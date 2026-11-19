@@ -526,6 +526,37 @@ test('desktop Viewer presents the real map, changes year, searches and moves the
 });
 
 
+test('dated Viewer renders names while flag downloads are pending',async({page})=>{
+ const warnings=[];let germanFlagRequested=false,release;
+ const gate=new Promise(resolve=>{release=resolve;});
+ page.on('console',message=>{
+  if(/Image "pando-flag-.*could not be loaded|feature index out of bounds/.test(message.text()))warnings.push(message.text());
+ });
+ await page.route(/\/assets\/vendor\/(?:country-flags|flag-icons|political-flags)\/.*\/de\.svg(?:\?|$)/,async route=>{
+  germanFlagRequested=true;
+  await gate;
+  await route.continue();
+ });
+ const labels=()=>page.evaluate(async()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__;
+  const data=await map.getSource('viewer-labels').getData();
+  const rows=data.features.filter(feature=>feature.properties.kind==='territorial').map(feature=>feature.properties);
+  const germany=rows.find(row=>row.objectKey==='territorial:entity:DEU');
+  return {name:germany?.primary,icon:germany?.icon,unregistered:rows.filter(row=>row.icon&&!map.hasImage(row.icon)).length};
+ });
+ try{
+  await open(page);
+  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[15,48],zoom:4}));
+  await expect.poll(()=>germanFlagRequested).toBe(true);
+  await month(page,'2024-12');
+  await expect.poll(async()=>(await labels()).name).toBeTruthy();
+  expect((await labels()).icon).toBe('');
+ }finally{release();}
+ await expect.poll(async()=>(await labels()).icon,{timeout:30_000}).toMatch(/^pando-flag-/);
+ expect((await labels()).unregistered).toBe(0);
+ expect(warnings).toEqual([]);
+});
+
 test('MapLibre camera projection and map selection remain aligned after date changes',async({page})=>{
  await page.setViewportSize({width:1280,height:800});await open(page);await month(page,'2024-12');
  await page.locator('#objectSearchBtn').click();await page.getByRole('searchbox',{name:'객체 검색'}).fill('대한민국');

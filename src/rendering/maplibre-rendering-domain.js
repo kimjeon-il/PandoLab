@@ -35,7 +35,8 @@ export function createMapLibreRenderingDomain(options){
   },error=>{if(pendingPlaceViewport===task&&!disposed)renderer.failMapPreparation(error);});
  };
  const labels=createMapLibreLabelPresentation({renderer,labels:options.labelResources,
-  onChange:()=>invalidate('map-labels-ready',false,false),onSourceError:renderer.failMapPreparation,
+  onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready'),
+  onSourceError:renderer.failMapPreparation,
   onError:error=>reportDiagnostic({operation:'map-labels',stage:'prepare',result:'failed',message:error.message,error})});
  const content=createMapContentPresentation({countries:options.countryResources,
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
@@ -76,6 +77,7 @@ export function createMapLibreRenderingDomain(options){
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
    if(result.deferred||waitingForVisibleLabels||waitingForPlaces||!renderer.canPresentVisualFrame(frame,result))return;
    if(!renderer.commitVisualFrame(frame))return;
+   labels.publishOptionalFlags();
    stats.visualFrameCommittedCount++;stats.lastCommittedVisualFrameId=frame.frameId;
    options.onFrameComplete?.({durationMs:0,viewFrame:true,frameId:frame.frameId});
   }catch(error){renderer.failMapPreparation(error);}
