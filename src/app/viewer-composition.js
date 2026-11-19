@@ -445,7 +445,6 @@ export async function composeViewer({ productMode, meta }) {
     onError:report,
   });
   disposables.push(projectClock);
-  action(get('builtinMapBtn'),'click',()=>projectClock.followNow());
   display=createMapSettings({capabilities:owners.capabilities,viewPresentation:map});
   display.connect({
     layerResources:{loadHydroData:owners.physicalResources.loadHydroData,preparePlaces:owners.territorialLabels.preparePlaces},
@@ -462,19 +461,15 @@ export async function composeViewer({ productMode, meta }) {
   const navigationBindings=createNavigationBindings();
   navigationBindings.connect({platform:{$:get},workspaceUi:surfaces,surfaces,
     navigation:map.navigation,projectState:{state:map.viewState},objectPicking:map.objectPicking,
+    projectPicker:{name:projectRuntime.project.name,openProject:()=>projectClock.followNow().catch(report)},
     readinessUi:notifications});
   navigationBindings.bindNavigationUI();
   disposables.push(navigationBindings);
-  for(const id of ['builtinMapBtn']){
-    const element=get(id),handler=()=>surfaces.closeFileMenu();
-    element.addEventListener('click',handler);
-    actionSubscriptions.push(()=>element.removeEventListener('click',handler));
-  }
   preferencesDialog=createPreferencesDialog({document,window,productMode,
     returnFocus:()=>get(surfaces.isMobile()?'mobileMenuBtn':'preferencesBtn'),
     getPreferences:()=>preferencePresentation.current,getMapState:()=>map.displayState(),mapSettings:display,
     applyPreferences:value=>preferencePresentation.apply(value,{persist:true}),
-    onError:report,beforeOpen:()=>surfaces.closeFileMenu()});
+    onError:report});
   disposables.push(preferencesDialog);
   const onProjectPreferences = () => preferencesDialog.sync();
   window.addEventListener('pandolab:project-changed', onProjectPreferences);

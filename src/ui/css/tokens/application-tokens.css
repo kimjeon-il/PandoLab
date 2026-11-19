@@ -61,7 +61,6 @@
   --map-status-bg: linear-gradient(90deg, rgba(16,20,25,.9), rgba(16,20,25,.68));
   --map-status-text: #b9c1cb;
   --map-status-border: rgba(55,64,75,.7);
-  --mobile-backdrop: rgba(4,7,10,.42);
   --component-card-border: #303944;
   --component-field-border: #3a4551;
   --mode-bar-border: #46505d;
@@ -204,7 +203,6 @@
   --map-status-bg: rgba(255,255,255,.90);
   --map-status-text: #46515c;
   --map-status-border: #c9d0d7;
-  --mobile-backdrop: rgba(50,58,66,.28);
   --component-card-border: #c9d0d7;
   --component-field-border: #b8c1ca;
   --mode-bar-border: #aeb8c2;

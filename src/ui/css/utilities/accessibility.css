@@ -227,13 +227,9 @@ html.keyboard-navigation :is(.ui-selectable-row.is-selected:not(.is-multi-select
   color: var(--text-soft);
 }
 
-:is( .file-menu-item, .ui-callout, .ui-alert, .ui-empty-state, .action-status strong ) {
+:is( .ui-callout, .ui-alert, .ui-empty-state, .action-status strong ) {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-:is(.file-menu-item) > span {
-  min-width: 0;
 }
 
 .ui-dialog-actions {

@@ -91,8 +91,6 @@
   box-shadow: var(--control-shadow);
 }
 
-.file-menu-page { display: contents; }
-.file-menu-page[hidden] { display: none; }
 
 .ui-command-menu {
   width: min(var(--ui-menu-width), calc(100vw - var(--ui-menu-screen-edge) * 2));
@@ -184,13 +182,7 @@
   height: var(--ui-icon-size);
 }
 
-.ui-menu-list .ui-menu-item .ui-menu-chevron {
-  grid-column: 3;
-  width: var(--ui-icon-size-sm);
-  height: var(--ui-icon-size-sm);
-}
-
-.ui-menu-list .ui-menu-item:is(:hover, :focus-visible, [aria-expanded="true"]):not(:disabled, [aria-disabled="true"], :has(> input:disabled)) {
+.ui-menu-list .ui-menu-item:is(:hover, :focus-visible):not(:disabled, [aria-disabled="true"], :has(> input:disabled)) {
   background: var(--ui-hover-fill, var(--surface-hover));
   color: var(--text-strong);
 }

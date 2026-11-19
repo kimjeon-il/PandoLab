@@ -3,7 +3,7 @@ import { setDialogReturnFocus } from "./dialog-accessibility-controller.js";
 
 /** One settings dialog. No detached View surface, DOM reparenting or duplicate state. */
 export function createPreferencesDialog({ document, window = globalThis.window, productMode,
-  getPreferences, applyPreferences, mapSettings, getMapState, beforeOpen = () => {},
+  getPreferences, applyPreferences, mapSettings, getMapState,
   returnFocus = null, onError = () => {} }) {
   if (productMode !== 'viewer') throw new TypeError('Preference dialog requires viewer product mode.');
   const get = id => document.getElementById(id);
@@ -103,7 +103,6 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     trigger = null;
   }
   listen(get('preferencesBtn'),'click',event => {
-    beforeOpen();
     trigger = event.currentTarget;
     setDialogReturnFocus(modal,()=>returnFocus?.() || trigger);
     sync();

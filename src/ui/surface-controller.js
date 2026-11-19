@@ -17,7 +17,7 @@ export function createSurfaceController({getElement,getLayout,document}) {
     return true;
   }
   const isOpen=surface=>activeSurface===surface;
-  function render({fileOpen=false}={}) {
+  function render() {
     const layout=getLayout(),mobile=isMobileWorkspaceLayout(layout);
     for(const [surface,id] of Object.entries(panels)){
       const panel=getElement(id),opened=isOpen(surface);
@@ -44,11 +44,7 @@ export function createSurfaceController({getElement,getLayout,document}) {
       trigger?.classList.toggle('sheet-open',isOpen('search'));
       trigger?.setAttribute('aria-expanded',String(isOpen('search')));
     }
-    document.body.classList.toggle('file-menu-open',fileOpen);
     document.body.classList.toggle('map-sheet-open',mobile&&!!activeMobileSheet);
-    getElement('mobileFileBtn')?.classList.toggle('sheet-open',fileOpen);
-    getElement('mobileFileBtn')?.setAttribute('aria-expanded',String(fileOpen));
-    getElement('mobileBackdrop')?.setAttribute('aria-hidden',String(!fileOpen));
     return {searchOpen:isOpen('search'),detailsOpen:isOpen('details'),activeMobileSheet};
   }
   function syncLayout(previousLayout) {

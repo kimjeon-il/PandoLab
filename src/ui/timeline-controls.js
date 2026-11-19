@@ -5,24 +5,17 @@ export function shiftTimelineMonth(value, delta) {
   return shiftTemporalMonth(value, delta);
 }
 
-export function timelineMonthLabel(value) {
-  const point = parseTemporal(value, { nullable: false });
-  if (point.precision !== 'month') throw new TypeError('A month is required.');
-  return `${point.year < 0 ? `기원전 ${Math.abs(point.year)}` : point.year}년 ${point.month}월`;
-}
-
 /** Owns transient date input; the session cursor and Core own committed time. */
 export function installTimelineControls({ document, window, getMonth, getRange=()=>null, setMonth, now = () => new Date() }) {
   const get = id => document.getElementById(id);
   const root = get('timelineControls'), popover = get('timelinePopover'), form = get('timelineDateForm');
   const year = get('timelineYearInput'), month = get('timelineMonthInput'), go = get('timelineGoBtn');
   const button = get('timelineDateButton'), text = get('timelineDateButtonText'), error = get('timelineDateError');
-  const unit = get('timelineViewUnit'), basis = get('timelineDateBasis'), monthFields = get('timelineMonthFields');
+  const unit = get('timelineViewUnit'), monthFields = get('timelineMonthFields');
   const steps = [['timelinePreviousDecade', -120], ['timelinePreviousYear', -12],
     ['timelineNextYear', 12], ['timelineNextDecade', 120]].map(([id, delta]) => [get(id), delta]);
-  const monthSteps = [['timelinePreviousMonth', -1], ['timelineNextMonth', 1]].map(([id, delta]) => [get(id), delta]);
-  if ([root, popover, form, year, month, go, button, text, error, unit, basis, monthFields,
-    ...steps.map(([node]) => node), ...monthSteps.map(([node]) => node)].some(node => !node))
+  if ([root, popover, form, year, month, go, button, text, error, unit, monthFields,
+    ...steps.map(([node]) => node)].some(node => !node))
     throw new Error('Timeline controls are missing.');
   let editing = false, composing = false, submitting = false, disposed = false;
   let viewUnit = 'year';
@@ -57,19 +50,21 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
     syncUnitInput();
   };
   const sync = () => {
-    if (!getMonth()) return;
-    const point = parseTemporal(getMonth(), { nullable: false });
-    const readable = viewUnit === 'month' ? timelineMonthLabel(getMonth())
-      : `${point.year < 0 ? `기원전 ${Math.abs(point.year)}` : point.year}년`;
+    const displayedMonth = getMonth();
+    if (!displayedMonth) return;
+    const point = parseTemporal(displayedMonth, { nullable: false });
+    const currentMonth = viewUnit === 'year' && displayedMonth === deviceCurrentMonth(now());
+    const yearEnd = viewUnit === 'year' && !currentMonth && point.month === 12;
+    const yearLabel = `${point.year < 0 ? `기원전 ${Math.abs(point.year)}` : point.year}년`;
+    const readable = yearEnd ? `${yearLabel} 말` : `${yearLabel} ${point.month}월`;
+    const basis = currentMonth ? '현재 월 기준' : yearEnd ? '연말 기준' : '월말 기준';
     text.textContent = readable;
-    basis.textContent = viewUnit === 'month' ? '월말 기준' : getMonth() === deviceCurrentMonth(now()) ? '현재 월 기준'
-      : point.month === 12 ? '연말 기준' : `${point.month}월말 기준`;
-    button.setAttribute('aria-label', `${readable}, ${basis.textContent}, 시점 직접 입력`);
+    button.setAttribute('aria-label', `${readable}, ${basis}, 시점 직접 입력`);
     // Navigation bounds are supplied by the currently admitted C++ project.
     // No builtin-specific date rules live in the timeline surface.
     for(const [node,delta] of steps) {
       try {
-        const shifted=shiftTimelineMonth(getMonth(),delta);
+        const shifted=shiftTimelineMonth(displayedMonth,delta);
         node.disabled=!permitted(viewUnit==='year'?annualMonth(shifted):shifted);
       }catch{node.disabled=true;}
     }
@@ -174,17 +169,6 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
     };
     node.addEventListener('click', handler); return [node, handler];
   });
-  const monthHandlers = monthSteps.map(([node, delta]) => {
-    const handler = () => {
-      if (!editing || unit.value !== 'month' || composing || disposed) return;
-      try {
-        const next = shiftTimelineMonth(readInput().value, delta), point = parseTemporal(next, { nullable: false });
-        year.value = String(point.year); month.value = String(point.month);
-        change(next, 'month').catch(reason => showError(String(reason?.message || reason)));
-      } catch (reason) { showError(String(reason.message)); }
-    };
-    node.addEventListener('click', handler); return [node, handler];
-  });
   const bindings = [[button, 'click', onButtonClick], [form, 'submit', submit], [root, 'keydown', onKeydown],
     [form, 'keydown', onFormKeydown], [form, 'beforeinput', onBeforeInput], [root, 'focusout', onFocusOut],
     [form, 'input', onInput], [form, 'change', onInput], [unit, 'change', onUnitChange], [form, 'compositionstart', onCompositionStart],
@@ -194,7 +178,7 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
   popover.hidden = true; button.setAttribute('aria-expanded', 'false'); sync();
   return () => {
     changeRequest++; disposed = true; exitEdit(false);
-    for (const [node, event, handler] of [...bindings, ...[...stepHandlers, ...monthHandlers].map(([node, handler]) => [node, 'click', handler])])
+    for (const [node, event, handler] of [...bindings, ...stepHandlers.map(([node, handler]) => [node, 'click', handler])])
       node.removeEventListener(event, handler);
   };
 }
