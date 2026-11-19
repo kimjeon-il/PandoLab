@@ -635,7 +635,8 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await menuButton.tap();
     const menu=page.locator('#mobileGlobalMenu');
     await expect(menu).toBeVisible();
-    expect((await chrome(menuButton)).face).not.toBe(normalMenu.face);
+    await expect(menuButton).toHaveAttribute('aria-expanded','true');
+    await expect.poll(async()=>(await chrome(menuButton)).face).not.toBe(normalMenu.face);
     expect(await chrome(menu)).toEqual(await chrome(dateBar));
     await menu.getByRole('menuitem',{name:'설정'}).tap();
     const settings=page.getByRole('dialog',{name:'설정'});
