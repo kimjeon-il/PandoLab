@@ -78,6 +78,7 @@
   --bootstrap-progress-bg: #11161c;
   --bootstrap-text: #b7c0ca;
   --control-shadow: var(--design-control-shadow);
+  --ui-floating-surface-filter: blur(16px);
   --inset-highlight: rgba(255,255,255,.015);
   --shadow: var(--design-shadow);
   --ui-space-0: var(--design-space-0);
@@ -234,4 +235,69 @@
 :root:has(.app-root[data-layout="phone-landscape"]) {
   --ui-control-height: var(--design-control-mobile-height);
   --ui-icon-control-size: var(--ui-icon-control-mobile-size);
+}
+
+/* Phone chrome includes dialogs that live outside the Viewer root. */
+@media (width < 600px) or ((height < 600px) and (orientation: landscape) and (pointer: coarse)) {
+  body:is([data-layout="mobile"], [data-layout="phone-landscape"]) {
+    --design-color-panel: var(--design-mobile-paper);
+    --design-color-surface-elevated: var(--design-mobile-paper);
+    --surface-elevated: var(--design-color-surface-elevated);
+    --surface-input: var(--surface-elevated);
+    --overlay-panel: var(--surface-elevated);
+    --toolbar-bg: var(--surface-elevated);
+    --mobile-nav-bg: var(--surface-elevated);
+    --object-search-background: var(--surface-elevated);
+    --modal-card-bg: var(--surface-elevated);
+    --border: var(--design-mobile-edge);
+    --overlay-border: var(--border);
+    --toolbar-border: var(--border);
+    --modal-card-border: var(--border);
+    --control-shadow: var(--design-mobile-shadow);
+    --toolbar-shadow: var(--control-shadow);
+    --modal-card-shadow: var(--control-shadow);
+    --ui-floating-surface-filter: none;
+    --ui-radius-sheet: var(--ui-radius-panel);
+
+    --accent: var(--design-mobile-ink);
+    --accent-surface: var(--accent);
+    --accent-text: var(--design-mobile-on-ink);
+    --accent-border: var(--accent);
+    --accent-surface-hover: color-mix(in srgb, var(--accent) 90%, var(--accent-text));
+    --ui-accent-pressed: color-mix(in srgb, var(--accent) 80%, var(--accent-text));
+    --focus-ring: var(--accent);
+    --selection-focus-on-strong: var(--focus-ring);
+    --surface-hover: var(--design-mobile-hover);
+    --ui-hover-fill: var(--surface-hover);
+    --ui-control-bg-hover: var(--ui-hover-fill);
+    --ui-control-bg-pressed: var(--design-mobile-pressed);
+    --ui-menu-pressed-fill: var(--ui-control-bg-pressed);
+    --ui-button-subtle-hover: var(--ui-hover-fill);
+    --ui-button-subtle-pressed: var(--ui-control-bg-pressed);
+    --ui-button-selected: color-mix(in srgb, var(--accent) 13%, var(--surface-elevated));
+    --ui-button-selected-hover: color-mix(in srgb, var(--accent) 19%, var(--surface-elevated));
+    --ui-selected-row-marker: inset 2px 0 var(--accent);
+    --ui-search-row-selected: var(--ui-button-selected);
+    --ui-search-row-selected-hover: var(--ui-button-selected-hover);
+
+    --design-tab-height: var(--ui-touch-height);
+    --ui-menu-item-min-height: var(--ui-touch-height);
+    --ui-menu-focus-color: var(--focus-ring);
+    --ui-surface-tab-active-color: var(--accent);
+    --ui-review-shadow: var(--control-shadow);
+    --ui-review-control-height: var(--ui-touch-height);
+    --ui-review-control-font: var(--ui-font-body);
+    --ui-mobile-floating-surface-size: var(--ui-icon-control-mobile-size);
+    --ui-mobile-floating-padding: 0px;
+    --ui-map-button-hover: var(--surface-hover);
+  }
+}
+
+@media (hover: none) and (width < 600px), (hover: none) and (height < 600px) and (orientation: landscape) and (pointer: coarse) {
+  body:is([data-layout="mobile"], [data-layout="phone-landscape"]) {
+    --ui-hover-fill: transparent;
+    --ui-map-button-hover: var(--surface-elevated);
+    --ui-button-selected-hover: var(--ui-button-selected);
+    --accent-surface-hover: var(--accent-surface);
+  }
 }

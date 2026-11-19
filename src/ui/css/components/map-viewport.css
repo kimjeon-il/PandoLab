@@ -109,6 +109,33 @@
   box-shadow: var(--control-shadow);
 }
 
+@media (width < 600px) or ((height < 600px) and (orientation: landscape) and (pointer: coarse)) {
+  .viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-menu-toolbar {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) :is(.reset-view-command, .mobile-menu-trigger) {
+    border-color: var(--overlay-border);
+    background: var(--surface-elevated);
+    box-shadow: var(--control-shadow);
+  }
+
+  .viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) :is(.reset-view-command, .mobile-menu-trigger):hover:not(:disabled) {
+    background: var(--ui-map-button-hover);
+  }
+
+  .viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-menu-trigger[aria-expanded="true"] {
+    color: var(--accent);
+    background: var(--ui-button-selected);
+  }
+
+  .viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) :is(.reset-view-command, .mobile-menu-trigger):active:not(:disabled) {
+    background: var(--ui-control-bg-pressed);
+  }
+}
+
 .timeline-popover { padding: var(--ui-space-4); }
 .timeline-popover h2 { margin: 0 0 var(--ui-space-3); font-size: var(--ui-font-title); line-height: var(--design-line-title); font-weight: var(--ui-weight-semibold); }
 .timeline-popover form,

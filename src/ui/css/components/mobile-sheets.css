@@ -140,7 +140,7 @@
     min-width: var(--ui-mobile-floating-surface-size);
     height: var(--ui-mobile-floating-surface-size);
     min-height: var(--ui-mobile-floating-surface-size);
-    padding: var(--ui-space-1-5);
+    padding: var(--ui-mobile-floating-padding, var(--ui-space-1-5));
     gap: 0;
     transform: none;
   }
@@ -188,6 +188,7 @@
     place-items: center;
   }
 }
+
 
 @media (max-width: 799px) {
   .mobile-workspace-controls .ui-nav-item .ui-icon {

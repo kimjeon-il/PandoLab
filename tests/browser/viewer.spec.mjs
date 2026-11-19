@@ -611,22 +611,45 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
       .toBe(await page.evaluate(()=>window.devicePixelRatio));
     const searchBar=page.getByRole('search'),dateBar=page.getByRole('group',{name:'시점 이동'});
     const details=page.getByRole('dialog',{name:'객체 정보'}),handle=page.getByRole('slider',{name:'정보창 높이 조절'});
+    const menuButton=page.locator('#mobileMenuBtn');
+    const chrome=element=>element.evaluate(node=>{
+      const style=getComputedStyle(node);
+      return {face:style.backgroundColor,edge:style.borderTopColor,shadow:style.boxShadow};
+    });
     for(const viewport of [{width:320,height:690},{width:844,height:390},{width:390,height:844}]){
       await page.setViewportSize(viewport);
       await expect(page.locator('#viewer')).toHaveAttribute('data-layout',viewport.width===844?'phone-landscape':'mobile');
       await expect(searchBar).toBeVisible();
       const bar=await dateBar.boundingBox(),dock=await searchBar.boundingBox();
       expect(dock.height).toBe(bar.height);
+      expect(bar.height).toBe(56);
+      expect(await chrome(searchBar)).toEqual(await chrome(dateBar));
+      await expect(dateBar).toHaveCSS('backdrop-filter','none');
+      await expect(menuButton).toHaveCSS('width','40px');
+      await expect(menuButton).toHaveCSS('height','40px');
       expect(bar.x).toBeGreaterThanOrEqual(0);
       expect(bar.x+bar.width).toBeLessThanOrEqual(viewport.width);
       if(viewport.width===844)expect(dock.x).toBeGreaterThan(bar.x+bar.width);
     }
+    const normalMenu=await chrome(menuButton);
+    await menuButton.tap();
+    const menu=page.locator('#mobileGlobalMenu');
+    await expect(menu).toBeVisible();
+    expect((await chrome(menuButton)).face).not.toBe(normalMenu.face);
+    expect(await chrome(menu)).toEqual(await chrome(dateBar));
+    await menu.getByRole('menuitem',{name:'설정'}).tap();
+    const settings=page.getByRole('dialog',{name:'설정'});
+    await expect(settings).toBeVisible();
+    expect((await chrome(settings.locator('.ui-dialog-card'))).face).toBe(normalMenu.face);
+    await expect(settings.getByRole('button',{name:'닫기'})).toHaveCSS('min-height','48px');
+    await settings.getByRole('button',{name:'닫기'}).tap();
     const searchBounds=await searchBar.boundingBox();
     expect(searchBounds.height).toBe((await dateBar.boundingBox()).height);
     await search(page,true);
     await expect(searchBar).toBeHidden();
     await expect(handle).toHaveAttribute('aria-valuenow','0');
     expect(await details.boundingBox()).toEqual(searchBounds);
+    expect(await chrome(details)).toEqual(await chrome(dateBar));
     await handle.tap();
     await expect(handle).toHaveAttribute('aria-valuenow','2');
     expect((await details.boundingBox()).height).toBeGreaterThan(searchBounds.height);

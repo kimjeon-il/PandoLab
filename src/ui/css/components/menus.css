@@ -138,7 +138,7 @@
   width: 100%;
   min-width: 0;
   height: auto;
-  min-height: var(--design-control-lg);
+  min-height: var(--ui-menu-item-min-height, var(--design-control-lg));
   margin: 0;
   padding: 0 var(--ui-menu-item-padding-x);
   border: var(--ui-border-width) solid transparent;
@@ -191,7 +191,7 @@
 }
 
 .ui-menu-list .ui-menu-item:is(:hover, :focus-visible, [aria-expanded="true"]):not(:disabled, [aria-disabled="true"], :has(> input:disabled)) {
-  background: var(--surface-hover);
+  background: var(--ui-hover-fill, var(--surface-hover));
   color: var(--text-strong);
 }
 
@@ -209,7 +209,7 @@
 }
 
 .ui-menu-list .ui-menu-item:active:not(:disabled, [aria-disabled="true"], :has(> input:disabled)) {
-  background: var(--surface-hover);
+  background: var(--ui-menu-pressed-fill, var(--surface-hover));
 }
 
 .ui-menu-list .ui-menu-item:is(:disabled, [aria-disabled="true"], :has(> input:disabled)) {
@@ -218,7 +218,7 @@
 }
 
 .ui-menu-list .ui-menu-item:is(:focus-visible, :has(> input:focus-visible)) {
-  outline: 2px solid var(--design-color-focus-ring);
+  outline: 2px solid var(--ui-menu-focus-color, var(--design-color-focus-ring));
   outline-offset: calc(-1 * var(--design-focus-offset));
 }
 
