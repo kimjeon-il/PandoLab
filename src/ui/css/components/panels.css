@@ -114,7 +114,12 @@ body.file-menu-open .mobile-backdrop {
   padding: 0;
   border-color: transparent;
   border-radius: var(--ui-radius-control);
-  background: transparent;
+  background: var(--ui-search-result-background, transparent);
+}
+
+.object-search-section .object-search-result.is-selected {
+  --ui-search-result-background: var(--ui-search-row-selected, transparent);
+  --ui-search-result-hover: var(--ui-search-row-selected-hover, var(--surface-hover));
 }
 
 .object-search-section .object-search-result-select {
@@ -167,7 +172,7 @@ body.file-menu-open .mobile-backdrop {
 
 .object-search-section .object-search-result:is(:hover, :focus-within) {
   border-color: transparent;
-  background: var(--surface-hover);
+  background: var(--ui-search-result-hover, var(--ui-hover-fill, var(--surface-hover)));
 }
 
 @media (max-width: 799px) {

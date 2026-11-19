@@ -300,7 +300,7 @@ body.map-sheet-dragging {
 
 .surface-tabs .ui-tab:is(.active, [aria-selected="true"]) {
   background: transparent;
-  color: var(--text-strong);
+  color: var(--ui-surface-tab-active-color, var(--text-strong));
   font-weight: var(--ui-weight-bold);
 }
 

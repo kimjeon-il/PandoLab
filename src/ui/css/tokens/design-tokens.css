@@ -139,6 +139,13 @@
   --design-control-shadow: 0 16px 42px rgba(0, 0, 0, .28);
   --design-toolbar-shadow: 0 4px 14px rgba(0, 0, 0, .18);
   --design-overlay-blur: 8px;
+  --design-mobile-paper: light-dark(#f8f7f3, #1d2427);
+  --design-mobile-edge: light-dark(#d3d4cc, #445054);
+  --design-mobile-ink: light-dark(#2d566b, #abcbdc);
+  --design-mobile-on-ink: light-dark(#fff, #162329);
+  --design-mobile-hover: light-dark(#eeeee8, #2b3337);
+  --design-mobile-pressed: light-dark(#e4e6de, #394348);
+  --design-mobile-shadow: 0 1px 3px light-dark(rgb(33 42 41 / .14), rgb(0 0 0 / .34));
   --ui-border-width: 1px;
   --ui-menu-width: 17.5rem;
   --ui-menu-trigger-gap: 6px;
