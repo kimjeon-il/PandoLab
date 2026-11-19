@@ -1,0 +1,68 @@
+name: Viewer core checks
+on:
+  workflow_dispatch:
+    inputs:
+      group:
+        type: choice
+        options:
+          - node
+          - maplibre
+          - browser
+          - lint
+        default: node
+        description: Selected core check
+      test_name_pattern:
+        type: string
+        default: ""
+        description: Optional Node scenario name
+      browser_grep:
+        type: string
+        default: ""
+        description: Browser test title filter (optional)
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - if: inputs.group == 'browser'
+        run: node tools/data/library-data.mjs --prepare-metadata
+      - if: inputs.group == 'browser' || inputs.group == 'maplibre'
+        run: pnpm exec playwright install --with-deps chromium
+      - env:
+          CHECK_GROUP: ${{ inputs.group }}
+          CHECK_PATTERN: ${{ inputs.test_name_pattern }}
+          BROWSER_GREP: ${{ inputs.browser_grep }}
+        run: |-
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { executeChecks } from './scripts/run-application-checks.mjs';
+          const group = process.env.CHECK_GROUP;
+          const pattern = process.env.BROWSER_GREP;
+          executeChecks({
+            groups: [group],
+            testNamePattern: process.env.CHECK_PATTERN || undefined,
+            ...(group === 'browser' ? {
+              run: ([command, ...args], options) => spawnSync(command, [
+                ...args,
+                ...(pattern ? [`--grep=${pattern}`] : []),
+                '--trace=retain-on-failure',
+              ], { ...options, stdio: 'inherit', windowsHide: true }),
+            } : {}),
+          });
+          NODE
+      - name: Upload browser failure traces
+        if: ${{ inputs.group == 'browser' && !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: browser-failure-traces
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

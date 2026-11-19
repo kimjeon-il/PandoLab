@@ -1,0 +1,65 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createCoreDocumentClient} from '../../../src/document/core-document-client.js';
+
+test('timeline geometry can be prepared without changing the displayed cursor',async()=>{
+ const calls=[];
+ const state={epoch:1,timelineCursor:'2026-12'};
+ const worker={postMessage(message){
+  calls.push(message.operation);
+  const result=message.operation==='core.document-load'?{state}:
+   message.operation==='core.document-geometry-requirements'?{sourceEpoch:1,resources:[{id:'fixture'}]}:
+   message.operation==='core.document-geometry-admit'?{state}:null;
+  queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
+   type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker});
+ try{
+  await client.load('{}');let loaded=false;
+  client.setGeometryLoader(async()=>{loaded=true;return [{id:'fixture'}];});
+  await client.prepareTimelineGeometry('1922-12');
+  assert.equal(loaded,true);
+  assert.equal(client.state().timelineCursor,'2026-12');
+  assert.deepEqual(calls,['core.document-load','core.document-geometry-requirements','core.document-geometry-admit']);
+ }finally{client.dispose();}
+});
+
+test('superseded timeline preparation does not admit stale geometry',async()=>{
+ let release,started;const waiting=new Promise(resolve=>{started=resolve;});const calls=[];
+ const worker={postMessage(message){
+  calls.push(message.operation);
+  const result=message.operation==='core.document-load'?{state:{epoch:1,timelineCursor:'2026-12'}}:
+   message.operation==='core.document-geometry-requirements'?{sourceEpoch:1,resources:[{id:'fixture'}]}:null;
+  queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
+   type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker});let current=true;
+ try{
+  await client.load('{}');client.setGeometryLoader(()=>new Promise(resolve=>{release=resolve;started();}));
+  const pending=client.prepareTimelineGeometry('1922-12',{isCurrent:()=>current});await waiting;
+  current=false;release([{id:'fixture'}]);await assert.rejects(pending,{name:'AbortError'});
+  assert.equal(calls.includes('core.document-geometry-admit'),false);
+  assert.equal(client.state().timelineCursor,'2026-12');
+ }finally{client.dispose();}
+});
+
+test('timeline preparation retries when another operation advances the Core epoch',async()=>{
+ let release,started,epoch=1,loads=0;const waiting=new Promise(resolve=>{started=resolve;});const admissions=[];
+ const worker={postMessage(message){
+  const state={epoch,timelineCursor:'2026-12'};
+  let result;
+  if(message.operation==='core.document-load')result={state};
+  else if(message.operation==='core.document-geometry-requirements')result={sourceEpoch:epoch,resources:[{id:'fixture'}]};
+  else if(message.operation==='core.document-presentation-catalog'){epoch++;result={state:{epoch,timelineCursor:'2026-12'}};}
+  else if(message.operation==='core.document-geometry-admit'){admissions.push(message.payload.expectedEpoch);result={state};}
+  queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
+   type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker});
+ try{
+  await client.load('{}');client.setGeometryLoader((_requirements,{isCurrent})=>++loads===1?new Promise((resolve,reject)=>{release=()=>isCurrent()?resolve([{id:'fixture'}]):reject(Object.assign(new Error('superseded'),{name:'AbortError'}));started();}):Promise.resolve([{id:'fixture'}]));
+  const pending=client.prepareTimelineGeometry('1922-12');await waiting;
+  await client.presentationCatalogLoad({});release();await pending;
+  assert.equal(loads,2);assert.deepEqual(admissions,[2]);assert.equal(client.state().timelineCursor,'2026-12');
+ }finally{client.dispose();}
+});

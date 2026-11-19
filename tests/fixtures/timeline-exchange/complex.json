@@ -1,0 +1,536 @@
+{
+  "baseDataset": "external-territorial-entities",
+  "distributionEntries": [],
+  "distributionLayers": [],
+  "distributionModel": {
+    "schemaVersion": 3,
+    "sourceModes": [
+      "territorial",
+      "geometry"
+    ],
+    "valueKind": "finite-number"
+  },
+  "distributionSettings": {
+    "activeLayerId": "",
+    "boundaryVisible": true,
+    "renderMode": "overlap"
+  },
+  "documentId": "ac86aaa8-4f4a-5a94-bb06-912bf7851f74",
+  "format": "pandolab-project-state",
+  "genericFeatures": [],
+  "geometries": [
+    {
+      "geojson": {
+        "coordinates": [
+          5,
+          6
+        ],
+        "type": "Point"
+      },
+      "id": "label",
+      "version": 1
+    },
+    {
+      "geojson": {
+        "coordinates": [
+          [
+            179,
+            2
+          ],
+          [
+            -179,
+            3
+          ]
+        ],
+        "type": "LineString"
+      },
+      "id": "river",
+      "version": 1
+    },
+    {
+      "geojson": {
+        "coordinates": [
+          [
+            [
+              [
+                0,
+                0
+              ],
+              [
+                10,
+                0
+              ],
+              [
+                10,
+                10
+              ],
+              [
+                0,
+                10
+              ],
+              [
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                2,
+                2
+              ],
+              [
+                2,
+                3
+              ],
+              [
+                3,
+                3
+              ],
+              [
+                3,
+                2
+              ],
+              [
+                2,
+                2
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                12,
+                0
+              ],
+              [
+                13,
+                0
+              ],
+              [
+                13,
+                1
+              ],
+              [
+                12,
+                0
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                179,
+                0
+              ],
+              [
+                -179,
+                0
+              ],
+              [
+                -179,
+                1
+              ],
+              [
+                179,
+                0
+              ]
+            ]
+          ]
+        ],
+        "type": "MultiPolygon"
+      },
+      "id": "shape",
+      "version": 1
+    },
+    {
+      "geojson": {
+        "coordinates": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1.2345678901234567,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              0,
+              0
+            ]
+          ]
+        ],
+        "type": "Polygon"
+      },
+      "id": "shape",
+      "version": 2
+    }
+  ],
+  "hydroEdits": [],
+  "labelSettings": {},
+  "labels": [],
+  "landObjectModel": {
+    "canonicalProperties": [
+      "name",
+      "notes",
+      "color",
+      "locked",
+      "source"
+    ],
+    "coastlineAuthority": "territorialEntities",
+    "directCreation": false,
+    "purpose": "lossless-fallback",
+    "schemaVersion": 2,
+    "sourceProvenanceSchemaVersion": 1
+  },
+  "layerPresentation": {
+    "objectOrder": [],
+    "objectStyles": {},
+    "schemaVersion": 5,
+    "styles": {}
+  },
+  "physicalSourceInfo": {
+    "hydro": {
+      "coordinatePolicy": "selected source coordinates retained without simplification",
+      "dataset": "hydro",
+      "selection": {},
+      "version": "0.34.0"
+    }
+  },
+  "projectSetup": {
+    "initialMapBounds": null,
+    "initialMonth": "2026-10",
+    "sourceMode": "empty",
+    "timelineRange": null
+  },
+  "savedAt": "2026-10-04T00:00:00.000Z",
+  "schemaVersion": 14,
+  "sourceInfo": null,
+  "territorialEntities": [
+    {
+      "geometry": null,
+      "id": "A",
+      "properties": {
+        "entityKind": "general",
+        "locked": false,
+        "metadata": {
+          "capital": "서울",
+          "originalName": "A Territory",
+          "source": {
+            "provider": "T2-2 exchange corpus",
+            "sourceId": "A"
+          }
+        },
+        "name": "A 영토",
+        "notes": "원본 메타데이터 보존",
+        "schemaVersion": 6,
+        "sourceEntityId": "timeline-test",
+        "sourceFolderId": "exchange",
+        "sourceGeometryVersion": "source-1",
+        "style": {
+          "color": "#507090"
+        }
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": null,
+      "id": "B",
+      "properties": {
+        "entityKind": "general",
+        "locked": false,
+        "metadata": {
+          "capital": "서울",
+          "originalName": "B Territory",
+          "source": {
+            "provider": "T2-2 exchange corpus",
+            "sourceId": "B"
+          }
+        },
+        "name": "B 영토",
+        "notes": "원본 메타데이터 보존",
+        "schemaVersion": 6,
+        "sourceEntityId": "timeline-test",
+        "sourceFolderId": "exchange",
+        "sourceGeometryVersion": "source-1",
+        "style": {
+          "color": "#507090"
+        }
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": null,
+      "id": "C",
+      "properties": {
+        "entityKind": "general",
+        "locked": false,
+        "metadata": {
+          "capital": "서울",
+          "originalName": "C Territory",
+          "source": {
+            "provider": "T2-2 exchange corpus",
+            "sourceId": "C"
+          }
+        },
+        "name": "C 영토",
+        "notes": "원본 메타데이터 보존",
+        "schemaVersion": 6,
+        "sourceEntityId": "timeline-test",
+        "sourceFolderId": "exchange",
+        "sourceGeometryVersion": "source-1",
+        "style": {
+          "color": "#507090"
+        }
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": null,
+      "id": "R",
+      "properties": {
+        "entityKind": "regional",
+        "locked": false,
+        "metadata": {
+          "capital": "서울",
+          "originalName": "R Territory",
+          "source": {
+            "provider": "T2-2 exchange corpus",
+            "sourceId": "R"
+          }
+        },
+        "name": "R 영토",
+        "notes": "원본 메타데이터 보존",
+        "schemaVersion": 6,
+        "sourceEntityId": "timeline-test",
+        "sourceFolderId": "exchange",
+        "sourceGeometryVersion": "source-1",
+        "style": {
+          "color": "#507090"
+        }
+      },
+      "type": "Feature"
+    }
+  ],
+  "territorialModel": {
+    "coastlineAuthority": "territorialEntities",
+    "coverageModes": [
+      "partition",
+      "explicit"
+    ],
+    "kinds": [
+      "general",
+      "regional"
+    ],
+    "schemaVersion": 6,
+    "storage": "territorialEntities"
+  },
+  "timelineRecords": {
+    "geometryBindings": [
+      {
+        "geometryRef": {
+          "id": "shape",
+          "version": 1
+        },
+        "id": "shape:C",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "C"
+        },
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "geometryRef": {
+          "id": "shape",
+          "version": 1
+        },
+        "id": "shape:R",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "R"
+        },
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "geometryRef": {
+          "id": "shape",
+          "version": 1
+        },
+        "id": "A:old",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "A"
+        },
+        "validFrom": null,
+        "validTo": "1914-06"
+      },
+      {
+        "geometryRef": {
+          "id": "shape",
+          "version": 2
+        },
+        "id": "A:new",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "A"
+        },
+        "validFrom": "1914-07",
+        "validTo": null
+      },
+      {
+        "geometryRef": {
+          "id": "shape",
+          "version": 1
+        },
+        "id": "B:ancient-shape",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "validFrom": "-0001",
+        "validTo": "0001"
+      },
+      {
+        "geometryRef": {
+          "id": "shape",
+          "version": 1
+        },
+        "id": "B:modern-shape",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "validFrom": "1910-01-02",
+        "validTo": "1920-03"
+      }
+    ],
+    "lifetimes": [
+      {
+        "id": "life:A",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "A"
+        },
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "id": "life:C",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "C"
+        },
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "id": "life:R",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "R"
+        },
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "id": "B:ancient",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "validFrom": "-0001",
+        "validTo": "0001"
+      },
+      {
+        "id": "B:modern",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "validFrom": "1910-01-02",
+        "validTo": "1920-03"
+      }
+    ],
+    "parentRelations": [
+      {
+        "coverageMode": "explicit",
+        "id": "parent:A",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "A"
+        },
+        "parentId": "",
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "coverageMode": "explicit",
+        "id": "parent:C",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "C"
+        },
+        "parentId": "",
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "coverageMode": "explicit",
+        "id": "parent:R",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "R"
+        },
+        "parentId": "",
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "coverageMode": "partition",
+        "id": "B:ancient-parent",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "parentId": "A",
+        "validFrom": "-0001",
+        "validTo": "0001"
+      },
+      {
+        "coverageMode": "partition",
+        "id": "B:old-parent",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "parentId": "A",
+        "validFrom": "1910-01-02",
+        "validTo": "1915"
+      },
+      {
+        "coverageMode": "explicit",
+        "id": "B:new-parent",
+        "objectRef": {
+          "domain": "territorial",
+          "id": "B"
+        },
+        "parentId": "C",
+        "validFrom": "1916",
+        "validTo": "1920-03"
+      }
+    ],
+    "propertyBindings": [],
+    "schemaVersion": 3
+  },
+  "version": "0.34.0"
+}

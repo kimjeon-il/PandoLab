@@ -1,0 +1,109 @@
+name: Curated Place Release
+on:
+  workflow_dispatch:
+    inputs:
+      data_revision:
+        description: Exact input SHA on the Library data/places branch, matching the app pin
+        type: string
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: pando-library-publication-work-active
+  cancel-in-progress: false
+jobs:
+  generate-verified-places:
+    if: github.repository == 'kimjeon-il/Pando' && github.ref == 'refs/heads/work/active'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exactly this places revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Check exact app and Library inputs
+        env:
+          DATA_REVISION: ${{ inputs.data_revision }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
+          node --input-type=module -e 'import assert from "node:assert/strict"; import {libraryConfig} from "./tools/data/library-context.mjs"; const pin=libraryConfig(); assert.equal(pin.repository,"kimjeon-il/PandoLab-library"); assert.match(process.env.DATA_REVISION,/^(?!0{40}$)[a-f0-9]{40}$/); assert.equal(pin.revision,process.env.DATA_REVISION)'
+      - uses: actions/checkout@v4
+        with:
+          repository: kimjeon-il/PandoLab-library
+          ref: data/places
+          path: .library-data/repository
+          sparse-checkout: archive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare exact pinned library data
+        env:
+          DATA_REVISION: ${{ inputs.data_revision }}
+        run: |
+          set -euo pipefail
+          test "$(git -C .library-data/repository rev-parse HEAD)" = "$DATA_REVISION"
+          node tools/data/library-data.mjs
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+          run_install: false
+      - name: Setup Node from repository pin
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Hydrate only reviewed places and archived spatial population records
+        run: |-
+          node tools/data/report-paths.mjs reports/places read
+          node tools/data/report-paths.mjs reports/map-analysis/corpus/gazetteer-v1/sources/cities500.source.json read
+          node tools/data/report-paths.mjs reports/map-analysis/corpus/gazetteer-v1/runtime/manifest.json read
+          node tools/data/report-paths.mjs reports/map-analysis/corpus/gazetteer-v1/runtime/records read
+      - name: Generate population tiers and neighbourhood weights only
+        run: node tools/build/build-place-runtime.mjs
+      - name: Verify deterministic generation and approved records
+        run: |-
+          node tools/build/build-place-runtime.mjs --check
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import assert from "node:assert/strict";
+            const a=JSON.parse(fs.readFileSync("assets/data/places/manifest.json","utf8"));
+            const p=a.displayRanking;
+            assert.equal(p?.approvedCount,173);
+            assert.equal(Object.keys(p.entries).length,173);
+            assert.deepEqual(p.model.populationTierThresholds,[1000000,500000,200000,100000,50000]);
+            assert.equal(p.entries["1835848"].populationTier,1);
+            assert.equal(p.entries["1835235"].populationTier,1);
+            assert(p.entries["1835848"].priority>p.entries["1835235"].priority);
+            console.log(JSON.stringify({count:p.approvedCount,neighbours:p.neighbourhoodCandidateCount,
+              seoul:p.entries["1835848"],daejeon:p.entries["1835235"]}));
+          '
+      - name: Store and pin only completed city data; never merge main
+        env:
+          DATA_REVISION: ${{ inputs.data_revision }}
+          PANDOLAB_LIBRARY_WRITE_TOKEN: ${{ secrets.PANDOLAB_LIBRARY_WRITE_TOKEN }}
+        run: |-
+          set -euo pipefail
+          test -n "$PANDOLAB_LIBRARY_WRITE_TOKEN"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
+          node --input-type=module <<'JS'
+          import {storeLibraryData} from './tools/data/library-store.mjs';
+          storeLibraryData({push:true,expectedRevision:process.env.DATA_REVISION,expectedBranch:'data/places',expectedAppBranch:'work/active',prefixes:[
+            'assets/data/places/reviewed-records-v1.json',
+            'assets/data/places/places-v1.bin',
+            'assets/data/places/manifest.json',
+          ]});
+          JS
+          git add -- config/library-data.json
+          if git diff --cached --quiet; then
+            echo "Curated place release already matches the pinned library."
+          else
+            git diff --cached --check
+            git commit -m "build(places): pin validated population and spatial display rankings [skip ci]"
+            git push origin HEAD:refs/heads/work/active
+          fi

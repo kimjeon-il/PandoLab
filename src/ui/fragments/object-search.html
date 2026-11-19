@@ -1,0 +1,16 @@
+<aside id="objectSearchSurface" class="workspace-surface surface-search" aria-labelledby="searchSheetTitle" data-od-id="object-search-surface">
+        <header class="surface-header">
+          <div class="surface-header-title"><strong id="searchSheetTitle">검색</strong></div>
+          <div class="surface-header-actions"><button id="objectSearchCloseBtn" class="ui-button icon-btn sheet-close-btn" type="button" aria-label="검색 창 닫기" data-tooltip="검색 창 닫기"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button></div>
+        </header>
+        <div class="surface-body surface-body-delegated">
+        <section id="objectSearchSection" class="panel-section ui-panel--dense object-search-section is-hydrating" aria-busy="true">
+          <div class="ui-search-field object-search">
+            <svg class="ui-icon object-search-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-search"/></svg>
+            <input id="objectSearchInput" type="search" placeholder="객체 검색" autocomplete="off" aria-label="객체 검색" disabled />
+            <button id="objectSearchClearBtn" class="ui-button ui-icon-button ui-search-clear hidden" type="button" aria-label="검색어 지우기" data-tooltip="검색어 지우기"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg></button>
+          </div>
+          <div id="objectSearchResults" class="object-search-results ui-scroll-surface ui-floating-surface hidden" role="listbox" aria-label="검색 결과"></div>
+        </section>
+        </div>
+      </aside>

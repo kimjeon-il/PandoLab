@@ -1,0 +1,333 @@
+{
+  "schema": "pandolab-generated-artifact-graph",
+  "schemaVersion": 1,
+  "families": [
+    {
+      "id": "territorial",
+      "dependencies": [
+        "wasm"
+      ],
+      "inputs": [
+        "assets/data/territorial-entities/source/"
+      ],
+      "outputs": [
+        "assets/data/territorial-entities/generated/v2/"
+      ],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-territorial-entity-chunks.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-territorial-entity-chunks.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "src/document/territorial-entity-repository.js"
+      ],
+      "tools": [
+        "node"
+      ]
+    },
+    {
+      "id": "current-world",
+      "dependencies": [
+        "wasm"
+      ],
+      "inputs": [
+        "assets/data/territorial-entities/source/"
+      ],
+      "outputs": [
+        "assets/data/territorial-entities/generated/current-world.geojson"
+      ],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-territorial-current-world.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-territorial-current-world.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "assets/data/world/build-input.json"
+      ],
+      "tools": [
+        "node"
+      ]
+    },
+    {
+      "id": "builtin-world",
+      "dependencies": [
+        "territorial",
+        "current-world",
+        "wasm"
+      ],
+      "inputs": [
+        "assets/data/historical-world/policy.json",
+        "assets/data/builtin-world/display-policy-v1.json",
+        "projects/default-world/generation-inputs.json",
+        "projects/default-world/manifest.json"
+      ],
+      "outputs": [
+        "assets/data/builtin-world/generated/v1/"
+      ],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-builtin-world.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-builtin-world.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "src/data/builtin-world-loader.js"
+      ],
+      "tools": [
+        "node"
+      ]
+    },
+    {
+      "id": "world-mesh",
+      "dependencies": [
+        "current-world",
+        "wasm"
+      ],
+      "inputs": [
+        "assets/data/world/build-input.json",
+        "src/rendering/workers/gpu-mesh-core.js",
+        "projects/default-world/generation-inputs.json",
+        "projects/default-world/manifest.json"
+      ],
+      "outputs": [],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-world-mesh.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "scripts/validate-generated-artifacts.mjs",
+          "world-mesh"
+        ]
+      ],
+      "consumers": [
+        "assets/data/world/current.json"
+      ],
+      "tools": [
+        "node"
+      ],
+      "resolve": "world-mesh"
+    },
+    {
+      "id": "world-country-packet",
+      "dependencies": [
+        "world-mesh",
+        "current-world",
+        "wasm"
+      ],
+      "inputs": [
+        "assets/data/world/build-input.json",
+        "projects/default-world/generation-inputs.json",
+        "projects/default-world/manifest.json",
+        "tools/build/canonical-country-packet-encoder.mjs",
+        "src/rendering/canonical-country-packet.js"
+      ],
+      "outputs": [],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-world-country-packet.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-world-country-packet.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "assets/data/world/current.json"
+      ],
+      "tools": [
+        "node"
+      ],
+      "resolve": "world-country-packet"
+    },
+    {
+      "id": "world-bundle",
+      "resolve": "world-bundle",
+      "dependencies": [
+        "world-country-packet"
+      ],
+      "inputs": [
+        "assets/data/world/build-input.json",
+        "projects/default-world/generation-inputs.json",
+        "projects/default-world/manifest.json"
+      ],
+      "outputs": [
+        "assets/data/world/current.json"
+      ],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-world-bundle.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-world-bundle.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "src/data/workers/data-loader-worker.js"
+      ],
+      "tools": [
+        "node"
+      ]
+    },
+    {
+      "id": "shared-boundaries",
+      "dependencies": [
+        "world-bundle",
+        "wasm"
+      ],
+      "inputs": [],
+      "outputs": [],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-country-shared-boundaries.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-country-shared-boundaries.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "src/rendering/country-shared-boundary-cache.js"
+      ],
+      "tools": [
+        "node"
+      ],
+      "resolve": "shared-boundaries"
+    },
+    {
+      "id": "prepared-mesh",
+      "dependencies": [
+        "builtin-world",
+        "territorial",
+        "current-world",
+        "wasm"
+      ],
+      "inputs": [
+        "src/rendering/workers/gpu-mesh-core.js",
+        "projects/default-world/generation-inputs.json",
+        "projects/default-world/manifest.json",
+        "src/rendering/workers/polygon-raster-contract.js",
+        "src/rendering/polygon-mesh-codec.js"
+      ],
+      "outputs": [
+        "assets/data/prepared-polygons/generated/v2/"
+      ],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-prepared-polygon-mesh.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "scripts/validate-generated-artifacts.mjs",
+          "prepared-mesh"
+        ]
+      ],
+      "consumers": [
+        "src/rendering/prepared-polygon-mesh.js"
+      ],
+      "tools": [
+        "node"
+      ]
+    },
+    {
+      "id": "places",
+      "dependencies": [
+        "wasm"
+      ],
+      "inputs": [
+        {
+          "prefix": "reports/places/",
+          "pattern": "(?:^|/)(?:tier1-major-cities-batch\\d{2}[-a-z0-9]*|runtime-release-approvals-v1)\\.json$"
+        },
+        "reports/map-analysis/corpus/gazetteer-v1/sources/cities500.source.json",
+        "reports/map-analysis/corpus/gazetteer-v1/runtime/manifest.json"
+      ],
+      "outputs": [
+        "assets/data/places/reviewed-records-v1.json",
+        "assets/data/places/places-v1.bin",
+        "assets/data/places/manifest.json"
+      ],
+      "generate": [
+        [
+          "node",
+          "tools/build/build-place-runtime.mjs"
+        ]
+      ],
+      "validate": [
+        [
+          "node",
+          "tools/build/build-place-runtime.mjs",
+          "--check"
+        ]
+      ],
+      "consumers": [
+        "src/data/place-runtime.js",
+        "src/data/place-worker-store.js",
+        "src/rendering/territorial-labels.js"
+      ],
+      "tools": [
+        "node"
+      ]
+    },
+    {
+      "id": "hydro",
+      "dependencies": [],
+      "inputs": [],
+      "outputs": [],
+      "generate": [],
+      "validate": [],
+      "consumers": [
+        "src/data/workers/data-loader-worker.js"
+      ],
+      "tools": [
+        "node",
+        "cmake"
+      ],
+      "resolve": "hydro",
+      "manual": true,
+      "blockedReason": "Raw hydro source paths and command arguments must be explicitly pinned for this GIS run; automatic downloads are forbidden."
+    }
+  ]
+}

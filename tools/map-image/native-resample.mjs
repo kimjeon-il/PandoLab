@@ -1,0 +1,421 @@
+// Source-bound standalone C++ image primitive. No runtime compilation or fallback.
+import {execFileSync,spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {chmodSync,createReadStream,existsSync,readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {verifyNativeTool} from "../build/native-tool.mjs";
+
+export const mapImageSourceFiles=Object.freeze(['tools/cpp/CMakeLists.txt','tools/cpp/map-image/main.cpp',
+  'tools/cpp/map-image/resample.cpp','tools/cpp/map-image/resample.h','tools/cpp/map-image/macro-mask.h','tools/cpp/map-image/png.cpp',
+  'tools/cpp/map-image/png.h','tools/cpp/map-image/png-read.c','tools/cpp/map-image/image-read.h','tools/cpp/map-image/jpeg-read.c','tools/cpp/map-image/webp-read.c',
+  'tools/cpp/map-image/image-input.cpp','tools/cpp/map-image/image-input.h','tools/cpp/map-image/training-scan.h','tools/cpp/map-image/training-tile.h',
+  'tools/cpp/reference-analysis/condition-sampling.h','tools/cpp/reference-analysis/training-photometry.h','tools/cpp/reference-analysis/CPYTHON-LICENSE','tools/cpp/map-preview/PILLOW-LICENSE',
+  'tools/cpp/map-image/zlib-LICENSE','tools/cpp/map-image/libpng-LICENSE',
+  'tools/cpp/map-image/libjpeg-turbo-LICENSE.md','tools/cpp/map-image/libjpeg-turbo-README.ijg','tools/cpp/map-image/libwebp-COPYING','tools/cpp/map-image/libwebp-PATENTS']);
+const root=fileURLToPath(new URL('../../',import.meta.url));
+export function collectMapImageArtifacts({workspace=root,revision,
+  linuxDirectory=process.env.PANDO_MAP_IMAGE_LINUX_ARTIFACT||resolve(workspace,'build-native/map-image/linux-x64'),
+  windowsDirectory=process.env.PANDO_MAP_IMAGE_WINDOWS_ARTIFACT||resolve(workspace,'build-native/map-image',process.platform==='win32'?'artifact':'win32-x64')}={}){
+  if(revision!==undefined&&!/^[a-f0-9]{40}$/.test(revision))throw Error('A full pinned source revision is required');
+  const entries=[];
+  for(const [platform,directory,executable] of [['linux',linuxDirectory,'pando-map-image'],['win32',windowsDirectory,'pando-map-image.exe']]){
+    const {binary,manifest}=verifyNativeTool({root:workspace,directory,target:'map-image',executable,sourceFiles:mapImageSourceFiles,platform,architecture:'x64'});
+    if(revision)for(const file of manifest.sourceFiles){
+      const source=execFileSync('git',['show',revision+':'+file.path],{cwd:workspace,encoding:'utf8',maxBuffer:16*1024*1024});
+      if(createHash('sha256').update(source.replaceAll('\r\n','\n')).digest('hex')!==file.sha256)
+        throw Error('Native image artifact differs from pinned source: '+file.path);
+    }
+    const prefix=`build-native/map-image/${platform}-x64/`;
+    entries.push({path:prefix+'native-tool.manifest.json',data:readFileSync(resolve(directory,'native-tool.manifest.json'))},
+      {path:prefix+executable,data:readFileSync(binary)});
+  }
+  return entries;
+}
+function dimensions(width,height){
+  if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width>16384||height>16384||width*height>16777216)
+    throw Error('Image dimensions exceed the 16MP graph budget');
+}
+function nativeBinary(workspace,directory){
+  const executable=process.platform==='win32'?'pando-map-image.exe':'pando-map-image';
+  const {binary}=verifyNativeTool({root:workspace,directory,target:'map-image',executable,sourceFiles:mapImageSourceFiles});
+  if(process.platform!=='win32'&&!process.env.PANDO_MAP_IMAGE_ARTIFACT&&existsSync(resolve(workspace,'.map-runtime.json')))
+    chmodSync(binary,0o755);
+  return binary;
+}
+async function runNative(binary,args,input,maximum,signal){
+  return new Promise((accept,reject)=>{
+    const child=spawn(binary,args,
+      {stdio:['pipe','pipe','pipe'],windowsHide:true,signal:signal||undefined});
+    const output=[],errors=[];let length=0,errorBytes=0,overflow=false,settled=false;
+    const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)reject(error);else accept(value);};
+    const timer=setTimeout(()=>{child.kill();finish(Error('Native image operation timed out'));},120000);
+    child.on('error',error=>finish(error));
+    child.stdin.on('error',()=>{});
+    child.stdout.on('data',chunk=>{length+=chunk.length;if(length>maximum){overflow=true;child.kill();}else output.push(chunk);});
+    child.stderr.on('data',chunk=>{errorBytes+=chunk.length;if(errorBytes<=65536)errors.push(chunk);});
+    child.on('close',(code,reason)=>{
+      if(code!==0||reason||overflow)return finish(Error('Native image operation failed: '+Buffer.concat(errors).toString('utf8')));
+      finish(null,Buffer.concat(output,length));
+    });
+    if(Array.isArray(input)){for(const part of input)child.stdin.write(part);child.stdin.end();}
+    else child.stdin.end(input);
+  });
+}
+function artifactDirectory(workspace){return process.env.PANDO_MAP_IMAGE_ARTIFACT||
+  resolve(workspace,'build-native/map-image',existsSync(resolve(workspace,'.map-runtime.json'))?`${process.platform}-${process.arch}`:'artifact');}
+async function nativeMacroMask(image,radius,action,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(image?.width,image?.height);
+  if(!(image.data instanceof Uint8Array)||image.data.length!==image.width*image.height)throw Error('Macro mask input length differs');
+  if(!Number.isInteger(radius)||radius<1||radius>(action==='macro-adjacency'?4:32))throw Error('Invalid macro mask radius');
+  if(action==='macro-dilate'&&image.data.some(value=>value>1))throw Error('Macro dilation input must be binary');
+  const pixels=image.width*image.height,expected=pixels*(action==='macro-adjacency'?2:1);
+  const output=await runNative(nativeBinary(workspace,directory),[action,String(image.width),String(image.height),String(radius)],image.data,expected,signal);
+  if(output.length!==expected||output.some(value=>value>1))throw Error('Invalid native macro mask result');
+  return output;
+}
+export async function nativeMacroAdjacency(image,radius,options){
+  const data=await nativeMacroMask(image,radius,'macro-adjacency',options),pixels=image.width*image.height;
+  return {target:data.subarray(0,pixels),known:data.subarray(pixels)};
+}
+export async function nativeMacroDilate(image,radius,options){return nativeMacroMask(image,radius,'macro-dilate',options);}
+async function nativeMacroColors(image,colors,action,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(image?.width,image?.height);
+  if(!(image.data instanceof Uint8Array)||image.data.length!==image.width*image.height*3)throw Error('Macro RGB input length differs');
+  const visible=action==='macro-visible';
+  if(!Array.isArray(colors)||colors.length<(visible?1:2)||colors.length>(visible?1024:16)||
+    colors.some(color=>!Array.isArray(color)||color.length!==3||color.some(value=>typeof value!=='number'||!Number.isFinite(value)||value<0||value>1)))
+    throw Error('Invalid macro color palette');
+  const values=Buffer.alloc(colors.length*24);colors.flat().forEach((value,i)=>values.writeDoubleLE(value,i*8));
+  const output=await runNative(nativeBinary(workspace,directory),[action,String(image.width),String(image.height),String(colors.length)],
+    Buffer.concat([values,image.data]),image.width*image.height,signal);
+  if(output.length!==image.width*image.height||output.some(value=>value>(visible?1:colors.length)))throw Error('Invalid native macro color result');
+  return output;
+}
+export async function nativeMacroPalette(image,colors,options){return nativeMacroColors(image,colors,'macro-palette',options);}
+export async function nativeMacroVisible(image,colors,options){return nativeMacroColors(image,colors,'macro-visible',options);}
+export async function nativeMacroFinish(image,target,known,{rotation,glyphs,exclusions},
+  {signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(image?.width,image?.height);const pixels=image.width*image.height;
+  if(!(image.data instanceof Uint8Array)||image.data.length!==pixels*3||!(target instanceof Uint8Array)||target.length!==pixels||
+    !(known instanceof Uint8Array)||known.length!==pixels)throw Error('Macro finish plane length differs');
+  if(![0,90,180,270].includes(rotation))throw Error('Macro rotation must be a right angle');
+  const width=rotation===90||rotation===270?image.height:image.width,height=rotation===90||rotation===270?image.width:image.height;
+  const validRect=rect=>Array.isArray(rect)&&rect.length===4&&rect.every(value=>Number.isInteger(value)&&value>=-2147483648&&value<=2147483647);
+  if(!Array.isArray(glyphs)||!Array.isArray(exclusions)||glyphs.length>1000000||exclusions.length>1000000||
+    glyphs.some(r=>!validRect(r)||r[0]>r[2]||r[1]>r[3])||
+    exclusions.some(r=>!validRect(r)||r[0]<0||r[1]<0||r[0]>=r[2]||r[1]>=r[3]||r[2]>width||r[3]>height))
+    throw Error('Invalid macro glyph or exclusion rectangle');
+  const rectangles=Buffer.alloc((glyphs.length+exclusions.length)*16);let at=0;
+  for(const rect of [...glyphs,...exclusions])for(const value of rect){rectangles.writeInt32LE(value,at);at+=4;}
+  const result=await runNative(nativeBinary(workspace,directory),['macro-finish',String(image.width),String(image.height),String(rotation),
+    String(glyphs.length),String(exclusions.length)],[rectangles,image.data,target,known],pixels*5,signal);
+  if(result.length!==pixels*5)throw Error('Invalid native macro finish result');
+  return {width,height,image:result.subarray(0,pixels*3),target:result.subarray(pixels*3,pixels*4),known:result.subarray(pixels*4)};
+}
+async function operateNativeRgba(image,size,action,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!image||!Array.isArray(size)||size.length!==2||!(image.data instanceof Uint8Array))throw Error('RGBA image and output size are required');
+  dimensions(image.width,image.height);dimensions(size[0],size[1]);
+  if(image.data.length!==image.width*image.height*4)throw Error('RGBA input byte length differs from dimensions');
+  const expected=size[0]*size[1]*4,encoded=['encode-png','encode-webp-lossless','encode-jpeg'].includes(action[0]),maximum=encoded?expected+size[1]+1048576:expected;
+  const data=await runNative(nativeBinary(workspace,directory),[action[0],String(image.width),String(image.height),...action.slice(1).map(String)],image.data,maximum,signal);
+  if((!encoded&&data.length!==expected)||(encoded&&data.length<8))throw Error('Native image output byte length mismatch');
+  signal?.throwIfAborted();return {width:size[0],height:size[1],data};
+}
+export function resizeNativeRgba(image,size,options){
+  return operateNativeRgba(image,size,['resize-rgba',...(Array.isArray(size)?size:[])],options);
+}
+export function resizeNativeOpaqueBilinear(image,size,options){
+  return operateNativeRgba(image,size,['resize-bilinear',...(Array.isArray(size)?size:[])],options);
+}
+export function applyNativeTrainingScan(image,{epoch,index,...options}={}){
+  if(!Number.isSafeInteger(epoch)||epoch<0||!Number.isSafeInteger(index)||index<0)return Promise.reject(Error('Nonnegative training epoch and tile index required'));
+  return operateNativeRgba(image,[image?.width,image?.height],['training-scan',epoch,index],options);
+}
+const trainingTensorSizes=[3*512*512*4,3*256*256*4,4*4,7*512*512*4,7*512*512*4];
+function trainingTensors(result){
+  if(result.length!==trainingTensorSizes.reduce((a,b)=>a+b,0))throw Error('Native training tensor byte length mismatch');
+  let offset=0;const fields={};for(const [i,name] of ['tile','overview','position','target','valid'].entries()){
+    fields[name]=result.subarray(offset,offset+trainingTensorSizes[i]);offset+=trainingTensorSizes[i];}
+  return fields;
+}
+export async function prepareNativeTrainingTile({image,targetBits,knownBits,x,y,augment=false,epoch=0,index=0},
+  {signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(image?.width,image?.height);
+  if(!(image.data instanceof Uint8Array)||image.data.length!==image.width*image.height*4||
+    !(targetBits instanceof Uint8Array)||targetBits.length!==512*512||!(knownBits instanceof Uint8Array)||knownBits.length!==512*512||
+    !Number.isInteger(x)||!Number.isInteger(y)||x<0||y<0||x>=image.width||y>=image.height||typeof augment!=='boolean'||
+    !Number.isSafeInteger(epoch)||epoch<0||!Number.isSafeInteger(index)||index<0)throw Error('Invalid native training tile input');
+  const expected=trainingTensorSizes.reduce((a,b)=>a+b,0);
+  const input=Buffer.concat([image.data,targetBits,knownBits]);
+  const result=await runNative(nativeBinary(workspace,directory),['training-tile',String(image.width),String(image.height),String(x),String(y),augment?'1':'0',String(epoch),String(index)],input,expected,signal);
+  signal?.throwIfAborted();return trainingTensors(result);
+}
+export async function prepareNativeTrainingTilePieces({image,targetBits,knownBits,x,y,augment=false,epoch=0,index=0},
+  {signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!image||![image.width,image.height].every(value=>Number.isInteger(value)&&value>=2&&value<=65535)||image.width*image.height>600000000||
+    !(image.tile instanceof Uint8Array)||image.tile.length!==512*512*4||!(image.data instanceof Uint8Array)||image.data.length!==256*256*4||
+    ![targetBits,knownBits].every(value=>value instanceof Uint8Array&&value.length===512*512)||
+    !Number.isInteger(x)||!Number.isInteger(y)||x<0||y<0||x>=image.width||y>=image.height||image.x!==x||image.y!==y||typeof augment!=='boolean'||
+    !Number.isSafeInteger(epoch)||epoch<0||!Number.isSafeInteger(index)||index<0)throw Error('Invalid source-bound training tile pieces');
+  const input=Buffer.concat([image.tile,image.data,targetBits,knownBits]);
+  const result=await runNative(nativeBinary(workspace,directory),['training-pieces',String(image.width),String(image.height),String(x),String(y),augment?'1':'0',String(epoch),String(index)],
+    input,trainingTensorSizes.reduce((a,b)=>a+b,0),signal);
+  signal?.throwIfAborted();return trainingTensors(result);
+}
+export async function composeNativeDiagnosticOverlays({width,height,original,known,active},
+  {signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(width,height);const pixels=width*height;
+  if(pixels>1048576||!(original instanceof Uint8Array)||original.length!==pixels*3||
+    !(known instanceof Uint8Array)||known.length!==pixels*7||!Array.isArray(active)||active.length<1||active.length>3||
+    active.some(plane=>!(plane instanceof Uint8Array)||plane.length!==pixels*7))throw Error('Bounded diagnostic image and mask panels required');
+  if([known,...active].some(plane=>plane.some(value=>value>1)))throw Error('Diagnostic masks must be binary');
+  const output=await runNative(nativeBinary(workspace,directory),['diagnostic-overlays',String(width),String(height),String(active.length)],
+    [original,known,...active],pixels*3*active.length,signal);
+  if(output.length!==pixels*3*active.length)throw Error('Invalid diagnostic overlay receipt');
+  signal?.throwIfAborted();return active.map((_,i)=>output.subarray(i*pixels*3,(i+1)*pixels*3));
+}
+export async function readNativeTrainingMask(bytes,sha256,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024||typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256))
+    throw Error('Bounded source-bound training mask required');
+  if(createHash('sha256').update(bytes).digest('hex')!==sha256)throw Error('Training mask hash changed');
+  const data=await runNative(nativeBinary(workspace,directory),['training-mask'],bytes,8+16777216,signal);
+  if(data.length<8)throw Error('Native training mask receipt is invalid');const width=data.readUInt32BE(0),height=data.readUInt32BE(4);
+  dimensions(width,height);if(data.length!==8+width*height)throw Error('Native training mask byte length mismatch');
+  signal?.throwIfAborted();return {width,height,data:data.subarray(8)};
+}
+export async function readNativeTrainingMaskWindow(bytes,sha256,{x,y},{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024||typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256)||
+    ![x,y].every(value=>Number.isInteger(value)&&value>=0&&value<65535))throw Error('Bounded source-bound training mask window required');
+  if(createHash('sha256').update(bytes).digest('hex')!==sha256)throw Error('Training mask hash changed');
+  const data=await runNative(nativeBinary(workspace,directory),['training-mask-window',String(x),String(y)],bytes,8+512*512,signal);
+  if(data.length!==8+512*512)throw Error('Native training mask window receipt is invalid');
+  const width=data.readUInt32BE(0),height=data.readUInt32BE(4);
+  if(!width||!height||width>65535||height>65535||width*height>600000000||x>=width||y>=height)
+    throw Error('Native training mask window dimensions are invalid');
+  signal?.throwIfAborted();return {width,height,data:data.subarray(8)};
+}
+export async function auditNativeTrainingMask({bytes,sha256},{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024||typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256))
+    throw Error('Bounded source-bound training mask required');
+  if(createHash('sha256').update(bytes).digest('hex')!==sha256)throw Error('Training mask hash changed');
+  const data=await runNative(nativeBinary(workspace,directory),['training-mask-audit'],bytes,9,signal);
+  if(data.length!==9)throw Error('Native training mask audit receipt is invalid');
+  const width=data.readUInt32BE(0),height=data.readUInt32BE(4);
+  if(!width||!height||width>65535||height>65535||width*height>600000000)throw Error('Native training mask audit dimensions are invalid');
+  return {width,height,observedBits:data[8]};
+}
+export async function scanNativeTrainingMaskTiles(bytes,sha256,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024||typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256))
+    throw Error('Bounded source-bound training mask required');
+  if(createHash('sha256').update(bytes).digest('hex')!==sha256)throw Error('Training mask hash changed');
+  const data=await runNative(nativeBinary(workspace,directory),['training-mask-tiles'],bytes,8+147*147,signal);
+  if(data.length<8)throw Error('Native training mask tile receipt is invalid');
+  const width=data.readUInt32BE(0),height=data.readUInt32BE(4),count=Math.ceil(width/448)*Math.ceil(height/448);
+  if(!width||!height||width>65535||height>65535||width*height>600000000||data.length!==8+count||data.subarray(8).some(value=>value>1))
+    throw Error('Native training mask tile receipt is invalid');
+  signal?.throwIfAborted();return {width,height,tiles:data.subarray(8)};
+}
+export async function countNativeTrainingSupervision(target,known,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(target?.width,target?.height);
+  if(target.width!==known?.width||target.height!==known?.height||!(target.data instanceof Uint8Array)||!(known.data instanceof Uint8Array)||
+    target.data.length!==target.width*target.height||known.data.length!==target.data.length)throw Error('Matching source-coordinate training masks required');
+  const output=await runNative(nativeBinary(workspace,directory),['training-supervision',String(target.width),String(target.height)],
+    Buffer.concat([target.data,known.data]),56,signal);
+  if(output.length!==56)throw Error('Native training supervision receipt is invalid');
+  const counts=Array.from({length:7},(_,i)=>[output.readUInt32BE(i*8),output.readUInt32BE(i*8+4)]);
+  if(counts.some(([valid,positive])=>valid>target.data.length||positive>valid))throw Error('Native training supervision counts are invalid');
+  return counts;
+}
+async function invokeEncodedSupervision(target,known,action,maximum,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  for(const mask of [target,known]){
+    if(!(mask?.bytes instanceof Uint8Array)||!mask.bytes.length||mask.bytes.length>300*1024*1024||typeof mask.sha256!=='string'||!/^[a-f0-9]{64}$/.test(mask.sha256))
+      throw Error('Bounded source-bound training masks required');
+    if(createHash('sha256').update(mask.bytes).digest('hex')!==mask.sha256)throw Error('Training mask hash changed');
+  }
+  const prefix=Buffer.alloc(4);prefix.writeUInt32BE(target.bytes.length);
+  const output=await runNative(nativeBinary(workspace,directory),[action],[prefix,target.bytes,known.bytes],maximum,signal);
+  if(output.length<8)throw Error('Native encoded supervision receipt is invalid');
+  const width=output.readUInt32BE(0),height=output.readUInt32BE(4);
+  if(!width||!height||width>65535||height>65535||width*height>600000000)throw Error('Invalid encoded supervision dimensions');
+  return {width,height,output};
+}
+export async function countNativeEncodedTrainingSupervision(target,known,options={}){
+  const {width,height,output}=await invokeEncodedSupervision(target,known,'training-supervision-encoded',64,options);
+  if(output.length!==64)throw Error('Native encoded supervision receipt is invalid');
+  const counts=Array.from({length:7},(_,i)=>[output.readUInt32BE(8+i*8),output.readUInt32BE(12+i*8)]);
+  if(counts.some(([valid,positive])=>valid>width*height||positive>valid))throw Error('Invalid encoded supervision counts');
+  options.signal?.throwIfAborted();return {width,height,counts};
+}
+export async function countNativeDiagnosticTiles(target,known,options={}){
+  const {width,height,output}=await invokeEncodedSupervision(target,known,'training-diagnostic-tile-counts',8+147*147*29,options);
+  const length=Math.ceil(width/448)*Math.ceil(height/448);
+  if(output.length!==8+length*29)throw Error('Native diagnostic tile receipt is invalid');
+  const tiles=Array.from({length},(_,i)=>{const offset=8+i*29,active=output[offset];
+    const counts=Array.from({length:7},(_,c)=>output.readUInt32BE(offset+1+c*4));
+    if(active>1||counts.some(value=>value>512*512)||(!active&&counts.some(Boolean)))throw Error('Invalid diagnostic tile counts');
+    return {active:!!active,counts};});
+  options.signal?.throwIfAborted();return {width,height,tiles};
+}
+export async function convertNativeSemapLabels(labels,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(labels?.width,labels?.height);
+  const pixels=labels.width*labels.height;
+  if(!(labels.data instanceof Uint8Array)||labels.data.length!==pixels)throw Error('Source-coordinate Semap label pixels required');
+  const result=await runNative(nativeBinary(workspace,directory),['semap-labels',String(labels.width),String(labels.height)],labels.data,8+pixels*2,signal);
+  if(result.length!==8+pixels*2)throw Error('Native Semap label output length differs');
+  const knownCount=result.readUInt32BE(0),positiveCount=result.readUInt32BE(4);
+  if(knownCount>pixels||positiveCount>knownCount)throw Error('Native Semap label counts are invalid');
+  return {target:{width:labels.width,height:labels.height,data:result.subarray(8,8+pixels)},
+    known:{width:labels.width,height:labels.height,data:result.subarray(8+pixels)},knownCount,positiveCount,
+    informative:knownCount>=pixels*.03&&positiveCount>=pixels*.005};
+}
+export async function encodeNativeGrayPng(image,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();dimensions(image?.width,image?.height);
+  if(!(image.data instanceof Uint8Array)||image.data.length!==image.width*image.height)throw Error('Grayscale image pixels required');
+  const result=await runNative(nativeBinary(workspace,directory),['encode-gray',String(image.width),String(image.height)],image.data,
+    image.data.length+image.height+1048576,signal);
+  if(result.length<8)throw Error('Native grayscale PNG is truncated');return result;
+}
+export async function inspectNativeSemapImage(bytes,sha256,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||bytes.length<2||bytes.length>8*1024*1024||bytes[0]!==255||bytes[1]!==216||
+    typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256)||createHash('sha256').update(bytes).digest('hex')!==sha256)
+    throw Error('Source-bound Semap JPEG required');
+  const result=await runNative(nativeBinary(workspace,directory),['semap-image'],bytes,12,signal);
+  if(result.length!==12)throw Error('Native Semap image receipt is invalid');
+  const width=result.readUInt32BE(0),height=result.readUInt32BE(4),chromaSum=result.readUInt32BE(8);
+  if(!width||!height||width>1200||height>1200||chromaSum>128*128*255)throw Error('Native Semap image metadata is invalid');
+  const chroma=chromaSum/(128*128);return {width,height,chromaSum,chroma,mapKind:chroma<8?'monochrome':'color'};
+}
+export function resizeNativePdfThumbnail(image,size,options){
+  return operateNativeRgba(image,size,['thumbnail-pdf',...(Array.isArray(size)?size:[])],options);
+}
+export function rotateNativeRgba(image,degrees,options){
+  if(![0,90,180,270].includes(degrees))return Promise.reject(Error('Invalid clockwise rotation'));
+  const width=image?.width,height=image?.height,size=degrees===90||degrees===270?[height,width]:[width,height];
+  return operateNativeRgba(image,size,['rotate-rgba',degrees],options);
+}
+export function encodeNativePng(image,options){
+  return operateNativeRgba(image,[image?.width,image?.height],['encode-png'],options);
+}
+export async function encodeNativeJpeg(image,options){
+  const result=await operateNativeRgba(image,[image?.width,image?.height],['encode-jpeg'],options);
+  if(result.data.length<4||result.data.readUInt16BE(0)!==0xffd8||result.data.readUInt16BE(result.data.length-2)!==0xffd9)
+    throw Error('Native JPEG output is invalid');
+  return result;
+}
+export async function encodeNativeWebpLossless(image,options){
+  const result=await operateNativeRgba(image,[image?.width,image?.height],['encode-webp-lossless'],options);
+  if(result.data.length<12||result.data.toString('ascii',0,4)!=='RIFF'||result.data.toString('ascii',8,12)!=='WEBP')
+    throw Error('Native lossless WebP output is invalid');
+  return result;
+}
+export async function readNativeRawWebp(bytes,{expectedSha256,signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024)throw Error('Bounded WebP source required');
+  const input=Buffer.from(bytes);
+  if(expectedSha256!==undefined&&(typeof expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(expectedSha256)||createHash('sha256').update(input).digest('hex')!==expectedSha256))
+    throw Error('Original WebP image hash changed');
+  const result=await runNative(nativeBinary(workspace,directory),['read-webp-raw'],input,8+16777216*4,signal);
+  if(result.length<8)throw Error('Native raw WebP receipt is truncated');
+  const width=result.readUInt32BE(0),height=result.readUInt32BE(4);dimensions(width,height);
+  if(result.length!==8+width*height*4)throw Error('Native raw WebP pixel length differs');
+  signal?.throwIfAborted();return {width,height,data:result.subarray(8)};
+}
+export async function prepareNativeJpeg(bytes,maximumPixels=8000000,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||bytes.length<2||bytes.length>300*1024*1024||bytes[0]!==255||bytes[1]!==216)throw Error('Expected bounded JPEG source');
+  if(!Number.isInteger(maximumPixels)||maximumPixels<1||maximumPixels>16777216)throw Error('Pixel budget must be 1..16777216');
+  const output=await runNative(nativeBinary(workspace,directory),['prepare-jpeg',String(maximumPixels)],bytes,20+maximumPixels*4+1048576,signal);
+  if(output.length<20)throw Error('Native JPEG preparation receipt is truncated');
+  const [originalWidth,originalHeight,width,height,changed]=Array.from({length:5},(_,i)=>output.readUInt32BE(i*4));
+  if(!originalWidth||!originalHeight||originalWidth>65535||originalHeight>65535||!width||!height||
+     width*height>maximumPixels||![0,1].includes(changed)||(changed===0&&output.length!==20)||
+     (changed===1&&(output.length<22||output[20]!==255||output[21]!==216)))throw Error('Native JPEG preparation receipt is invalid');
+  signal?.throwIfAborted();return {originalSize:[originalWidth,originalHeight],size:[width,height],changed:changed===1,data:output.subarray(20)};
+}
+export async function inspectNativeJpeg(bytes,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||bytes.length<2||bytes.length>300*1024*1024||bytes[0]!==255||bytes[1]!==216)throw Error('Expected bounded JPEG source');
+  const output=await runNative(nativeBinary(workspace,directory),['inspect-jpeg','16777216'],bytes,20,signal);
+  if(output.length!==20)throw Error('Native JPEG inspection receipt is invalid');
+  const [width,height,outWidth,outHeight,changed]=Array.from({length:5},(_,i)=>output.readUInt32BE(i*4));
+  if(!width||!height||width>65535||height>65535||outWidth!==width||outHeight!==height||changed!==0)throw Error('Native JPEG inspection receipt is invalid');
+  signal?.throwIfAborted();return [width,height];
+}
+export async function inspectNativeImageHeader(bytes,format,{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!['png','jpeg','webp'].includes(format))throw Error('Expected a supported image format');
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024)throw Error('Expected a bounded image source');
+  const output=await runNative(nativeBinary(workspace,directory),['header-'+format],bytes,12,signal);
+  if(output.length!==12)throw Error('Native image header receipt is invalid');
+  const width=output.readUInt32BE(0),height=output.readUInt32BE(4),orientation=output.readUInt32BE(8);
+  if(!width||!height||width*height>600000000)throw Error('Native image header dimensions are invalid');
+  const swap=orientation>=5&&orientation<=8;signal?.throwIfAborted();
+  return {format,encodedSize:[width,height],orientation,size:swap?[height,width]:[width,height]};
+}
+function imageReadCoordinates(rect,format,maxPixels){
+  if(!['png','jpeg','webp'].includes(format))throw Error('Supported image format required');
+  if(!Number.isInteger(maxPixels)||maxPixels<256||maxPixels>16777216)throw Error('Pixel budget must be 256..16777216');
+  let coordinates=[0,0,0,0];
+  if(rect!=null){
+    coordinates=[rect.x,rect.y,rect.width,rect.height];
+    if(coordinates.some(value=>!Number.isInteger(value)||value<0||value>16384)||rect.width<2||rect.height<2)
+      throw Error('Source rectangle exceeds original pixel bounds');
+  }
+  return coordinates;
+}
+export async function decodeNativeImageBytes({bytes,rect,format,maxPixels=4000000,expectedSha256},{signal,workspace=root,directory=artifactDirectory(workspace)}={}){
+  signal?.throwIfAborted();
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>300*1024*1024)throw Error('Bounded image source required');
+  const coordinates=imageReadCoordinates(rect,format,maxPixels);
+  const encoded=Buffer.from(bytes);
+  if(expectedSha256!==undefined&&(typeof expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(expectedSha256)||createHash('sha256').update(encoded).digest('hex')!==expectedSha256))
+    throw Error('Original image hash changed');
+  const data=await runNative(nativeBinary(workspace,directory),['read-'+format,String(maxPixels),...coordinates.map(String)],encoded,44+16777216*4,signal);
+  if(data.length<44)throw Error('Native image receipt is truncated');
+  const fields=Array.from({length:11},(_,i)=>data.readUInt32BE(i*4));
+  const [encodedWidth,encodedHeight,exifOrientation,originalWidth,originalHeight,x,y,width,height,outWidth,outHeight]=fields;
+  dimensions(encodedWidth,encodedHeight);dimensions(originalWidth,originalHeight);dimensions(outWidth,outHeight);
+  if(width<2||height<2||x+width>originalWidth||y+height>originalHeight||data.length!==44+outWidth*outHeight*4)
+    throw Error('Native image receipt is invalid');
+  signal?.throwIfAborted();
+  return {width:outWidth,height:outHeight,originalWidth,originalHeight,mapping:{exifOrientation,encodedSize:[encodedWidth,encodedHeight],
+    rect:{x,y,width,height},analysisSize:[outWidth,outHeight],coordinateSpace:'exif-oriented-original-pixels'},data:data.subarray(44)};
+}
+async function readEncodedImage(path,signal){
+  const chunks=[];let length=0;
+  for await(const chunk of createReadStream(path,{signal:signal||undefined})){
+    length+=chunk.length;if(length>300*1024*1024)throw Error('Image input exceeds encoded byte budget');chunks.push(chunk);
+  }
+  signal?.throwIfAborted();return Buffer.concat(chunks,length);
+}
+export async function readNativeImage({path,rect,format,maxPixels=4000000,expectedSha256},options={}){
+  options.signal?.throwIfAborted();
+  if(typeof path!=='string'||!path||!['png','jpeg','webp'].includes(format))throw Error('Image path and supported format are required');
+  imageReadCoordinates(rect,format,maxPixels);
+  const bytes=await readEncodedImage(path,options.signal);
+  return decodeNativeImageBytes({bytes,rect,format,maxPixels,expectedSha256},options);
+}
+export async function readNativeTrainingRaster({path,format,expectedSha256,x=0,y=0},{workspace=root,directory=artifactDirectory(workspace),signal}={}){
+  signal?.throwIfAborted();
+  if(typeof path!=='string'||!path||!['jpeg','png','webp'].includes(format)||typeof expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(expectedSha256)||
+    ![x,y].every(value=>Number.isInteger(value)&&value>=0&&value<65535))
+    throw Error('Source-bound PNG, JPEG or WebP path and SHA-256 required');
+  const bytes=await readEncodedImage(path,signal);
+  if(createHash('sha256').update(bytes).digest('hex')!==expectedSha256)throw Error('Original image hash changed');
+  const overviewBytes=256*256*4,tileBytes=512*512*4;
+  const output=await runNative(nativeBinary(workspace,directory),[`training-${format}-overview`,String(x),String(y)],bytes,12+overviewBytes+tileBytes,signal);
+  if(output.length!==12+overviewBytes+tileBytes)throw Error('Invalid training raster receipt');
+  const width=output.readUInt32BE(0),height=output.readUInt32BE(4),orientation=output.readUInt32BE(8);
+  if(!width||!height||width>65535||height>65535||width*height>600000000||orientation<1||orientation>8)
+    throw Error('Invalid training raster dimensions or orientation');
+  return {width,height,orientation,x,y,data:output.subarray(12,12+overviewBytes),tile:output.subarray(12+overviewBytes)};
+}

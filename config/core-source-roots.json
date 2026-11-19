@@ -1,0 +1,12 @@
+{
+  "schema": "pando-core-source-roots-v1",
+  "roots": [
+    "src/document/native",
+    "src/geometry/native",
+    "src/map/native",
+    "src/rendering/native",
+    "src/data/native",
+    "src/runtime/native",
+    "tools/build/native"
+  ]
+}

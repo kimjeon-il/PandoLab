@@ -1,0 +1,258 @@
+/* Canonical components / map-search. */
+
+.object-search input::placeholder {
+  color: var(--object-search-color);
+}
+
+:root[data-theme="light"] .object-search {
+  background: var(--object-search-background);
+}
+
+:root[data-theme="light"] .object-search input::placeholder {
+  color: var(--object-search-color-media-prefers-color-scheme-light);
+}
+
+.object-search {
+  min-height: var(--ui-control-height);
+  border-color: var(--component-field-border);
+  border-radius: var(--ui-radius-control);
+  background: var(--surface-input);
+  flex: 0 0 auto;
+  margin: 0 var(--ui-surface-content-rail-x) var(--ui-space-2);
+}
+
+.object-search input {
+  height: calc(var(--ui-control-height) - var(--ui-space-0-5));
+  min-height: 0;
+  font: inherit;
+  font-size: var(--ui-font-body);
+  font-weight: var(--ui-weight-regular);
+}
+
+.object-search-icon {
+  width: var(--ui-icon-size);
+  height: var(--ui-icon-size);
+  justify-self: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.map-view-panel-section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  padding-block: var(--ui-space-2) 0;
+  padding-inline: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.object-search-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: var(--ui-space-1);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  padding-block: var(--ui-space-3);
+  padding-inline-end: var(--ui-surface-content-rail-x);
+  padding-inline-start: var(--ui-surface-content-rail-x);
+}
+
+.object-search-result {
+  width: 100%;
+  min-height: var(--ui-tree-row-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: var(--ui-space-1);
+  padding: var(--ui-space-2) var(--ui-control-padding-x);
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-command-toolbar .icon-btn {
+  flex: 0 0 var(--ui-icon-control-size);
+}
+
+.map-command-search {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--ui-icon-control-size);
+  min-width: 0;
+  height: var(--ui-icon-control-size);
+  transition: width 180ms ease;
+}
+
+.map-command-search.is-expanded {
+  width: min(22.5rem, var(--search-toolbar-available-width, calc(100dvw - var(--ui-menu-screen-edge) * 2 - var(--ui-icon-control-size) * 3 - var(--ui-toolbar-gap) * 3 - var(--ui-toolbar-padding) * 2 - var(--ui-space-0-5))));
+  height: var(--ui-control-height);
+}
+
+.map-command-toolbar:has(.map-command-search.is-expanded) {
+  z-index: 40;
+}
+
+.map-command-search > .object-search-command[hidden] {
+  display: none;
+}
+
+/* The desktop search surface tracks its toolbar slot without reparenting. */
+.surface-search.search-toolbar-desktop {
+  position: fixed;
+  z-index: var(--ui-layer-search-z);
+  top: var(--search-toolbar-top, 0);
+  right: auto;
+  bottom: auto;
+  left: var(--search-toolbar-left, 0);
+  width: var(--search-toolbar-width, var(--ui-control-height));
+  height: var(--search-toolbar-height, var(--ui-control-height));
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  transition: none;
+}
+
+.surface-search.search-toolbar-desktop:not(.surface-open) {
+  display: none;
+}
+
+.surface-search.search-toolbar-desktop > .surface-header {
+  display: none;
+}
+
+.surface-search:is(.search-toolbar-desktop, .map-search-bar) .surface-body-delegated {
+  position: static;
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 0;
+}
+
+:is(.search-toolbar-desktop, .map-search-bar) .object-search-section {
+  position: static;
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 0;
+}
+
+:is(.search-toolbar-desktop, .map-search-bar) .object-search-section .object-search {
+  margin: 0;
+}
+
+:is(.search-toolbar-desktop, .map-search-bar) .object-search-section .object-search-results {
+  position: absolute;
+  bottom: calc(100% + var(--ui-menu-trigger-gap));
+  left: 0;
+  width: 100%;
+  max-height: min(24rem, var(--search-results-max-height, 24rem));
+  overflow-y: auto;
+}
+
+.app-root.viewer-root .map-search-bar {
+  height: var(--ui-viewer-map-bar-height);
+  overflow: visible;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+  transition: none;
+}
+.app-root.viewer-root .map-search-bar .surface-body-delegated {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.app-root.viewer-root .map-search-bar > .surface-header,
+.app-root.viewer-root .map-search-bar:not(.surface-open) .object-search-results {
+  display: none;
+}
+.app-root.viewer-root .map-search-bar .object-search {
+  min-height: calc(var(--ui-viewer-map-bar-height) - var(--ui-border-width) * 2);
+  border: 0;
+  background: transparent;
+}
+.app-root.viewer-root .map-search-bar .object-search-results {
+  max-height: clamp(0px, calc(var(--workspace-visible-height, 100dvh) - var(--viewer-context-bottom)
+    + var(--workspace-bottom-offset, 0px) - var(--ui-viewer-map-bar-height) - var(--ui-space-6)), 24rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-command-search {
+    transition: none;
+  }
+}
+
+.map-command-divider {
+  width: var(--ui-border-width);
+  align-self: stretch;
+  margin: var(--ui-space-1) 0;
+  background: var(--border);
+}
+
+.object-search-section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.object-search-section .object-search {
+  margin-block-start: var(--ui-space-3);
+}
+
+@media (max-width: 799px) {
+  .app-root[data-layout="mobile"] .map-command-toolbar {
+    top: auto;
+    right: max(var(--ui-map-edge), env(safe-area-inset-right));
+    /* Keep map commands above the editor's occupied bottom controls. */
+    bottom: calc(
+      var(--ui-map-bottom-occupied-height) + var(--ui-space-1)
+      + var(--ui-space-3)
+    );
+    left: auto;
+    display: flex;
+    grid-template-columns: none;
+    grid-template-rows: none;
+    width: max-content;
+    min-width: 0;
+    height: var(--ui-mobile-floating-surface-size);
+    min-height: var(--ui-mobile-floating-surface-size);
+    padding: var(--ui-space-1-5);
+    gap: var(--ui-toolbar-gap);
+    transform: none;
+  }
+}
+
+@media (max-width: 799px) {
+  .app-root[data-layout="mobile"] .map-command-toolbar :is(.map-command-search, .map-command-divider) {
+    display: none;
+  }
+}
+
+@media (max-width: 799px) {
+  .app-root[data-layout="mobile"] .map-command-toolbar button {
+    width: var(--ui-icon-control-mobile-size);
+    min-width: var(--ui-icon-control-mobile-size);
+    height: var(--ui-icon-control-mobile-size);
+    min-height: var(--ui-icon-control-mobile-size);
+    flex: 0 0 var(--ui-icon-control-mobile-size);
+  }
+}
+
+@media (max-width: 799px) {
+  .app-root[data-layout="mobile"] .surface-search .object-search-results {
+    padding-bottom: var(--ui-space-3);
+  }
+}

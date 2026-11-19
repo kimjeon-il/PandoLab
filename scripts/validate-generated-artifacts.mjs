@@ -1,0 +1,40 @@
+// Decode the actual generated packets and verify current Web/WASM consumption bytes.
+import assert from 'node:assert/strict';
+import { sharedSourceManifest } from "../tools/build/package-shared-core-assets.mjs";
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
+import { decodeCountryMesh } from "../src/rendering/country-mesh-codec.js";
+import { decodePolygonMesh } from "../src/rendering/polygon-mesh-codec.js";
+import { safePath } from './lib/generated-artifact-graph.mjs';
+import {verifyPreparedInputHashes} from './lib/prepared-input-verification.mjs';
+
+const root=fileURLToPath(new URL('../',import.meta.url));
+const read=p=>readFileSync(safePath(root,p));
+const json=p=>JSON.parse(read(p));
+const sha=b=>createHash('sha256').update(b).digest('hex');
+const array=b=>b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength);
+const family=process.argv[2];
+if(family==='world-mesh') {
+  const seed=json('assets/data/world/build-input.json'),legacy=json('assets/data/'+seed.legacyPreviewManifest);
+  const {mesh}=decodeCountryMesh(array(gunzipSync(read('assets/data/'+legacy.assets.canonicalMesh.url))));
+  const vertices=mesh.positions.length/2;
+  assert.equal(mesh.triangleIndices.length%3,0);
+  assert.equal(mesh.lineIndices.length%2,0);
+  for(const index of mesh.triangleIndices)assert.ok(index<vertices,'triangle index');
+  for(const index of mesh.lineIndices)assert.ok(index<vertices,'line index');
+} else if(family==='prepared-mesh') {
+  await import('../tools/build/load-spherical-core.mjs');
+  const manifest=json('assets/data/prepared-polygons/generated/v2/manifest.json');
+  assert.equal(manifest.schema,'pandolab-prepared-polygon-meshes');
+  assert.ok(Object.keys(manifest.meshes).length,'empty prepared meshes');
+  assert.equal(sharedSourceManifest(root).sourceSha256,manifest.algorithmSourceSha256);
+  verifyPreparedInputHashes(manifest.inputHashes,read);
+  for(const spec of Object.values(manifest.meshes)) {
+    const bytes=read(spec.url);assert.equal(sha(bytes),spec.sha256);assert.equal(bytes.length,spec.compressedBytes);
+    const raw=gunzipSync(bytes);assert.equal(raw.length,spec.decodedBytes);
+    decodePolygonMesh(array(raw),{algorithmVersion:manifest.algorithmVersion});
+  }
+} else throw Error('ARTIFACT_INVALID_VALIDATOR_FAMILY: '+family);
+console.log('Generated-artifact validation completed for actual '+family+' artifacts');

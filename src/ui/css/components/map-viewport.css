@@ -1,0 +1,120 @@
+/* Canonical components / map-viewport. */
+
+.map-wrap {
+  min-height: 0;
+  background: var(--map-wrap-bg);
+}
+
+.floating-toolbar {
+  position: absolute;
+  top: var(--ui-map-edge);
+  right: var(--ui-map-edge);
+  z-index: 8;
+}
+
+.map-stage {
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
+  cursor: grab;
+  background: var(--map-stage);
+  isolation: isolate;
+}
+
+.gpu-map-canvas {
+  z-index: 1;
+  pointer-events: none;
+  background: transparent;
+}
+
+.map-top-context-slot > * {
+  pointer-events: auto;
+}
+
+.map-wrap {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 100%;
+}
+
+.map-stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 100%;
+}
+
+.app-root[data-layout="mobile"] {
+  --mobile-nav-height: calc(var(--ui-mobile-bottom-nav-height) + env(safe-area-inset-bottom));
+  --ui-map-bottom-occupied-height: calc(var(--workspace-bottom-offset, 0px) + var(--mobile-nav-height) + var(--ui-shell-statusbar-height));
+}
+
+.reset-view-command {
+  font-size: var(--ui-font-body);
+}
+
+.ui-floating-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-toolbar-gap);
+  padding: var(--ui-toolbar-padding);
+}
+
+.ui-context-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-toolbar-gap);
+  padding: var(--ui-toolbar-padding);
+}
+
+.app-root[data-layout="mobile"] .ui-floating-toolbar:has(.workspace-surface) {
+  backdrop-filter: none;
+}
+
+.map-overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+}
+
+
+.timeline-controls {
+  display: grid;
+  grid-template-columns: var(--ui-icon-control-size) var(--ui-icon-control-size) minmax(0, 1fr) var(--ui-icon-control-size) var(--ui-icon-control-size);
+  align-items: center;
+  gap: 0;
+}
+
+.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .timeline-controls {
+  grid-template-columns: repeat(2, var(--ui-icon-control-mobile-size)) minmax(0, 1fr) repeat(2, var(--ui-icon-control-mobile-size));
+  min-height: var(--ui-viewer-map-bar-height);
+  padding-block: 0;
+}
+.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .timeline-calendar-icon {
+  display: none;
+}
+.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .reset-view-command {
+  width: var(--ui-icon-control-mobile-size);
+  height: var(--ui-icon-control-mobile-size);
+  border-color: var(--overlay-border);
+  background: var(--surface-elevated);
+  box-shadow: var(--control-shadow);
+}
+
+.timeline-popover { padding: var(--ui-space-4); }
+.timeline-popover h2 { margin: 0 0 var(--ui-space-3); font-size: var(--ui-font-title); line-height: var(--design-line-title); font-weight: var(--ui-weight-semibold); }
+.timeline-popover form,
+.timeline-month-fields:not([hidden]) { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--ui-space-2) var(--ui-space-3); align-items: center; }
+.timeline-month-fields:not([hidden]) { grid-column: 1 / -1; }
+.timeline-month-navigation { display: grid; grid-template-columns: var(--ui-icon-control-size) minmax(0, 1fr) var(--ui-icon-control-size); align-items: center; gap: var(--ui-control-gap); min-width: 0; }
+.timeline-year-hint,
+.timeline-error,
+.timeline-submit { grid-column: 1 / -1; }
