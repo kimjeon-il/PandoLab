@@ -355,7 +355,6 @@ select.ui-input:not(.ui-native-select),
 
 .ui-input[aria-invalid="true"] { border-color: var(--danger); }
 
-/* Two-line date summaries remain text controls, with content-driven height. */
 .ui-button.timeline-date-button {
   display: flex;
   align-items: center;
@@ -365,12 +364,10 @@ select.ui-input:not(.ui-native-select),
   min-height: var(--ui-control-height);
   height: auto;
   padding: 0 var(--ui-space-1);
-  white-space: normal;
+  white-space: nowrap;
 }
 
-.timeline-date-button span { min-width: 0; overflow-wrap: anywhere; }
-.timeline-date-label { display: grid; }
-.timeline-date-basis { color: var(--text-soft); font-size: var(--ui-font-sm); font-weight: var(--ui-weight-regular); }
+.timeline-date-button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .ui-panel {
   padding: var(--ui-panel-padding);

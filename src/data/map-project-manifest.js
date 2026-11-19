@@ -17,12 +17,14 @@ export function mapProjectManifestSourcePath(projectId){
   return 'projects/'+projectId+'/manifest.json';
 }
 export function validateMapProjectManifest(input){
-  requireOnly(input,['format','schemaVersion','projectId','documentFormat','resources'],
+  requireOnly(input,['format','schemaVersion','projectId','name','documentFormat','resources'],
     'map project manifest');
   if(input.format!=='pandolab-map-project-manifest'||input.schemaVersion!==1||
     input.documentFormat!=='pandolab-project-state'||typeof input.projectId!=='string'||
     !/^[a-z][a-z0-9-]{0,63}$/.test(input.projectId))
     throw new TypeError('Unsupported map project manifest identity or format');
+  if(typeof input.name!=='string'||!input.name.trim())
+    throw new TypeError('Map project requires a name');
   if(!isRecord(input.resources)||Object.keys(input.resources).length!==ROLES.size||
     Object.keys(input.resources).some(key=>!ROLES.has(key)))
     throw new TypeError('Map project requires each supported resource role exactly once');
@@ -42,7 +44,7 @@ export function validateMapProjectManifest(input){
   if(resources.rivers.catalog!==resources.lakes.catalog)
     throw new TypeError('River and lake roles must share one Hydro catalog');
   return Object.freeze({format:input.format,schemaVersion:input.schemaVersion,
-    projectId:input.projectId,documentFormat:input.documentFormat,
+    projectId:input.projectId,name:input.name.trim(),documentFormat:input.documentFormat,
     resources:Object.freeze(resources)});
 }
 export function mapProjectResourcePath(project,role){

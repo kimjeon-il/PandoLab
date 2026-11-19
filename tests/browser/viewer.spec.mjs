@@ -397,6 +397,83 @@ async function month(page,value){
   console.log('[viewer-ready]',JSON.stringify({stage:`month ${value}`,milestone:'cursor accepted',elapsedMs:Math.round(performance.now()-started)}));
   await ready(page,`month ${value}`);
 }
+
+test('timeline displays one line and changes month through the dropdown', async ({page}) => {
+  await open(page);
+  const current = await page.evaluate(() => window.__PANDOLAB_VIEWER__.builtinMonth().month);
+  const [year, currentMonth] = current.split('-').map(Number);
+  const button = page.locator('#timelineDateButton'), label = page.locator('#timelineDateButtonText');
+  await expect(label).toHaveText(`${year}년 ${currentMonth}월`);
+  await expect(button).toHaveAccessibleName(`${year}년 ${currentMonth}월, 현재 월 기준, 시점 직접 입력`);
+  await page.locator('#timelinePreviousYear').click();
+  await expect(label).toHaveText(`${year - 1}년 말`);
+  await expect(button).toHaveAccessibleName(`${year - 1}년 말, 연말 기준, 시점 직접 입력`);
+  await page.locator('#timelineDateButton').click();
+  await page.locator('#timelineViewUnit').selectOption('month');
+  await expect(page.locator('#timelineMonthFields button')).toHaveCount(0);
+  await page.getByRole('combobox', {name: '월', exact: true}).selectOption('7');
+  await expect(label).toHaveText(`${year - 1}년 말`);
+  await page.locator('#timelineGoBtn').click();
+  await expect(label).toHaveText(`${year - 1}년 7월`);
+  await expect(button).toHaveAccessibleName(`${year - 1}년 7월, 월말 기준, 시점 직접 입력`);
+  await page.setViewportSize({width: 320, height: 690});
+  await expect(page.locator('#viewer')).toHaveAttribute('data-layout', 'mobile');
+  await expect(label).toHaveCSS('white-space', 'nowrap');
+  expect(await label.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+});
+
+for (const touch of [false, true]) {
+  test(`파일에서 프로젝트 선택창을 바로 연다 (${touch ? '모바일' : '데스크톱'})`, async ({browser, baseURL}) => {
+    const context = await browser.newContext({baseURL, hasTouch: touch, isMobile: touch,
+      viewport: touch ? {width: 390, height: 844} : {width: 1280, height: 800}});
+    try {
+      const page = await context.newPage();
+      await open(page);
+      const currentMonth = await page.evaluate(() => window.__PANDOLAB_VIEWER__.builtinMonth().month);
+      const previousYearEnd = String(Number(currentMonth.slice(0, 4)) - 1) + '-12';
+      await month(page, previousYearEnd);
+      const menu = page.locator('#mobileMenuBtn');
+      const file = touch ? page.getByRole('menuitem', {name: '파일'}) : page.getByRole('button', {name: '파일', exact: true});
+      const picker = page.getByRole('dialog', {name: '프로젝트 선택'});
+      const response = await page.request.get('./assets/data/projects/default-world/manifest.json');
+      expect(response.ok()).toBe(true);
+      const published = await response.json();
+      expect(published.name).toBe('세계지도');
+      const project = picker.getByRole('button', {name: published.name, exact: true});
+      const activate = control => touch ? control.tap({timeout: 5000}) : control.click({timeout: 5000});
+      const showPicker = async () => {
+        if (touch) await activate(menu);
+        await activate(file);
+        await expect(picker).toBeVisible();
+        await expect(project).toBeFocused();
+      };
+      const returnFocus = touch ? menu : file;
+      await showPicker();
+      await activate(picker.getByRole('button', {name: '닫기'}));
+      await expect(picker).toBeHidden();
+      await expect(returnFocus).toBeFocused();
+      await showPicker();
+      await page.keyboard.press('Escape');
+      await expect(picker).toBeHidden();
+      await expect(returnFocus).toBeFocused();
+      await showPicker();
+      await page.mouse.click(5, 5);
+      await expect(picker).toBeHidden();
+      await expect(returnFocus).toBeFocused();
+      expect(await page.evaluate(() => window.__PANDOLAB_VIEWER__.builtinMonth())).toEqual({
+        month: previousYearEnd, automatic: false,
+      });
+      await showPicker();
+      await activate(project);
+      await expect(picker).toBeHidden();
+      await expect.poll(() => page.evaluate(() => window.__PANDOLAB_VIEWER__.builtinMonth()), {timeout: 60_000})
+        .toEqual({month: currentMonth, automatic: true});
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 async function search(page,touch=false){
   if(touch)await page.locator('#objectSearchInput').tap();
   else await page.locator('#objectSearchBtn').click();
@@ -693,6 +770,19 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
   await expect(page.locator('#openProjectBtn, #projectFileInput')).toHaveCount(0);
   const before=await page.evaluate(()=>({project:window.__PANDOLAB_VIEWER__.documentSnapshot(),state:window.__PANDOLAB_VIEWER__.documentState()}));
   expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.readOnly)).toBe(true);
+  const inspector=page.locator('#reviewPanel'),dateBar=page.locator('.timeline-controls');
+  for (const [layout, width, height] of [['wide', 1440, 800], ['compact', 834, 620]]) {
+    await page.setViewportSize({width, height});
+    await expect(page.locator('#viewer')).toHaveAttribute('data-layout', layout);
+    const panelRect = await inspector.boundingBox(), barRect = await dateBar.boundingBox();
+    expect(panelRect.y + panelRect.height, `${layout} inspector must leave room for the timeline`)
+      .toBeLessThan(barRect.y);
+    await page.locator('#timelineDateButton').click({timeout: 3000});
+    await page.locator('#timelineYearInput').click({timeout: 3000});
+    await page.locator('#timelineDateButton').click({timeout: 3000});
+    await expect(inspector).toBeVisible();
+  }
+  await page.setViewportSize({width: 1280, height: 800});
   await page.locator('#reviewTabPerformance').click();
   await page.locator('#reviewTabErrors').click();
   await ready(page);

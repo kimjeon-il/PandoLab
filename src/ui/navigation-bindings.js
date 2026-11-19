@@ -1,4 +1,5 @@
 import { isMobileWorkspaceLayout } from "./workspace-layout.js";
+import { createSemanticIcon } from "./icon-utils.js";
 
 /** NavigationBindings: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
@@ -25,6 +26,34 @@ export function createNavigationBindings() {
   function bindNavigationUI() {
     if (bound || disposed) return;
     bound = true;
+    const get = dependencies.platform.$;
+    const picker = get('projectPicker');
+    const project = document.createElement('button');
+    project.type = 'button';
+    project.className = 'ui-button ui-menu-item';
+    project.autofocus = true;
+    const projectName = document.createElement('span');
+    projectName.textContent = dependencies.projectPicker.name;
+    project.append(createSemanticIcon(document, 'map'), projectName);
+    get('projectPickerList').append(project);
+
+    const showProjectPicker = () => {
+      if (!picker.open) picker.showModal();
+    };
+    listen(project, 'click', () => {
+      if (!picker.open) return;
+      picker.close();
+      dependencies.projectPicker.openProject();
+    });
+    listen(get('projectPickerCloseBtn'), 'click', () => picker.close());
+    listen(picker, 'close', () => {
+      if (!picker.open) get(dependencies.surfaces.isMobile() ? 'mobileMenuBtn' : 'fileBtn').focus({preventScroll: true});
+    });
+    listen(picker, 'click', event => {
+      if (event.target !== picker) return;
+      const {left, right, top, bottom} = picker.getBoundingClientRect();
+      if (event.clientX < left || event.clientX > right || event.clientY < top || event.clientY > bottom) picker.close();
+    });
     let mobileMenuOpen=false;
     const mobileMenu = () => (0, dependencies.platform.$)('mobileGlobalMenu');
     const closeMobileMenu = ({ restoreFocus = false } = {}) => {
@@ -37,17 +66,15 @@ export function createNavigationBindings() {
     const openMobileMenu = () => {
       const menu = mobileMenu();
       if (!menu) return;
-      (0, dependencies.workspaceUi.closeFileMenu)();
       (0, dependencies.workspaceUi.closeSurface)('create');
       mobileMenuOpen=true;menu.hidden = false;
       (0, dependencies.platform.$)('mobileMenuBtn')?.setAttribute('aria-expanded', 'true');
-      requestAnimationFrame(() => { if (!disposed) menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true }); });
+      requestAnimationFrame(() => { if (!disposed && mobileMenuOpen) menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true }); });
     };
     let searchToolbarPointer = false;
     listen(document, 'keydown',event=>{
-      if(event.key!=='Escape'||event.defaultPrevented||document.querySelector('.ui-modal:not(.hidden),[aria-modal="true"]:not(.hidden):not([hidden])'))return;
+      if(event.key!=='Escape'||event.defaultPrevented||picker.open||document.querySelector('.ui-modal:not(.hidden),[aria-modal="true"]:not(.hidden):not([hidden])'))return;
       if(mobileMenuOpen){closeMobileMenu({restoreFocus:true});event.preventDefault();event.stopImmediatePropagation();return;}
-      if(dependencies.workspaceUi.isFileMenuOpen){dependencies.workspaceUi.closeFileMenu({restoreFocus:true});event.preventDefault();event.stopImmediatePropagation();return;}
       for(const surface of ['search','details'])if(dependencies.workspaceUi.surfaceController.isOpen(surface)){dependencies.workspaceUi.closeSurface(surface,{restoreFocus:true});event.preventDefault();event.stopImmediatePropagation();return;}
     });
     listen(document, 'pointerdown', event => {
@@ -55,16 +82,10 @@ export function createNavigationBindings() {
       if (!event.target.closest('#notificationCloseBtn')) (0, dependencies.readinessUi.clearErrorNotification)();
     }, true);
     listen(document, 'click', e => {
-      if (!e.target.closest('.top-actions') && !e.target.closest('#mobileFileBtn')) {
-        (0, dependencies.workspaceUi.closeFileMenu)();
-      }
       if (!e.target.closest('#mobileGlobalMenu, #mobileMenuBtn')) closeMobileMenu();
     });
 
-    listen((0, dependencies.platform.$)('mobileFileBtn'), 'click', event => {
-      event.stopPropagation();
-      (0, dependencies.workspaceUi.toggleFileMenu)();
-    });
+    listen(get('fileBtn'), 'click', showProjectPicker);
     listen((0, dependencies.platform.$)('mobileMenuBtn'), 'click', event => {
       event.stopPropagation();
       if (!mobileMenuOpen) openMobileMenu(); else closeMobileMenu({ restoreFocus: true });
@@ -72,12 +93,7 @@ export function createNavigationBindings() {
     listen((0, dependencies.platform.$)('mobileMenuFileBtn'), 'click', event => {
       event.stopPropagation();
       closeMobileMenu();
-      (0, dependencies.workspaceUi.toggleFileMenu)();
-    });
-    listen((0, dependencies.platform.$)('mobileFileBackBtn'), 'click', event => {
-      event.stopPropagation();
-      (0, dependencies.workspaceUi.closeFileMenu)();
-      openMobileMenu();
+      showProjectPicker();
     });
     listen((0, dependencies.platform.$)('mobilePreferencesBtn'), 'click', () => {
       closeMobileMenu();
@@ -126,10 +142,6 @@ export function createNavigationBindings() {
       catch(error) { dependencies.feedback.reportOperationError(error,'객체 표시를 변경하지 못했습니다.','PL-VIEW-COMMAND-001',4200); }
     });
     listen((0, dependencies.platform.$)('objectDeleteBtn'), 'click', () => dependencies.objectOperations.deleteSelectedFromObjectMenu());
-    listen((0, dependencies.platform.$)('mobileBackdrop'), 'click', () => {
-      (0, dependencies.workspaceUi.closeFileMenu)({ restoreFocus: true });
-      closeMobileMenu({ restoreFocus: true });
-    });
     Object.values(dependencies.workspaceUi.MOBILE_SHEET_IDS).forEach(id => (0, dependencies.workspaceUi.bindMobileSheetSurface)((0, dependencies.platform.$)(id)));
     listen((0, dependencies.platform.$)('mobileSearchBtn'), 'click', event => toggleWorkspaceSurface('search', event.currentTarget));
     listen((0, dependencies.platform.$)('objectSearchCloseBtn'), 'click', () => (0, dependencies.workspaceUi.closeSurface)('search', { restoreFocus: true }));

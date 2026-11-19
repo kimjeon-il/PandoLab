@@ -1,6 +1,6 @@
 import { createMobileSheetPresentation } from "./mobile-sheet-presentation.js";
 import { createWorkspaceLayoutDetector, isMobileWorkspaceLayout } from "./workspace-layout.js";
-import { clearMenuPosition, createMenuPositionScheduler, positionRootMenu } from "./menu-presentation.js";
+import { createMenuPositionScheduler } from "./menu-presentation.js";
 import { createSearchToolbarPresentation } from "./search-toolbar-presentation.js";
 
 /** WorkspaceSurfaces: extracted application responsibility.
@@ -12,13 +12,11 @@ export function createWorkspaceSurfaces() {
   const MOBILE_SHEET_HISTORY_KEY = '__pandolabMobileSheet';
   const listeners=[];
   const listen=(target,type,listener)=>{target.addEventListener(type,listener);listeners.push(()=>target.removeEventListener(type,listener));};
-  let fileMenuOpen=false;
   let dependencies, mobileSheets;
   let detectLayoutMode;
   let layoutMode;
   let isMobile;
   let lastOverlayTrigger;
-  let fileMenuTrigger;
   let pendingLayoutChange = false;
   let surfaceController;
   let MOBILE_SHEET_IDS;
@@ -102,14 +100,12 @@ export function createWorkspaceSurfaces() {
     else if (isMobile() && !isMobileWorkspaceLayout(previous) && surfaceController.activeMobileSheet) {
       trackMobileSheetHistory(surfaceController.activeMobileSheet);
     }
-    const fileOpen=fileMenuOpen;
-    surfaceController.render({ fileOpen });
+    surfaceController.render();
     // Publish the layout only after its open-surface classes are in place.
     // A transient hidden sheet can blur an existing input in WebView2.
     if (app) app.dataset.layout = layoutMode;
     document.body.dataset.layout = layoutMode;
     searchToolbarPresentation.sync();
-    if (fileOpen) requestAnimationFrame(syncFileMenuNotificationOffset);
     refreshMapSheetMetrics();
     menuPositionScheduler.schedule();
     if (!initial && previous !== layoutMode) (0, dependencies.mapHostView.queueMapResize)('layout-mode-change');
@@ -117,10 +113,7 @@ export function createWorkspaceSurfaces() {
   }
 
   function syncOverlayState() {
-    const fileOpen=fileMenuOpen;
-    const menu=document.querySelector('.top-actions');
-    if(menu){menu.hidden=!fileOpen;menu.classList.toggle('mobile-open',fileOpen);}
-    const view = surfaceController.render({ fileOpen });
+    const view = surfaceController.render();
     if (!surfaceController.isOpen('search')) {
       dependencies.domains.objectSearchController?.cancelSearch();
       cancelAnimationFrame(searchFocusFrame);
@@ -131,35 +124,8 @@ export function createWorkspaceSurfaces() {
     searchToolbarPresentation.sync();
     refreshMapSheetMetrics();
     menuPositionScheduler.schedule();
-    if (fileOpen) requestAnimationFrame(syncFileMenuNotificationOffset);
-    else (0, dependencies.platform.$)('app')?.style.removeProperty('--file-menu-notification-top');
     if (layoutMode !== 'wide') (0, dependencies.mapHostView.queueMapResize)('panel-layout');
     return view;
-  }
-
-  function syncFileMenuNotificationOffset() {
-    const app = (0, dependencies.platform.$)('app');
-    const menu = document.querySelector('.top-actions.mobile-open');
-    if (!app || layoutMode !== 'mobile' || !menu) {
-      app?.style.removeProperty('--file-menu-notification-top');
-      return;
-    }
-    app.style.setProperty('--file-menu-notification-top', `${Math.ceil(menu.getBoundingClientRect().bottom)}px`);
-  }
-
-  function closeFileMenu({ restoreFocus = false } = {}) {
-    const menu = document.querySelector('.top-actions');
-    if(!menu||!fileMenuOpen)return;
-    const trigger = fileMenuTrigger;
-    fileMenuTrigger = null;
-    fileMenuOpen=false;
-    syncOverlayState();
-    if (restoreFocus) {
-      const focusTarget = isMobile()
-        ? ((0, dependencies.platform.$)('mobileMenuFileBtn') || (0, dependencies.platform.$)('mobileMenuBtn'))
-        : trigger;
-      if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
-    }
   }
 
   function focusSurfaceTrigger(surface) {
@@ -178,18 +144,6 @@ export function createWorkspaceSurfaces() {
     trigger?.focus({ preventScroll: true });
   }
 
-
-  function positionWorkspaceMenus() {
-    searchToolbarPresentation.position();
-    const fileMenu = document.querySelector('.top-actions');
-    if (isMobile()) {
-      clearMenuPosition(fileMenu);
-      return;
-    }
-    if(fileMenuOpen){
-      positionRootMenu({ menu: fileMenu, trigger: (0, dependencies.platform.$)('mobileFileBtn') });
-    }
-  }
 
   function closeActiveMobileSheet({ restoreFocus = false, syncHistory = true } = {}) {
     if (!isMobile() || !surfaceController.activeMobileSheet) return;
@@ -216,18 +170,9 @@ export function createWorkspaceSurfaces() {
     if (restoreFocus) lastOverlayTrigger = null;
   }
 
-  function openFileMenu({trigger=null}={}){
-    if(!document.querySelector('.top-actions'))return false;
-    fileMenuOpen=true;fileMenuTrigger=trigger||dependencies.platform.$('mobileFileBtn');
-    syncOverlayState();requestAnimationFrame(()=>document.querySelector('.top-actions [role="menuitem"]:not(:disabled)')?.focus({preventScroll:true}));return true;
-  }
-  function toggleFileMenu(){if(fileMenuOpen){closeFileMenu();return false;}return openFileMenu();}
-
-
   function openSurface(surface, { trigger = null } = {}) {
     if(!registeredSurfaces.includes(surface))return false;
     if (dependencies.projectState.state.projectReplacing) return false;
-    closeFileMenu();
     if(surfaceController.isOpen(surface))return true;
     const activeTrigger = trigger instanceof HTMLElement ? trigger : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!surfaceController.open(surface)) return false;
@@ -289,9 +234,6 @@ export function createWorkspaceSurfaces() {
 
     (lastOverlayTrigger = null);
 
-    (fileMenuTrigger = null);
-
-
     (surfaceController = (0, dependencies.surfaceFactories.createSurfaceController)({ getElement: dependencies.platform.$, getLayout: () => layoutMode, document }));
 
 
@@ -331,7 +273,7 @@ export function createWorkspaceSurfaces() {
 
 
 
-    (menuPositionScheduler = createMenuPositionScheduler(positionWorkspaceMenus));
+    menuPositionScheduler = createMenuPositionScheduler(() => searchToolbarPresentation.position());
     searchToolbarPresentation = createSearchToolbarPresentation({
       document,
       panel: (0, dependencies.platform.$)('objectSearchSurface'),
@@ -373,17 +315,15 @@ export function createWorkspaceSurfaces() {
 
   return Object.freeze({
     connect,
-    initializeWorkspaceSurfaces,openFileMenu,
+    initializeWorkspaceSurfaces,
     dispose(){listeners.forEach(remove=>remove());if(mobileSheets)mobileSheets.dispose();if(menuPositionScheduler)menuPositionScheduler.cancel();if(searchToolbarPresentation)searchToolbarPresentation.dispose();cancelAnimationFrame(searchFocusFrame);},
     get MOBILE_SHEET_IDS() { return MOBILE_SHEET_IDS; },
     get applyLayoutMode() { return applyLayoutMode; },
     get bindMobileSheetSurface() { return mobileSheets.bindMobileSheetSurface; },
     get closeActiveMobileSheet() { return closeActiveMobileSheet; },
-    get closeFileMenu() { return closeFileMenu; },
     get closeMobileSheets() { return closeMobileSheets; },
     get closeSurface() { return closeSurface; },
     get isMobile() { return isMobile; },
-    get isFileMenuOpen(){return fileMenuOpen;},
     get layoutMode() { return layoutMode; },
     get openSurface() { return openSurface; },
     get refreshMapSheetMetrics() { return refreshMapSheetMetrics; },
@@ -391,7 +331,6 @@ export function createWorkspaceSurfaces() {
     get setMobileSheetHeight() { return mobileSheets.setMobileSheetHeight; },
     get surfaceController() { return surfaceController; },
     get syncOverlayState() { return syncOverlayState; },
-    get toggleFileMenu() { return toggleFileMenu; },
     get toggleSurface() { return toggleSurface; },
     get trackMobileSheetHistory() { return trackMobileSheetHistory; },
   });

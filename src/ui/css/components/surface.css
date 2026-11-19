@@ -33,10 +33,6 @@
   z-index: 200;
 }
 
-.overlay-root .mobile-backdrop {
-  z-index: 1;
-}
-
 :root[data-theme="light"] .surface-header::before {
   background: var(--surface-header-background);
 }

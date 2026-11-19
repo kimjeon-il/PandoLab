@@ -2,6 +2,7 @@
   "format": "pandolab-map-project-manifest",
   "schemaVersion": 1,
   "projectId": "default-world",
+  "name": "세계지도",
   "documentFormat": "pandolab-project-state",
   "resources": {
     "world": {

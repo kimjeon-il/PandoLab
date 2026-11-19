@@ -91,8 +91,8 @@ test('groups are deterministic and omit invalid source rows',()=>{
   ]),[{label:'총독부',items:[{id:'A',name:'A'},{id:'B',name:'Z'}]}]);
 });
 test('details and search share one mutually exclusive responsive surface owner',()=>{
-  const nodes=new Map(['objectSearchSurface','objectDetailSurface','objectSearchBtn','mobileSearchBtn',
-    'mobileFileBtn','mobileBackdrop'].map(id=>[id,fakeElement(id)]));
+  const nodes=new Map(['objectSearchSurface','objectDetailSurface','objectSearchBtn','mobileSearchBtn']
+    .map(id=>[id,fakeElement(id)]));
   const workspace=fakeElement('workspace'),document={querySelector:key=>key==='.workspace'?workspace:null,
     body:{classList:fakeElement().classList}};
   let layout='mobile';

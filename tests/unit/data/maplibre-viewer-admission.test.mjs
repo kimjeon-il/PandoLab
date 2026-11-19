@@ -9,7 +9,7 @@ import {chromium} from '@playwright/test';
 test('MapLibre certifies the admitted dated geometry before resolving its presentation waiter',{timeout:120000},async()=>{
  const root=fileURLToPath(new URL('../../../',import.meta.url));
  const roles=['world','territorial','rivers','lakes','places','placeLifetimes','physicalLand','preparedMeshes'];
- const meta={assetRevision:'fixture',dataRevision:'fixture',resourceProfile:'test-fixture',mapProject:{format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',documentFormat:'pandolab-project-state',resources:Object.fromEntries(roles.map(role=>[role,{catalog:'assets/data/fixture/catalog.json'}]))},projectCatalogs:{preparedMeshes:{catalog:'assets/data/fixture/catalog.json',bytes:2,sha256:'a'.repeat(64),current:false}}};
+ const meta={assetRevision:'fixture',dataRevision:'fixture',resourceProfile:'test-fixture',mapProject:{format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',name:'Fixture map',documentFormat:'pandolab-project-state',resources:Object.fromEntries(roles.map(role=>[role,{catalog:'assets/data/fixture/catalog.json'}]))},projectCatalogs:{preparedMeshes:{catalog:'assets/data/fixture/catalog.json',bytes:2,sha256:'a'.repeat(64),current:false}}};
  const server=createServer(async(request,response)=>{
   try{
    const path=new URL(request.url,'http://localhost').pathname;

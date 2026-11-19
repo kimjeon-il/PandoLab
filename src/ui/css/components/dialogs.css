@@ -119,11 +119,33 @@ body[data-layout="mobile"] .ui-dialog-header .icon-btn {
   display: none;
 }
 
-.ui-dialog-backdrop {
+.ui-dialog-backdrop,
+.project-picker-dialog::backdrop {
   position: absolute;
   inset: 0;
   background: var(--confirm-dim);
   backdrop-filter: none;
+}
+
+.project-picker-dialog::backdrop {
+  position: fixed;
+}
+
+.project-picker-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: var(--ui-menu-width);
+  max-height: calc(100dvh - var(--ui-dialog-edge) * 2);
+}
+
+.project-picker-dialog .ui-menu-list {
+  margin-top: var(--ui-space-4);
+}
+
+.project-picker-dialog .ui-menu-item {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .ui-dialog-card h2 {

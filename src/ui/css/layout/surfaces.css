@@ -217,7 +217,7 @@ body .app-root.viewer-root[data-layout="phone-landscape"] .mobile-menu-toolbar {
   inset: var(--workspace-visible-top, 0) auto auto 0;
   height: var(--phone-nav-width);
 }
-.app-root[data-layout="phone-landscape"] :is(.mobile-global-menu, .top-actions) {
+.app-root[data-layout="phone-landscape"] .mobile-global-menu {
   position: fixed;
   z-index: 210;
   top: calc(var(--workspace-visible-top, 0px) + env(safe-area-inset-top));
@@ -227,13 +227,12 @@ body .app-root.viewer-root[data-layout="phone-landscape"] .mobile-menu-toolbar {
   max-height: calc(var(--workspace-visible-height, 100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   overflow-y: auto;
 }
-.app-root.viewer-root[data-layout="phone-landscape"] :is(.mobile-global-menu, .top-actions) {
+.app-root.viewer-root[data-layout="phone-landscape"] .mobile-global-menu {
   left: var(--phone-nav-width);
   right: auto;
   width: min(var(--ui-phone-landscape-panel-max-width), calc(100vw - var(--phone-nav-width)));
 }
 body .app-root[data-layout="phone-landscape"] .mobile-global-menu { display: grid; }
-.app-root[data-layout="phone-landscape"] .mobile-file-back { display: grid; }
 .app-root[data-layout="phone-landscape"] .map-command-toolbar {
   top: auto;
   bottom: calc(var(--ui-statusbar-height) + var(--ui-space-2));

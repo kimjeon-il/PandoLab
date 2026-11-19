@@ -331,7 +331,7 @@ test('remote byte verification failure cannot be reported as completed archival'
 test('Viewer closure rejects missing payloads and private report dependencies',()=>{
  const manifest='assets/data/world/current.json',payload='assets/data/world/objects/current.bin',privateReport='reports/development/private.md';
  const roles=['world','territorial','rivers','lakes','places','placeLifetimes','physicalLand','preparedMeshes'];
- const projectManifest={format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',documentFormat:'pandolab-project-state',resources:Object.fromEntries(roles.map(role=>[role,{catalog:manifest}]))};
+ const projectManifest={format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',name:'Fixture map',documentFormat:'pandolab-project-state',resources:Object.fromEntries(roles.map(role=>[role,{catalog:manifest}]))};
  assert.throws(()=>collectRuntimeDataAssets({availablePaths:[],readManifest:()=>({})}),/project/i);
  assert.throws(()=>collectRuntimeDataAssets({projectManifest,availablePaths:[manifest],readManifest:()=>({assets:{canonicalMesh:{url:'world/objects/missing.bin'}}})}),/missing/i);
  assert.throws(()=>collectRuntimeDataAssets({projectManifest,availablePaths:[manifest,privateReport],entryPaths:[privateReport],readManifest:()=>({assets:{}})}),/invalid/i);

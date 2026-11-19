@@ -1,12 +1,5 @@
 /* Canonical components / panels. */
 
-body.file-menu-open .mobile-backdrop {
-  position: fixed;
-  inset: var(--ui-topbar-height) 0 0;
-  opacity: 1;
-  background: var(--mobile-backdrop);
-}
-
 .ui-dialog-kicker {
   color: var(--accent-2);
   font-size: var(--ui-font-caption);
@@ -35,11 +28,6 @@ body.file-menu-open .mobile-backdrop {
 
 .ui-dialog-kicker {
   display: none;
-}
-
-body.file-menu-open .mobile-backdrop {
-  display: none;
-  pointer-events: none;
 }
 
 .map-command-toolbar,

@@ -1,12 +1,27 @@
 /* Viewer-only placement. Shared controls, surfaces and tokens own the visual language. */
-.app-root.viewer-root { --ui-shell-statusbar-height: 0px; --ui-statusbar-height: 0px; --ui-map-bottom-occupied-height: 0px; --mobile-nav-height: 0px; }
+.app-root.viewer-root {
+  --ui-shell-statusbar-height: 0px;
+  --ui-statusbar-height: 0px;
+  --ui-map-bottom-occupied-height: 0px;
+  --mobile-nav-height: 0px;
+  --viewer-desktop-tools-bottom: max(var(--ui-space-4), env(safe-area-inset-bottom));
+  --viewer-desktop-timeline-height: calc(
+    max(var(--ui-control-height), var(--ui-icon-control-size))
+    + 2 * (var(--ui-toolbar-padding) + var(--ui-border-width))
+  );
+}
 .viewer-root .gpu-map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .viewer-root .maplibre-map-surface { position: absolute; inset: 0; z-index: 1; }
-.viewer-root .viewer-map-tools { position: absolute; z-index: 18; inset: auto max(var(--ui-space-4), env(safe-area-inset-right)) max(var(--ui-space-4), env(safe-area-inset-bottom)) max(var(--ui-space-4), env(safe-area-inset-left)); min-height: calc(var(--ui-icon-control-size) + var(--ui-space-2) * 2); pointer-events: none; }
+.viewer-root .viewer-map-tools { position: absolute; z-index: 18; inset: auto max(var(--ui-space-4), env(safe-area-inset-right)) var(--viewer-desktop-tools-bottom) max(var(--ui-space-4), env(safe-area-inset-left)); min-height: calc(var(--ui-icon-control-size) + var(--ui-space-2) * 2); pointer-events: none; }
 .app-root.viewer-root .map-command-toolbar { z-index: 18; bottom: 0; left: 50%; right: auto; transform: translateX(-50%); pointer-events: auto; }
 .viewer-root .timeline-controls { position: absolute; z-index: 20; right: 0; bottom: 0; width: min(23rem, 100%); pointer-events: auto; overflow: visible; }
-.app-root.viewer-root:is([data-layout="wide"], [data-layout="compact"]) .surface-details { bottom: calc(var(--ui-icon-control-size) + var(--ui-space-4) + var(--ui-space-2)); }
+.app-root.viewer-root:is([data-layout="wide"], [data-layout="compact"]) :is(.surface-details, .viewer-review-panel) {
+  bottom: calc(var(--viewer-desktop-timeline-height) + var(--viewer-desktop-tools-bottom) + var(--ui-space-2));
+}
 .viewer-root:is([data-layout="wide"], [data-layout="compact"]) .viewer-map-tools { z-index: 40; }
+.viewer-root:is([data-layout="wide"], [data-layout="compact"]) .viewer-map-tools:has(.timeline-popover:not([hidden])) {
+  z-index: 61;
+}
 .viewer-root .timeline-popover { position: absolute; right: 0; bottom: calc(100% + var(--ui-space-2)); width: min(20rem, calc(100vw - var(--ui-space-8))); max-height: calc(100dvh - 7.5rem); overflow-y: auto; }
 .viewer-root .viewer-map-notices { position: absolute; z-index: 19; top: var(--ui-space-4); left: 50%; transform: translateX(-50%); max-width: calc(100% - var(--ui-space-8)); display: flex; flex-direction: column; gap: var(--ui-space-2); pointer-events: none; }
 .viewer-root .viewer-map-error { pointer-events: auto; overflow-wrap: anywhere; }
