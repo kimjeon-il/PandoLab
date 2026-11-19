@@ -56,6 +56,61 @@ async function open(page,query=''){
 }
 const camera=page=>page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState());
 
+for(const [profile,viewport,saved] of [
+ ['mobile',{width:390,height:844},null],
+ ['desktop',{width:1440,height:900},null],
+ ['saved desktop',{width:1440,height:900},{projection:'globe',center:[38,42],zoom:3.25,bearing:12,pitch:0,roll:0}],
+]){
+ test(`first visible globe keeps its camera through data loading (${profile})`,async({browser,baseURL})=>{
+  const context=await browser.newContext({baseURL,viewport,hasTouch:profile==='mobile',isMobile:profile==='mobile'});
+  const page=await context.newPage();
+  if(saved){
+   await page.route('**/camera-storage-fixture',route=>route.fulfill({contentType:'text/html',body:'<!doctype html>'}));
+   await page.goto('./camera-storage-fixture');
+   await page.evaluate(async value=>{
+    const {createBrowserProjectStorage}=await import(new URL('./assets/js/modules/browser-project-storage.js',location.href).href);
+    const storage=createBrowserProjectStorage({productMode:'viewer',indexedDB,databaseName:'pandolab-viewer',storeName:'views',viewKey:'active-view'});
+    await storage.writeCamera('default-world',value);
+   },saved);
+  }
+  let allowGeometry,geometryRequested=false;
+  const geometryBlocked=new Promise(resolve=>{allowGeometry=resolve;});
+  try{
+   await page.route(/\/world-geometry\/sha256-/,async route=>{
+    geometryRequested=true;
+    await geometryBlocked;
+    await route.continue();
+   });
+   await page.addInitScript(()=>{
+    const capture=()=>{
+     const map=window.__PANDOLAB_MAPLIBRE__,canvas=map?.getCanvas();
+     if(canvas&&getComputedStyle(canvas).visibility==='visible'){
+      const center=map.getCenter();
+      (window.__visibleGlobeFrames??=[]).push([center.lng,center.lat,map.getZoom(),map.getBearing()]);
+     }
+     if(document.querySelector('#viewerStatus')?.dataset.ready!=='true')requestAnimationFrame(capture);
+    };
+    requestAnimationFrame(capture);
+   });
+   await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
+   await expect.poll(()=>page.evaluate(()=>window.__visibleGlobeFrames?.length??0)).toBeGreaterThan(0);
+   await expect.poll(()=>geometryRequested).toBe(true);
+   expect(await page.locator('#viewer').getAttribute('data-initial-loading')).toBe('true');
+   allowGeometry();
+   await ready(page,'globe camera after loading');
+   const {frames,final}=await page.evaluate(()=>{
+    const map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter();
+    return {frames:window.__visibleGlobeFrames,final:[center.lng,center.lat,map.getZoom(),map.getBearing()]};
+   });
+   for(const frame of frames)frame.forEach((value,index)=>expect(value).toBeCloseTo(final[index],5));
+   if(saved)[...saved.center,saved.zoom,saved.bearing].forEach((value,index)=>expect(final[index]).toBeCloseTo(value,5));
+  }finally{
+   allowGeometry();
+   await context.close();
+  }
+ });
+}
+
 test('Viewer paints the correct search layout before startup completes',async({browser,baseURL})=>{
  for(const [width,height,layout,touch] of [[390,844,'mobile',true],[844,390,'phone-landscape',true],
   [1024,768,'compact',true],[1440,900,'wide',false]]){

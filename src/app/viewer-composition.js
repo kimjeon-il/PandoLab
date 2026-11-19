@@ -78,6 +78,18 @@ export async function composeViewer({ productMode, meta }) {
   const selectController=createSelectController({document,window});selectController.enhanceAll();
   const notifications=createNotificationPresentation({document,getElement:get,isMobile:()=>surfaces.isMobile(),protectErrorNotices:true});
   const report=(error,message='작업을 완료하지 못했습니다.',code='PL-MAP-OPERATION')=>notifications.reportOperationError(error,message,code);
+  const readSavedCamera=async()=>{
+    try {
+      const camera=await viewStorage.readCamera(runtimeContext.meta.mapProject.projectId);
+      if(camera?.projection==='globe'&&Array.isArray(camera.center)&&camera.center.length===2&&camera.center.every(Number.isFinite)&&Number.isFinite(camera.zoom)){
+        return {globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],
+          zoom:camera.zoom,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll};
+      }
+    } catch(error) {
+      report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');
+    }
+    return null;
+  };
   const documentSession=createDocumentSession({productMode,readOnly:true,initialProject:createInitialDocument({appVersion:meta.appVersion})});
   const disposables=[tooltipController,selectController,preferencePresentation,surfaces,notifications,documentSession.commandOwner,initialPresentation];
   async function composeMap() {
@@ -88,20 +100,19 @@ export async function composeViewer({ productMode, meta }) {
     onProjectReset:async event=>{postPresentation.invalidate();searchController.cancelSearch();previousView=map.capturePresentation();await selectionDomain.resetProject(event.generation);selectionUiController.resetProject();map.renderingDomain.resetProjectGeneration(event.generation,{presentation:event.presentation,isCurrent:event.isCurrent,onPresented:event.onPresented});},
     replaceSnapshot:async(_project,{reason})=>{await map.setSession(activeSession,{source:reason==='builtin'?'builtin':'project',prepareView:async()=>{
       const project=activeSession.documentModel.snapshot(),bounds=project.projectSetup.initialMapBounds;let restoredCamera=false;
+      const startupWorld=reason==='builtin'&&!initialPresentation.hasPresented();
       if(openingPreserved)map.projectSession.restoreViewingPresentation({documentId:project.documentId,viewingPresentation:openingPreserved});
       else {
         let workspace=null;
         try{workspace=await viewStorage.readView(viewDocumentId);}catch(error){report(error,'보기 설정을 복원하지 못했습니다.','PL-WORKSPACE-READ-001');}
         map.projectSession.restoreViewingPresentation(workspace?{...workspace,documentId:project.documentId}:null);
-        let camera=null;try{camera=await viewStorage.readCamera(runtimeContext.meta.mapProject.projectId);}catch(error){report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');}
-        if(camera?.projection==='globe'&&Array.isArray(camera.center)&&camera.center.length===2&&camera.center.every(Number.isFinite)&&Number.isFinite(camera.zoom)){
-          map.viewState.view={globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],zoom:camera.zoom};
-          map.renderer.syncCameraFromState({...map.viewState.view,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll});
-          restoredCamera=true;
+        if(!startupWorld){
+          const camera=await readSavedCamera();
+          if(camera){map.renderer.syncCameraFromState(camera);restoredCamera=true;}
         }
       }
       await map.loadPhysicalLandMask();
-      if(!openingPreserved&&!restoredCamera){
+      if(!startupWorld&&!openingPreserved&&!restoredCamera){
         if(bounds)map.renderer.fitMapBounds([[bounds.west,bounds.south],[bounds.east,bounds.north]],map.mapProjection.currentMapSafeInsets());
         else map.navigation.resetView();
       }
@@ -158,6 +169,7 @@ export async function composeViewer({ productMode, meta }) {
   });
   disposables.push(objectDetailsPanel);
   map=createViewerMap({owners,runtimeContext,element:get('map'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,isSafeKoreanErrorMessage:notifications.isSafeKoreanErrorMessage,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
+    initialCamera:readSavedCamera(),
     onMapPreparationStatus:(presentation,generation)=>{initialPresentation.observe(presentation,generation);mapSkeleton.reconsider();},isInitialPresentation:()=>!initialPresentation.hasPresented()});
   map.renderer.setInitialMapLoading(true);
   map.ready.then(()=>{

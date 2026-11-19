@@ -36,7 +36,7 @@ const layerVisibleAtZoom=(layer,zoom)=>layer.layout?.visibility!=='none'&&
  zoom>=(layer.minzoom??-Infinity)&&zoom<(layer.maxzoom??Infinity);
 
 /** MapLibre owns map pixels and picking. Core and the physical owner retain all data. */
-export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPreparationStatus}={}) {
+export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPreparationStatus,initialCamera,readInitialSafeInsets}={}) {
  if(typeof deps.objectRefVisible!=='function')throw new TypeError('MapLibre requires the canonical object visibility query.');
  const state=deps.projectState.state;
  const metrics=createRenderingMetrics();
@@ -528,6 +528,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    api.setWorkerUrl(new URL('maplibre-gl-worker.mjs',vendor).href);
    const initialStyle=currentMapStyle();
    const hydroStyle=mapLibreHydroStyle({antiAlias:interactionStyle?.antiAlias!==false,stylePaint:initialStyle.paint});
+   // MapLibre can draw a default-camera frame before its load event.
+   if(initialCamera)container.style.visibility='hidden';
    // Draw native symbol placement with the tile's first frame so a published
    // camera frame and its visible labels share the same approval.
    map=new api.Map({container,trackResize:false,attributionControl:false,interactive:true,fadeDuration:0,canvasContextAttributes:{preserveDrawingBuffer:true},dragRotate:false,pitchWithRotate:false,
@@ -575,8 +577,19 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     if(pendingFrame)invalidate('maplibre-presented');
    });
    await new Promise((resolve,reject)=>{map.once('load',resolve);map.once('error',event=>reject(event.error));});
+   const startupView=await initialCamera;
+   if(disposed)return false;
    const initialView=state.view;
-   loaded=true;lastCameraZoom=map.getZoom();
+   loaded=true;
+   if(initialCamera){
+    map.resize();
+    if(startupView)syncCameraFromState(startupView);
+    else fitMapBounds(WORLD_VIEW_BOUNDS,readInitialSafeInsets());
+    syncInitialMapSkeleton();
+    map.once('render',()=>container.style.removeProperty('visibility'));
+    map.triggerRepaint();
+   }
+   lastCameraZoom=map.getZoom();
    map.on('move',()=>{
     const zoom=map.getZoom(),jump=Math.abs(zoom-lastCameraZoom)>=2-ZOOM_EPSILON;
     lastCameraZoom=zoom;
@@ -592,7 +605,9 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    });
    map.on('movestart',()=>deps.domains.renderingDomain?.beginInteraction('maplibre-move'));
    map.on('moveend',()=>deps.domains.renderingDomain?.endInteraction('maplibre-move-end'));
-   if(pendingCameraFit)applyCameraFit();else syncCameraFromState(initialView);
+   if(!initialCamera){
+    if(pendingCameraFit)applyCameraFit();else syncCameraFromState(initialView);
+   }
    window.__PANDOLAB_MAPLIBRE__=map;
    return true;
   })();
