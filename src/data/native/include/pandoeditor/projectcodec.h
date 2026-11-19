@@ -1,7 +1,7 @@
 #pragma once
 #include <pandoeditor/project.h>
 #include <pandoeditor/losslessjson.h>
-#include <pandoeditor/webterritorialcommands.h>
+#include <pandoeditor/webterritorial-source-codec.h>
 #include <functional>
 #include <string>
 

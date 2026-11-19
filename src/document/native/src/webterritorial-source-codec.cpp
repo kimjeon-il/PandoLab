@@ -1,4 +1,4 @@
-#include <pandoeditor/webterritorialcommands.h>
+#include <pandoeditor/webterritorial-source-codec.h>
 #include <pandoeditor/projectcodec.h>
 #include <pandoeditor/webcommands.h>
 #include <algorithm>
@@ -72,10 +72,10 @@ WebTerritorialFeature feature(const V& input,const projectcodec::PlatformPorts& 
 }
 }
 codecjson::Value normalizeWebTerritorialResolvedFeature(const codecjson::Value& value){return normalizedResolvedFeature(value);}
-WebTerritorialEdit readWebTerritorialSource(const V& payload,const projectcodec::PlatformPorts& ports) {
+WebTerritorialSource readWebTerritorialSource(const V& payload,const projectcodec::PlatformPorts& ports) {
     const auto& rows=required(payload,"features");
     if(rows.kind!=V::Array)throw TimelineError("CORE_COMMAND_PAYLOAD","Territorial features must be an array.");
-    WebTerritorialEdit edit;std::set<std::string> seen;
+    WebTerritorialSource edit;std::set<std::string> seen;
     for(const auto& row:rows.array) {
         auto value=feature(row,ports);
         if(!seen.insert(value.identity.id).second)throw TimelineError("CORE_COMMAND_PAYLOAD","Duplicate territorial feature ID: "+value.identity.id);

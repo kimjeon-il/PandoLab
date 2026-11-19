@@ -3,7 +3,7 @@
 #include <pandoeditor/geometrypredicates.h>
 #include <pandoeditor/projectcodec.h>
 #include <pandoeditor/sphericalpolygon.h>
-#include <pandoeditor/territorialmutation.h>
+#include <pandoeditor/polygon-selection.h>
 #include <pandoeditor/gisexchange.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>

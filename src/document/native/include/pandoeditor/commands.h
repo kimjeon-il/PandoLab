@@ -1,7 +1,6 @@
 #pragma once
 #include <pandoeditor/document.h>
-#include <pandoeditor/territorialmutation.h>
-#include <pandoeditor/webterritorialcommands.h>
+#include <pandoeditor/webterritorial-source-codec.h>
 #include <pandoeditor/gisexchange.h>
 #include <cstdint>
 #include <functional>
@@ -18,11 +17,11 @@ namespace detail { struct DocumentState; }
 
 using ContentValue=std::variant<std::monostate,PlaceLabel,HydroFeature,DistributionLayer,
     DistributionEntry,GenericFeature,CountryDetails,TerritorialSymbolStyle>;
-enum class CommandStatus { Prepared, Applied, NoOp, Rejected };
+enum class CommandStatus { Applied, NoOp, Rejected };
 enum class CommandError {
     None, ProjectMismatch, DocumentMismatch, StaleRevision, InvalidCommand,
-    InvalidTargets, InvalidArguments, Locked, UnsupportedDependency,
-    ValidationFailed, PrepareFailed, CommitFailed, PreviewConsumed, RevisionOverflow
+    InvalidTargets, InvalidArguments, Locked,
+    ValidationFailed, PrepareFailed, CommitFailed, RevisionOverflow
 };
 const char* commandErrorCode(CommandError error) noexcept;
 // Calculated against validated immutable states during prepare. Candidate consumers
