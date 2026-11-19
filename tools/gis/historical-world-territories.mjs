@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import "../../assets/js-vendor/polygon-clipping.min.js";
 import "../build/load-spherical-core.mjs";
 import "../../src/geometry/polygon-geometry.js";
-import {area as polygonArea} from "../../src/geometry/map-edit-geometry.js";
+import {area as polygonArea} from "../../src/geometry/polygon-geometry-utils.js";
 import { normalizeTemporalInterval, compareTemporal, sharedCalculationCore } from "../../src/document/temporal.js";
 
 // One deterministic, native Boolean owner for historical compilation. The

@@ -72,7 +72,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       if (objectRefSelectable(normalized) && !candidates.some(candidate => candidate.key === normalized.key)) candidates.push(normalized);
     };
     seedRefs.forEach(add);
-    dependencies.rendering.gpuMapRenderer.queryObjectRefs(screenPoint).forEach(ref=>{
+    dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint).forEach(ref=>{
       if((includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))add(ref);
     });
     return candidates.sort(compareVisualOrder);

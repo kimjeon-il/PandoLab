@@ -3,7 +3,7 @@ import {createMapLibreLabelPresentation} from './maplibre-label-presentation.js'
 
 /** Assemble geographic sources before MapLibre draws; publish labels after its render event. */
 export function createMapLibreRenderingDomain(options){
- const {gpuMapRenderer:renderer,selectionDomain,prepareView,renderers,reportDiagnostic}=options;
+ const {mapRenderer:renderer,selectionDomain,prepareView,renderers,reportDiagnostic}=options;
  let disposed=false,queued=false,frameId=0,contentDirty=true,selectionDirty=true,labelsDirty=true,lastFrame=null;
  let viewportOverlaysDirty=false;
  let lastPlaceQueryAt=-Infinity;
@@ -60,7 +60,7 @@ export function createMapLibreRenderingDomain(options){
     content.renderTerritorialUnits(frame);content.renderGenericFeatures(frame);content.renderDistributions(frame);
    }
    if(refreshContent)content.renderCountries(frame);
-   if(refreshContent||refreshViewportOverlays)options.countryResources.syncGpuRenderScene();
+   if(refreshContent||refreshViewportOverlays)options.countryResources.syncMapScene();
    if(selectionDirty){selectionDirty=false;renderer.setSelection(selectionDomain.snapshot());}
    // Prepare symbol sources alongside geometry, behind the preserved temporal
    // frame. Publication still waits for both sources and a subsequent render.

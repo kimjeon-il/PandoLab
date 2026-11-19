@@ -6,7 +6,7 @@ import {classifyTerritorialPropertyOnly,createTerritorialEntityStore} from "../d
 import {temporalContains,temporalMonthEnd} from "../document/temporal.js";
 import {createMapRenderingResources} from "../rendering/map-renderer-composition.js";
 import {createMapLibreViewerRenderer} from "../rendering/maplibre-viewer-renderer.js";
-import {createPhysicalSourceConfiguration,HYDRO_LAYER_META,HYDRO_TOOL_CONFIG,PHYSICAL_DATASET} from "../data/physical-source-configuration.js";
+import {createPhysicalSourceConfiguration,HYDRO_LAYER_META,HYDRO_CATEGORY_STYLES,PHYSICAL_DATASET} from "../data/physical-source-configuration.js";
 import {createMapSurfaceHost} from "../ui/map-surface-host.js";
 import {setInteractionStyle as setSelectionInteractionStyle} from "../rendering/selection-style.js";
 import "../geometry/polygon-geometry.js";
@@ -61,7 +61,7 @@ function createViewerMapPreparationPresenter(getElement) {
 // End viewer map presentation helpers
 
 /** Presentation adapter shared by the Viewer and Windows reviewer. */
-export function createViewerMap({ runtimeContext,owners,element, canvas, projectDomain, documentSession, getPreferences, onError, onPlacesSettled, onStatus,isSafeKoreanErrorMessage,isMobile,diagnostics,getInteractionStyle,onMapPreparationStatus=null,isInitialPresentation }) {
+export function createViewerMap({ runtimeContext,owners,element, projectDomain, documentSession, getPreferences, onError, onPlacesSettled, onStatus,isSafeKoreanErrorMessage,isMobile,diagnostics,getInteractionStyle,onMapPreparationStatus=null,isInitialPresentation }) {
   const meta=runtimeContext.meta;
   const d3 = globalThis.d3;
   if (!d3) throw new Error('지도 투영 라이브러리를 불러오지 못했습니다.');
@@ -76,7 +76,7 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
   let presentedHydroEdits=null;
   let lastFrame=null;
 
-  const {projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,projectSession,renderQuality,pointerTargets,cameraNavigation:navigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings:physicalSettings,objectCatalog,territorialLabels:labelOwner,physicalResources,gpuScene,mapHost,objectPicking}=owners;
+  const {projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,projectSession,renderQuality,pointerTargets,cameraNavigation:navigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings:physicalSettings,objectCatalog,territorialLabels:labelOwner,physicalResources,mapScene,mapHost,objectPicking}=owners;
   const commonPorts=createMapReadPorts(owners);
   connectMapOwner('projectSession',projectSession,mergeCapabilityPorts(commonPorts,{applicationConstants:{DISTRIBUTION_RENDER_MODES},
     modelValidation:{normalizeLayerPresentation},physicalConfig:{PHYSICAL_DATASET},domains:{selectionDomain:documentSession.selectionDomain},
@@ -98,7 +98,7 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
   const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
 
   connectMapOwner('renderQuality',renderQuality,mergeCapabilityPorts(commonPorts,{projectState:{mapWorkScheduler},mapFactories:{createAdaptiveRenderQualityController},
-    rendering:{get gpuMapRenderer(){return renderer;}},
+    rendering:{get mapRenderer(){return renderer;}},
     preferences:{get resolvedInteractionStyle(){return getInteractionStyle();}},selectionServices:{setSelectionInteractionStyle},
     domains:{get renderingDomain(){return renderingDomain;}}}));
   renderQuality.initializeRenderQualityController();
@@ -106,14 +106,14 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
   const palette = () => resolveMapPalette({state});
   const schedule = () => { if(!disposed&&session&&renderingDomain)renderingDomain.invalidateView('map-view'); };
   Object.defineProperty(state,'projectReplacing',{get:()=>projectDomain.isReplacing()});
-  const hydroEditById=physicalSettings.hydroEditById,hydroById=physicalSettings.hydroFeatureById;
+  const projectHydroById=physicalSettings.projectHydroById,hydroById=physicalSettings.hydroFeatureById;
 
   const readPorts={platform:{get polygonClipping(){return globalThis.polygonClipping;}},preferences:{get userPreferences(){return getPreferences();}},projectSession,domains:{projectDomain,get selectionDomain(){return documentSession.selectionDomain;}},projectState:{state},territorialModel:{entityRepository:repository,DISTRIBUTION_MODES},
     colorModel:{COLOR_DOMAINS,readDomainColor,countryDefaultColor,DEFAULT_GENERIC_FEATURE_COLOR,defaultCountryColor:feature=>countryDefaultColor(feature)||palette().defaultLand},
     objectDefinitions:{MAP_OBJECT_CATEGORIES,MAP_OBJECT_TYPES},
     objectPresentation,hydroModel:{hydroFeatureById:hydroById},labelPresentation:commonPorts.labelPresentation,
-    hydroPresentation:{HYDRO_LAYER_META,HYDRO_TOOL_CONFIG,hydroEditById,hydroCategoryKey:value=>objectPresentation.hydroCategoryKey(value),hydroDisplayColor:physicalSettings.hydroDisplayColor,
-      hydroEditorName:objectPresentation.hydroEditorName,hydroFallbackName:value=>objectPresentation.hydroFallbackName(value),hydroCategoryLabel:value=>objectPresentation.hydroCategoryLabel(value),
+    hydroPresentation:{HYDRO_LAYER_META,HYDRO_CATEGORY_STYLES,projectHydroById,hydroCategoryKey:value=>objectPresentation.hydroCategoryKey(value),hydroDisplayColor:physicalSettings.hydroDisplayColor,
+      hydroDisplayName:objectPresentation.hydroDisplayName,hydroFallbackName:value=>objectPresentation.hydroFallbackName(value),hydroCategoryLabel:value=>objectPresentation.hydroCategoryLabel(value),
 },
     distributionPresentation:{distributionColor:layer=>objectPresentation.distributionColor(layer)},
     distributionServices:{distributionEntriesForLayer},
@@ -129,18 +129,17 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
   const territorialScope=objectPresentation.territorialScope;
   connectMapOwner('projectResourcePorts',projectResourcePorts,mergeCapabilityPorts(commonPorts,{territorialModel:{entityRepository:repository},territorialObjectModel:{territorialScope},
     objectDefinitions:{builtinSubunitSourceId},layerStyleServices:{layerStyle},runtimeConfiguration:{BASE_DATASET},domains:{projectDomain},
-    rendering:{get gpuMapRenderer(){return renderer;}},layerPresentation:objectCatalog}));
-  territorialSceneRuntime.initializePristineCountriesFallback();
+    rendering:{get mapRenderer(){return renderer;}},layerPresentation:objectCatalog}));
   const releaseGeometryLoader=documentSession.commandOwner.setGeometryLoader(projectSourceRuntime.loadGeometryResources);
   connectMapOwner('hydroSettings',physicalSettings,mergeCapabilityPorts(commonPorts,{physicalResources,physicalConfig,preferences:{mapPalette:palette},platform:{$:id=>document.getElementById(id),clamp},
     hydroPresentation:readPorts.hydroPresentation,objectPresentation,layerPresentation:objectCatalog}));
   Object.assign(readPorts.hydroPresentation,{allBuiltInHydroFeatures:physicalSettings.allBuiltInHydroFeatures,
     hydroLayerVisible:physicalSettings.hydroLayerVisible,hydroLineParts:physicalSettings.hydroLineParts});
   connectMapOwner('physicalResources',physicalResources,mergeCapabilityPorts(commonPorts,{physicalConfig,physicalServices:{createHydroService,fetchWithRetry,},
-    hydroPresentation:readPorts.hydroPresentation,platform:{d3},cutGeometry:{coordinateBounds},
+    hydroPresentation:readPorts.hydroPresentation,platform:{d3},geometryBounds:{coordinateBounds},
     layerPresentation:objectCatalog,domains:{projectDomain,get renderingDomain(){return renderingDomain;},objectSearchController:{render:()=>onPlacesSettled('render')}},
     operationFeedback:{reliabilityDiagnostic:diagnostics},
-    rendering:{get gpuMapRenderer(){return renderer;}},feedback:{reportOperationError:onError}}));
+    rendering:{get mapRenderer(){return renderer;}},feedback:{reportOperationError:onError}}));
   const renderer=createMapLibreViewerRenderer({projectState:{state,mapWorkScheduler},physicalConfig,
     runtimeConfiguration:{APP_VERSION:meta.appVersion},layerPresentation:{ASSET_REVISION:meta.assetRevision,isLayerItemVisible:objectCatalog.isLayerItemVisible},
     preferences:{mapPalette:palette},colorModel:readPorts.colorModel,
@@ -171,25 +170,24 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
     navigation,workspaceUi:owners.workspaceSurfaces,mapLayers:{},
     readiness:{reliabilityDiagnostic:diagnostics},preferences:{syncResolvedInteractionStyle:renderQuality.syncResolvedInteractionStyle},
     applicationConstants:{MAP_HOST_KINDS},
-    runtimeConfiguration:{},rendering:{gpuMapRenderer:renderer},surfaces:{isMobile},
+    runtimeConfiguration:{},rendering:{mapRenderer:renderer},surfaces:{isMobile},
     mapLayout:{DEFAULT_SAFE_INSETS,},
     domains:{projectDomain,get renderingDomain(){return renderingDomain;}},renderQuality,renderFactories:{createMapVisualFrame,createMapSurfaceHost}}));
 
   connectMapOwner('cameraNavigation',navigation,mergeCapabilityPorts(commonPorts,{platform:{d3,clamp},surfaces:{isMobile},
-    rendering:{gpuMapRenderer:renderer},objectLookup:objectQuery,physicalData:{HYDRO_LAYER_META:readPorts.hydroPresentation.HYDRO_LAYER_META},
+    rendering:{mapRenderer:renderer},objectLookup:objectQuery,physicalData:{HYDRO_LAYER_META:readPorts.hydroPresentation.HYDRO_LAYER_META},
     domains:{get selectionUiController(){return documentSession.selectionUiController;},renderingDomain:{beginInteraction:()=>inputPresentation.beginMovement(),endInteraction:()=>inputPresentation.finishMovement(),invalidateView:schedule}}}));
 
-  connectMapOwner('spatialIndex',spatialIndex,mergeCapabilityPorts(commonPorts,{projectState:{mapWorkScheduler},territorialModel:{entityRepository:repository},cutGeometry:{coordinateBounds},
+  connectMapOwner('spatialIndex',spatialIndex,mergeCapabilityPorts(commonPorts,{projectState:{mapWorkScheduler},territorialModel:{entityRepository:repository},geometryBounds:{coordinateBounds},
     mapView:mapProjection,spatialFactories:{createMapObjectSpatialIndex},domains:{get renderingDomain(){return renderingDomain;}},surfaces:{isMobile},rendering:{get selectionPerformanceMetrics(){return selectionPerformanceMetrics;}}}));
   initializeMapReadOwners(owners,'spatial');
   Object.assign(readPorts,{navigation,territorialObjectModel:{territorialScope},countries:{builtinTerritorialScene:territorialSceneRuntime.builtinTerritorialScene,validLabelAnchor:countryIndex.validLabelAnchor},surfaces:{isMobile},feedback:{setActionStatus:onStatus}});
   const countryPorts={projectState:{state,mapWorkScheduler},platform:{d3,deepClone:structuredClone,runtimeAssetUrl},
-    countries:{builtinTerritorialScene:territorialSceneRuntime.builtinTerritorialScene,territorialLabelFeatureById:territorialSceneRuntime.territorialLabelFeatureById,
-      PRISTINE_LABEL_ANCHORS:territorialSceneRuntime.PRISTINE_LABEL_ANCHORS},
+    countries:{builtinTerritorialScene:territorialSceneRuntime.builtinTerritorialScene,territorialLabelFeatureById:territorialSceneRuntime.territorialLabelFeatureById},
     objectDisplay:{invalidateObjectPresentation:objectCatalog.invalidateObjectPresentation},mapView:{ringRepresentativePoint:mapProjection.ringRepresentativePoint},
     domains:{get projectDomain(){return projectDomain;},get renderingDomain(){return renderingDomain;}}};
   connectMapOwner('countryIndex',countryIndex,mergeCapabilityPorts(commonPorts,countryPorts));initializeMapReadOwners(owners,'anchors');
-  const labelPorts={...countryPorts,rendering:{gpuMapRenderer:renderer},territorialModel:{entityRepository:repository},territorialObjectModel:{territorialScope},objectPresentation,
+  const labelPorts={...countryPorts,rendering:{mapRenderer:renderer},territorialModel:{entityRepository:repository},territorialObjectModel:{territorialScope},objectPresentation,
     countries:{...countryPorts.countries,scheduleCountryLabelAnchors:countryIndex.scheduleCountryLabelAnchors},
     mapView:mapProjection,mapHostView:{projectionViewSnapshot:mapHost.projectionViewSnapshot},
     layerPresentation:{...readPorts.layerPresentation,isLayerItemVisible:objectCatalog.isLayerItemVisible,isCountryVisibleById:objectCatalog.isCountryVisibleById},
@@ -201,21 +199,21 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
       get selectionDomain(){return documentSession.selectionDomain;},objectSearchController:{cancelSearch:()=>onPlacesSettled('cancel'),render:()=>onPlacesSettled('render')}}};
   connectMapOwner('territorialLabels',labelOwner,mergeCapabilityPorts(commonPorts,labelPorts));initializeMapReadOwners(owners,'labels');
   const places=()=>labelOwner.builtinPlaces;
-  connectMapOwner('gpuScene',gpuScene,mergeCapabilityPorts(commonPorts,{rendering:{gpuMapRenderer:renderer}}));
-  gpuScene.initializeGpuSceneDomains();
-  mapHost.attachMapOutput({gpuCanvas:canvas});
+  connectMapOwner('mapScene',mapScene,mergeCapabilityPorts(commonPorts,{rendering:{mapRenderer:renderer}}));
+  mapScene.initializeSceneDomains();
+  mapHost.attachMapOutput();
   initialized=Promise.all([renderer.initialize(),mapHost.initializeMapHost()]);
   initialized.then(()=>renderingDomain.invalidateProject('map-initialized'))
     .catch(error=>onError(error,'지도 표시를 준비하지 못했습니다.','PL-MAP-INITIALIZE-001'));
   const selectionDomain=documentSession.selectionDomain;
 
   const mapDisplay=createMapDisplayClient({getEntities:territorialScope.displayEntities,getRevision:()=>spatialIndex.mapObjectGeometryRevisions.territorial});
-  renderingDomain=createMapLibreRenderingDomain({gpuMapRenderer:renderer,projectDomain,selectionDomain:selectionDomain,
+  renderingDomain=createMapLibreRenderingDomain({mapRenderer:renderer,projectDomain,selectionDomain:selectionDomain,
     mapHost:()=>mapHost.mapHost,
     prepareMapDisplay:mapDisplay.prepare,disposeMapDisplay:mapDisplay.dispose,
     ...createMapRenderingResources({session:{selectionDomain,objectSearchController:{cancelSearch:()=>onPlacesSettled('cancel')}},ports:mergeCapabilityPorts(commonPorts,readPorts,{
     domains:{projectDomain,selectionDomain,get renderingDomain(){return renderingDomain;}},
-    objectPicking,gpuSceneServices:gpuScene,spatialRecords:spatialIndex,
+    objectPicking,mapSceneServices:mapScene,spatialRecords:spatialIndex,
     preferences:{mapPalette:palette,get resolvedInteractionStyle(){return getInteractionStyle();}},
     mapDisplayModel:{get distributionVisibilityRevision(){return objectPresentation.distributionVisibilityRevision;}},
   })}),
@@ -269,7 +267,7 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
     selectionServices:{normalizeObjectRef},objectLookup:objectQuery,objectOperations:objectQuery,territorialModel:{entityRepository:repository},
     renderScene:{OVERLAY_GROUPS},mapView:mapProjection,
     landRelations:{pointInCountryFeature:(coord,feature)=>hitTester.containsGeometry(coord,feature.geometry)},
-    hydroModel:{hydroFeatureById:hydroById},rendering:{gpuMapRenderer:renderer,selectionPerformanceMetrics},hydroPresentation:{hydroEditById},surfaces:{isMobile},
+    hydroModel:{hydroFeatureById:hydroById},rendering:{mapRenderer:renderer,selectionPerformanceMetrics},hydroPresentation:{projectHydroById},surfaces:{isMobile},
 
     pointerInteraction:{get hydroAtScreenPoint(){return pointerTargets.hydroAtScreenPoint;}},
     domains:{projectDomain,selectionDomain:selectionDomain,get selectionUiController(){return documentSession.selectionUiController;}},
@@ -281,11 +279,11 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
     hydroPresentation:readPorts.hydroPresentation,
     domains:{projectDomain,selectionDomain:selectionDomain},
     layerPresentation:objectCatalog,landRelations:{pointInCountryFeature:(coord,feature)=>hitTester.containsGeometry(coord,feature.geometry)},
-    platform:{d3,clamp},surfaces:{isMobile},rendering:{gpuMapRenderer:renderer},feedback:{reportOperationError:onError}}));
+    platform:{d3,clamp},surfaces:{isMobile},rendering:{mapRenderer:renderer},feedback:{reportOperationError:onError}}));
   pointerTargets.initializeHoverPickFrame();
   const inputPresentation=createMapLibreInputPresentation({renderer,initialized,
     ports:mergeCapabilityPorts(commonPorts,{
-      platform:{$:id=>document.getElementById(id),d3},rendering:{gpuMapRenderer:renderer},
+      platform:{$:id=>document.getElementById(id),d3},rendering:{mapRenderer:renderer},
       domains:{renderingDomain,selectionDomain,projectDomain},navigation,mapView:mapProjection,
       objectPicking,surfaces:{isMobile},feedback:{reportOperationError:onError},
       pointerInteraction:{cancelCountryHoverPick:pointerTargets.cancelCountryHoverPick,mapNavigationEnabled:()=>!!session&&!state.projectReplacing,
@@ -293,7 +291,7 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
         suppressNextMapClick:pointerTargets.suppressNextMapClick},
       interactionStateCommands:{setHoverHit:hit=>{state.hoverHit=hit;}}
     })});
-  inputPresentation.bindSvg(d3.select(element));
+  inputPresentation.bindMapEvents();
   mapHost.startMapResizeObserver();
   return Object.freeze({
     async setSession(next,{view=null,prepareView=null,source='project'}={}){

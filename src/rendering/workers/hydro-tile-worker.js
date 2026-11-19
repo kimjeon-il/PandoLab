@@ -106,8 +106,9 @@ async function saveWholeHydroBundle(bytes) {
 }
 
 async function fetchGzip(asset) {
+  const signal = AbortSignal.timeout(15000);
   if (typeof asset === 'string') {
-    const response = await fetchWithRetry(resolveUrl(asset));
+    const response = await fetchWithRetry(resolveUrl(asset), {signal});
     if (!response.ok) throw responseError(asset, response);
     return self.fflate.gunzipSync(new Uint8Array(await response.arrayBuffer()));
   }
@@ -121,7 +122,7 @@ async function fetchGzip(asset) {
     content = wholeHydroBundle.subarray(offset, offset + length);
   } else {
     const response = await fetchWithRetry(resolveUrl(url),
-      { headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
+      { signal, headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
     if (!response.ok) throw responseError(url, response);
     const raw = new Uint8Array(await response.arrayBuffer());
     if (response.status === 206) {
@@ -222,7 +223,10 @@ async function detectRangeSupport() {
   const first = [...shardSpecs.values()][0];
   if (!first) return false;
   try {
-    const response = await fetchWithRetry(resolveUrl(first.url), { headers: { Range: 'bytes=0-0' } }, { attempts: 2 });
+    const response = await fetchWithRetry(resolveUrl(first.url), {
+      signal:AbortSignal.timeout(15000), headers: { Range: 'bytes=0-0' },
+    }, { attempts: 2 });
+    if (response.status !== 206) { await response.body?.cancel(); return false; }
     const bytes = new Uint8Array(await response.arrayBuffer());
     return response.status === 206 && bytes.length === 1 && response.headers.get('Content-Range') === 'bytes 0-0/' + (first.fileBytes || first.bytes);
   } catch (_) { return false; }
@@ -471,7 +475,10 @@ async function loadPackRangeGroup(group, signal = null) {
   const shard = shardSpecs.get(Number(group.shard));
   if (!shard) throw new Error('Unknown hydro shard ' + group.shard);
   const rows = await shardStore.read(shard, group.rows, group.start, group.end, signal);
-  return rows.map(([id, bytes]) => [id, readPack(bytes, id, {prepareMesh:delivery !== 'geojson'})]);
+  return rows.map(([id, bytes]) => {
+    try { return {id,pack:readPack(bytes,id,{prepareMesh:delivery!=='geojson'})}; }
+    catch(error){ return {id,error}; }
+  });
 }
 
 function postPack(packId, pack, revision) {
@@ -523,6 +530,9 @@ async function processView(message) {
   abortBackgroundCache();
   const packIds = [...new Set((message.tiles || []).flatMap(spec => tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`) || []))].sort((a, b) => a - b);
   const needed = packIds.filter(packId => !postedPacks.has(packId));
+  const failedPacks=[];
+  const isCurrent=()=>message.revision>=latestRevision&&!controller.signal.aborted;
+  const recordFailure=(id,error)=>failedPacks.push({id,message:error.message,diagnostic:error.diagnostic});
   let activated = needed.length === 0 || packIds.some(packId => postedPacks.has(packId));
   if (activated) postActive(message.revision, packIds);
   const supportsRange = await (rangeSupportPromise || Promise.resolve(false));
@@ -536,9 +546,23 @@ async function processView(message) {
         while (groupCursor < groups.length) {
           if (message.revision < latestRevision) return;
           const group = groups[groupCursor++];
-          const rows = await loadPackRangeGroup(group,controller.signal);
-          if (message.revision < latestRevision) return;
-          for (const [packId, pack] of rows) postPack(packId, pack, message.revision);
+          let rows;
+          try{rows=await loadPackRangeGroup(group,controller.signal);}
+          catch(error){
+            if(!isCurrent())return;
+            if(error.corrupt&&group.rows.length>1){
+              rows=[];
+              for(const spec of group.rows){
+                if(!isCurrent())return;
+                try{rows.push({id:spec.id,pack:await loadPack(spec.id,controller.signal)});}
+                catch(cause){rows.push({id:spec.id,error:cause});}
+              }
+            }else rows=group.rows.map(spec=>({id:spec.id,error}));
+          }
+          if(!isCurrent())return;
+          for(const {id,pack,error} of rows){
+            if(error)recordFailure(id,error);else postPack(id,pack,message.revision);
+          }
           if (!activated && rows.length) {
             activated = true;
             postActive(message.revision, packIds);
@@ -559,8 +583,10 @@ async function processView(message) {
           const packIdsForShard = shardGroups[cursor++];
           for (const packId of packIdsForShard) {
             if (message.revision < latestRevision) return;
-            const pack = await loadPack(packId,controller.signal);
-            if (message.revision < latestRevision) return;
+            let pack;
+            try{pack=await loadPack(packId,controller.signal);}
+            catch(error){if(!isCurrent())return;recordFailure(packId,error);continue;}
+            if(!isCurrent())return;
             postPack(packId, pack, message.revision);
             if (!activated) {
               activated = true;
@@ -576,7 +602,8 @@ async function processView(message) {
   }
   if (message.revision < latestRevision) return;
   if (!activated) postActive(message.revision, packIds);
-  postMessage({ type: 'view-ready', revision: message.revision, packIds });
+  postMessage({ type: 'view-ready', revision: message.revision,
+    packIds:packIds.filter(id=>postedPacks.has(id)),failedPacks });
   firstViewReady = true;
   if(delivery!=='geojson')scheduleBackgroundCache();
 }
@@ -771,7 +798,9 @@ onmessage = async event => {
       readGlobalIndex(await fetchGzip(manifest.container ? manifest.index : manifest.index.url));
       readFeatureMetadata(await fetchGzip(manifest.container
         ? manifest.metadata.core : manifest.metadata?.core?.url || manifest.metadata?.url));
-      rangeSupportPromise = message.externalRuntimeData ? Promise.resolve(true) : wholeHydroBundle ? Promise.resolve(false) : detectRangeSupport();
+      // The container reads already proved whether the host served ranges.
+      rangeSupportPromise = message.externalRuntimeData ? Promise.resolve(true)
+        : manifest.container ? Promise.resolve(!wholeHydroBundle) : detectRangeSupport();
       postMessage({ type: 'ready' });
     } catch (error) {
       postMessage({ type: 'init-error', message: error?.message || String(error) });
@@ -794,7 +823,6 @@ onmessage = async event => {
     else if (firstViewReady) scheduleBackgroundCache();
   }
   else if (message.type === 'retry-cache') {
-    shardStore.retry();
     cacheCompleted = false;
     abortBackgroundCache();
     scheduleBackgroundCache(true);

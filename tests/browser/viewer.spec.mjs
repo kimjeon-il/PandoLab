@@ -56,6 +56,26 @@ async function open(page,query=''){
 }
 const camera=page=>page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState());
 
+test('Viewer paints the correct search layout before startup completes',async({browser,baseURL})=>{
+ for(const [width,height,layout,touch] of [[390,844,'mobile',true],[844,390,'phone-landscape',true],
+  [1024,768,'compact',true],[1440,900,'wide',false]]){
+  const context=await browser.newContext({baseURL,viewport:{width,height},isMobile:touch,hasTouch:touch});
+  let release;
+  try{
+   const page=await context.newPage();
+   const pending=new Promise(resolve=>{release=resolve;});
+   await page.route(/\/assets\/js\/viewer\.js(?:\?|$)/,async route=>{await pending;await route.abort();});
+   await page.goto('./',{waitUntil:'commit'});
+   await page.waitForFunction(()=>performance.getEntriesByName('first-contentful-paint').length>0);
+   await expect(page.locator('#viewer')).toHaveAttribute('data-layout',layout);
+   await expect(page.locator('body')).toHaveAttribute('data-layout',layout);
+   const docked=layout==='mobile'||layout==='phone-landscape';
+   await expect(page.locator(docked?'#objectSearchInput':'#objectSearchBtn')).toBeVisible();
+   await expect(page.locator(docked?'#objectSearchBtn':'#objectSearchInput')).toBeHidden();
+  }finally{release?.();await context.close();}
+ }
+});
+
 test('Viewer dialogs share readable action colors across layouts and themes',async({browser,baseURL,page})=>{
  const install=async target=>{
   await target.addInitScript(()=>{
@@ -826,22 +846,31 @@ test('visible city and dated lake clicks reach the canonical Viewer selection',a
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain('waterbody:caspian');
 });
 
+const viewerChrome=element=>element.evaluate(node=>{
+  const style=getComputedStyle(node);
+  return {face:style.backgroundColor,edge:style.borderTopColor,shadow:style.boxShadow};
+});
+const viewerFaceRgba=element=>element.evaluate(node=>{
+  const canvas=document.createElement('canvas').getContext('2d');
+  canvas.fillStyle=getComputedStyle(node).backgroundColor;
+  canvas.fillRect(0,0,1,1);
+  return [...canvas.getImageData(0,0,1,1).data];
+});
+
 test('touch Viewer searches, navigates and changes time in a mobile context',async({browser,baseURL})=>{
   const context=await browser.newContext({baseURL,viewport:{width:390,height:844},isMobile:true,hasTouch:true});
   try{
     const page=await context.newPage();
     page.setDefaultTimeout(15_000);
+    await page.emulateMedia({colorScheme:'light'});
     await open(page);
     expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getPixelRatio()))
       .toBe(await page.evaluate(()=>window.devicePixelRatio));
     const searchBar=page.getByRole('search'),dateBar=page.getByRole('group',{name:'시점 이동'});
     const details=page.getByRole('dialog',{name:'객체 정보'}),handle=page.getByRole('slider',{name:'정보창 높이 조절'});
     const menuButton=page.locator('#mobileMenuBtn');
-    const chrome=element=>element.evaluate(node=>{
-      const style=getComputedStyle(node);
-      return {face:style.backgroundColor,edge:style.borderTopColor,shadow:style.boxShadow};
-    });
-    for(const viewport of [{width:320,height:690},{width:844,height:390},{width:390,height:844}]){
+    const chrome=viewerChrome;
+    for(const viewport of [{width:320,height:690},{width:844,height:390},{width:768,height:1024},{width:390,height:844}]){
       await page.setViewportSize(viewport);
       await expect(page.locator('#viewer')).toHaveAttribute('data-layout',viewport.width===844?'phone-landscape':'mobile');
       await expect(searchBar).toBeVisible();
@@ -849,6 +878,7 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
       expect(dock.height).toBe(bar.height);
       expect(bar.height).toBe(56);
       expect(await chrome(searchBar)).toEqual(await chrome(dateBar));
+      expect(await viewerFaceRgba(dateBar)).toEqual([255,255,255,255]);
       await expect(dateBar).toHaveCSS('backdrop-filter','none');
       await expect(menuButton).toHaveCSS('width','40px');
       await expect(menuButton).toHaveCSS('height','40px');
@@ -882,6 +912,27 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await handle.tap();
     await expect(handle).toHaveAttribute('aria-valuenow','0');
     expect(await details.boundingBox()).toEqual(searchBounds);
+    await page.setViewportSize({width:1024,height:768});
+    await expect(page.locator('#viewer')).toHaveAttribute('data-layout','compact');
+    const tabletDetails=page.locator('#objectDetailSurface');
+    await expect(tabletDetails).toBeVisible();
+    const tabletDetailsRect=await tabletDetails.boundingBox();
+    expect(tabletDetailsRect.x).toBeGreaterThan(512);
+    expect(tabletDetailsRect.y+tabletDetailsRect.height).toBeLessThan((await dateBar.boundingBox()).y);
+    await expect(page.locator('#objectSearchBtn')).toHaveCSS('width','40px');
+    await expect(page.locator('#preferencesBtn')).toHaveCSS('min-height','48px');
+    await expect(tabletDetails.getByRole('tab',{name:'정보'})).toHaveCSS('min-height','48px');
+    expect(await viewerFaceRgba(dateBar)).toEqual([255,255,255,255]);
+    await page.locator('#objectSearchBtn').tap();
+    const tabletInput=page.getByRole('searchbox',{name:'객체 검색'});
+    await expect(tabletInput).toBeFocused();
+    const tabletSearchRect=await tabletInput.boundingBox(),tabletDateRect=await dateBar.boundingBox();
+    expect(tabletSearchRect.y+tabletSearchRect.height).toBeLessThan(tabletDateRect.y);
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({width:390,height:844});
+    await expect(page.locator('#viewer')).toHaveAttribute('data-layout','mobile');
+    await search(page,true);
+    await expect(handle).toHaveAttribute('aria-valuenow','0');
     const reset=page.getByRole('button',{name:'전체 지도 보기'});
     await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[127,37],zoom:3}));
     await expect(reset).toBeVisible();
@@ -894,6 +945,7 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await page.getByRole('button',{name:'객체 정보 닫기'}).tap();
     await expect(searchBar).toBeVisible();
     expect(await searchBar.boundingBox()).toEqual(searchBounds);
+    await expect.poll(()=>chrome(menuButton)).toEqual(normalMenu);
     await ready(page,'mobile selection presentation');
     await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.dragPan.isEnabled()&&!window.__PANDOLAB_VIEWER__.rendererStats().projectReplacing)).toBe(true);
     await page.evaluate(()=>{window.__touchProbe={start:0,move:0,drag:0};const map=window.__PANDOLAB_MAPLIBRE__;map.on('touchstart',()=>window.__touchProbe.start++);map.on('touchmove',()=>window.__touchProbe.move++);map.on('dragstart',()=>window.__touchProbe.drag++);});
@@ -915,6 +967,8 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
 });
 
 test('built-in map opens in the read-only inspector and exports diagnostics without changing its project',async({page})=>{
+  await page.setViewportSize({width:1280,height:800});
+  await page.emulateMedia({colorScheme:'light'});
   await open(page,'&inspect=1');
   await expect(page.locator('#openProjectBtn, #projectFileInput')).toHaveCount(0);
   const before=await page.evaluate(()=>({project:window.__PANDOLAB_VIEWER__.documentSnapshot(),state:window.__PANDOLAB_VIEWER__.documentState()}));
@@ -932,6 +986,11 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
     await expect(inspector).toBeVisible();
   }
   await page.setViewportSize({width: 1280, height: 800});
+  expect(await viewerChrome(inspector)).toEqual(await viewerChrome(dateBar));
+  expect(await viewerFaceRgba(inspector)).toEqual([255,255,255,255]);
+  await expect(dateBar).toHaveCSS('backdrop-filter','none');
+  await expect(page.locator('#reviewTabPerformance')).toHaveCSS('min-height','40px');
+  await expect(page.locator('#objectSearchBtn')).toHaveCSS('width','36px');
   await page.locator('#reviewTabPerformance').click();
   await page.locator('#reviewTabErrors').click();
   await ready(page);
@@ -945,10 +1004,24 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
   expect(diagnostics.data.projectId).toBe(before.project.documentId);
   expect(diagnostics.data.readOnly).toBe(true);
   await page.keyboard.press('Escape');
+  const searchButton=page.locator('#objectSearchBtn');
+  const normalFace=(await viewerChrome(searchButton)).face;
+  await searchButton.hover();
+  await expect.poll(async()=>(await viewerChrome(searchButton)).face).not.toBe(normalFace);
+  await page.keyboard.press('Tab');
+  await searchButton.focus();
+  await expect(searchButton).toHaveCSS('outline-style','solid');
+  await searchButton.click();
+  await expect(page.getByRole('searchbox',{name:'객체 검색'})).toBeFocused();
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({width:1440,height:900});
+  await expect(page.locator('#viewer')).toHaveAttribute('data-layout','wide');
   await page.locator('#preferencesBtn').click();
   await expect(page.locator('#preferencesObjectColorsInput')).toBeChecked();
   await page.locator('[data-preference-theme="dark"]').click();
+  expect(await viewerFaceRgba(page.locator('.preferences-card'))).toEqual([23,27,32,255]);
   await page.locator('#preferencesCloseBtn').click();await ready(page);
+  expect(await viewerFaceRgba(dateBar)).toEqual([23,27,32,255]);
   expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getLayer('map-base-fallback').source)).toBe('physical-land');
   await page.keyboard.press('Delete');await page.keyboard.press('Control+z');
   expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentSnapshot())).toEqual(before.project);

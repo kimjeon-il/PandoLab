@@ -1,16 +1,18 @@
 export const HYDRO_DATA_VERSION = '0.13.4';
 export const HYDRO_DATASET = 'HydroRIVERS 1.0 · Natural Earth 5.0.0 1:10m lakes';
 
-async function fetchManifest({ fetchWithRetry, url, operation, onRetry }) {
-  const response = await fetchWithRetry(url, {}, {
+async function fetchManifest({ fetchWithRetry, url, operation, onRetry, signal }) {
+  return fetchWithRetry(url, {signal}, {
     maxAttempts: 3,
     baseDelay: 400,
     maxDelay: 2400,
     timeoutMs: 15000,
     onRetry: ({ attempt }) => onRetry(operation, attempt),
+    consume:response=>{
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    },
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
 }
 
 export function createHydroService({
@@ -26,41 +28,51 @@ export function createHydroService({
   loadKey=()=>null,
   isLoadCurrent=()=>true,
 }) {
-  let pendingLoad=null,pendingKey=null,readyKey=null;
+  let pendingLoad=null,pendingKey=null,readyKey=null,controller=null,parsed=null;
 
-  function load(force=false) {
+  function cancel(){
+    controller?.abort();controller=null;pendingLoad=null;pendingKey=null;
+  }
+  function load() {
     const key=loadKey();
+    if(!isLoadCurrent(key))return Promise.resolve(false);
     if(pendingLoad&&Object.is(pendingKey,key))return pendingLoad;
-    if(!force&&getLoadState()==='ready'&&Object.is(readyKey,key))
+    if(getLoadState()==='ready'&&Object.is(readyKey,key))
       return Promise.resolve(true);
-    const task=Promise.resolve().then(()=>loadManifest(key)).finally(()=>{
-      if(pendingLoad===task){pendingLoad=null;pendingKey=null;}
+    cancel();
+    controller=new AbortController();
+    const {signal}=controller;
+    const task=Promise.resolve().then(()=>loadManifest(key,signal)).finally(()=>{
+      if(pendingLoad===task){pendingLoad=null;pendingKey=null;controller=null;}
     });
     pendingKey=key;pendingLoad=task;
     return task;
   }
 
-  async function loadManifest(key) {
-    if(!isLoadCurrent(key))return false;
+  async function loadManifest(key,signal) {
+    const isCurrent=()=>!signal.aborted&&isLoadCurrent(key);
+    if(!isCurrent())return false;
     onLoading();
     try {
       const url=manifestUrl();
-      const manifest=await fetchManifest({fetchWithRetry,url,operation:'hydro-manifest',onRetry});
-      if(!isLoadCurrent(key))return false;
+      const manifest=parsed&&Object.is(parsed.key,key)?parsed.manifest:
+        await fetchManifest({fetchWithRetry,url,operation:'hydro-manifest',onRetry,signal});
+      if(!isCurrent())return false;
       if(manifest.version!==dataVersion||manifest.schema!=='pandolab-water-shards-v5')
         throw new Error('수계 타일 버전이 맞지 않습니다.');
-      const accepted=await acceptManifest(manifest,url,{key,isCurrent:()=>isLoadCurrent(key)});
-      if(!isLoadCurrent(key))return false;
+      parsed={key,manifest};
+      const accepted=await acceptManifest(manifest,url,{key,isCurrent});
+      if(!isCurrent())return false;
       if(!accepted)throw new Error('수계 Worker 초기화에 실패했습니다.');
       readyKey=key;
       return true;
     } catch(error) {
       // A previous project's rejected network/Worker reply must never
       // alter the active project's load status or surface an obsolete error.
-      if(isLoadCurrent(key))onFailure(error);
+      if(isCurrent())onFailure(error);
       return false;
     }
   }
 
-  return Object.freeze({load});
+  return Object.freeze({load,cancel});
 }

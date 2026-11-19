@@ -64,7 +64,7 @@
 }
 
 .object-search-section .object-search-result {
-  min-height: var(--design-control-md);
+  min-height: var(--ui-control-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
@@ -104,8 +104,8 @@
 
 .object-search-section .object-search-focus-action {
   align-self: center;
-  width: var(--design-control-md);
-  height: var(--design-control-md);
+  width: var(--ui-icon-control-size);
+  height: var(--ui-icon-control-size);
   margin-inline-end: var(--ui-space-0-5);
   color: var(--muted);
 }
@@ -131,19 +131,6 @@
 .object-search-section .object-search-result:is(:hover, :focus-within) {
   border-color: transparent;
   background: var(--ui-search-result-hover, var(--ui-hover-fill, var(--surface-hover)));
-}
-
-@media (max-width: 799px) {
-  .object-search-section .object-search-result {
-    min-height: var(--ui-touch-height);
-  }
-}
-
-@media (max-width: 799px) {
-  .object-search-section .object-search-focus-action {
-    width: var(--ui-icon-control-mobile-size);
-    height: var(--ui-icon-control-mobile-size);
-  }
 }
 
 /* Object details uses shared surface, tabs, panels, section and selectable-row styles.

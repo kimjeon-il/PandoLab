@@ -30,7 +30,7 @@ export function createMapContentPresentation({countries={},territorial={},generi
           style: resolveFill(feature) });
         pendingStrokes.push({ key: `pending-country-outline:${id}`, geometryRevision, geometry: countries.countryOutlineFeature?.(feature).geometry, order: -290, style: Object.freeze({ ...theme.strokes.country, alpha: theme.borderAlpha }) });
       }
-      countries.replaceGpuSceneDomain?.('country-overlays', {
+      countries.replaceSceneDomain?.('country-overlays', {
         polygons: pendingPolygons,
         strokes: pendingStrokes,
       });
@@ -64,11 +64,11 @@ export function createMapContentPresentation({countries={},territorial={},generi
       const geometryRevision = t.selectionGeometryRevision?.(objectKey, 'gpu-scene', feature);
       polygons.push({ key: `${objectKey}:fill`, objectKey, geometryRevision, geometry: feature.geometry,
         role: 'regional-overlay',
-        order: t.gpuSceneOrder?.(group, 'fill', objectKey), blendMode: unitStyle.blendMode,
+        order: t.sceneOrder?.(group, 'fill', objectKey), blendMode: unitStyle.blendMode,
         style: { color: unitStyle.color, fillAlpha: unitStyle.fillAlpha, blendMode: unitStyle.blendMode } });
 
     }
-    t.replaceGpuSceneDomain?.('territorial-units', { polygons, strokes });
+    t.replaceSceneDomain?.('territorial-units', { polygons, strokes });
     const boundaryFeatures = displayedUnits.filter(feature => {
       const group = 'objects';
       return state.layerVisibility?.[group] !== false && t.isLayerItemVisible?.(group, feature.id);
@@ -97,23 +97,23 @@ export function createMapContentPresentation({countries={},territorial={},generi
       const geometryRevision = g.selectionGeometryRevision?.(objectKey, 'gpu-scene', feature);
       if (['Polygon', 'MultiPolygon'].includes(feature.geometry?.type)) {
         polygons.push({ key: `${objectKey}:fill`, objectKey, geometryRevision, geometry: feature.geometry,
-          order: g.gpuSceneOrder?.('genericFeatures', 'fill'), blendMode: style.blendMode,
+          order: g.sceneOrder?.('genericFeatures', 'fill'), blendMode: style.blendMode,
           style: { color: g.genericFeatureColor?.(feature), fillAlpha: 0.34, blendMode: style.blendMode } });
         if (style.boundaryVisible) strokes.push({
           key: `${objectKey}:boundary`, objectKey, geometryRevision,
           geometry: (g.buildRenderableStrokeFeature?.(feature) || feature).geometry,
-          order: g.gpuSceneOrder?.('genericFeatures', 'boundary'), blendMode: style.blendMode,
+          order: g.sceneOrder?.('genericFeatures', 'boundary'), blendMode: style.blendMode,
           style: resolveMapStrokeStyle({ color: g.genericFeatureColor?.(feature), layerStyle: style, antiAlias: isSmooth() }, 'generic'),
         });
       } else if (['LineString', 'MultiLineString'].includes(feature.geometry?.type) && style.boundaryVisible) strokes.push({
         key: `${objectKey}:line`, objectKey, geometryRevision, geometry: feature.geometry,
-        order: g.gpuSceneOrder?.('genericFeatures', 'line'), blendMode: style.blendMode,
+        order: g.sceneOrder?.('genericFeatures', 'line'), blendMode: style.blendMode,
         style: resolveMapStrokeStyle({ color: g.genericFeatureColor?.(feature), layerStyle: style, antiAlias: isSmooth() }, 'generic'),
       });
       else if(['Point','MultiPoint'].includes(feature.geometry?.type))strokes.push({key:`${objectKey}:point`,objectKey,geometryRevision,geometry:feature.geometry,
-        order:g.gpuSceneOrder?.('genericFeatures','line'),style:{color:g.genericFeatureColor(feature),alpha:1,width:style.boundaryWidth}});
+        order:g.sceneOrder?.('genericFeatures','line'),style:{color:g.genericFeatureColor(feature),alpha:1,width:style.boundaryWidth}});
     }
-    g.replaceGpuSceneDomain?.('generic-features', { polygons, strokes });
+    g.replaceSceneDomain?.('generic-features', { polygons, strokes });
     return true;
   };
   let distributionRenderRowCache = { layers: null, entries: null, entities: null, countryGeometryRevision: -1, month:'', renderMode: '', selectedLayerId: '', visibilityRevision: -1, rows: Object.freeze([]), rebuildCount: 0, buildMs: 0 };
@@ -197,11 +197,11 @@ export function createMapContentPresentation({countries={},territorial={},generi
       const geometryRevision = d.selectionGeometryRevision?.(`distribution-entry:${row.id}`, 'gpu-scene', feature);
       const fillAlpha = distributionValueAlpha(row.entry.value, row.range);
       if (isArea(row)) {
-        polygons.push({ key: `distribution-entry:${row.id}:fill`, objectKey, geometryRevision, geometry: row.geometry, order: d.gpuSceneOrder?.(group, 'fill'), blendMode: renderStyle.blendMode, style: { color: color(row), fillAlpha, blendMode: renderStyle.blendMode } });
-        if (boundaryVisible && renderStyle.boundaryVisible) strokes.push({ key: `distribution-entry:${row.id}:boundary`, objectKey, geometryRevision, geometry: (d.buildRenderableStrokeFeature?.(feature) || feature).geometry, order: d.gpuSceneOrder?.(group, 'boundary'), blendMode: renderStyle.blendMode, style: resolveMapStrokeStyle({ color: color(row), layerStyle: renderStyle, antiAlias: isSmooth() }, 'distribution') });
-      } else if (['LineString', 'MultiLineString'].includes(row.geometry?.type) && boundaryVisible) strokes.push({ key: `distribution-entry:${row.id}:line`, objectKey, geometryRevision, geometry: row.geometry, order: d.gpuSceneOrder?.(group, 'line'), blendMode: renderStyle.blendMode, style: resolveMapStrokeStyle({ color: color(row), layerStyle: renderStyle, antiAlias: isSmooth() }, 'distribution') });
+        polygons.push({ key: `distribution-entry:${row.id}:fill`, objectKey, geometryRevision, geometry: row.geometry, order: d.sceneOrder?.(group, 'fill'), blendMode: renderStyle.blendMode, style: { color: color(row), fillAlpha, blendMode: renderStyle.blendMode } });
+        if (boundaryVisible && renderStyle.boundaryVisible) strokes.push({ key: `distribution-entry:${row.id}:boundary`, objectKey, geometryRevision, geometry: (d.buildRenderableStrokeFeature?.(feature) || feature).geometry, order: d.sceneOrder?.(group, 'boundary'), blendMode: renderStyle.blendMode, style: resolveMapStrokeStyle({ color: color(row), layerStyle: renderStyle, antiAlias: isSmooth() }, 'distribution') });
+      } else if (['LineString', 'MultiLineString'].includes(row.geometry?.type) && boundaryVisible) strokes.push({ key: `distribution-entry:${row.id}:line`, objectKey, geometryRevision, geometry: row.geometry, order: d.sceneOrder?.(group, 'line'), blendMode: renderStyle.blendMode, style: resolveMapStrokeStyle({ color: color(row), layerStyle: renderStyle, antiAlias: isSmooth() }, 'distribution') });
     }
-    d.replaceGpuSceneDomain?.('distributions', { polygons, strokes });
+    d.replaceSceneDomain?.('distributions', { polygons, strokes });
     return true;
   };
   let pendingTerritorialBoundary = null;
@@ -220,7 +220,7 @@ export function createMapContentPresentation({countries={},territorial={},generi
       const hadBoundaries = territorialBoundaryCache.segments.length || territorialBoundaryBatchCache.groups.length;
       territorialBoundaryCache = { countries: null, units: null, revision: -1, inputSignature: '', segments: [], rebuildCount: territorialBoundaryCache.rebuildCount };
       territorialBoundaryBatchCache = { signature: '', revision: '', groups: [], data: [] };
-      if (hadBoundaries) t.replaceGpuSceneDomain?.('territorial-boundaries', { strokes: [] });
+      if (hadBoundaries) t.replaceSceneDomain?.('territorial-boundaries', { strokes: [] });
       return true;
     }
     const inputSignature = JSON.stringify([
@@ -311,19 +311,19 @@ export function createMapContentPresentation({countries={},territorial={},generi
     const data = territorialBoundaryBatchCache.data;
     // These are scene strokes. A projected SVG copy caused a second visual
     // owner with different cache and transition timing.
-    t.replaceGpuSceneDomain?.('territorial-boundaries', { strokes: data.map((group, index) => {
+    t.replaceSceneDomain?.('territorial-boundaries', { strokes: data.map((group, index) => {
       const definition = styleByType.get(group.styleType) || styleByType.get('subunit') || { presentationGroup: 'objects' };
-      return { key: `territorial-internal:${group.key}`, continuityOwnerIds, geometryRevision: territorialBoundaryBatchCache.revision, geometry: group.geometry, order: t.gpuSceneOrder?.(definition.presentationGroup, 'territorial-boundary', '', index), style: resolveMapStrokeStyle({ color: group.color, layerStyle: { boundaryWidth: 1, blendMode: group.blendMode } }, group.styleType) };
+      return { key: `territorial-internal:${group.key}`, continuityOwnerIds, geometryRevision: territorialBoundaryBatchCache.revision, geometry: group.geometry, order: t.sceneOrder?.(definition.presentationGroup, 'territorial-boundary', '', index), style: resolveMapStrokeStyle({ color: group.color, layerStyle: { boundaryWidth: 1, blendMode: group.blendMode } }, group.styleType) };
     }) });
     return true;
   };
   const renderBase = (viewState = null) => {
     const b = base;
-    if(b.getState().resourceCapabilities?.graticule===false||b.getState().backgroundSettings?.graticule===false){b.replaceGpuSceneDomain('base-graticule',{strokes:[]});return true;}
+    if(b.getState().resourceCapabilities?.graticule===false||b.getState().backgroundSettings?.graticule===false){b.replaceSceneDomain('base-graticule',{strokes:[]});return true;}
     const graticuleGeometry = b.graticule?.();
     if (!graticuleGeometry) return false;
     const light = b.isLightTheme?.() ?? true;
-    b.replaceGpuSceneDomain?.('base-graticule', { strokes: [{
+    b.replaceSceneDomain?.('base-graticule', { strokes: [{
       key: 'base:graticule', geometryRevision: `${viewState.projection}:graticule-v2`,
       geometry:graticuleGeometry,
       lodPolicy: 'exact', protected: true, role: 'graticule', order: 0,

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHydroBrowserLoader} from '../../../src/data/maplibre-hydro-loader.js';
+import {createHydroService} from '../../../src/data/physical-layer-service.js';
 
 test('browser worker delivers only newly visible water packs and can release them',async()=>{
  const sent=[];let worker;
@@ -21,4 +22,59 @@ test('inactive cached packs are released when the cache limit is exceeded',async
  const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),tilesForView:()=>[],baseUrl:'http://example/',packLimit:1});
  await loader.view({knownKey:''});await loader.view({knownKey:'1'});
  assert.deepEqual(sent.find(message=>message.type==='release').packIds,[1]);assert.equal(loader.stats().cached,1);loader.dispose();
+});
+
+test('partial and failed views keep the applied viewport and release inactive packs',async()=>{
+ const releases=[];let next=0;
+ class FakeWorker {
+  postMessage(message){
+   if(message.type==='release')releases.push(...message.packIds);
+   if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
+   if(message.type!=='view')return;
+   const revision=message.revision,id=++next;
+   queueMicrotask(()=>{
+    this.onmessage({data:{type:'pack',revision,packId:id,features:[]}});
+    this.onmessage({data:id===1?{type:'view-ready',revision,packIds:[1],failedPacks:[{id:8,message:'offline'}]}:
+     {type:'view-error',revision,message:'transport failed'}});
+   });
+  }
+  terminate(){}
+ }
+ const loader=await createHydroBrowserLoader({manifest:{},baseUrl:'http://example/',tilesForView:()=>[],packLimit:1,createWorker:()=>new FakeWorker()});
+ try{
+  const first=await loader.view({knownKey:''});assert.equal(first.key,'1');assert.equal(first.failedPacks[0].id,8);
+  for(let n=0;n<4;n++)await assert.rejects(loader.view({knownKey:'1'}),/transport failed/);
+  assert.equal(loader.stats().cached,1);assert.deepEqual(releases,[2,3,4,5]);
+ }finally{loader.dispose();}
+});
+
+test('a view with no reply times out and retires the stalled worker',async()=>{
+ let stopped=false;
+ class FakeWorker {
+  postMessage(message){if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));}
+  terminate(){stopped=true;}
+ }
+ const loader=await createHydroBrowserLoader({manifest:{},baseUrl:'http://example/',tilesForView:()=>[],viewTimeoutMs:10,createWorker:()=>new FakeWorker()});
+ await assert.rejects(loader.view({}),{name:'TimeoutError'});
+ assert.equal(stopped,true);assert.equal(loader.disposed,true);
+});
+
+test('disabled hydro cancels a manifest request and reuses an accepted manifest',async()=>{
+ let enabled=false,status='idle',requests=0,aborted,accepts=0;
+ const service=createHydroService({
+  manifestUrl:()=>new URL('https://fixture.test/manifest.json'),dataVersion:'1',getLoadState:()=>status,isLoadCurrent:()=>enabled,
+  onLoading:()=>{status='loading';},onRetry:assert.fail,onFailure:assert.fail,
+  fetchWithRetry:async(_url,{signal},{consume})=>{
+   requests++;
+   if(requests===1)return new Promise((_,reject)=>{aborted=()=>reject(signal.reason);signal.addEventListener('abort',aborted,{once:true});});
+   return consume(new Response(JSON.stringify({version:'1',schema:'pandolab-water-shards-v5'})));
+  },
+  acceptManifest:async()=>{accepts++;status='ready';return true;},
+ });
+ assert.equal(await service.load(),false);assert.equal(requests,0);
+ enabled=true;const first=service.load();await Promise.resolve();assert.equal(typeof aborted,'function');
+ enabled=false;service.cancel();assert.equal(await first,false);
+ enabled=true;assert.equal(await service.load(),true);
+ enabled=false;service.cancel();enabled=true;assert.equal(await service.load(),true);
+ assert.equal(requests,2);assert.equal(accepts,1);
 });

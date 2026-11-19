@@ -1,4 +1,4 @@
-export const HYDRO_TOOL_CONFIG = Object.freeze({
+export const HYDRO_CATEGORY_STYLES = Object.freeze({
       river: Object.freeze({ geometry: 'LineString', category: 'river', label: '강', color: '#3b82c4', prefix: 'river' }),
       lake: Object.freeze({ geometry: 'Polygon', category: 'lake', label: '호수', color: '#5aa9d6', prefix: 'lake' }),
     });

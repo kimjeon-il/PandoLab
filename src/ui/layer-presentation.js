@@ -47,7 +47,6 @@ export function overlayVisualOrder(presentation, group, detail = 'fill', objectK
     + layerObjectRank(presentation, objectKey) + fragment;
 }
 
-export const TERRITORIAL_SYMBOL_KEYS = Object.freeze({ name: 'objectNames', flag: 'objectFlags' });
 
 // Paint ownership differs from the common object display settings.
 export function territorialPaintRole(feature) {

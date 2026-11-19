@@ -5,7 +5,7 @@ export function createMapHost({productMode='viewer',readOnly=true,projection='gl
  const policy=createProductModePolicy(productMode,{readOnly,projection});
  let dependencies,host=null,observer=null,resolution=null,resizeFrame=0,viewRevision=0,lastSignature='',lastFrame=null;
  const element=()=>dependencies.platform.$('map');
- const renderer=()=>dependencies.rendering.gpuMapRenderer;
+ const renderer=()=>dependencies.rendering.mapRenderer;
  function connect(ports){if(dependencies)throw new Error('map-host already connected');dependencies=ports;}
  function projectionViewSnapshot({withGeographicBounds=true}={}){
   const state=dependencies.projectState.state,layout=dependencies.mapView.projectionLayoutMetrics(),camera=renderer().cameraSnapshot();
@@ -31,8 +31,8 @@ export function createMapHost({productMode='viewer',readOnly=true,projection='gl
   return lastFrame;
  }
  function syncMapHostFromState(){renderer().syncCameraFromState();return dependencies.domains.renderingDomain.invalidateView('host-camera');}
- function attachMapOutput({gpuCanvas}){
-  renderer().attach(gpuCanvas);
+ function attachMapOutput(){
+  renderer().attach(element());
   host=dependencies.renderFactories.createMapSurfaceHost({getProjectionKind:()=>dependencies.projectState.state.projection,
    setProjectionKind:kind=>{policy.assertProjection(kind);return true;},getViewState:projectionViewSnapshot,
    setViewState:view=>{policy.assertProjection(view?.projection);if(view?.view)dependencies.projectState.state.view=structuredClone(view.view);syncMapHostFromState();return true;},

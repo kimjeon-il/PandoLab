@@ -47,7 +47,7 @@ export function createHydroSettings() {
     return gpu ? palette.oceanGpu : palette.ocean;
   }
 
-  function hydroEditById(id) {
+  function projectHydroById(id) {
     return projectHydroResources().findById(id);
   }
 
@@ -110,7 +110,7 @@ export function createHydroSettings() {
     get builtInHydroFeatureById() { return builtInHydroFeatureById; },
     get currentMapDevicePixelRatio() { return currentMapDevicePixelRatio; },
     get hydroDisplayColor() { return hydroDisplayColor; },
-    get hydroEditById() { return hydroEditById; },
+    get projectHydroById() { return projectHydroById; },
     get hydroFeatureById() { return hydroFeatureById; },
     get hydroLayerVisible() { return hydroLayerVisible; },
     get isHydroEditFeature() { return isHydroEditFeature; },

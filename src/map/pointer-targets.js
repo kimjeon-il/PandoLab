@@ -93,7 +93,7 @@ export function createPointerTargets() {
       if (!(0, dependencies.physicalServices.isHydroFeatureVisible)(feature) || !(0, dependencies.objectPicking.geometryHitsScreenPoint)(feature.geometry, coord, screenPoint, (0, dependencies.surfaces.isMobile)() ? 14 : 8)) continue;
       return feature;
     }
-    return dependencies.rendering.gpuMapRenderer.pickHydro(screenPoint)?.feature ?? null;
+    return dependencies.rendering.mapRenderer.pickHydro(screenPoint)?.feature ?? null;
   }
 
   function mapClickBlocked(event = dependencies.platform.d3.event) {

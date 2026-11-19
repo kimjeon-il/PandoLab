@@ -4,7 +4,8 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
   sharedBundle = null, onWholeBundle = null, verifiedExternal = false }) {
   const memory = new Map();
   const queues = new Map();
-  const recoveries = new Map();
+  const deadline = signal => signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
   const inContainer = spec => Number.isSafeInteger(spec.offset) &&
     Number.isSafeInteger(spec.fileBytes) && spec.offset >= 0 &&
     spec.bytes > 0 && spec.offset + spec.bytes <= spec.fileBytes;
@@ -64,6 +65,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     return { bytes: remember(spec, bytes), source: 'cache' };
   }
   async function downloadFull(spec, recovery = false, signal) {
+    signal.throwIfAborted();
     const diagnostic = { shardId: spec.id, source: recovery ? 'recovery' : 'network-full', recovery };
     const shared = await cachedBundlePart(spec, diagnostic);
     if (shared) return save(spec, shared);
@@ -78,6 +80,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     diagnostic.status = response.status;
     diagnostic.contentRange = response.headers.get('Content-Range');
     const raw = new Uint8Array(await response.arrayBuffer());
+    signal.throwIfAborted();
     let bytes;
     if (contained && response.status === 206) {
       if (diagnostic.contentRange !== `bytes ${absoluteStart}-${absoluteEnd - 1}/${spec.fileBytes}` ||
@@ -92,24 +95,18 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
       throw invalid('수계 전체 파일 응답이 올바르지 않습니다.', { ...diagnostic, stage: 'response' });
     }
     await validate(spec, bytes, diagnostic);
+    signal.throwIfAborted();
     return save(spec, bytes);
   }
-  async function recover(spec, error) {
-    if (recoveries.has(spec.id)) {
-      const previous = recoveries.get(spec.id);
-      if (previous.error) throw previous.error;
-      throw Object.assign(error, { retryable: false });
-    }
-    const record = {};
-    recoveries.set(spec.id, record);
+  async function recover(spec, error, signal) {
+    signal.throwIfAborted();
     memory.delete(spec.id);
     const cache = await openCache();
     try { await cache?.delete(cacheKey(spec)); } catch (_) { /* Memory recovery still works. */ }
-    try { return await downloadFull(spec, true); }
+    try { return await downloadFull(spec, true, signal); }
     catch (failure) {
-      failure.retryable = false;
+      signal.throwIfAborted();
       failure.diagnostic = { ...error.diagnostic, ...failure.diagnostic, recovery: true, stage: failure.diagnostic?.stage || 'recovery-download' };
-      record.error = failure;
       throw failure;
     }
   }
@@ -123,16 +120,18 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     });
   }
   return {
-    read(spec, rows, start, end, signal = null) {
+    read(spec, rows, start, end, viewSignal = null) {
       return serial(spec, async () => {
+        const signal = deadline(viewSignal);
         try {
-          if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-          if (recoveries.get(spec.id)?.error) throw recoveries.get(spec.id).error;
+          signal.throwIfAborted();
           const hit = await cached(spec);
+          signal.throwIfAborted();
           if (hit) return decode(spec, rows, hit.bytes, 0, hit.source);
           if (verifiedExternal) return decode(spec, rows, await downloadFull(spec, false, signal), 0, 'network-verified-shard');
           const contained = inContainer(spec);
           const bundlePart = await cachedBundlePart(spec, { shardId: spec.id, source: 'shared-container' });
+          signal.throwIfAborted();
           if (bundlePart) return decode(spec, rows, bundlePart, 0, 'shared-container');
           const absoluteStart = (contained ? spec.offset : 0) + start;
           const absoluteEnd = (contained ? spec.offset : 0) + end;
@@ -144,6 +143,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
             stage: 'range' };
           if (!response.ok) throw Object.assign(new Error(`수계 HTTP ${response.status}`), { diagnostic });
           const raw = new Uint8Array(await response.arrayBuffer());
+          signal.throwIfAborted();
           diagnostic.actualLength = raw.length;
           if (response.status === 206) {
             if (diagnostic.contentRange !==
@@ -159,12 +159,12 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
           await save(spec, bytes);
           return decode(spec, rows, bytes, 0, 'network-full', diagnostic);
         } catch (error) {
+          signal.throwIfAborted();
           if (!error.corrupt || error.retryable === false) throw error;
-          const bytes = await recover(spec, error);
+          const bytes = await recover(spec, error, signal);
+          signal.throwIfAborted();
           try { return decode(spec, rows, bytes, 0, 'recovery'); }
           catch (failure) {
-            failure.retryable = false;
-            recoveries.get(spec.id).error = failure;
             memory.delete(spec.id);
             const cache = await openCache();
             try { await cache?.delete(cacheKey(spec)); } catch (_) {}
@@ -173,17 +173,22 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
         }
       });
     },
-    full(spec, signal) {
+    full(spec, viewSignal) {
       return serial(spec, async () => {
-        if (recoveries.get(spec.id)?.error) throw recoveries.get(spec.id).error;
-        try { return (await cached(spec))?.bytes || await downloadFull(spec, false, signal); }
+        const signal = deadline(viewSignal);
+        signal.throwIfAborted();
+        try {
+          const hit = await cached(spec);
+          signal.throwIfAborted();
+          return hit?.bytes || await downloadFull(spec, false, signal);
+        }
         catch (error) {
+          signal.throwIfAborted();
           if (!error.corrupt) throw error;
-          return recover(spec, error);
+          return recover(spec, error, signal);
         }
       });
     },
-    retry() { recoveries.clear(); },
   };
 }
 self.createHydroShardStore = createHydroShardStore;

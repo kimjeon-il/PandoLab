@@ -21,12 +21,6 @@
   isolation: isolate;
 }
 
-.gpu-map-canvas {
-  z-index: 1;
-  pointer-events: none;
-  background: transparent;
-}
-
 .map-top-context-slot > * {
   pointer-events: auto;
 }

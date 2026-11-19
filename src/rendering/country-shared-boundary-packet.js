@@ -10,10 +10,6 @@ import { assembleStrokeWithGroupReuse } from "./country-stroke-group-reuse.js";
 
 // Every ordinary map style renders shared land borders, not per-object coastal outlines.
 // This is a presentation policy: canonical polygon/coast geometry is unchanged.
-export function shouldShowSharedCountryBorders() {
-  return true;
-}
-
 export function visibleCountrySharedSegments(segments = [], isVisible = () => true) {
   return segments.filter(segment => segment.ownerIds.some(isVisible));
 }

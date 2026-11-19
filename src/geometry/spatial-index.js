@@ -19,7 +19,7 @@ export function createSpatialIndex() {
     if (!geometry || typeof geometry !== 'object') return [Infinity, Infinity, -Infinity, -Infinity];
     const cached = geometryBoundsCache.get(geometry);
     if (cached) return cached;
-    const bounds = (0, dependencies.cutGeometry.coordinateBounds)(geometry.coordinates);
+    const bounds = (0, dependencies.geometryBounds.coordinateBounds)(geometry.coordinates);
     geometryBoundsCache.set(geometry, bounds);
     return bounds;
   }
@@ -39,7 +39,7 @@ export function createSpatialIndex() {
       [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2],
     ];
     const projected = samples
-      .filter(coordinate => dependencies.projectState.state.projection !== 'globe' || (0, dependencies.mapView.isCoordVisible)(coordinate))
+      .filter(coordinate => (0, dependencies.mapView.isCoordVisible)(coordinate))
       .map(coordinate => (0, dependencies.mapView.activeProjection)()(coordinate))
       .filter(Boolean);
     if (!projected.length) return false;
@@ -86,37 +86,14 @@ export function createSpatialIndex() {
     return true;
   }
 
-  function visibleFlatGeographicBounds(overscan = 64) {
-    const width = Math.max(1, Number(dependencies.projectState.state.size.width || 1));
-    const height = Math.max(1, Number(dependencies.projectState.state.size.height || 1));
-    const rotation=dependencies.projectState.state.view.globeRotation;
-    const center = (0, dependencies.mapView.screenToGeo)([width / 2, height / 2]) || [-rotation[0], -rotation[1]];
-    const samples = [
-      [-overscan, -overscan], [width / 2, -overscan], [width + overscan, -overscan],
-      [-overscan, height / 2], [width / 2, height / 2], [width + overscan, height / 2],
-      [-overscan, height + overscan], [width / 2, height + overscan], [width + overscan, height + overscan],
-    ].map(dependencies.mapView.screenToGeo).filter(Boolean);
-    if (!samples.length) return [-180, -90, 180, 90];
-    const longitudes = samples.map(coordinate => {
-      let longitude = Number(coordinate[0]);
-      while (longitude - center[0] > 180) longitude -= 360;
-      while (longitude - center[0] < -180) longitude += 360;
-      return longitude;
-    });
-    const latitudes = samples.map(coordinate => Number(coordinate[1]));
-    return [Math.min(...longitudes), Math.max(-90, Math.min(...latitudes)), Math.max(...longitudes), Math.min(90, Math.max(...latitudes))];
-  }
-
   function visibleMapObjectCandidates(domains) {
     rebuildMapObjectSpatialIndex();
     const started = performance.now();
-    const records = dependencies.projectState.state.projection === 'globe'
-      ? mapObjectSpatialIndex.querySphericalCap({
-          center: [-Number(dependencies.projectState.state.view.globeRotation?.[0] || 0), -Number(dependencies.projectState.state.view.globeRotation?.[1] || 0)],
-          radius: 91,
-          domains,
-        })
-      : mapObjectSpatialIndex.query(visibleFlatGeographicBounds(), { domains });
+    const records = mapObjectSpatialIndex.querySphericalCap({
+      center: [-Number(dependencies.projectState.state.view.globeRotation?.[0] || 0), -Number(dependencies.projectState.state.view.globeRotation?.[1] || 0)],
+      radius: 91,
+      domains,
+    });
     viewportCullingMetrics.queryCount += 1;
     viewportCullingMetrics.candidateCount = records.length;
     viewportCullingMetrics.queryMs = performance.now() - started;
@@ -217,13 +194,6 @@ export function createSpatialIndex() {
     }));
   }
 
-  function spatialFeatures(bounds, excludeIds = null) {
-    const excluded = excludeIds ? new Set([...excludeIds].map(String)) : null;
-    return (dependencies.projectState.state.spatialIndex || [])
-      .filter(item => (!excluded || !excluded.has(item.id)) && (0, dependencies.cutGeometry.boundsOverlap)(bounds, item.bounds))
-      .map(item => item.feature);
-  }
-
   function initializeGeometryBoundsCache() {
     (geometryBoundsCache = new WeakMap());
   }
@@ -265,7 +235,6 @@ export function createSpatialIndex() {
     get retainTerritorialSpatialIndex() { return retainTerritorialSpatialIndex; },
     get rebuildSpatialIndex() { return rebuildSpatialIndex; },
     get scheduleMapObjectSpatialIndexRebuild() { return scheduleMapObjectSpatialIndexRebuild; },
-    get spatialFeatures() { return spatialFeatures; },
     get viewportCullingMetrics() { return viewportCullingMetrics; },
     get visibleMapObjectCandidates() { return visibleMapObjectCandidates; },
   });

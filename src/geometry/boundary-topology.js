@@ -5,7 +5,7 @@ import { countryGeometrySignature } from "../rendering/country-shared-boundary-c
 import { territorialRootId } from "../document/territorial-units.js";
 import { sharedCalculationCore } from "../document/temporal.js";
 import { computeCountrySharedContacts } from "./country-contact-core.js";
-import { multiCoordinates } from "./map-edit-geometry.js";
+import { multiCoordinates } from "./polygon-geometry-utils.js";
 
 for (const capability of ['boundaryOpposingInteriors', 'boundaryOpposingInteriorsBatch', 'boundaryEdgeBoxesBatch']) {
   if (typeof sharedCalculationCore?.[capability] !== 'function') {

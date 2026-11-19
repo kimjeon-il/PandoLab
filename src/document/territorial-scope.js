@@ -1,4 +1,4 @@
-import { normalizeClippedPolygonGeometry } from "../geometry/map-edit-geometry.js";
+import { normalizeClippedPolygonGeometry } from "../geometry/polygon-geometry-utils.js";
 import { admittedGeometryKey } from "../geometry/geometry-version-store.js";
 
 const polygons = geometry => geometry?.type === 'Polygon' ? [geometry.coordinates]

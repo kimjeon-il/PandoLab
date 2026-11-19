@@ -1,6 +1,6 @@
 import {loadUserPreferences,saveUserPreferences,effectiveTheme} from "./user-preferences.js";
 import {resolveMapAccent} from "./app-accent.js";
-import {resolveMapInteractionStyle,applyInteractionCssProperties} from "../map/map-interaction-style.js";
+import {resolveMapInteractionStyle} from "../map/map-interaction-style.js";
 
 const FONT_STACKS=Object.freeze({default:'var(--ui-font-family)',gothic:'"Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif',serif:'"Noto Serif KR", "Nanum Myeongjo", "AppleMyungjo", serif'});
 
@@ -24,7 +24,7 @@ export function createPreferencePresentation({document,window,productMode,onChan
     interactionStyle=resolveMapInteractionStyle({theme,selectionColor:current.selection.color||accent,outlineVisible:current.selection.outlineVisible,
       fillStrength:current.selection.fillStrength,antiAlias:current.appearance.smoothLines,
       tokens:{accent:computed.getPropertyValue('--accent').trim(),textStrong:computed.getPropertyValue('--text-strong').trim()}});
-    applyInteractionCssProperties(interactionStyle);window.__PANDOLAB_THEME__=theme;window.__PANDOLAB_INTERACTION_STYLE__=interactionStyle;
+    window.__PANDOLAB_THEME__=theme;window.__PANDOLAB_INTERACTION_STYLE__=interactionStyle;
   }
   function apply(next,{persist=true,rerender=true,reason='user-preferences'}={}){
     current=persist?saveUserPreferences(next):next;render();onChange({reason,rerender,interactionStyle});return current;

@@ -1,4 +1,4 @@
-import { resourceKey, resourceUpdate } from "../rendering/resource-update-policy.js";
+import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
 import { admittedGeometryKey, geometryReferenceFor } from "../geometry/geometry-version-store.js";
 // A fast path is allowed only for *verified* presentation-only differences.
 // The full Core and renderer path stays authoritative for any uncertainty.

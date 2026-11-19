@@ -15,7 +15,7 @@ test('color visibility does not alter explicitly hidden objects or labels',async
   layerResources:{loadHydroData(){throw Error('must not load');},preparePlaces(){throw Error('must not load');}},
   layerStyleServices:{layerStyle:(_p,g)=>({...state.layerPresentation.styles[g]})},
   objectDisplay:{invalidateObjectPresentation(){}},
-  rendering:{gpuMapRenderer:{invalidateCountryColors(){}}},
+  rendering:{mapRenderer:{invalidateCountryColors(){}}},
   domains:{renderingDomain:{invalidateOverlayStyle(){}}}});
  const original=structuredClone(state.layerVisibility);
  await settings.updateLayerPresentationStyle('objects',{colorVisible:false});
@@ -37,7 +37,7 @@ test('color visibility changes presentation only, preserving territorial colors,
   layerResources:{loadHydroData(){events.push(['hydro-reload']);},preparePlaces(){events.push(['label-reload']);}},
   layerStyleServices:{layerStyle:(_presentation,group)=>({...state.layerPresentation.styles[group]})},
   objectDisplay:{invalidateObjectPresentation(){events.push(['objects']);}},
-  rendering:{gpuMapRenderer:{invalidateCountryColors(){events.push(['paint']);},invalidateCountryPalette(){events.push(['palette']);},invalidatePhysicalStyle(){events.push(['physical']);}}},
+  rendering:{mapRenderer:{invalidateCountryColors(){events.push(['paint']);},invalidateCountryPalette(){events.push(['palette']);},invalidatePhysicalStyle(){events.push(['physical']);}}},
   domains:{renderingDomain:{invalidateOverlayStyle(){events.push(['overlay']);}}}});
  const {createTerritorialFillResolver}=await import('../../../src/rendering/territorial-fill-style.js');
  const entity={id:'A',properties:{entityKind:'general',style:{color:projectColor},parentId:''}};

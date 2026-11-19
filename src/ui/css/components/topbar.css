@@ -78,8 +78,8 @@
 .app-root .topbar .topbar-command {
   --topbar-command-background: transparent;
   min-width: 0;
-  min-height: var(--design-control-md);
-  height: var(--design-control-md);
+  min-height: var(--ui-control-height);
+  height: auto;
   padding: 0 var(--ui-space-3);
   border: 0;
   border-radius: var(--ui-radius-control);

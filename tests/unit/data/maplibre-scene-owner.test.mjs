@@ -1,28 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createGpuScene} from '../../../src/rendering/gpu-scene.js';
+import {createMapScene} from '../../../src/rendering/map-scene.js';
 import {createMapVisualFrame,isMapVisualFrame} from '../../../src/rendering/map-visual-frame.js';
 
 test('MapLibre scene owns one set of live overlay domains without a second GPU packet lifecycle',()=>{
  const submissions=[];
- const scene=createGpuScene();
+ const scene=createMapScene();
  const state={stateRevision:5,layerPresentation:{overlayOrder:['distributions','objects','genericFeatures']}};
  scene.connect({projectState:{state},countries:{countryLandRevision:6},
-  rendering:{gpuMapRenderer:{setSceneDomains:domains=>submissions.push(domains)}}});
- scene.initializeGpuSceneDomains();
+  rendering:{mapRenderer:{setSceneDomains:domains=>submissions.push(domains)}}});
+ scene.initializeSceneDomains();
  const geometry={type:'Polygon',coordinates:[[[0,0],[1,0],[0,1],[0,0]]]};
  const domain=style=>({polygons:[{key:'example',geometry,geometryRevision:'v1',style,order:10}]});
- assert.equal(scene.replaceGpuSceneDomain('distributions',domain({color:'#123456',fillAlpha:1})),true);
- assert.equal(scene.replaceGpuSceneDomain('distributions',domain({color:'#123456',fillAlpha:1})),false);
- assert.equal(scene.replaceGpuSceneDomain('distributions',domain({color:'#abcdef',fillAlpha:1})),true);
- const submitted=scene.syncGpuRenderScene();
+ assert.equal(scene.replaceSceneDomain('distributions',domain({color:'#123456',fillAlpha:1})),true);
+ assert.equal(scene.replaceSceneDomain('distributions',domain({color:'#123456',fillAlpha:1})),false);
+ assert.equal(scene.replaceSceneDomain('distributions',domain({color:'#abcdef',fillAlpha:1})),true);
+ const submitted=scene.syncMapScene();
  assert.equal(submitted,submissions[0]);
  assert.equal(submitted.size,1);
  assert.equal(submitted.get('distributions').polygons[0].style.color,'#abcdef');
- assert.equal(scene.replaceGpuSceneDomain('distributions',{polygons:[]}),true);
- assert.equal(scene.syncGpuRenderScene().get('distributions').polygons.length,0);
+ assert.equal(scene.replaceSceneDomain('distributions',{polygons:[]}),true);
+ assert.equal(scene.syncMapScene().get('distributions').polygons.length,0);
  assert.equal(scene.selectionGeometryRevision('x','fill'), 'x:fill:state-5:country-6');
- assert.equal(scene.gpuSceneOrder('objects','fill'),1010);
+ assert.equal(scene.sceneOrder('objects','fill'),1010);
  assert.equal(Object.hasOwn(scene,'selectionPass'),false);
  assert.equal(Object.hasOwn(scene,'renderSceneBuilder'),false);
 });

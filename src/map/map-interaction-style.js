@@ -12,34 +12,6 @@ function unitInterval(value, fallback) {
   return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : fallback;
 }
 
-/** Collapse roles without copying geometry or changing the selection model. */
-export function resolveInteractionEntries(entries = []) {
-  const byKey = new Map();
-  for (const entry of entries) {
-    const key = String(entry?.key || entry?.ref?.key || '');
-    if (!key) continue;
-    const previous = byKey.get(key);
-    const roles = [...new Set([...(previous?.roles || []), ...(entry.roles || [entry.role || 'candidate'])])]
-      .filter(role => Object.hasOwn(INTERACTION_ROLE_PRIORITY, role))
-      .sort((a, b) => INTERACTION_ROLE_PRIORITY[b] - INTERACTION_ROLE_PRIORITY[a] || a.localeCompare(b));
-    const role = roles[0] || 'candidate';
-    byKey.set(key, Object.freeze({ ...previous, ...entry, key, roles: Object.freeze(roles), role,
-      priority: INTERACTION_ROLE_PRIORITY[role] }));
-  }
-  const remaining = [...byKey.values()];
-  const ordered = [];
-  while (remaining.length) {
-    const priority = Math.max(...remaining.map(entry => entry.priority));
-    const peers = remaining.filter(entry => entry.priority === priority);
-    const keys = new Set(peers.map(entry => entry.key));
-    const eligible = peers.filter(entry => !(entry.ancestorKeys || []).some(key => keys.has(key)));
-    // A malformed hierarchy cannot make presentation hang.
-    const next = (eligible.length ? eligible : peers).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0)[0];
-    ordered.push(next); remaining.splice(remaining.indexOf(next), 1);
-  }
-  return Object.freeze(ordered);
-}
-
 const STROKE_SHAPE = Object.freeze({ cap: 'round', join: 'round', dash: Object.freeze([0, 0]), casing: null,
   blendMode: 'normal', antiAlias: true });
 const BASE_STROKES = Object.freeze({
@@ -82,36 +54,6 @@ export function resolveMapStrokeStyle(style, role = 'candidate') {
     fillAlpha: source.fillAlpha,
     coverage: role === 'primary' || role === 'secondary' ? 'union' : 'normal',
     antiAlias });
-}
-
-/** Convert once at the device boundary; never persist or cache this as policy. */
-export function gpuStrokeStyle(style, frameContext) {
-  const dpr = Math.max(0.25, Number(frameContext.dpr || 1));
-  return Object.freeze({ ...style, width: Number(style.width || 0) * dpr,
-    innerCutout: Number(style.innerCutout || 0) * dpr,
-    casing: style.casing ? Object.freeze({ ...style.casing, width: Number(style.casing.width || 0) * dpr }) : null,
-    dash: Object.freeze((style.dash || STROKE_SHAPE.dash).map(value => Number(value) * dpr)) });
-}
-
-export function interactionCssProperties(style) {
-  const properties = { '--map-selection-halo': style.selection.color, '--map-hover-stroke': style.hover.color };
-  for (const role of ['primary', 'secondary', 'hover', 'candidate']) {
-    const value = resolveMapStrokeStyle(style, role);
-    properties[`--map-${role}-fill-alpha`] = String(value.fillAlpha);
-    properties[`--map-${role}-stroke-alpha`] = String(value.alpha);
-    properties[`--map-${role}-stroke-width`] = `${value.width}px`;
-  }
-  properties['--map-hover-fill'] = `color-mix(in srgb, ${style.hover.color} ${style.hover.fillAlpha * 100}%, transparent)`;
-  return Object.freeze(properties);
-}
-
-/** The document root owns interaction tokens for both the map and its SVG overlays. */
-export function applyInteractionCssProperties(style, root = globalThis.document?.documentElement) {
-  if (!root?.style) return false;
-  for (const [property, value] of Object.entries(interactionCssProperties(style))) {
-    root.style.setProperty(property, value);
-  }
-  return true;
 }
 
 export function resolveMapInteractionStyle({

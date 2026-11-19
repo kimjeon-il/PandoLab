@@ -2,7 +2,7 @@ import {overlayVisualOrder} from '../ui/layer-presentation.js';
 import {admittedGeometryKey} from '../geometry/geometry-version-store.js';
 
 /** One prepared overlay state for the MapLibre renderer. */
-export function createGpuScene() {
+export function createMapScene() {
   let dependencies = null;
   const domains = new Map();
   function connect(ports) {
@@ -18,10 +18,10 @@ export function createGpuScene() {
       ? `${key}:${role}:${admittedGeometryKey(geometry)}`
       : `${key}:${role}:state-${dependencies.projectState.state.stateRevision}:country-${dependencies.countries.countryLandRevision}`;
   }
-  function gpuSceneOrder(group, detail = 'fill', objectKey = '', fragment = 0) {
+  function sceneOrder(group, detail = 'fill', objectKey = '', fragment = 0) {
     return overlayVisualOrder(dependencies.projectState.state.layerPresentation, group, detail, objectKey, fragment);
   }
-  function replaceGpuSceneDomain(domain, {polygons = [], strokes = []} = {}) {
+  function replaceSceneDomain(domain, {polygons = [], strokes = []} = {}) {
     const name = String(domain);
     const independent = ['base-graticule','generic-features','distributions'].includes(name);
     const normalize = item => Object.freeze({
@@ -43,13 +43,13 @@ export function createGpuScene() {
     domains.set(name,{signature,polygons:nextPolygons,strokes:nextStrokes});
     return true;
   }
-  function syncGpuRenderScene() {
-    dependencies.rendering.gpuMapRenderer.setSceneDomains(domains);
+  function syncMapScene() {
+    dependencies.rendering.mapRenderer.setSceneDomains(domains);
     return domains;
   }
   return Object.freeze({
-    connect,featureFromGeometry,selectionGeometryRevision,gpuSceneOrder,
-    replaceGpuSceneDomain,syncGpuRenderScene,
-    initializeGpuSceneDomains(){ domains.clear(); },
+    connect,featureFromGeometry,selectionGeometryRevision,sceneOrder,
+    replaceSceneDomain,syncMapScene,
+    initializeSceneDomains(){ domains.clear(); },
   });
 }

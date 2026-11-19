@@ -14,7 +14,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
   try{
    const path=new URL(request.url,'http://localhost').pathname;
    if(path.startsWith('/optional/'))return;
-   if(path==='/'){response.setHeader('Content-Type','text/html');response.end('<script src="/assets/js-vendor/d3.min.js"></script><div id="map" style="position:relative;width:800px;height:600px"><canvas></canvas></div>');return;}
+   if(path==='/'){response.setHeader('Content-Type','text/html');response.end('<script src="/assets/js-vendor/d3.min.js"></script><div id="map" style="position:relative;width:800px;height:600px"></div>');return;}
    if(path==='/src/rendering/build-meta.js'){response.setHeader('Content-Type','text/javascript');response.end('globalThis.PANDOLAB_BUILD_META='+JSON.stringify(meta));return;}
    const workerAliases={'/src/rendering/workers/geographic-boundary-core.js':'src/geometry/workers/geographic-boundary-core.js','/src/rendering/workers/worker-rpc-host.js':'src/runtime/workers/worker-rpc-host.js'};
    const file=workerAliases[path]?resolve(root,workerAliases[path]):path.startsWith('/assets/vendor/maplibre-gl/')?resolve(root,'node_modules/maplibre-gl/dist',path.slice('/assets/vendor/maplibre-gl/'.length)):path.startsWith('/wasm/')?resolve(root,'assets/wasm',path.slice('/wasm/'.length)):resolve(root,path.slice(1));
@@ -32,12 +32,12 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const before=square('old',-8),after=square('current:상태%2',18),entities=new Map([[before.id,before],[after.id,after]]),errors=[];let visible=true,loadingPalette={ocean:'#4477aa',land:'#aaaaaa'};
    const state={size:{width:800,height:600},projection:'globe',view:{globeRotation:[0,0,0],zoom:1},layerVisibility:{objects:true},layerPresentation:{},hydroFeatureCache:new Map(),hydroEdits:[],genericFeatures:[],distributionEntries:[],labels:[]};
    const land={revision:'fixture-land',geometry:{type:'MultiPolygon',coordinates:[[[[-40,-40],[0,-40],[.1,0],[0,40],[-40,40],[-40,-40]]],[[[0,-40],[40,-40],[40,40],[0,40],[.1,0],[0,-40]]]]}};
-   let landAvailable=false;
+   let landAvailable=false,hydroEnabled=false;
    const renderer=createMapLibreViewerRenderer({projectState:{state},physicalConfig:{},countryLabelModel:{labelLayoutMetrics:{}},layerPresentation:{isLayerItemVisible:()=>true},
     preferences:{mapPalette:()=>({loadingSurface:loadingPalette,ocean:'#4477aa',defaultLand:'#aaaaaa',countryColorAlpha:1,borderAlpha:1,strokes:{country:{color:'#ffffff',width:1},river:{width:1}}})},
-    surfaces:{isMobile:()=>false},physicalResources:{get physicalLand(){return landAvailable?land:null;},physicalContextState:{ready:true},hydroVisibilityThreshold:()=>0,hydroEditColor:()=>null},physicalServices:{isHydroFeatureVisible:()=>true},hydroPresentation:{hydroDisplayColor:()=> '#4477aa'},objectRefVisible:()=>visible,territorialModel:{entityRepository:{get:id=>entities.get(id),parent:id=>entities.get(entities.get(id)?.properties.parentId)}},
+    surfaces:{isMobile:()=>false},physicalResources:{get physicalLand(){return landAvailable?land:null;},physicalContextState:{ready:true},hydroVisibilityThreshold:()=>0,hydroDetailEnabled:()=>hydroEnabled,prepareHydroFeature:feature=>feature,admitHydroFeatures:async()=>true},physicalServices:{isHydroFeatureVisible:()=>true},hydroPresentation:{hydroDisplayColor:()=> '#4477aa'},objectRefVisible:()=>visible,territorialModel:{entityRepository:{get:id=>entities.get(id),parent:id=>entities.get(entities.get(id)?.properties.parentId)}},
     platform:{d3:globalThis.d3,runtimeAssetUrl:path=>{const url=new URL('/src/rendering/'+path,globalThis.location.href);url.searchParams.set('v','fixture');url.searchParams.set('dataRevision','fixture');return url;}},domains:{renderingDomain:{invalidateView(){},beginInteraction(){},endInteraction(){}}},feedback:{reportOperationError:error=>errors.push(error.message)}});
-   renderer.attach(globalThis.document.querySelector('canvas'));await renderer.initialize();
+   renderer.attach(globalThis.document.getElementById('map'));await renderer.initialize();
    if(!renderer.map.isStyleLoaded())await new Promise(resolve=>renderer.map.once('load',resolve));
    renderer.invalidateCountryPalette();
    if(errors.length)throw new Error('A palette refresh before land availability failed: '+errors.join('\n'));
@@ -251,8 +251,25 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    for(let i=0;i<100&&(renderer.map.getLayer('test-basemap')||!renderer.isStyleReady()||!errors.includes('external source failed'));i++)await new Promise(resolve=>setTimeout(resolve,10));
    const externalFailureRecovered=!renderer.map.getLayer('test-basemap')&&!renderer.getRuntimeState().projectRenderBlocked&&errors.includes('external source failed');errors.length=0;
    renderer.map.jumpTo({center:[0,0],zoom:2});await settle();
-   const river=(id,zoom,lat)=>({type:'Feature',id,properties:{featureId:id,logicalId:id,category:'river',viewerMinZoom:zoom},geometry:{type:'LineString',coordinates:[[-5,lat],[5,lat]]}});
-   await renderer.map.getSource('hydro').setData({type:'FeatureCollection',features:[river('river-fixture',2,0),river('detail-3',3,1),river('detail-4',4,2),river('detail-5',5,3)]});
+   const river=(id,stage,lat)=>({type:'Feature',id,properties:{featureId:id,logicalId:id,category:'river',stage},geometry:{type:'LineString',coordinates:[[-5,lat],[5,lat]]}});
+   const features=[river('river-fixture',0,0),river('detail-3',1,1),river('detail-4',2,2),river('detail-5',3,3)];
+   const BrowserWorker=globalThis.Worker;
+   globalThis.Worker=class {
+    constructor(url,options){if(!new URL(url).pathname.endsWith('/hydro-tile-worker.js'))return new BrowserWorker(url,options);}
+    postMessage(message){
+     if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
+     if(message.type==='view')queueMicrotask(()=>{
+      const {revision}=message;
+      this.onmessage({data:{type:'pack',revision,packId:1,features}});
+      this.onmessage({data:{type:'view-ready',revision,packIds:[1]}});
+     });
+    }
+    terminate(){}
+   };
+   hydroEnabled=true;
+   try{
+    await renderer.setHydroManifest({stages:[6,6.7,7,7.5].map((minZoom,id)=>({id,minZoom,columns:1,rows:1}))},globalThis.location.href);
+   }finally{globalThis.Worker=BrowserWorker;}
    for(let attempt=0;attempt<500&&!renderer.map.isSourceLoaded('hydro');attempt++)await new Promise(resolve=>setTimeout(resolve,10));
    await settle();let riverHit=false;
    for(let attempt=0;attempt<100&&!riverHit;attempt++){
@@ -283,6 +300,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
      if(painted!==(offset===0))throw new Error('River pixels did not follow camera zoom '+renderer.map.getZoom());
     }
    }
+   hydroEnabled=false;renderer.invalidateHydroVisibility();
    await renderer.map.getSource('hydro').setData({type:'FeatureCollection',features:[]});await settle();
    renderer.setInitialMapLoading(true);await settle();
    const skeletonPixel=await new Promise(resolve=>{renderer.map.once('render',()=>{const point=renderer.projection.projectCoordinate([-4,0]),canvas=renderer.map.getCanvas(),gl=canvas.getContext('webgl2'),pixel=new Uint8Array(4);gl.readPixels(Math.round(point[0]),canvas.height-Math.round(point[1]),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);resolve([...pixel]);});renderer.map.triggerRepaint();});
