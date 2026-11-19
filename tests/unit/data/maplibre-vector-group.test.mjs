@@ -87,7 +87,7 @@ test('polar drawing uses MapLibre custom-layer state restoration without synchro
    {packet,color:land,loadingRole:'land'},{packet,color:border},{packet,color:grid,loadingRole:'grid'},
   ],ocean);await new Promise(resolve=>setImmediate(resolve));
   owner.setLoadingSurface({ocean:loadingOcean,land:loadingLand});render();
-  assert.deepEqual(colors.splice(0),[loadingOcean,loadingLand,grid]);
+  assert.deepEqual(colors.splice(0),[loadingOcean,loadingLand]);
   owner.setLoadingSurface(null);render();
   assert.deepEqual(colors,[ocean,land,border,grid]);
   assert.deepEqual(errors,[]);assert.equal(lastVao,null);

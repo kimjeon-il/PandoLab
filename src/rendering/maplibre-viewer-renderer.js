@@ -242,7 +242,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    items.push({packet:paths.polar,color:rgba(borderColor,borderAlpha),width:borderWidth});
    keys.push([key,borderColor,borderAlpha,borderWidth]);
   }
-  if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5,loadingRole:'grid'});keys.push('grid');}
+  if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5});keys.push('grid');}
   for(const ref of selectionSnapshot?.selection?.items||[]){if(!deps.objectRefVisible(ref))continue;const f=ref.domain==='territorial'?deps.territorialModel.entityRepository.get(ref.id):ref.domain==='hydro'?deps.hydroModel.hydroFeatureById(ref.id):null;const role=ref.key===selectionSnapshot.selection.primaryKey?interactionStyle?.selection.primary:interactionStyle?.selection.secondary;if(f?.geometry){add(f.geometry,interactionStyle?.selection.color||'#0080ff',role?.fillAlpha??.2);line(f.geometry,interactionStyle?.selection.color||'#0080ff',role?.innerAlpha??role?.alpha??1,role?.innerWidth??role?.width??2);}}
   if(polarHover){
    const {geometry,properties:{color,alpha,strokeAlpha,width}}=polarHover;
