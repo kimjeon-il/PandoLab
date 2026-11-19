@@ -1,5 +1,6 @@
 import {requireProjectMonth} from "./project-setup.js";
 import { createProductModePolicy } from "../app/product-mode-policy.js";
+import { resourceKey } from '../runtime/resource-dependency-policy.js';
 
 const cloneValue = value => {
   if (value === undefined || value === null) return value;
@@ -41,6 +42,8 @@ export function createProjectDomain({
   let disposed = false;
   let replacing = false;
   let commandQueue = Promise.resolve();
+  const admittedSelectionCatalogs=new Map();
+  const selectionCatalogKey=refs=>JSON.stringify(refs.map(resourceKey).sort());
   // One admitted C++ document is active irrespective of its input reader.
   // projectId identifies content; documentId and generation isolate a session.
   let activeProject=null;
@@ -69,6 +72,7 @@ export function createProjectDomain({
   };
   const bumpGeneration = async (reason, detail = null) => {
     generation += 1;
+    admittedSelectionCatalogs.clear();
     const event = { generation, reason: String(reason || 'project-reset') };
     if (detail && typeof detail === 'object') Object.assign(event, detail);
     await onProjectReset(Object.freeze(event));
@@ -85,8 +89,12 @@ export function createProjectDomain({
     if(!Array.isArray(catalogs))throw new TypeError('Builtin selection catalogs must be explicit domain/ref records.');
     // A replacement may not inherit the previous project's transient water
     // and place references. Its own providers re-admit them after acceptance.
-    for(const {domain,refs} of catalogs)
-      await commandOwner.selectionCatalogLoad(domain,replacingProject?[]:refs);
+    admittedSelectionCatalogs.clear();
+    for(const {domain,refs} of catalogs){
+      const current=replacingProject?[]:refs;
+      await commandOwner.selectionCatalogLoad(domain,current);
+      admittedSelectionCatalogs.set(domain,selectionCatalogKey(current));
+    }
   };
 
   // Startup promotion replaces data inside the current render generation. It
@@ -123,6 +131,7 @@ export function createProjectDomain({
       if (typeof commandOwner?.storageBaselineLoad!=='function' || typeof publishCommand!=='function')
         throw new TypeError('The canonical C++ storage baseline admission is required.');
       const result=await commandOwner.storageBaselineLoad(baseline);
+      admittedSelectionCatalogs.clear();
       if(generation!==expectedGeneration)
         throw Object.assign(new Error('Storage baseline admission completed after project replacement.'),{ code: 'PL-CORE-STALE' });
       await publishCommand(result,{ expectedGeneration,reason: 'storage-baseline' });
@@ -224,8 +233,11 @@ export function createProjectDomain({
       if(typeof commandOwner?.selectionCatalogLoad!=='function' || typeof publishCommand!=='function')
         throw new TypeError('Canonical C++ builtin identity admission is required.');
       const refs=typeof refsProducerOrArray==='function' ? refsProducerOrArray():refsProducerOrArray;
+      const key=selectionCatalogKey(refs);
+      if(expectedEpoch===undefined&&admittedSelectionCatalogs.get(domain)===key)return false;
       const result=await commandOwner.selectionCatalogLoad(domain,refs,expectedEpoch);
       await publishCommand(result,{ expectedGeneration,reason: 'selection-catalog' });
+      if(generation===expectedGeneration)admittedSelectionCatalogs.set(domain,key);
       return result;
     });
     commandQueue=operation.catch(() => {});return operation;

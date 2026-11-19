@@ -68,29 +68,50 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
  let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map();
+ const fragmentsById=new Map();
+ let presentedFeatures=()=>[];
  async function refresh(version){
   const center=map.getCenter(),canvas=map.getCanvas();
   let result;try{result=await load({center:[center.lng,center.lat],zoom:map.getZoom(),width:canvas.clientWidth,height:canvas.clientHeight,knownKey:presentedKey});}catch(error){if(disposed||version!==generation)return;throw error;}
   const {key,addPacks,removePacks}=result;
   if(disposed||version!==generation)return;
+  if(key===presentedKey&&publishedKey===key)return;
   await beforePublish(()=>!disposed&&version===generation);
   if(disposed||version!==generation)return;
-  if(key===presentedKey){if(publishedKey!==key){onFeatures([...activePacks.values()].flat());publishedKey=key;}return;}
-  const next=new Map(activePacks),remove=[],changedIds=new Set();for(const id of removePacks||[]){for(const feature of next.get(id)||[]){remove.push(feature.id);changedIds.add(String(feature.properties.logicalId));}next.delete(id);}
-  const add=[];for(const pack of addPacks||[]){next.set(pack.id,pack.features);add.push(...pack.features);for(const feature of pack.features)changedIds.add(String(feature.properties.logicalId));}
+  if(key===presentedKey){onFeatures(presentedFeatures());publishedKey=key;return;}
+  const next=new Map(activePacks),remove=[],add=[],changed=new Map();
+  const fragmentsFor=feature=>{
+   const id=String(feature.properties.logicalId);
+   if(!changed.has(id))changed.set(id,new Map(fragmentsById.get(id)));
+   return changed.get(id);
+  };
+  for(const id of removePacks||[]){
+   for(const feature of next.get(id)||[]){remove.push(feature.id);fragmentsFor(feature).delete(feature.id);}
+   next.delete(id);
+  }
+  for(const pack of addPacks||[]){
+   next.set(pack.id,pack.features);
+   for(const feature of pack.features){add.push(feature);fragmentsFor(feature).set(feature.id,feature);}
+  }
   // Identity may be unchanged while a river gains or loses visible fragments.
   // The existing data owner must receive that effective geometry as well.
-  await admitFeatures([...next.values()].flat().filter(feature=>changedIds.has(String(feature.properties.logicalId))));
+  const changedFragments=[...changed.values()].flatMap(fragments=>[...fragments.values()]);
+  if(changedFragments.length)await admitFeatures(changedFragments);
   if(disposed||version!==generation)return;
-  if(add.length||remove.length){const applied=await updateSource({add,remove},[...next.values()].flat(),()=>!disposed&&version===generation);if(!applied)return;}
+  let snapshot;
+  const allFeatures=()=>snapshot??=[...next.values()].flat();
+  if(add.length||remove.length){const applied=await updateSource({add,remove},allFeatures,()=>!disposed&&version===generation);if(!applied)return;}
   if(!disposed){
    // updateData has already changed the source, so retain its actual pack
    // baseline even when a newer view arrived while the worker was applying it.
-   activePacks=next;presentedKey=key;
-   if(version===generation){onFeatures([...next.values()].flat());publishedKey=key;}
+   for(const [id,fragments]of changed){
+    if(fragments.size)fragmentsById.set(id,fragments);else fragmentsById.delete(id);
+   }
+   activePacks=next;presentedKey=key;presentedFeatures=allFeatures;
+   if(version===generation){onFeatures(allFeatures());publishedKey=key;}
   }
  }
  const settle=()=>{const version=++generation,cancelled=cancel?Promise.resolve().then(cancel):Promise.resolve();cancelled.catch(()=>{});pending=tail.then(async()=>{await cancelled;if(!disposed&&version===generation)await refresh(version);}).catch(error=>{if(!disposed&&version===generation)throw error;});tail=pending.catch(()=>{});pending.catch(onError);return pending;};
  map.on('moveend',settle);
- return {refresh:settle,ready:()=>pending,dispose(){disposed=true;generation++;if(cancel)Promise.resolve().then(cancel).catch(onError);map.off('moveend',settle);activePacks.clear();}};
+ return {refresh:settle,ready:()=>pending,dispose(){disposed=true;generation++;if(cancel)Promise.resolve().then(cancel).catch(onError);map.off('moveend',settle);activePacks.clear();fragmentsById.clear();presentedFeatures=()=>[];}};
 }

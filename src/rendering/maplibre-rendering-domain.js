@@ -93,11 +93,11 @@ export function createMapLibreRenderingDomain(options){
    }
    // Source/render certificates never change label identities. Keep the
    // existing symbol source while waiting for the native frame to publish.
-   if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready'].includes(reason))
+   if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint','temporal-source-admitted','await-current-map-frame'].includes(reason))
     return invalidate(reason,false,false);
    return invalidate(reason);
   },invalidateViewport:reason=>{renderer.verifyLayout();return invalidate(reason,true);},
-  invalidateProject:reason=>invalidate(reason,true),invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason);},
+  invalidateProject:reason=>invalidate(reason,true),invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason,false,reason!=='selection-hover');},
   invalidateLabels:reason=>invalidate(reason),invalidateQuality:reason=>invalidate(reason),
   invalidateBaseScene:reason=>invalidate(reason,true),invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},

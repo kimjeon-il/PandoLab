@@ -1,5 +1,6 @@
 import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
 import {timelineObjectKey} from '../document/timeline-records.js';
+import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {projectResourceOverlay} from '../document/project-resource-overlay.js';
 import {createPhysicalAssetReader} from '../data/physical-asset-reader.js';
 import {loadPhysicalLandGeometry} from '../data/physical-land-patch.js';
@@ -129,15 +130,16 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
       value.replacement?geometryReferenceFor(value.replacement.geometry):null,value.visible]));
     if(entry.presentationKey===presentationKey)return entry.presentation;
     let geometry=entry.value.geometry,revision=entry.value.revision;
-    const visibleWater=[];
+    const waterFeatures=[];
     for(const value of presentations){
       const result=presentPhysicalWater({geometry,revision,water:value.water,waterRevision:value.waterRevision,waterObjectRef:value.row.objectRef},value.replacement,value.visible);
       geometry=result.geometry;revision=result.revision;
-      if(result.water)visibleWater.push(result.water);
+      if(result.water)waterFeatures.push({type:'Feature',geometry:result.water,
+        properties:{objectKey:normalizeObjectRef({domain:'hydro',type:value.row.identity.entityKind,id:value.row.objectRef.id}).key}});
     }
-    const water=composePhysicalWaterGeometry(visibleWater);
+    const water=composePhysicalWaterGeometry(waterFeatures.map(feature=>feature.geometry));
     entry.presentationKey=presentationKey;
-    entry.presentation=Object.freeze({geometry,revision,water,waterRevision:JSON.stringify([key,presentationKey])});
+    entry.presentation=Object.freeze({geometry,revision,water,waterFeatures,waterRevision:JSON.stringify([key,presentationKey])});
     return entry.presentation;
   }
 

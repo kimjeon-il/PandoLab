@@ -152,7 +152,7 @@ export function createCoreDocumentReadModel(initialProject) {
     }));
     return acceptWorld({ month: world.month,sourceEpoch: epoch,entities },epoch);
   }
-  function acceptTransition(result,operation) {
+  function acceptTransition(result,operation,verifiedResources) {
     if(operation==='core.document-temporal-candidate-adopt') {
       const complete=Object.hasOwn(result||{},'project'),delta=result?.delta!=null;
       if(complete===delta)invalid('Core adoption requires exactly one complete project or temporal delta.');
@@ -161,7 +161,7 @@ export function createCoreDocumentReadModel(initialProject) {
     if (['core.document-load','core.document-load-baseline','core.document-initialize',
       'core.document-replacement-rollback'].includes(operation))
       acceptLoadedProject(result.project);
-    if (result?.delta) apply(result.delta);
+    if (result?.delta) apply(result.delta,verifiedResources);
     if (result?.world) acceptWorld(result.world,result.state.epoch);
     else if (result?.state && world && result.state.epoch!==world.sourceEpoch) {
       if (result.delta && result.delta.timelineRecords!==null)
@@ -170,7 +170,7 @@ export function createCoreDocumentReadModel(initialProject) {
     }
     return project;
   }
-  function candidateForDelta(delta) {
+  function candidateForDelta(delta,verifiedResources) {
     for (const field of ['objects','geometries','removedGeometryRefs'])
       if (!Array.isArray(delta[field])) invalid(`Required C++ delta collection is missing: ${field}`);
     for (const field of ['timelineRecords','presentation','provenance','header'])
@@ -219,7 +219,8 @@ export function createCoreDocumentReadModel(initialProject) {
       // Canonical archive admission can expose an already-stored reference.
       // Upsert its identical version while retaining the geometry allocation.
       const entries = project.geometries.filter(row => !removed.has(refKey(row)) && !admitted.has(refKey(row))).concat(delta.geometries);
-      nextGeometries = createGeometryVersionStore(entries, { reuse: geometries });
+      const verifiedContentHashes=verifiedResources&&new Map(verifiedResources.map(row=>[refKey(row),row.contentSha256]));
+      nextGeometries = createGeometryVersionStore(entries, { reuse: geometries, verifiedContentHashes });
       candidate.geometries = nextGeometries.snapshot();
     }
     if (delta.timelineRecords !== null) candidate.timelineRecords = freeze(structuredClone(delta.timelineRecords));
@@ -235,8 +236,8 @@ export function createCoreDocumentReadModel(initialProject) {
     const nextProvenance = delta.provenance === null ? provenance : freeze(structuredClone(delta.provenance));
     return { project: freeze(candidate),geometries: nextGeometries,provenance: nextProvenance };
   }
-  function apply(delta) {
-    const next=candidateForDelta(delta);
+  function apply(delta,verifiedResources) {
+    const next=candidateForDelta(delta,verifiedResources);
     project=next.project;
     geometries=next.geometries;
     provenance=next.provenance;

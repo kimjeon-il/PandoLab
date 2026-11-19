@@ -46,6 +46,10 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (Object.entries(patch).every(([key,value]) => current[key] === value)) return false;
     const result = await viewPresentation.applyPresentation({ action: 'groupStyle', group, patch });
     if (!result) throw new Error('Layer style command rejected: ' + group);
+    if(group==='objects'&&Object.keys(patch).length===1&&Object.hasOwn(patch,'colorVisible')){
+      ports.rendering.gpuMapRenderer.invalidateCountryColors();
+      return true;
+    }
     if (group === 'objects')
       ports.rendering.gpuMapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-presentation');
     if (group === 'rivers' || group === 'lakes')

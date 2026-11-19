@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCoreDocumentClient} from '../../../src/document/core-document-client.js';
+import {createProjectDomain} from '../../../src/document/project-domain.js';
 
 test('timeline geometry can be prepared without changing the displayed cursor',async()=>{
  const calls=[];
@@ -9,7 +10,8 @@ test('timeline geometry can be prepared without changing the displayed cursor',a
   calls.push(message.operation);
   const result=message.operation==='core.document-load'?{state}:
    message.operation==='core.document-geometry-requirements'?{sourceEpoch:1,resources:[{id:'fixture'}]}:
-   message.operation==='core.document-geometry-admit'?{state}:null;
+   message.operation==='core.document-geometry-admit'?{state}:
+   message.operation==='core.document-timeline-cursor'?{state:{epoch:2,timelineCursor:message.payload.month}}:null;
   queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
    type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
  },terminate(){}};
@@ -17,10 +19,16 @@ test('timeline geometry can be prepared without changing the displayed cursor',a
  try{
   await client.load('{}');let loaded=false;
   client.setGeometryLoader(async()=>{loaded=true;return [{id:'fixture'}];});
-  await client.prepareTimelineGeometry('1922-12');
+  const geometryPreparation=await client.prepareTimelineGeometry('1922-12');
   assert.equal(loaded,true);
   assert.equal(client.state().timelineCursor,'2026-12');
   assert.deepEqual(calls,['core.document-load','core.document-geometry-requirements','core.document-geometry-admit']);
+  await client.setTimelineCursor('1922-12',{geometryPreparation});
+  assert.equal(client.state().timelineCursor,'1922-12');
+  assert.equal(calls.filter(operation=>operation==='core.document-geometry-requirements').length,1);
+  await client.load('{}'); // Same numeric epoch as the receipt, a different document.
+  await client.setTimelineCursor('1922-12',{geometryPreparation});
+  assert.equal(calls.filter(operation=>operation==='core.document-geometry-requirements').length,2);
  }finally{client.dispose();}
 });
 
@@ -62,4 +70,23 @@ test('timeline preparation retries when another operation advances the Core epoc
   await client.presentationCatalogLoad({});release();await pending;
   assert.equal(loads,2);assert.deepEqual(admissions,[2]);assert.equal(client.state().timelineCursor,'2026-12');
  }finally{client.dispose();}
+});
+
+test('unchanged builtin water identities do not re-enter Core until the project changes',async()=>{
+ const calls=[];
+ const project=createProjectDomain({productMode:'viewer',readOnly:true,
+  commandOwner:{async selectionCatalogLoad(domain,refs){calls.push({domain,refs});return {accepted:true};}},
+  publishCommand:async()=>{}});
+ const river={domain:'hydroBuiltin',id:'river:1',logicalId:'river:1',type:'river',sourceIds:['hydro:1']};
+ const lake={...river,id:'lake:2',logicalId:'lake:2',type:'lake'};
+ try{
+  await project.admitSelectionCatalog('hydroBuiltin',[river,lake]);
+  await project.admitSelectionCatalog('hydroBuiltin',()=>[{...lake},{...river}]);
+  assert.equal(calls.length,1);
+  await project.admitSelectionCatalog('hydroBuiltin',[river]);
+  assert.equal(calls.length,2);
+  await project.resetRenderGeneration('fixture-replacement');
+  await project.admitSelectionCatalog('hydroBuiltin',[river]);
+  assert.equal(calls.length,3);
+ }finally{project.dispose();}
 });

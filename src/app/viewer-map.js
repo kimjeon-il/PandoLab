@@ -2,7 +2,8 @@ import {connectMapOwner,createMapReadPorts,mergeCapabilityPorts} from "./map-own
 import {createMapLibreInputPresentation} from "../map/maplibre-input-presentation.js";
 import {workerAssetUrl} from "../runtime/worker-asset-url.js";
 import {createAtomicMapStateController} from "./map-state-transition.js";
-import {createTerritorialEntityStore} from "../document/territorial-entity-store.js";
+import {classifyTerritorialPropertyOnly,createTerritorialEntityStore} from "../document/territorial-entity-store.js";
+import {temporalContains,temporalMonthEnd} from "../document/temporal.js";
 import {createMapRenderingResources} from "../rendering/map-renderer-composition.js";
 import {createMapLibreViewerRenderer} from "../rendering/maplibre-viewer-renderer.js";
 import {createPhysicalSourceConfiguration,HYDRO_LAYER_META,HYDRO_TOOL_CONFIG,PHYSICAL_DATASET} from "../data/physical-source-configuration.js";
@@ -71,8 +72,8 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
 
   let updateGeneration = 0;
   const hitTester=createRingHitTester(globalThis.PandoLabPolygonGeometry.ensureClosedRing);
-  let rootGeometryDirty=true;
-  let pendingPropertyPaint=false;
+  let presentedEntities=null;
+  let presentedHydroEdits=null;
   let lastFrame=null;
 
   const {projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,projectSession,renderQuality,pointerTargets,cameraNavigation:navigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings:physicalSettings,objectCatalog,territorialLabels:labelOwner,physicalResources,gpuScene,mapHost,objectPicking}=owners;
@@ -83,14 +84,13 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
   projectSession.initializeMapWorkScheduler();
   const state=projectSession.state,mapWorkScheduler=projectSession.mapWorkScheduler;
   const entityStore=createTerritorialEntityStore({documentModel:documentSession.documentModel,commandOwner:documentSession.commandOwner,
-    onEntitiesReplaced:(entities,{rootGeometryChanged,propertyOnly=false,paintChangedIds=[]})=>{
+    onEntitiesReplaced:(entities,{rootGeometryChanged,propertyOnly=false})=>{
       // Property-only Core snapshots may have fresh Feature wrappers. Retain
       // proven identical spatial bounds; never retain them on a geometry,
       // membership or hierarchy change, or when no index was initialized.
       if(!propertyOnly||!spatialIndex.retainTerritorialSpatialIndex(entities))
         spatialIndex.mapObjectGeometryRevisions.territorial++;
-      if(rootGeometryChanged){rootGeometryDirty=true;countryIndex.countryLandRevision++;}
-      if(propertyOnly&&paintChangedIds.length)pendingPropertyPaint=true;
+      if(rootGeometryChanged)countryIndex.countryLandRevision++;
     }});
   projectSession.installDocumentProjection({documentModel:documentSession.documentModel,commandOwner:documentSession.commandOwner,entityStore});
   state.countryVisualPhase='canonical';
@@ -231,18 +231,37 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
   renderQuality.applyAdaptiveRenderQuality();
   renderQuality.syncResolvedInteractionStyle();
   function buildScene(){if(!session)return;objectCatalog.invalidateObjectPresentation();renderingDomain.invalidateProject('document-presentation');}
-  async function update() {
+  async function update({previousMonth}={}) {
     if(!session)return;
     const generation=++updateGeneration;
-    state.countryIndex=new Map(entityStore.snapshot().map(feature=>[String(feature.id),feature]));
+    const entities=entityStore.snapshot();
+    const previous=presentedEntities;
+    if(!previous||previous!==entities)state.countryIndex=new Map(entities.map(feature=>[String(feature.id),feature]));
     const territorialFeatures=territorialScope.displayEntities().filter(feature=>feature.properties.entityKind==='general');
     await initialized;if(generation!==updateGeneration)return;
     // A dated source is admitted before its matching MapLibre render event.
     if(!await renderer.prepareTemporalCountrySource(territorialFeatures)||generation!==updateGeneration)return;
-    await renderer.setTerritorialFeatures(territorialFeatures);
-    buildScene(); // PROJECT includes label layout: renamed labels reflow around neighbors.
-    rootGeometryDirty=false;pendingPropertyPaint=false;
-    if(generation===updateGeneration)schedule();
+    if(!await renderer.setTerritorialFeatures(territorialFeatures)||generation!==updateGeneration)return;
+    presentedEntities=entities;
+    const hydroChanged=presentedHydroEdits!==state.hydroEdits;
+    presentedHydroEdits=state.hydroEdits;
+    // Distribution lifetimes can change on their own, even with identical national geometry.
+    let distributionChanged=false;
+    if(previousMonth&&previousMonth!==state.timelineCursor&&state.layerVisibility.distributions!==false){
+      const before=temporalMonthEnd(previousMonth),after=temporalMonthEnd(state.timelineCursor);
+      distributionChanged=[state.distributionLayers,state.distributionEntries].some(rows=>rows.some(row=>
+        (row.validFrom||row.validTo)&&temporalContains(row,before)!==temporalContains(row,after)));
+    }
+    const propertiesOnly=previous&&classifyTerritorialPropertyOnly(previous,entities);
+    const regionalPaint=propertiesOnly?.paintChangedIds.some(id=>repository.get(id)?.properties.entityKind==='regional');
+    if(!previousMonth||distributionChanged||regionalPaint||previous!==entities&&!propertiesOnly)buildScene();
+    else {
+      if(previous!==entities)objectCatalog.invalidateObjectPresentation();
+      if(hydroChanged)renderingDomain.invalidateSelection('dated-hydro');
+      const zoom=renderer.labelZoomVisibility();
+      if(zoom.country||zoom.places)renderingDomain.invalidateLabels('document-month-labels');
+      else renderingDomain.invalidateView('temporal-source-admitted');
+    }
   }
   const selectionPerformanceMetrics={};
 
@@ -309,7 +328,7 @@ export function createViewerMap({ runtimeContext,owners,element, canvas, project
       return candidate.value;
     },
     placeSelectionReferences:labelOwner.builtinPlaceSelectionReferences,hydroSelectionReferences:physicalResources.builtinHydroSelectionReferences,
-    objectPicking,closeObjectChooser:objectPicking.closeObjectChooser,objectCatalog,objectQuery,refreshSelection:()=>renderingDomain.invalidateSelection(),
+    objectPicking,closeObjectChooser:objectPicking.closeObjectChooser,objectCatalog,objectQuery,refreshSelection:reason=>renderingDomain.invalidateSelection(reason),
     capturePresentation:projectSession.captureViewingPresentation,
     physicalSettings:()=>state.physicalSettings,
     entityRepository:repository,

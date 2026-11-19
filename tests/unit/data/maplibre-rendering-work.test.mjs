@@ -70,9 +70,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   for(let i=0;i<25;i++){time+=16;domain.invalidateView('maplibre-camera');await flush();}
   assert.equal(labelRuns,1,'Native camera movement cannot rebuild unchanged labels');
   assert.equal(contentRuns,1,'Native camera movement cannot rebuild the geographic scene');
-  for(const event of ['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready']){
+  for(const event of ['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint']){
    domain.invalidateView(event);await flush();
   }
+  domain.invalidateSelection('selection-hover');await flush();
   assert.equal(labelRuns,1,'Native source completion must not recompile the unchanged symbol source');
   assert.equal(contentRuns,1,'Native source completion must not rebuild unrelated geometry');
   assert.ok(frames.slice(1).every(frame=>frame.withBounds===false),'Camera frames must not query geographic bounds');

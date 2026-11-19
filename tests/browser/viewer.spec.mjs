@@ -358,9 +358,9 @@ test('single white base and object-color toggle preserve boundaries, labels and 
  await expect(toggle).toBeChecked();
  await toggle.uncheck();
  await expect.poll(()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,data=await map.getSource(map.getLayer('territories').source).getData();
+  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getLayer('territories').source,data=await map.getSource(source).getData();
   const fills=data.features.filter(feature=>feature.properties.displayRole==='country-fill');
-  return fills.length>100&&fills.every(f=>f.properties.color==='#f1f1f1'&&f.properties.alpha===1);
+  return fills.length>100&&fills.every(f=>map.getFeatureState({source,id:f.id}).neutral===true);
  }),{timeout:20_000}).toBe(true);
  expect(await page.evaluate(()=>JSON.stringify(window.__PANDOLAB_VIEWER__.documentSnapshot()))).toEqual(initial.document);
  expect(await page.evaluate(()=>{
@@ -379,8 +379,8 @@ test('single white base and object-color toggle preserve boundaries, labels and 
  await page.locator('#preferencesBtn').click();
  await toggle.check();
  await expect.poll(()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,data=await map.getSource(map.getLayer('territories').source).getData();
-  return data.features.some(f=>f.properties.color&&f.properties.color!=='#f1f1f1'&&f.properties.alpha>0);
+  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getLayer('territories').source,data=await map.getSource(source).getData();
+  return data.features.some(f=>f.properties.color&&f.properties.alpha>0&&map.getFeatureState({source,id:f.id}).neutral===false);
  }),{timeout:20_000}).toBe(true);
  expect(await page.evaluate(()=>JSON.stringify(window.__PANDOLAB_VIEWER__.documentSnapshot()))).toEqual(initial.document);
 });
@@ -567,16 +567,77 @@ test('optional raster tile delay does not block a 1925 to 2025 transition',async
 
 
 test('dated physical water is restored across timeline changes',async({page})=>{
+ await page.addInitScript(()=>{
+  const operations=new Set(['core.document-geometry-requirements','core.document-geometry-admit','place.viewport']);
+  const post=Worker.prototype.postMessage;
+  window.__datedWorkerProbe={requirements:0,admissions:0,places:0};
+  Worker.prototype.postMessage=function(payload,...rest){
+   if(payload?.type==='request'&&operations.has(payload.operation)){
+    const key=payload.operation==='place.viewport'?'places':payload.operation.endsWith('requirements')?'requirements':'admissions';
+    window.__datedWorkerProbe[key]++;
+   }
+   return post.call(this,payload,...rest);
+  };
+ });
  await open(page);await month(page,'2026-11');
+ const original=await page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,states=window.__PANDOLAB_VIEWER__.rendererStats().datedSources;
+  window.__datedTileProbe=Object.fromEntries(Object.values(states).map(id=>{
+   const source=map.getSource(id),probe={source,requests:0};
+   const load=source.loadTile.bind(source);
+   source.loadTile=(...args)=>{probe.requests++;return load(...args);};
+   return [id,probe];
+  }));
+  return states;
+ });
+ const unchangedWork=()=>page.evaluate(()=>{
+  const s=window.__PANDOLAB_VIEWER__.rendererStats(),phases=s.performance.phases;
+  return {tiles:Object.values(window.__datedTileProbe).map(probe=>probe.requests),
+   geometryRequests:s.boundaryRequests,physicalLandPreparations:s.physicalLandPreparations,
+   territorialPayloads:phases['territorial.payload']?.count??0};
+ });
+ const unchangedBefore=await unchangedWork();
+ const workerBefore=await page.evaluate(()=>window.__datedWorkerProbe);
+ const unchangedDownloads=[];
+ const recordDownload=request=>{
+  if(/\/(?:world-geometry\/sha256-|geometries\/sha256-|display-land\/sha256-)/.test(request.url()))unchangedDownloads.push(request.url());
+ };
+ page.on('request',recordDownload);
+ await month(page,'2026-10');await month(page,'2026-11');
+ page.off('request',recordDownload);
+ expect(await unchangedWork()).toEqual(unchangedBefore);
+ expect(unchangedDownloads).toEqual([]);
+ expect(await page.evaluate(()=>window.__datedWorkerProbe)).toEqual({...workerBefore,requirements:workerBefore.requirements+2});
  const physical=()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,water=await map.getSource(map.getLayer('physical-water').source).getData();
+  const map=window.__PANDOLAB_MAPLIBRE__,{water:id}=window.__PANDOLAB_VIEWER__.rendererStats().datedSources;
+  const water=await map.getSource(id).getData();
   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(water)));
   return {water:[...new Uint8Array(bytes)].join(','),base:map.getLayer('map-base-fallback')?.source};
  });
- const modern=await physical();await month(page,'1925-01');const historical=await physical();
+ const modern=await physical();await month(page,'1922-12');const historical=await physical();
  expect(historical.water).not.toBe(modern.water);
  expect(historical.base).toBe('physical-land');
+ const historicalSources=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().datedSources);
+ const replaced=Object.keys(original).filter(kind=>historicalSources[kind]!==original[kind]);
+ expect(replaced).toContain('territories');
+ expect(replaced).toContain('water');
+ const hitsBefore=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().retainedSourceHits);
+ const tilesBefore=await page.evaluate(()=>Object.values(window.__datedTileProbe).map(probe=>probe.requests));
  await month(page,'2026-11');expect((await physical()).water).toBe(modern.water);
+ const returned=await page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,stats=window.__PANDOLAB_VIEWER__.rendererStats();
+  return {ids:stats.datedSources,hits:stats.retainedSourceHits,
+   same:Object.entries(window.__datedTileProbe).every(([id,probe])=>map.getSource(id)===probe.source),
+   requests:Object.values(window.__datedTileProbe).map(probe=>probe.requests)};
+ });
+ expect(returned.ids).toEqual(original);
+ expect(returned.same).toBe(true);
+ expect(returned.hits-hitsBefore).toBe(replaced.length);
+ expect(returned.requests).toEqual(tilesBefore);
+ await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[124,35],zoom:4});});
+ await ready(page,'uncached viewport after returning to a retained date');
+ expect(await page.evaluate(before=>Object.values(window.__datedTileProbe)
+  .some((probe,index)=>probe.requests>before[index]),tilesBefore)).toBe(true);
 });
 
 test('desktop Viewer presents the real map, changes year, searches and moves the camera',async({page})=>{

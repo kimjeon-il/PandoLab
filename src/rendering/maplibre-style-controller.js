@@ -35,7 +35,10 @@ export function createMapLibreStyleController(map){
   // Country hierarchy can create additional normal-fill batches. They use the
   // same centralized style rather than painting from the renderer.
   for(const layer of map.getStyle()?.layers||[]){
-   if(style.territorialFillPaint&&/^territories-fill-\d+$/.test(layer.id)&&layer.type==='fill')
+   const name=layer.id.split('--',1)[0];
+   if(layer.id!==name&&style.paint[name]&&['territories','borders','physical-water','map-base-fallback'].includes(name))
+    changed=paint(layer.id,style.paint[name])||changed;
+   if(style.territorialFillPaint&&/^territories-(fill|multiply)-/.test(layer.id)&&layer.type==='fill')
     changed=paint(layer.id,style.territorialFillPaint)||changed;
    const hydro=layer.source==='hydro'&&/^(lakes|rivers)-(\d+)$/.exec(layer.id);
    if(hydro)changed=paint(layer.id,mapLibreHydroPaint(style.paint[hydro[1]],layer.type,Number(hydro[2])))||changed;

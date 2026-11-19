@@ -119,7 +119,7 @@ export async function composeViewer({ productMode, meta }) {
       inspectorController?.syncMapSelection(snapshot);
     },
     onHoverChanged:snapshot=>tooltipController.setMapHover(snapshot.hover?map.objectQuery.objectDisplayInfo(snapshot.hover):null),
-    requestRender:()=>map.refreshSelection()});
+    requestRender:reason=>map.refreshSelection(reason)});
   disposables.push(selectionDomain);
   const selectionStatus=get('viewerSelectionStatus');
   selectionUiController=createSelectionUiController({window,document,selectionDomain,elements:{selectionStatus},
@@ -244,20 +244,21 @@ export async function composeViewer({ productMode, meta }) {
   });
   disposables.push(postPresentation);
   // Both imported files and the builtin map use the same C++ time cursor.
-  const applyDocumentMonth=async(month,{isCurrent=()=>true,waitForFrame=false,admitPresentation=null}={})=>{
+  const applyDocumentMonth=async(month,{isCurrent=()=>true,waitForFrame=false,admitPresentation=null,geometryPreparation}={})=>{
     projectDomain.requireTimelineMonth(month);
     const before=map.features(),generation=projectDomain.getGeneration();
-    await activeSession.commandOwner.setTimelineCursor(month,{isCurrent});
+    const previousMonth=activeSession.commandOwner.state().timelineCursor;
+    await map.renderer.measureWork('core.timeline-cursor',()=>activeSession.commandOwner.setTimelineCursor(month,{isCurrent,geometryPreparation}));
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    if(territorialMembershipDelta(before,map.features()).changed)
+    if(before!==map.features()&&territorialMembershipDelta(before,map.features()).changed)
       await map.objectCatalog.pruneLayerItemVisibility();
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     // Country sources can tile while place data loads. Keep temporal admission
     // closed until both owners finish preparing the accepted Core month.
     await Promise.all([
-      map.update(),
+      map.update({previousMonth}),
       waitForFrame&&map.viewState.layerVisibility.labels!==false
-        ?owners.territorialLabels.preparePlaces({force:true}):null,
+        ?owners.territorialLabels.preparePlaces():null,
     ]);
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     if(admitPresentation?.()===false)return false;
@@ -371,19 +372,20 @@ export async function composeViewer({ productMode, meta }) {
       // Physical resources are scoped to this document; one C++ cursor owns
       // the date for both builtin and GeoPackage projects.
       let preparing=true;
+      let geometryPreparation;
       const preparationCurrent=()=>preparing&&current();
       try{
-        await Promise.all([
+        [,geometryPreparation]=await Promise.all([
           owners.physicalResources.preparePhysicalContext(month,{
             isCurrent:preparationCurrent,activeProject:projectDomain.activeProject()}),
-          activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent}),
+          map.renderer.measureWork('core.timeline-geometry',()=>activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent})),
         ]);
       }finally{preparing=false;}
       if(!current())return false;
       // Keep the current map interactive while immutable physical data loads.
       // The existing frame guard is still needed once the cursor can change.
       map.renderer.preserveTemporalFrame();
-      if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,
+      if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,geometryPreparation,
         admitPresentation:()=>map.renderer.admitTemporalViewTransition(temporalTicket)}))return false;
       if(!current()||!commit())return false;
       status.dataset.ready='true';presentViewerLoadStatus(status,'지도 준비 완료.');

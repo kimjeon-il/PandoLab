@@ -3,7 +3,7 @@ import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {automaticLabelSettings,labelKey} from './label-layout.js';
 import {buildRenderableStrokeFeature} from '../geometry/geographic-boundary.js';
 import {DISTRIBUTION_MODES,DISTRIBUTION_RENDER_MODES} from '../document/distribution-model.js';
-import {geometryRevisionKey} from '../geometry/geometry-versions.js';
+import {admittedGeometryKey} from '../geometry/geometry-version-store.js';
 
 /** Source preparation ports for the single MapLibre scene; no SVG layer refresh. */
 export function createMapRenderingResources({ports,session}) {
@@ -90,7 +90,7 @@ export function createMapRenderingResources({ports,session}) {
       getState:()=>ports.projectState.state,
       getCountryLandRevision:()=>ports.countries.countryLandRevision,
       getTerritorialGeometryRevision:()=>ports.spatialQuery.mapObjectGeometryRevisions.territorial,
-      geometryToken:geometry=>geometryRevisionKey(geometry),
+      geometryToken:admittedGeometryKey,
       territorialEntityColor:ports.colorModel.territorialEntityColor,
       layerStyle,
       mapPalette:ports.preferences.mapPalette,

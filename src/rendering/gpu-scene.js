@@ -1,5 +1,5 @@
 import {overlayVisualOrder} from '../ui/layer-presentation.js';
-import {geometryRevisionKey} from '../geometry/geometry-versions.js';
+import {admittedGeometryKey} from '../geometry/geometry-version-store.js';
 
 /** One prepared overlay state for the MapLibre renderer. */
 export function createGpuScene() {
@@ -15,7 +15,7 @@ export function createGpuScene() {
   function selectionGeometryRevision(key, role = 'outline', feature = null) {
     const geometry = feature?.geometry;
     return geometry
-      ? `${key}:${role}:${geometryRevisionKey(geometry)}`
+      ? `${key}:${role}:${admittedGeometryKey(geometry)}`
       : `${key}:${role}:state-${dependencies.projectState.state.stateRevision}:country-${dependencies.countries.countryLandRevision}`;
   }
   function gpuSceneOrder(group, detail = 'fill', objectKey = '', fragment = 0) {
