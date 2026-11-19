@@ -1,4 +1,4 @@
-#include <pandoeditor/webterritorialcommands.h>
+#include <pandoeditor/webterritorial-source-codec.h>
 #include <pandoeditor/project.h>
 #include <pandoeditor/projectcodec.h>
 #include <pandoeditor/timeline-edit.h>
@@ -74,7 +74,7 @@ void validateHierarchy(const Rows& rows) {
         (void)root(rows,index,row.identity.id);
     }
 }
-Rows changedRows(const WebTerritorialEdit& edit) {
+Rows changedRows(const WebTerritorialSource& edit) {
     validateHierarchy(edit.features);
     return edit.features;
 }
@@ -186,7 +186,7 @@ void applyMonth(ProjectDocument& d,const ActiveFrame& before,const Rows& next,co
     }
 }
 }
-ProjectDocument applyWebTerritorialSource(const ProjectSnapshot& snapshot,const WebTerritorialEdit& edit) {
+ProjectDocument applyWebTerritorialSource(const ProjectSnapshot& snapshot,const WebTerritorialSource& edit) {
     const auto before=activeFrame(snapshot);const auto next=changedRows(edit);auto candidate=snapshot.document();
     if(snapshot.timelineEditsEnabled()) {
         applyMonth(candidate,before,next,snapshot.timelineMonth(),false);

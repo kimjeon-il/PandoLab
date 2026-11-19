@@ -6,7 +6,7 @@
 #include <pandoeditor/gisexchange.h>
 #include <pandoeditor/timeline-edit.h>
 #include <pandoeditor/webcommands.h>
-#include <pandoeditor/webterritorialcommands.h>
+#include <pandoeditor/webterritorial-source-codec.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 #include <emscripten.h>
@@ -421,7 +421,7 @@ val commandOutcome(const DocumentSessionOutcome& outcome,const DocumentSession& 
     value.set("changed",outcome.result.changed()||outcome.candidateId!=0);
     value.set("candidateId",outcome.candidateId);value.set("state",documentState(session.projectState()));
     value.set("selection",selectionSnapshot(session.selection()));
-    const char* status=outcome.result.status==CommandStatus::Prepared?"prepared":outcome.result.status==CommandStatus::Applied?"applied"
+    const char* status=outcome.result.status==CommandStatus::Applied?"applied"
         :outcome.result.status==CommandStatus::NoOp?"noop":"rejected";
     value.set("status",std::string(status));
     if(!outcome.result.ok()) {

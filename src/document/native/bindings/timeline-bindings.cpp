@@ -1,4 +1,3 @@
-#include <pandoeditor/timeline-edit.h>
 #include <pandoeditor/timeline-resolver.h>
 #include <pandoeditor/losslessjson.h>
 #include <emscripten/bind.h>
@@ -270,41 +269,11 @@ std::string initialMonth(val input,const std::string& currentMonth) {
 val resolvedWorld(val input,val contextInput,const std::string& month) {
     return boundary([&] {return webWorld(resolveWorld(readRecords(input),context(contextInput),month));});
 }
-val editRecord(val input,const std::string& collection,val objectRef,
-               const std::string& month,val patch) {
-    return boundary([&] {
-        const auto original=readRecords(input);
-        if(patch.isNull()||!is(patch,"object")||arrayValue(patch))
-            fail("TIMELINE_EDIT_PATCH","A patch object is required.");
-        TimelineEditPatch changes;
-        const auto keys=val::global("Object").call<val>("keys",patch);
-        for(unsigned i=0;i<keys["length"].as<unsigned>();++i) {
-            const auto key=keys[i].as<std::string>();
-            if(collection=="geometryBindings"&&key=="geometryRef")changes.geometryRef=readRef(patch["geometryRef"]);
-            else if(collection=="geometryBindings"&&key=="rendering")changes.rendering=val::global("JSON").call<val>("stringify",patch["rendering"]).as<std::string>();
-            else if(collection=="parentRelations"&&key=="parentId")
-                changes.parentId=readText(patch["parentId"],"TIMELINE_PARENT");
-            else if(collection=="parentRelations"&&key=="coverageMode")
-                changes.coverageMode=readText(patch["coverageMode"],"TIMELINE_COVERAGE");
-            else fail("TIMELINE_EDIT_PATCH","Unsupported timeline patch field.");
-        }
-        const auto outcome=editTimelineRecordAtMonth(original,collection,readObjectRef(objectRef),month,changes);
-        auto output=val::object();
-        output.set("changed",outcome.changed);
-        output.set("records",outcome.changed?webRecords(outcome.records):val::null());
-        return output;
-    });
-}
-val truncateEntity(val input,val objectRef,const std::string& month) {
-    return boundary([&]{return webRecords(truncateTimelineEntityAtMonth(readRecords(input),readObjectRef(objectRef),month));});
-}
 }
 EMSCRIPTEN_BINDINGS(pandoeditor_timeline_calculations) {
     emscripten::function("timelineNormalizeRecords",&normalizeRecords);
     emscripten::function("timelineInitialMonth",&initialMonth);
     emscripten::function("timelineResolveWorld",&resolvedWorld);
-    emscripten::function("timelineEditRecord",&editRecord);
-    emscripten::function("timelineTruncateEntity",&truncateEntity);
     emscripten::function("timelineVersionExistsAt",&versionExistsAt);
     emscripten::function("timelineSelectGeometryVersion",&selectGeometryVersion);
     emscripten::function("timelineLibraryNames",&libraryNames);

@@ -17,10 +17,10 @@ struct WebTerritorialFeature {
 };
 // A typed current Web store intent. Common command prepare owns current-month
 // admission, archive versions, records, dependencies and atomic publication.
-struct WebTerritorialEdit {
+struct WebTerritorialSource {
     std::vector<WebTerritorialFeature> features;
 };
-WebTerritorialEdit readWebTerritorialSource(const codecjson::Value&,const projectcodec::PlatformPorts&);
+WebTerritorialSource readWebTerritorialSource(const codecjson::Value&,const projectcodec::PlatformPorts&);
 codecjson::Value normalizeWebTerritorialResolvedFeature(const codecjson::Value&);
-ProjectDocument applyWebTerritorialSource(const ProjectSnapshot&,const WebTerritorialEdit&);
+ProjectDocument applyWebTerritorialSource(const ProjectSnapshot&,const WebTerritorialSource&);
 }
