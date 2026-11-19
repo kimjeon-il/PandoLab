@@ -58,24 +58,24 @@ export function installFrontendSnapshot({root,snapshot,settings=storageSettings(
     return existsSync(resolve(root,'config/library-data.json'))?withLibraryLock(root,install):install();
   });
 }
-function retireArtifactSnapshots(kind,{root=repository,roots=permanentWorktrees(root),settings=storageSettings(root),apply=false,processes=runningStorageConsumers(),refreshProcesses=()=>processes,afterFile=()=>{}}={}){
-  const native=kind==='native',markerName=native?'native-artifact.json':'frontend-manifest.json',retirementSchema='pando-'+kind+'-retirement-v1';
+export function retireFrontendSnapshots({root=repository,roots=permanentWorktrees(root),settings=storageSettings(root),apply=false,processes=runningStorageConsumers(),refreshProcesses=()=>processes,afterFile=()=>{}}={}){
+  const markerName='frontend-manifest.json',retirementSchema='pando-frontend-retirement-v1';
   if(!settings)throw Error('Application storage is not activated');
-  const libraryStore=!native&&existsSync(resolve(root,'config/library-data.json'))?{root:librarySharedCheckout(root),blobDirectory:'.pando-store/blobs'}:null;
+  const libraryStore=existsSync(resolve(root,'config/library-data.json'))?{root:librarySharedCheckout(root),blobDirectory:'.pando-store/blobs'}:null;
   const operation=()=>{
     if(processes.some(nativeWriter))throw Error('Active consumers block artifact retirement');
     // Frontend views contain thousands of tiny files. References/leases remain
     // checked per unlink under the owner lock; bound expensive Windows process
-    // inventory to once per second. Native executable inventories stay fresh.
+    // inventory to once per second.
     let processCheckedAt=0,currentProcesses=processes;
-    const latestProcesses=()=>{if(native||Date.now()-processCheckedAt>=1000){currentProcesses=refreshProcesses();processCheckedAt=Date.now();}return currentProcesses;};
-    const base=containedPath(settings.cacheRoot,kind),journal=containedPath(settings.cacheRoot,kind+'-retirement.pending.json');
+    const latestProcesses=()=>{if(Date.now()-processCheckedAt>=1000){currentProcesses=refreshProcesses();processCheckedAt=Date.now();}return currentProcesses;};
+    const base=containedPath(settings.cacheRoot,'frontend'),journal=containedPath(settings.cacheRoot,'frontend-retirement.pending.json');
     for(const name of ['frontend-install.pending.json','native-install.pending.json','generated-retirement.pending.json'])if(existsSync(containedPath(settings.cacheRoot,name)))throw Error('Pending installation blocks frontend retirement');
     const referenced=new Set();
-    const leaseReferences=()=>{const refs=new Set();for(const lease of contentFiles(containedPath(settings.cacheRoot,kind+'-leases'))){const record=JSON.parse(readFileSync(lease.path));if(!Number.isInteger(record.pid)||record.pid<=0)throw Error('Invalid artifact lease owner');let alive=true;try{process.kill(record.pid,0);}catch(e){if(e.code==='ESRCH')alive=false;else if(e.code!=='EPERM')throw e;}if(alive)refs.add(containedPath(base,record.directory));}return refs;};
+    const leaseReferences=()=>{const refs=new Set();for(const lease of contentFiles(containedPath(settings.cacheRoot,'frontend-leases'))){const record=JSON.parse(readFileSync(lease.path));if(!Number.isInteger(record.pid)||record.pid<=0)throw Error('Invalid artifact lease owner');let alive=true;try{process.kill(record.pid,0);}catch(e){if(e.code==='ESRCH')alive=false;else if(e.code!=='EPERM')throw e;}if(alive)refs.add(containedPath(base,record.directory));}return refs;};
     for(const ref of leaseReferences())referenced.add(ref);
 
-    for(const app of roots){const pointer=resolve(app,'.library-data/'+kind+'-artifacts.json');if(existsSync(pointer))for(const ref of Object.values(JSON.parse(readFileSync(pointer))))referenced.add(containedPath(base,ref.directory));}
+    for(const app of roots){const pointer=resolve(app,'.library-data/frontend-artifacts.json');if(existsSync(pointer))for(const ref of Object.values(JSON.parse(readFileSync(pointer))))referenced.add(containedPath(base,ref.directory));}
     let state=existsSync(journal)?JSON.parse(readFileSync(journal)):null;
     if(state&&(state.schema!==retirementSchema||containedPath(base,state.directory)!==state.directory||referenced.has(state.directory)||!Number.isInteger(state.completedCount)||state.completedCount<0||state.completedCount>state.manifest.files.length))throw Error('Pending retirement scope changed');
     if(state?.batch){const batch=state.batch,expected=state.manifest.files.slice(state.completedCount,batch.end);if(!Number.isInteger(batch.end)||batch.end<=state.completedCount||batch.end>state.manifest.files.length||!Array.isArray(batch.files)||batch.files.length!==expected.length||batch.files.some((f,i)=>f.path!==expected[i].path||!Number.isSafeInteger(f.physicalBytes)||f.physicalBytes<0||f.physicalBytes>expected[i].bytes))throw Error('Pending artifact retirement batch changed');}
@@ -91,7 +91,7 @@ function retireArtifactSnapshots(kind,{root=repository,roots=permanentWorktrees(
       if(referenced.has(directory)){entries.push({directory,status:'referenced'});continue;}
       const marker=containedPath(directory,markerName),manifest=existsSync(marker)?JSON.parse(readFileSync(marker)):state?.directory===directory&&state.markerRetirement?state.manifest:null;
       if(!manifest)throw Error('Frontend ownership marker is missing');
-      if(manifest.schema!==(native?1:'pando-frontend-v1')||directory!==containedPath(base,(native?manifest.nativeInputSha256:manifest.sourceSha256))||!Array.isArray(manifest.files)||new Set(manifest.files.map(f=>f.path)).size!==manifest.files.length||manifest.files.some(f=>f.path===markerName))throw Error('Unknown frontend ownership');
+      if(manifest.schema!=='pando-frontend-v1'||directory!==containedPath(base,manifest.sourceSha256)||!Array.isArray(manifest.files)||new Set(manifest.files.map(f=>f.path)).size!==manifest.files.length||manifest.files.some(f=>f.path===markerName))throw Error('Unknown frontend ownership');
       const resumed=state?.directory===directory;
       if(resumed&&JSON.stringify(state.manifest)!==JSON.stringify(manifest))throw Error('Pending frontend manifest changed');
       const completed=resumed?state.completedCount:0,expected=new Set([markerName,...manifest.files.slice(completed).map(file=>file.path)]);
@@ -99,7 +99,7 @@ function retireArtifactSnapshots(kind,{root=repository,roots=permanentWorktrees(
       for(const file of manifest.files.slice(completed)){
         const target=containedPath(directory,file.path);
         if(!existsSync(target)){if(resumed&&(state.pending?.path===file.path||state.batch?.files.some(f=>f.path===file.path)))continue;throw Error('Frontend file is missing');}
-        const s=lstatSync(target);if(!/^[a-f0-9]{64}$/.test(file.sha256)||s.size!==file.bytes||contentHash(readFileSync(target))!==file.sha256||((s.mode&0o200)&&(!native||s.nlink!==1)))throw Error('Modified artifact output must be preserved');
+        const s=lstatSync(target);if(!/^[a-f0-9]{64}$/.test(file.sha256)||s.size!==file.bytes||contentHash(readFileSync(target))!==file.sha256||(s.mode&0o200))throw Error('Modified artifact output must be preserved');
       }
       const markerBytes=existsSync(marker)?lstatSync(marker).size:state.markerRetirement.bytes;
       const row={directory,status:'eligible',bytes:manifest.files.reduce((n,f)=>n+f.bytes,0)+markerBytes};entries.push(row);
@@ -109,7 +109,7 @@ function retireArtifactSnapshots(kind,{root=repository,roots=permanentWorktrees(
       while(state.completedCount<manifest.files.length){
         if(leaseReferences().has(directory))throw Error('Artifact acquired a live verification lease during retirement');
         const observed=latestProcesses(),busy=observed.filter(p=>nativeWriter(p)||usesDirectory(p,directory));if(busy.length)throw Error('Active consumer appeared during artifact retirement: '+busy.map(p=>p.ProcessId+':'+p.Name+':'+p.CommandLine).join('; '));
-        for(const app of roots){const pointer=resolve(app,'.library-data/'+kind+'-artifacts.json');if(existsSync(pointer)&&Object.values(JSON.parse(readFileSync(pointer))).some(ref=>containedPath(base,ref.directory)===directory))throw Error('Artifact acquired a worktree reference during retirement');}
+        for(const app of roots){const pointer=resolve(app,'.library-data/frontend-artifacts.json');if(existsSync(pointer)&&Object.values(JSON.parse(readFileSync(pointer))).some(ref=>containedPath(base,ref.directory)===directory))throw Error('Artifact acquired a worktree reference during retirement');}
         const file=manifest.files[state.completedCount],target=containedPath(directory,file.path);
         if(!state.batch){
           const end=Math.min(state.completedCount+64,manifest.files.length);
@@ -137,17 +137,14 @@ function retireArtifactSnapshots(kind,{root=repository,roots=permanentWorktrees(
   if(!apply)return operation();
   return withStorageLock(root,settings,()=>existsSync(resolve(root,'config/library-data.json'))?withLibraryLock(root,operation,{compact:false}):operation());
 }
-export const retireFrontendSnapshots=options=>retireArtifactSnapshots('frontend',options);
-export const retireNativeSnapshots=options=>retireArtifactSnapshots('native',options);
-
 export function finishArtifactMaintenance({root=repository,roots=permanentWorktrees(root),settings=storageSettings(root),processes=runningStorageConsumers()}={}){
   const marker=containedPath(settings.cacheRoot,'artifact-maintenance.requested.json');
   atomicStorageJSON(marker,{root,requestedAt:new Date().toISOString()});
   if(processes.some(nativeWriter))return {status:'deferred',reason:'active build or stage writer'};
   const options={root,roots,settings,processes,refreshProcesses:runningStorageConsumers,apply:true};
   try{
-    const native=retireNativeSnapshots(options),frontend=retireFrontendSnapshots(options),blobs=pruneApplicationBlobs(options);
-    unlinkSync(marker);return {status:'completed',native,frontend,blobs};
+    const frontend=retireFrontendSnapshots(options),blobs=pruneApplicationBlobs(options);
+    unlinkSync(marker);return {status:'completed',frontend,blobs};
   }catch(error){
     const result={status:'blocked',code:'PL-STORAGE-MAINTENANCE',message:error.message};
     atomicStorageJSON(marker,{...result,root,diagnostic:error.stack});process.stderr.write(result.code+': '+result.message+'\n');return result;
@@ -161,47 +158,6 @@ function withStorageLock(root,settings,operation){
   try{fd=openSync(path,'wx');}catch(error){throw Error('Worktree storage is already running; preserve its journal and retry',{cause:error});}
   try{writeFileSync(fd,JSON.stringify({pid:process.pid,root}));recoverContentPermissions({root:settings.cacheRoot,blobDirectory:'blobs'});return operation();}
   finally{closeSync(fd);unlinkSync(path);}
-}
-export function installNativeArtifactView({root,source,manifest,settings=storageSettings(root),afterFile=()=>{}}){
-  if(!settings)throw Error('Activate application storage before installing native artifacts');
-  // New installations are Windows-only. Retired Android cache objects remain untouched.
-  if(manifest?.schema!==1||!/^[a-f0-9]{64}$/.test(manifest.nativeInputSha256)||
-     manifest.platform!=='windows'||!['development','offline','verification'].includes(manifest.mode))
-    throw Error('Invalid Windows native artifact identity');
-  if(!Array.isArray(manifest.files)||!manifest.files.length)
-    throw Error('Invalid Windows native artifact file list');
-  const allowed=new Set(['pandolab-web-shell.exe','WebView2Loader.dll',
-    ...(manifest.mode==='offline'?['PandoLab-setup.exe']:[])]);
-  const selected=new Set();
-  for(const file of manifest.files){
-    if(!file||typeof file.path!=='string'||!allowed.has(file.path)||selected.has(file.path)||
-       !Number.isSafeInteger(file.bytes)||file.bytes<=0||!/^[a-f0-9]{64}$/.test(file.sha256))
-      throw Error('Unexpected Windows native artifact path, size, hash, or duplicate');
-    selected.add(file.path);
-  }
-  if(!selected.has('pandolab-web-shell.exe')||
-     (manifest.mode==='offline'&&!selected.has('PandoLab-setup.exe')))
-    throw Error('Required Windows executable or offline installer is missing');
-  return withStorageLock(root,settings,()=>{
-    const store={root:settings.cacheRoot,blobDirectory:'blobs'},directory=containedPath(settings.cacheRoot,'native/'+manifest.nativeInputSha256),pending=directory+'.pending',journal=containedPath(settings.cacheRoot,'native-install.pending.json');
-    if(existsSync(journal)&&JSON.parse(readFileSync(journal)).manifest.nativeInputSha256!==manifest.nativeInputSha256)throw Error('Resume the pending native artifact installation first');
-    const checkFiles=(dir,value)=>{for(const f of value.files){const target=containedPath(dir,f.path);if(statSync(target).size!==f.bytes||contentHash(readFileSync(target))!==f.sha256||(statSync(target).mode&0o200))throw Error('Native artifact view changed or became writable');}};
-    if(!existsSync(directory)){
-      const bytes=manifest.files.reduce((n,f)=>n+f.bytes,0),disk=statfsSync(settings.cacheRoot);
-      if(bytes>=1024**3&&disk.bavail*disk.bsize<bytes+5*1024**3)throw Error('Native installation requires payload plus 5GiB headroom');
-      mkdirSync(pending,{recursive:true});
-      if(existsSync(join(pending,'native-artifact.json'))&&JSON.stringify(JSON.parse(readFileSync(join(pending,'native-artifact.json'))))!==JSON.stringify(manifest))throw Error('Pending native artifact differs; preserve it for recovery');
-      atomicStorageJSON(join(pending,'native-artifact.json'),manifest);atomicStorageJSON(journal,{root,source,manifest});
-      const view={viewRoot:pending,marker:'native-artifact.json'};
-      for(const f of manifest.files){const input=containedPath(source,f.path),bytes=readFileSync(input);if(bytes.length!==f.bytes||contentHash(bytes)!==f.sha256)throw Error('Downloaded native artifact changed');publishContent(store,bytes);linkContentView(store,f.sha256,containedPath(pending,f.path),view);afterFile(f);}
-      checkFiles(pending,manifest);renameSync(pending,directory);
-    }
-    const current=JSON.parse(readFileSync(containedPath(directory,'native-artifact.json')));
-    if(current.nativeInputSha256!==manifest.nativeInputSha256||current.platform!==manifest.platform||current.mode!==manifest.mode||JSON.stringify(current)!==JSON.stringify(manifest))throw Error('Native view identity changed');checkFiles(directory,current);
-    if(existsSync(journal))unlinkSync(journal);
-    const pointer=containedPath(root,'.library-data/native-artifacts.json'),bindings=existsSync(pointer)?JSON.parse(readFileSync(pointer)):{};
-    bindings[manifest.platform+'-'+manifest.mode]={directory,nativeInputSha256:manifest.nativeInputSha256};atomicStorageJSON(pointer,bindings);return directory;
-  });
 }
 const fileIdentity=path=>{const s=lstatSync(path,{bigint:true});return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;};
 function isRetiringEmsdkConsumer(p){
@@ -263,185 +219,6 @@ export function pruneApplicationBlobs({root=repository,roots=permanentWorktrees(
     recoverContentPermissions(store);
     const after=statfsSync(settings.cacheRoot);
     return {schema,apply,entries,deletedBytes:entries.filter(x=>x.status==='removed').reduce((n,x)=>n+x.bytes,0),freeBytesBefore:before.bavail*before.bsize,freeBytesAfter:after.bavail*after.bsize,freeBytesDelta:(after.bavail-before.bavail)*after.bsize};
-  };
-  return apply?withStorageLock(root,settings,operation):operation();
-}
-// Retire only verified unreferenced immutable Windows native artifact views.
-// Artifact transport uses a hash-keyed shared pool; this never deletes originals,
-// staged user work, SDKs, source files or pinned/actively used executable views.
-export function retireUnusedNativeViews({root=repository,roots=permanentWorktrees(root),
-  settings=storageSettings(root),processes=runningStorageConsumers(),apply=false,afterFile=()=>{}}={}) {
-  if(!settings)throw Error('Application storage is not activated');
-  const operation=()=>{
-    if(processes.length||roots.some(app=>storageBusy(app,processes)))
-      throw Error('Active native/App consumer or stage writer blocks native retirement');
-    for(const name of ['native-install.pending.json','frontend-install.pending.json',
-      'generated-retirement.pending.json','migration.pending.json','runtime-migration.pending.json',
-      'app-git-compaction.pending.json'])
-      if(existsSync(containedPath(settings.cacheRoot,name)))throw Error('Pending storage operation blocks native retirement: '+name);
-    const base=containedPath(settings.cacheRoot,'native'),
-      journal=containedPath(settings.cacheRoot,'native-retirement.pending.json');
-    const referenced=new Set();
-    for(const app of roots) {
-      const pointer=resolve(app,'.library-data/native-artifacts.json');
-      if(!existsSync(pointer))continue;
-      if(!lstatSync(pointer).isFile())throw Error('Invalid native artifact pointer');
-      for(const value of Object.values(JSON.parse(readFileSync(pointer,'utf8')))) {
-        if(typeof value?.directory!=='string'||!/^[a-f0-9]{64}$/.test(value.nativeInputSha256))
-          throw Error('Unknown native artifact pointer; preserve installed views');
-        const target=containedPath(base,value.directory);
-        if(target!==containedPath(base,value.nativeInputSha256))
-          throw Error('Native pointer identity mismatch');
-        referenced.add(target);
-      }
-    }
-    let state=existsSync(journal)?JSON.parse(readFileSync(journal,'utf8')):null;
-    if(state&&(state.schema!=='pando-native-retirement-v1'||
-      state.directory!==containedPath(base,state.directory)||referenced.has(state.directory)||
-      !Number.isInteger(state.completedCount)||state.completedCount<0||
-      state.completedCount>state.manifest?.files?.length))
-      throw Error('Pending native retirement scope changed');
-    const names=existsSync(base)?readdirSync(base):[];
-    const directories=names.filter(name=>/^[a-f0-9]{64}$/.test(name)).map(name=>containedPath(base,name));
-    const entries=[];let deletedBytes=state?.deletedBytes||0,payloadBytesUnlinked=state?.payloadBytesUnlinked||0;
-    if(state&&!directories.includes(state.directory)) {
-      if(!apply||state.completedCount!==state.manifest.files.length||!state.markerRetirement)
-        throw Error('Pending native directory missing or incomplete');
-      deletedBytes+=state.markerRetirement.bytes;payloadBytesUnlinked+=state.markerRetirement.bytes;
-      if(apply)unlinkSync(journal);
-      state=null;
-    }
-    if(state)directories.sort((a,b)=>Number(b===state.directory)-Number(a===state.directory));
-    for(const directory of directories) {
-      if(referenced.has(directory)){entries.push({directory,status:'referenced'});continue;}
-      const marker=containedPath(directory,'native-artifact.json'),
-        manifest=existsSync(marker)?JSON.parse(readFileSync(marker,'utf8')):
-          state?.directory===directory&&state.markerRetirement?state.manifest:null;
-      if(!manifest||manifest.schema!==1||manifest.platform!=='windows'||
-        !['development','offline','verification'].includes(manifest.mode)||
-        directory!==containedPath(base,manifest.nativeInputSha256)||
-        !/^[a-f0-9]{40}$/.test(manifest.sourceCommit||'')||
-        !Array.isArray(manifest.files)||!manifest.files.length)
-        throw Error('Unrecognized native artifact ownership; preserve it');
-      const allowed=new Set(['pandolab-web-shell.exe','WebView2Loader.dll',
-        ...(manifest.mode==='offline'?['PandoLab-setup.exe']:[])]);
-      if(new Set(manifest.files.map(f=>f.path)).size!==manifest.files.length||
-        !manifest.files.some(f=>f.path==='pandolab-web-shell.exe')||
-        (manifest.mode==='offline'&&!manifest.files.some(f=>f.path==='PandoLab-setup.exe'))||
-        manifest.files.some(f=>!allowed.has(f.path)||!Number.isSafeInteger(f.bytes)||f.bytes<=0||
-          !/^[a-f0-9]{64}$/.test(f.sha256)))
-        throw Error('Unexpected native artifact manifest; preserve it');
-      const resumed=state?.directory===directory;
-      if(resumed&&JSON.stringify(state.manifest)!==JSON.stringify(manifest))
-        throw Error('Pending native artifact manifest changed');
-      const completed=resumed?state.completedCount:0,
-        expected=new Set(['native-artifact.json',...manifest.files.slice(completed).map(f=>f.path)]);
-      for(const file of contentFiles(directory))
-        if(!expected.has(file.logical))throw Error('Unlisted native artifact file must be preserved: '+file.path);
-      for(const file of manifest.files.slice(completed)){
-        const target=containedPath(directory,file.path);
-        if(!existsSync(target)){
-          if(resumed&&state.pending?.path===file.path)continue;
-          throw Error('Native artifact missing without journal');
-        }
-        const s=lstatSync(target);
-        if(!s.isFile()||s.size!==file.bytes||(s.mode&0o200)||
-          contentHash(readFileSync(target))!==file.sha256)
-          throw Error('Changed native artifact must be preserved');
-      }
-      const markerBytes=existsSync(marker)?lstatSync(marker).size:state.markerRetirement.bytes,
-        row={directory,status:'eligible',logicalBytes:manifest.files.reduce((n,f)=>n+f.bytes,0)+markerBytes};
-      entries.push(row);
-      if(!apply)continue;
-      state=resumed?state:{schema:'pando-native-retirement-v1',directory,manifest,completedCount:0,
-        pending:null,deletedBytes,payloadBytesUnlinked};
-      atomicStorageJSON(journal,state);
-      while(state.completedCount<manifest.files.length) {
-        const file=manifest.files[state.completedCount],target=containedPath(directory,file.path);
-        if(existsSync(target)){
-          const s=lstatSync(target);
-          if(s.size!==file.bytes||contentHash(readFileSync(target))!==file.sha256)
-            throw Error('Native artifact changed before removal');
-          state.pending={path:file.path,physicalBytes:s.nlink===1?file.bytes:0};
-          atomicStorageJSON(journal,state);
-          removeContentView({root:settings.cacheRoot,blobDirectory:'blobs'},target,
-            {viewRoot:directory,marker:'native-artifact.json'});
-        }else if(state.pending?.path!==file.path)throw Error('Unjournaled native artifact absence');
-        state.deletedBytes+=file.bytes;
-        state.payloadBytesUnlinked+=state.pending?.physicalBytes||0;
-        state.pending=null;state.completedCount++;
-        atomicStorageJSON(journal,state);afterFile(file);
-      }
-      state.markerRetirement={bytes:markerBytes};
-      atomicStorageJSON(journal,state);
-      if(existsSync(marker)){unlinkSync(marker);state.deletedBytes+=markerBytes;state.payloadBytesUnlinked+=markerBytes;}
-      rmdirSync(directory);
-      deletedBytes=state.deletedBytes;payloadBytesUnlinked=state.payloadBytesUnlinked;
-      unlinkSync(journal);state=null;row.status='removed';
-    }
-    return {schema:'pando-native-retirement-v1',apply,entries,deletedBytes,payloadBytesUnlinked,
-      note:'Physical space of shared blobs is recovered by the existing --prune-blobs operation'};
-  };
-  return apply?withStorageLock(root,settings,operation):operation();
-}
-
-const retiredQtRuns=['qt-pair-70789caf-failed','qt-pair-4418b791','qt-pair-9bd078c7','qt-pair-ad3ba73b-baseline','qt-pair-ad3ba73b-candidate','qt-pair-b81c6173-baseline','qt-pair-b81c6173-candidate'];
-export function shareRetiredQtRuntimes({root=repository,roots=permanentWorktrees(root),settings=storageSettings(root),apply=false,processes=runningStorageConsumers(),retire=false}={}){
-  if(!settings)throw Error('Worktree storage is not activated');
-  const store={root:settings.cacheRoot,blobDirectory:'blobs'};
-  const validate=(app,directory,scan=true)=>{
-    if(!roots.map(resolvePath=>resolve(resolvePath)).includes(resolve(app)))throw Error('Unknown runtime worktree');
-    const path=containedPath(app,directory),relativePath=path.slice(resolve(app).length+1).replaceAll('\\','/');
-    if(!retiredQtRuns.some(run=>relativePath.startsWith(`build-native/p9/${run}/`))||!path.endsWith('qt-runtime'))throw Error('Unknown retired runtime scope');
-    const marker=containedPath(path,'source-identity.json');
-    if(!existsSync(marker))throw Error('No source identity: preserve unique SDK material');
-    const identity=JSON.parse(readFileSync(marker,'utf8'));
-    if(identity.qtVersion!=='6.8.3'||!identity.binaries||Object.values(identity.binaries).some(row=>typeof row.file!=='string'))throw Error('Unknown runtime ownership');
-    for(const binary of Object.values(identity.binaries))if(existsSync(containedPath(path,binary.file)))throw Error('A historical executable still consumes this runtime');
-    const files=scan?contentFiles(path):[];
-    if(files.some(file=>file.logical.endsWith('.exe')))throw Error('A historical executable still consumes this runtime');
-    if(processes.length)throw Error('A build/application consumer is active');
-    return {view:{viewRoot:path,marker:'source-identity.json'},files};
-  };
-  const operation=()=>{
-    const entries=[],journal=containedPath(settings.cacheRoot,'runtime-migration.pending.json'),before=statfsSync(settings.cacheRoot);
-    const finish=row=>{
-      const {view}=validate(row.root,row.directory,false),target=containedPath(row.directory,row.path),blob=contentPath(store,row.sha256);
-      if(!existsSync(blob)||contentHash(readFileSync(blob))!==row.sha256||statSync(blob).size!==row.bytes)throw Error('Runtime recovery blob differs');
-      if(existsSync(target)&&contentHash(readFileSync(target))!==row.sha256)throw Error('Runtime changed; preserve recovery journal');
-      linkContentView(store,row.sha256,target,view);
-      if(statSync(target,{bigint:true}).ino!==statSync(blob,{bigint:true}).ino)throw Error('Runtime sharing did not preserve file identity');
-      unlinkSync(journal);
-    };
-    if(apply&&existsSync(journal)){const record=JSON.parse(readFileSync(journal));if(record.schema!==schema)throw Error('Unknown runtime journal');finish(record.entry);}
-    for(const app of roots)for(const run of retiredQtRuns){
-      const runRoot=containedPath(app,`build-native/p9/${run}`);if(!existsSync(runRoot))continue;
-      const directories=[join(runRoot,'qt-runtime'),...readdirSync(runRoot,{withFileTypes:true}).filter(x=>x.isDirectory()&&x.name.startsWith('p9-windows-qt-')).map(x=>join(runRoot,x.name,'qt-runtime'))].filter(existsSync);
-      for(const directory of directories){
-        let checked;try{checked=validate(app,directory);}catch(error){entries.push({root:app,directory,status:'protected',reason:error.message});continue;}
-        if(retire){
-          const files=checked.files.filter(f=>f.logical!=='source-identity.json'),marker=containedPath(directory,'source-identity.json');
-          // Only already-owned shared SDK views qualify; unknown local bytes stay.
-          const owned=files.every(f=>{const blob=contentPath(store,contentHash(readFileSync(f.path)));return existsSync(blob)&&statSync(blob,{bigint:true}).ino===statSync(f.path,{bigint:true}).ino;});
-          if(!owned){entries.push({root:app,directory,status:'protected',reason:'Runtime includes unowned bytes'});continue;}
-          const sourceIdentityText=readFileSync(marker,'utf8');
-          const row={root:app,directory,status:apply?'removed-runtime':'retired-runtime',bytes:files.reduce((n,f)=>n+f.bytes,0),sourceIdentity:JSON.parse(sourceIdentityText),sourceIdentityText,sourceIdentitySha256:contentHash(Buffer.from(sourceIdentityText))};entries.push(row);
-          if(apply){for(const f of files)removeContentView(store,f.path,checked.view);unlinkSync(marker);const prune=p=>{for(const e of readdirSync(p,{withFileTypes:true})){if(!e.isDirectory()||e.isSymbolicLink())throw Error('Unexpected runtime remnant');prune(containedPath(p,e.name));}rmdirSync(p);};prune(directory);}
-          continue;
-        }
-        for(const file of checked.files.filter(x=>x.logical!=='source-identity.json')){
-          const identity=fileIdentity(file.path),bytes=readFileSync(file.path),sha256=contentHash(bytes),blob=contentPath(store,sha256),s=lstatSync(file.path);
-          const row={root:app,directory,path:file.logical,sha256,bytes:bytes.length,status:'eligible'};entries.push(row);
-          if(existsSync(blob)&&statSync(blob,{bigint:true}).ino===statSync(file.path,{bigint:true}).ino){row.status='already-shared';continue;}
-          if(s.nlink>1){row.status='protected';row.reason='Unknown shared SDK inode';continue;}
-          if(apply){
-            if(fileIdentity(file.path)!==identity)throw Error('Runtime changed before sharing');
-            publishContent(store,bytes);atomicStorageJSON(journal,{schema,entry:row});finish(row);row.status='shared';
-          }
-        }
-      }
-    }
-    const after=statfsSync(settings.cacheRoot);return {schema,apply,entries,freeBytesBefore:before.bavail*before.bsize,freeBytesAfter:after.bavail*after.bsize,freeBytesDelta:(after.bavail-before.bavail)*after.bsize};
   };
   return apply?withStorageLock(root,settings,operation):operation();
 }
@@ -592,7 +369,6 @@ async function main(){
     console.log(JSON.stringify({entries:result.entries?.length,deletedBytes:result.deletedBytes,relocatedBytes:result.relocatedBytes,payloadBytesUnlinked:result.payloadBytesUnlinked,output}));return;
   }
   if(args.includes('--prepare-dependencies')){console.log(JSON.stringify(prepareDependencies(root)));return;}
-  if(args.includes('--retire-native')){console.log(JSON.stringify(retireNativeSnapshots({root,apply:args.includes('--apply'),refreshProcesses:runningStorageConsumers})));return;}
   if(args.includes('--retire-frontend')){console.log(JSON.stringify(retireFrontendSnapshots({root,apply:args.includes('--apply')})));return;}
   if(args.includes('--activate-compiler-cache'))return activateCompilerCache(root);
   if(args.includes('--disable-local-compiler')){console.log(JSON.stringify(deactivateCompilerCache({root})));return;}
@@ -606,8 +382,8 @@ async function main(){
     const result=spawnSync(command[0],command.slice(1),{cwd:process.cwd(),env:compilerCacheEnvironment({root}),stdio:'inherit',windowsHide:true});
     if(result.error)throw result.error;process.exitCode=result.status??1;return;
   }
-  if(!['--retire-qt-runtimes','--share-retired-qt','--prune-blobs'].some(flag=>args.includes(flag)))throw Error('Choose an explicit storage operation: --prune-blobs, --retire-frontend, --retire-native or --retire-generated=<manifest>');
-  const result=args.includes('--retire-qt-runtimes')?shareRetiredQtRuntimes({root,apply:args.includes('--apply'),retire:true}):args.includes('--share-retired-qt')?shareRetiredQtRuntimes({root,apply:args.includes('--apply')}):pruneApplicationBlobs({root,apply:args.includes('--apply')});
+  if(!args.includes('--prune-blobs'))throw Error('Choose an explicit storage operation: --prune-blobs, --retire-frontend or --retire-generated=<manifest>');
+  const result=pruneApplicationBlobs({root,apply:args.includes('--apply')});
   const output=args.find(x=>x.startsWith('--output='))?.slice(9);
   if(output)atomicStorageJSON(resolve(output),result);
   console.log(JSON.stringify({apply:result.apply,entries:result.entries.length,statuses:Object.fromEntries([...new Set(result.entries.map(x=>x.status))].map(status=>[status,result.entries.filter(x=>x.status===status).length])),freeBytesDelta:result.freeBytesDelta,output}));
