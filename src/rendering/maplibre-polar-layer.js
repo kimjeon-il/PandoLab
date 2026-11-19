@@ -113,10 +113,11 @@ export function createPolarLayer({map,prepare,onChange,onError}){
     gl.uniform2f(uniform('u_viewport'),map.getCanvas().clientWidth,map.getCanvas().clientHeight);gl.uniform1f(uniform('u_width'),1);
     for(const row of rows){
      if(!capsVisible&&!row.fullExtent)continue;
-     if(loadingSurface&&!row.loadingRole)continue;
+     const color=loadingSurface?loadingSurface[row.loadingRole]:row.color;
+     if(!color)continue;
      const b=upload(row.packet);gl.bindBuffer(gl.ARRAY_BUFFER,b.vertex);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b.index);
      const pos=bindings.position,side=bindings.side;gl.enableVertexAttribArray(pos);gl.vertexAttribPointer(pos,4,gl.FLOAT,false,20,0);gl.enableVertexAttribArray(side);gl.vertexAttribPointer(side,1,gl.FLOAT,false,20,16);
-     gl.uniform1i(uniform('u_cap_only'),row.fullExtent?0:1);gl.uniform1f(uniform('u_width'),row.width||1);gl.uniform4fv(uniform('u_color'),loadingSurface?.[row.loadingRole]??row.color);
+     gl.uniform1i(uniform('u_cap_only'),row.fullExtent?0:1);gl.uniform1f(uniform('u_width'),row.width||1);gl.uniform4fv(uniform('u_color'),color);
      gl.blendFunc(row.multiply?gl.DST_COLOR:gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.drawElements(gl.TRIANGLES,b.count,gl.UNSIGNED_INT,0);drawCalls++;submittedTriangles+=b.count/3;
     }
    }catch(error){failed=true;onError(error);}finally{
