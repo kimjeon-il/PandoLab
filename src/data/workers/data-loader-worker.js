@@ -1,0 +1,109 @@
+import { runtimeDataRoot, workerBuildMeta } from "../../runtime/worker-asset-url.js";
+const workerAssetRevision = new URL(self.location.href).searchParams.get('v') || '';
+await import(`../../../assets/js/build-meta.js?v=${encodeURIComponent(workerAssetRevision)}`);
+const buildMeta = workerBuildMeta(self.location.href, globalThis.PANDOLAB_BUILD_META);
+if (!buildMeta) throw new Error('빌드 메타데이터를 불러오지 못했습니다.');
+const ASSET_REVISION = String(buildMeta.assetRevision || workerAssetRevision);
+const DATA_REVISION = String(buildMeta.dataRevision || '');
+if (!DATA_REVISION) throw new Error('데이터 빌드 메타데이터가 없습니다.');
+const { decodePreparedCountryScene, preparedCountrySceneKey } = await import(`../../rendering/country-mesh-codec.js?v=${encodeURIComponent(ASSET_REVISION)}`);
+// The prepared scene may already contain its conservative stroke visibility
+// index. Avoid loading the derivation module for that current-format scene or
+// for a historical date that cannot use this one immutable asset.
+let visibilityModule = null;
+const resolveVisibilityBlocks = async prepared => {
+  if (prepared?.visibilityBlocks?.version === 1) return prepared.visibilityBlocks;
+  visibilityModule ||= import(`../../rendering/gpu-stroke-visibility.js?v=${encodeURIComponent(ASSET_REVISION)}`);
+  const { prepareGpuStrokeVisibilityBlocks } = await visibilityModule;
+  return prepareGpuStrokeVisibilityBlocks(prepared);
+};
+let manifest = null;
+const { createStoredAssetLoader } = await import(`../stored-asset-loader.js?v=${encodeURIComponent(ASSET_REVISION)}`);
+const { parseVerifiedWorldBundle, worldAssetUrl } = await import(`../world-bundle-manifest.js?v=${encodeURIComponent(ASSET_REVISION)}`);
+const {mapProjectCatalogSpec}=await import(`../map-project-runtime.js?v=${encodeURIComponent(ASSET_REVISION)}`);
+const worldDataRoot = new URL('assets/data/', runtimeDataRoot(self.location.href));
+const worldSpec=mapProjectCatalogSpec(buildMeta,'world');
+const manifestLoader = createStoredAssetLoader({ dataRevision: DATA_REVISION,
+  resolveUrl: spec => new URL(spec.url, runtimeDataRoot(self.location.href)) });
+const { loadAsset } = createStoredAssetLoader({
+  dataRevision: DATA_REVISION,
+  cachePolicy: 'immutable',
+  resolveUrl: spec => worldAssetUrl(spec, worldDataRoot),
+});
+
+async function loadPreparedScene(sceneIdentity) {
+  const startedAt=performance.now();
+  const key=preparedCountrySceneKey(sceneIdentity),spec=manifest.assets.preparedCountryScene;
+  if(!spec){
+    // A prepared scene is optional. Missing or obsolete immutable packets are
+    // recomputed from the already accepted C++ country geometries. Required
+    // world/catalog integrity remains enforced by loadManifest().
+    self.postMessage({type:'builtin-mesh-miss'});
+    return;
+  }
+  if(key!==preparedCountrySceneKey(spec.identity)){self.postMessage({type:'builtin-mesh-miss'});return;}
+  let result;
+  try {
+    result=await loadAsset(spec,'mesh','builtin-scene','사전 계산 지도',
+      buffer=>decodePreparedCountryScene(buffer,sceneIdentity));
+  } catch(error) {
+    // Only a source-verified but obsolete *descriptor* may miss the cache.
+    // Load-time hash failures and other invalid assets still fail closed.
+    if(error?.message==='Invalid prepared country scene descriptor'){
+      self.postMessage({type:'builtin-mesh-miss',reason:'incompatible-prepared-descriptor'});
+      return;
+    }
+    throw error;
+  }
+  const loadedAt=performance.now();
+  const scene=result.value, buffers=new Set();
+  // Older immutable prepared-world assets predate viewport stroke culling. Derive
+  // their viewport index here in the loader Worker, never on the UI thread.
+  // The SHA-verified scene and its canonical boundary coordinates stay intact.
+  const original = scene.boundaryPacket;
+  const prepared = original.preparedGeometry;
+  const index=await resolveVisibilityBlocks(prepared);
+  const indexedAt=performance.now();
+  const boundaryPacket = index
+    ? { ...original, preparedGeometry: { ...prepared, visibilityBlocks: index } }
+    : original;
+  const collect=value=>{
+    if(value instanceof ArrayBuffer)buffers.add(value);
+    else if(ArrayBuffer.isView(value))buffers.add(value.buffer);
+    else if(value&&typeof value==='object')for(const item of Object.values(value))collect(item);
+  };
+  collect(scene);
+  self.postMessage({type:'builtin-mesh-ready',meshBuffer:scene.meshBuffer,
+    preparedStroke:scene.preparedStroke,spatialBlocks:scene.spatialBlocks,boundaryPacket,
+    // Report cold-load cost by stage; the resource still remains owned and
+    // SHA-verified by createStoredAssetLoader before the scene is admitted.
+    timings: {cacheHit:result.cacheHit===true,readMs:result.readMs,
+      cacheWriteMs:result.cacheWriteMs,decompressMs:result.decompressMs,
+      assetLoadAndVerifyMs:loadedAt-startedAt,visibilityIndexMs:indexedAt-loadedAt,
+      workerTotalMs:performance.now()-startedAt},
+    identity:{hash:spec.sha256,sceneKey:key,dataRevision:DATA_REVISION,
+      countryIds:scene.countryIds,header:[...new Uint32Array(scene.meshBuffer,0,12)]}},[...buffers]);
+}
+
+self.onmessage = event => {
+  if (event.data?.type !== 'load-builtin-mesh') return;
+  loadPreparedScene(event.data.sceneIdentity).catch(error => {
+    self.postMessage({ type: 'builtin-mesh-error', message: error?.message || String(error) });
+  });
+};
+try {
+  const result = await manifestLoader.loadAsset(worldSpec,
+    'mesh', 'world-manifest', '세계지도 목록', bytes => parseVerifiedWorldBundle(bytes, worldSpec));
+  manifest = result.value;
+  // The pinned world bundle contains at most one prepared *entire* country
+  // scene. Advertise its exact identity and ordered country slots before a
+  // large binary is requested. A historical date with another country set
+  // cannot use this asset, so its caller can skip expensive hash/Worker work.
+  const prepared = manifest.assets?.preparedCountryScene;
+  self.postMessage({ type: 'builtin-mesh-loader-ready',
+    preparedSceneKey: prepared ? preparedCountrySceneKey(prepared.identity) : null,
+    preparedSceneCountryIds: prepared?.identity?.fills?.map(row=>String(row[0])) || [],
+  });
+} catch (error) {
+  self.postMessage({ type: 'builtin-mesh-error', message: error?.message || String(error) });
+}

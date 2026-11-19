@@ -1,0 +1,17 @@
+{
+  "name": "Pando optional private preview (Node 24)",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
+  "portsAttributes": {
+    "4173": {
+      "label": "Private Pando Viewer preview (on demand)",
+      "onAutoForward": "ignore",
+      "visibility": "private"
+    }
+  },
+  "remoteEnv": {
+    "PANDO_REMOTE_ONLY": "1"
+  },
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  }
+}

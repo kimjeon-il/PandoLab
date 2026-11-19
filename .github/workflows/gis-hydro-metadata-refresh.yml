@@ -1,0 +1,35 @@
+name: Refresh Hydro Worker and build metadata
+on:
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: gis-hydro-worker-metadata-refresh
+  cancel-in-progress: false
+jobs:
+  targeted-metadata-refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 2
+      - name: Mount pinned Hydro version
+        uses: ./.github/actions/library-data
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Recreate immutable Worker execution closure using current source
+        run: |-
+          node scripts/generate-build-metadata.mjs
+          node scripts/generate-build-metadata.mjs --check
+      - name: Check Hydro provenance and published package identity
+        run: node tools/checks/check-current-hydro-layout.mjs --root . --allow-retired false --out "$RUNNER_TEMP/hydro-release-proof.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gis-hydro-metadata-refresh-evidence
+          path: ${{ runner.temp }}/hydro-release-proof.json
+          if-no-files-found: warn

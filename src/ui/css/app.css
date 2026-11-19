@@ -1,0 +1,34 @@
+/* Foundation only: font loading, document sizing and semantic visibility.
+   All application presentation is owned by the canonical UI source catalog. */
+
+@font-face {
+font-family: "Pretendard Variable";
+  src: url("../fonts/pretendard-v1.3.9/PretendardVariable.woff2") format("woff2-variations");
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, .app-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.hidden {
+  display: none !important;
+}
+
+[hidden] {
+  display: none !important;
+}

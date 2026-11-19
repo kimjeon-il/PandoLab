@@ -1,0 +1,16 @@
+{
+  "schema": "pando-development-toolchain-v1",
+  "node": "24",
+  "pnpm": "11.19.0",
+  "cmake": "3.31.6",
+  "emscripten": "6.0.3",
+  "emsdkCommit": "db04e88298d9916fc51fcd3743045ca3eb695127",
+  "linuxRunner": "ubuntu-24.04",
+  "windowsRunner": "windows-2022",
+  "sccache": {
+    "version": "0.19.0",
+    "url": "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip",
+    "sha256": "28be8c61f6b2c89b9eb2869f6af7f78e6f992e78a8abae0ce855fcc129cbeac1"
+  },
+  "scope": "Web/shared C++/WASM/GIS CI versions"
+}

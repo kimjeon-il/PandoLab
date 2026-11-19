@@ -1,0 +1,547 @@
+/* Canonical components / mobile-sheets. */
+
+.surface-header-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  font-size: var(--design-font-xl);
+  line-height: var(--design-line-title);
+}
+
+.surface-header-title > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.surface-header .sheet-drag-handle {
+  display: none;
+}
+
+.surface-tabs {
+  flex: 0 0 auto;
+  min-height: var(--design-tab-height);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0;
+  padding-inline: var(--ui-surface-content-rail-x);
+  border-bottom: var(--ui-border-width) solid var(--border);
+}
+
+.surface-tabs .ui-tab {
+  position: relative;
+  min-height: var(--design-tab-height);
+  font-size: var(--design-font-md);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.mobile-workspace-controls { display: contents; }
+
+.mobile-bottom-bar {
+  display: none;
+}
+
+.app-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-workspace-controls .ui-nav-item {
+  position: relative;
+  min-width: 0;
+  min-height: var(--ui-touch-height);
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-nav-icon-label-gap);
+  padding: var(--ui-space-1) var(--ui-space-0-5);
+  border: var(--ui-border-width) solid transparent;
+  border-radius: var(--ui-radius-control);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.app-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-workspace-controls .ui-nav-item strong {
+  font-size: var(--ui-font-body);
+  font-weight: var(--ui-weight-semibold);
+  line-height: var(--ui-line-normal);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 799px) {
+  [data-layout="mobile"] { --ui-shell-topbar-height: 0px; }
+}
+
+@media (max-width: 799px) {
+  [data-layout="mobile"] .mobile-workspace-controls {
+    display: grid;
+    position: fixed;
+    z-index: 150;
+    inset: auto 0 var(--workspace-bottom-offset, var(--ui-space-0));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+    padding: var(--ui-space-1) max(var(--ui-space-1), env(safe-area-inset-right)) calc(var(--ui-mobile-bottom-nav-padding) + env(safe-area-inset-bottom)) max(var(--ui-space-1), env(safe-area-inset-left));
+    border-top: 1px solid var(--border);
+    background: var(--mobile-nav-bg);
+  }
+
+  [data-layout="mobile"] .mobile-bottom-bar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-column: 1 / span 3;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  [data-layout="mobile"] .mobile-workspace-controls .mobile-menu-toolbar {
+    position: static;
+    display: flex;
+    grid-column: 4;
+    grid-row: 1;
+    align-items: stretch;
+    justify-content: stretch;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: 0;
+    padding: 0;
+  }
+
+  [data-layout="mobile"] .mobile-workspace-controls .mobile-menu-trigger {
+    width: 100%;
+    min-width: 0;
+    min-height: var(--ui-touch-height);
+    height: auto;
+    flex: 1 1 auto;
+    padding: var(--ui-space-1) var(--ui-space-0-5);
+  }
+}
+
+.app-root:not([data-layout="mobile"]) .mobile-menu-toolbar,
+.app-root:not([data-layout="mobile"]) .mobile-global-menu {
+  display: none;
+}
+
+.ui-menu-list .mobile-file-back { display: none; }
+
+@media (max-width: 799px) {
+  .viewer-root[data-layout="mobile"] .mobile-menu-toolbar {
+    display: flex;
+    position: absolute;
+    z-index: 180;
+    top: max(var(--ui-space-2), env(safe-area-inset-top));
+    right: auto;
+    bottom: auto;
+    left: max(var(--ui-space-2), env(safe-area-inset-left));
+    width: var(--ui-mobile-floating-surface-size);
+    min-width: var(--ui-mobile-floating-surface-size);
+    height: var(--ui-mobile-floating-surface-size);
+    min-height: var(--ui-mobile-floating-surface-size);
+    padding: var(--ui-space-1-5);
+    gap: 0;
+    transform: none;
+  }
+
+  .viewer-root[data-layout="mobile"] .mobile-menu-trigger {
+    width: var(--ui-icon-control-mobile-size);
+    min-width: var(--ui-icon-control-mobile-size);
+    height: var(--ui-icon-control-mobile-size);
+    min-height: var(--ui-icon-control-mobile-size);
+    padding: 0;
+  }
+
+  [data-layout="mobile"] .mobile-global-menu {
+    display: grid;
+    position: absolute;
+    z-index: 210;
+    padding: var(--ui-menu-padding);
+  }
+
+  .viewer-root[data-layout="mobile"] .mobile-global-menu,
+  .app-root.viewer-root[data-layout="mobile"] .top-actions {
+    top: calc(
+      max(var(--ui-space-2), env(safe-area-inset-top))
+      + var(--ui-mobile-floating-surface-size)
+      + var(--ui-space-2)
+    );
+    left: max(var(--ui-space-2), env(safe-area-inset-left));
+    width: min(
+      var(--ui-menu-width),
+      calc(100vw - var(--ui-space-4) - env(safe-area-inset-left) - env(safe-area-inset-right))
+    );
+  }
+
+  [data-layout="mobile"] .mobile-global-menu[hidden] { display: none; }
+  [data-layout="mobile"] .mobile-global-menu .ui-menu-item { min-height: var(--ui-touch-height); }
+  [data-layout="mobile"] .ui-menu-list .mobile-file-back { display: grid; }
+  [data-layout="mobile"] .mobile-command-item[aria-expanded="true"] { color: inherit; background: transparent; }
+  [data-layout="mobile"] .mobile-command-item::after { display: none; }
+}
+
+@media (max-width: 799px) {
+  .mobile-workspace-controls .ui-nav-item > span {
+    height: var(--mobile-bottom-bar-height);
+    display: grid;
+    place-items: center;
+  }
+}
+
+@media (max-width: 799px) {
+  .mobile-workspace-controls .ui-nav-item .ui-icon {
+    width: var(--ui-icon-size);
+    height: var(--ui-icon-size);
+    color: inherit;
+  }
+}
+
+@media (max-width: 799px) {
+  .mobile-workspace-controls .ui-nav-item[aria-expanded="true"] {
+    background: transparent;
+    color: var(--accent);
+  }
+}
+
+@media (max-width: 799px) {
+  .mobile-workspace-controls .ui-nav-item[aria-expanded="true"]::after {
+    content: '';
+    position: absolute;
+    inset-inline: 50%;
+    bottom: var(--ui-space-0-5);
+    width: 1.5rem;
+    height: var(--ui-space-0-5);
+    border-radius: var(--ui-radius-pill);
+    background: currentColor;
+    transform: translateX(-50%);
+  }
+}
+
+@media (max-width: 799px) {
+  .mobile-workspace-controls .ui-nav-item:active:not(:disabled) {
+    background: transparent;
+  }
+}
+
+@media (max-width: 799px) {
+  @media (hover: hover) and (pointer: fine) {
+    .mobile-workspace-controls .ui-nav-item:hover:not(:disabled, [aria-expanded="true"]) {
+      background: var(--surface-hover);
+      color: var(--text-strong);
+    }
+  }
+}
+
+@media (max-width: 799px) {
+  .workspace-surface.ui-sheet {
+    --ui-sheet-handle-visual-offset: var(--ui-space-1);
+    --surface-elevated: var(--design-color-panel);
+    border-top: 1px solid var(--border);
+    border-radius: var(--ui-radius-sheet) var(--ui-radius-sheet) 0 0;
+    background: var(--surface-elevated);
+    box-shadow: var(--control-shadow);
+  }
+}
+
+@media (max-width: 799px) {
+  .workspace-surface.ui-sheet > .surface-header {
+    position: relative;
+    padding-inline: var(--ui-surface-content-rail-x);
+  }
+}
+
+@media (max-width: 799px) {
+  .workspace-surface.ui-sheet > .surface-header > .surface-header-title {
+    display: none;
+  }
+}
+
+@media (max-width: 799px) {
+  .surface-header .sheet-drag-handle {
+    --ui-control-bg: transparent;
+    --ui-control-bg-hover: transparent;
+    --ui-control-bg-pressed: transparent;
+    position: static;
+    grid-column: 1 / -1;
+    grid-row: 1;
+    justify-self: center;
+    width: 6rem;
+    min-height: var(--ui-touch-height);
+    height: auto;
+    display: grid;
+    place-items: start center;
+    padding: calc(var(--ui-space-2) + var(--ui-space-1)) 0 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: ns-resize;
+  }
+}
+
+@media (max-width: 799px) {
+  .surface-header .sheet-drag-handle:is(:hover, :active) {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 799px) {
+  .surface-header .sheet-drag-handle:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: calc(-1 * var(--design-focus-offset));
+  }
+}
+
+@media (max-width: 799px) {
+  .sheet-drag-handle > span {
+    width: var(--design-control-lg);
+    height: var(--ui-space-1);
+    border-radius: var(--ui-radius-pill);
+    background: color-mix(in srgb, var(--muted) 54%, transparent);
+    transform: translateY(var(--ui-sheet-handle-visual-offset));
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 799px) {
+  .surface-header-title {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 799px) {
+  .surface-header-title > strong {
+    font-size: var(--design-font-xl);
+    line-height: var(--design-line-title);
+    font-weight: var(--ui-weight-bold);
+  }
+}
+
+@media (max-width: 799px) {
+  .workspace-surface[data-sheet-snap="0"] .surface-tabs {
+    display: none;
+  }
+}
+
+
+@media (max-width: 799px) {
+  .surface-tabs {
+    min-height: var(--ui-touch-height);
+  }
+}
+
+@media (max-width: 799px) {
+  .surface-tabs .ui-tab {
+    min-height: var(--ui-touch-height);
+  }
+}
+
+
+
+
+
+
+
+@media (max-width: 799px) and (orientation: landscape) {
+  .workspace-surface.ui-sheet {
+    max-height: calc(var(--workspace-visible-height, 100dvh) - var(--ui-shell-topbar-height) - var(--mobile-nav-height));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-surface.ui-sheet {
+    transition-duration: .01ms;
+  }
+}
+
+/* Phone landscape is a side dock, but retains the common sheet chrome.
+   The layout stylesheet owns its placement and visibility only. */
+.app-root[data-layout="phone-landscape"] .workspace-surface.ui-sheet {
+  border: 0;
+  border-left: var(--ui-border-width) solid var(--border);
+  border-radius: 0;
+  background: var(--surface-elevated);
+  box-shadow: var(--control-shadow);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.app-root[data-layout="phone-landscape"] .workspace-surface.ui-sheet > .surface-header {
+  padding: var(--ui-space-1) var(--ui-space-2);
+}
+
+.app-root[data-layout="phone-landscape"] .mobile-bottom-bar {
+  padding: 0;
+}
+
+.app-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-workspace-controls {
+  background: var(--mobile-nav-bg);
+}
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) var(--ui-space-0);
+}
+
+.app-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-workspace-controls :is(.mobile-menu-toolbar, .mobile-bottom-bar) {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls .ui-nav-item {
+  flex: 0 0 auto;
+  min-height: var(--ui-touch-height);
+  height: auto;
+  width: 100%;
+  padding: var(--ui-space-1);
+}
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls .ui-nav-item strong {
+  font-size: var(--ui-font-body);
+  line-height: var(--design-line-normal);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+body .app-root[data-layout="phone-landscape"] .mobile-menu-toolbar { padding: 0; }
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls .mobile-menu-trigger { min-height: var(--ui-touch-height); }
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls :is(.ui-nav-item, .mobile-menu-trigger) {
+  position: relative;
+  border: var(--ui-border-width) solid transparent;
+  border-radius: var(--ui-radius-control);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls :is(.ui-nav-item, .mobile-menu-trigger)[aria-expanded="true"],
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls :is(.ui-nav-item, .mobile-menu-trigger)[aria-expanded="true"]:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent);
+}
+
+.app-root[data-layout="phone-landscape"] .mobile-workspace-controls :is(.ui-nav-item, .mobile-menu-trigger)[aria-expanded="true"]::after {
+  content: '';
+  position: absolute;
+  inset-inline: 50%;
+  bottom: var(--ui-space-0-5);
+  width: 1.5rem;
+  height: var(--ui-space-0-5);
+  border-radius: var(--ui-radius-pill);
+  background: currentColor;
+  transform: translateX(-50%);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .app-root[data-layout="phone-landscape"] .mobile-workspace-controls :is(.ui-nav-item, .mobile-menu-trigger):hover:not(:disabled, [aria-expanded="true"]) {
+    background: var(--surface-hover);
+    color: var(--text-strong);
+  }
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details {
+  height: var(--sheet-height, var(--ui-viewer-map-bar-height));
+  border: var(--ui-border-width) solid var(--border);
+  border-radius: var(--ui-radius-panel);
+  background: var(--surface-elevated);
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details:is(.is-sheet-dragging, .is-sheet-settling) {
+  height: var(--sheet-drag-height, var(--sheet-height));
+  transform: translate3d(0, var(--sheet-drag-offset, 0px), 0);
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details:not(.surface-open) {
+  display: none;
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 auto;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr) auto;
+  column-gap: 0;
+  min-height: calc(var(--ui-viewer-map-bar-height) - var(--ui-border-width) * 2);
+  padding: 0 var(--ui-space-1);
+  background: transparent;
+  cursor: default;
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header .surface-header-title {
+  display: none;
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header .sheet-drag-handle {
+  display: grid;
+  grid-area: 1 / 1;
+  justify-self: stretch;
+  place-items: center end;
+  width: auto;
+  min-height: var(--ui-icon-control-mobile-size);
+  padding: 0 var(--ui-space-2);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  touch-action: none;
+  cursor: ns-resize;
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details .sheet-drag-handle .ui-icon {
+  transform: rotate(90deg);
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details[data-sheet-snap="0"] .sheet-drag-handle .ui-icon {
+  transform: rotate(-90deg);
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details .surface-header-actions {
+  display: flex;
+  grid-area: 1 / 2;
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details .surface-header-actions .sheet-close-btn {
+  display: grid;
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: calc(var(--ui-viewer-map-bar-height) - var(--ui-border-width) * 2);
+  padding: 0 calc(var(--ui-icon-control-mobile-size) + var(--ui-space-8)) 0 var(--ui-space-3);
+}
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context .ui-object-context-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--ui-space-2);
+}
+.object-details-flag { display: none; }
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-flag:not([hidden]) {
+  display: block;
+  width: var(--design-control-md);
+  height: var(--ui-icon-control-mobile-size);
+  object-fit: contain;
+}
+.object-details-type { display: none; }
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-type:not([hidden]) {
+  display: block;
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context:has(.object-details-affiliation:not([hidden])) .object-details-type {
+  display: none;
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context .ui-object-context-heading {
+  min-width: 0;
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context :is(h2, .object-details-affiliation) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details[data-sheet-snap="0"]:not(.is-sheet-dragging, .is-sheet-settling) > :is(.surface-tabs, .surface-body) {
+  display: none;
+}

@@ -1,0 +1,33 @@
+assets/data/country-label-anchors-v0.10.1.json text eol=lf
+assets/data/countries-ne-5.1.1.geojson text eol=lf
+tools/historical-library/sources/**/*.geojson text eol=lf
+tests/fixtures/portability/* text eol=lf
+tests/fixtures/timeline-*.json text eol=lf
+tests/fixtures/timeline-*-cases.mjs text eol=lf
+tools/check-platform-portability.mjs text eol=lf
+assets/data/historical-world/**/*.json text eol=lf
+assets/data/prepared-polygons/generated/v2/manifest.json text eol=lf
+assets/data/territorial-entities/generated/current-world.geojson text eol=lf
+assets/data/world-preview-*.json text eol=lf
+assets/data/places/*.json text eol=lf
+assets/data/hydro/*/manifest.json text eol=lf
+assets/data/world/*.json text eol=lf
+assets/data/world/objects/*.json text eol=lf
+assets/wasm/pandoeditor-core.js text eol=lf
+assets/wasm/pandoeditor-core.manifest.json text eol=lf
+assets/wasm/pandoeditor-core.wasm binary
+tests/fixtures/portability/web-9300609-oracle/** text eol=lf
+tests/fixtures/portability/web-9300609-hydro-create/** -text
+tests/fixtures/portability/web-9300609-hydro-hidden/** -text
+tests/fixtures/portability/web-9300609-hydro-copy/** -text
+
+# Canonical inputs extracted from the retired app remain exact LF Git blobs.
+tests/fixtures/shared-core/** text eol=lf
+tools/reference-fixtures/*.mjs text eol=lf
+
+# Historical comparison corpus has a byte-exact source pin.
+tests/fixtures/geographic-predicate-comparison/** text eol=lf
+
+# PDF cross-reference offsets require byte-exact fixtures on every platform.
+tests/fixtures/map-image/pdf-read/*.pdf binary
+tests/fixtures/map-image/**/*.rgba binary

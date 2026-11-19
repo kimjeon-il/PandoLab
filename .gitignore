@@ -1,0 +1,34 @@
+__pycache__/
+*.py[cod]
+reports/hydro-calibration/.cache/
+reports/places/.cache/
+node_modules/
+/build-native/
+playwright-report/
+test-results/
+aqtinstall.log
+
+# Restricted/local historical GIS working sources and generated bases
+tools/historical-library/sources/german-empire-1914/*.geojson
+tools/historical-library/generated/german-empire-1914-base.geojson
+tools/historical-library/generated/german-empire-1914-base.diagnostics.json
+
+# External library data and fixed local materialization (never tracked in app Git).
+/.library-data/
+/assets/data
+/reports
+/tools/historical-library/sources
+/tools/historical-library/working
+/tools/historical-library/review-output
+/tools/historical-library/land-borders
+/.codex-remote-attachments/
+
+# Generated frontend outputs are owned by the immutable cache.
+/index.html
+/.nojekyll
+/assets/js/
+/assets/css/
+/assets/worker-runtime/
+
+# Machine-local dependency store configuration
+/.npmrc

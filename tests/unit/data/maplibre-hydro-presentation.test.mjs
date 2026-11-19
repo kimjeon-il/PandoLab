@@ -1,0 +1,127 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStages,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from '../../../src/rendering/maplibre-hydro-presentation.js';
+
+test('optional water publication yields before aggregation and rejects a disposed result',async()=>{
+ let release,entered=false,admitted=0,updated=0;
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>1,getCanvas:()=>({clientWidth:100,clientHeight:100}),on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,beforePublish:()=>{entered=true;return new Promise(resolve=>{release=resolve;});},
+  admitFeatures:async()=>{admitted++;},updateSource:async()=>{updated++;return true;},onFeatures(){},onError:error=>{throw error;},
+  load:async()=>({key:'late',addPacks:[{id:1,features:[{id:'a',properties:{logicalId:'a'}}]}]})});
+ const pending=water.refresh();while(!entered)await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(admitted,0);assert.equal(updated,0);water.dispose();release();await pending;
+ assert.equal(admitted,0);assert.equal(updated,0);
+});
+
+test('hydro presentation groups selectable fragments and applies visibility thresholds',()=>{
+ const stages=mapLibreHydroStages([6,6.7,7,7.5].map((minZoom,id)=>({id,minZoom})));
+ const fragment=(id,coordinates,stage=0)=>({type:'Feature',id:id+coordinates[0][0],geometry:{type:'LineString',coordinates},properties:{logicalId:id,category:'river',layerId:'rivers',stage}});
+ const features=[fragment('a',[[0,0],[1,0]]),fragment('a',[[1,0],[2,0]]),fragment('b',[[2,0],[3,0]],3)];
+ const prepared=prepareMapLibreHydroFeatures(features,feature=>feature);
+ assert.deepEqual(prepared.map(feature=>[feature.id,feature.geometry.coordinates.length]),[['a',2],['b',1]]);
+ assert.deepEqual(hiddenMapLibreHydroIds(features,feature=>feature.id==='b'),['a']);
+ assert.deepEqual(stages.map(stage=>stage.minZoom),[2,3,4,5]);
+});
+
+test('hydro presentation applies layer filters and visibility to the existing source',()=>{
+ const calls=[],filters=new Map(mapLibreHydroStyle().layers.map(layer=>[layer.id,layer.filter])),visibility=new Map();
+ const map={getFilter:id=>filters.get(id),getLayoutProperty:id=>visibility.get(id),
+  setFilter:(id,filter)=>{calls.push(id);filters.set(id,filter);},
+  setLayoutProperty:(id,_key,value)=>{calls.push(id);visibility.set(id,value);}};
+ for(let i=0;i<2;i++)syncMapLibreHydroVisibility(map,['old-river'],{rivers:false,lakes:true});
+ assert.equal(calls.length,16,'Unchanged filters and visibility must not reload native tiles');
+ assert.deepEqual(filters.get('rivers').at(-1),['!',['in',['get','logicalId'],['literal',['old-river']]]]);
+ assert.equal(visibility.get('rivers'),'none');
+});
+
+test('a superseded water request cannot replace the latest view',async()=>{
+ const tasks=[],published=[];
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:100,clientHeight:100}),
+  getSource:()=>({updateData:async data=>published.push(data)}),on(){},off(){}};
+
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:()=>new Promise(resolve=>tasks.push(resolve)),onError:error=>{throw error;}});
+ const first=water.refresh();while(!tasks.length)await new Promise(resolve=>setTimeout(resolve,0));const second=water.refresh();
+ tasks[0]({key:'old',addPacks:[],removePacks:[]});await first;while(tasks.length<2)await new Promise(resolve=>setTimeout(resolve,0));
+ tasks[1]({key:'new',addPacks:[{id:1,features:[{id:'new',properties:{logicalId:'new',category:'lake'}}]}],removePacks:[]});await second;
+ assert.equal(published.length,1);assert.equal(published[0].add[0].id,'new');water.dispose();
+});
+test('an unchanged active pack set does not transfer or replace water data again',async()=>{
+ let count=0;const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async()=>{count++;}}),on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:async({knownKey})=>knownKey==='same'?{key:'same'}:{key:'same',addPacks:[{id:1,features:[{id:'a',properties:{logicalId:'a',category:'lake'}}]}],removePacks:[]},onError:error=>{throw error;}});
+ await water.refresh();await water.refresh();assert.equal(count,1);water.dispose();
+});
+test('water updates only added and removed packs',async()=>{
+ const diffs=[];const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async diff=>diffs.push(diff)}),on(){},off(){}};
+ let n=0;const feature=(id)=>({id,properties:{logicalId:id,category:'lake',sourceId:''}});
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:async()=>++n===1?{key:'1',addPacks:[{id:1,features:[feature('a')]}],removePacks:[]}:{key:'2',addPacks:[{id:2,features:[feature('b')]}],removePacks:[1]},onError:error=>{throw error;}});
+ await water.refresh();await water.refresh();assert.deepEqual(diffs[0].add.map(f=>f.id),['a']);assert.deepEqual(diffs[1].remove,['a']);assert.deepEqual(diffs[1].add.map(f=>f.id),['b']);water.dispose();
+});
+test('a newer viewport cancels its in-flight predecessor',async()=>{
+ let rejectLoad,cancellations=0,loads=0;const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async()=>{}}),on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:()=>++loads===1?new Promise((resolve,reject)=>{rejectLoad=reject;}):Promise.resolve({key:'new',addPacks:[],removePacks:[]}),cancel:()=>{cancellations++;if(rejectLoad){rejectLoad(new Error('cancelled'));rejectLoad=null;}},onError:error=>{throw error;}});
+ const first=water.refresh();while(!rejectLoad)await new Promise(resolve=>setTimeout(resolve,0));const second=water.refresh();await Promise.all([first,second]);assert.equal(loads,2);assert.ok(cancellations>=2);water.dispose();
+});
+
+test('a superseded source update is not published as the current selection catalog',async()=>{
+ let release;const published=[],known=[],diffs=[];
+ const source={updateData:async diff=>{diffs.push(diff);if(diffs.length===1)await new Promise(resolve=>{release=resolve;});}};
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>source,on(){},off(){}};
+ const feature=id=>({id,properties:{logicalId:id,category:'lake'}});
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:features=>published.push(features.map(f=>f.id)),
+  load:async({knownKey})=>{known.push(knownKey);return knownKey==='1'?{key:'2',addPacks:[{id:2,features:[feature('b')]}],removePacks:[1]}:{key:'1',addPacks:[{id:1,features:[feature('a')]}],removePacks:[]};},onError:error=>{throw error;}});
+ const first=water.refresh();while(!release)await new Promise(resolve=>setTimeout(resolve,0));
+ const second=water.refresh();release();await Promise.all([first,second]);
+ assert.deepEqual(known,[null,'1']);
+ assert.deepEqual(diffs[1].remove,['a']);
+ assert.deepEqual(published,[['b']]);water.dispose();
+});
+
+test('the latest view publishes a completed pack set even when it uses the same packs',async()=>{
+ let release;const published=[];
+ const source={updateData:async()=>{await new Promise(resolve=>{release=resolve;});}};
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>source,on(){},off(){}};
+ const feature={id:'a',properties:{logicalId:'a',category:'lake'}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:features=>published.push(features.map(f=>f.id)),
+  load:async({knownKey})=>knownKey==='1'?{key:'1'}:{key:'1',addPacks:[{id:1,features:[feature]}],removePacks:[]},onError:error=>{throw error;}});
+ const first=water.refresh();while(!release)await new Promise(resolve=>setTimeout(resolve,0));
+ const second=water.refresh();release();await Promise.all([first,second]);
+ assert.deepEqual(published,[['a']]);water.dispose();
+});
+
+test('the selection owner receives changed fragments for an already known river',async()=>{
+ const admitted=[];let index=0;
+ const fragment=id=>({id,properties:{logicalId:'river',category:'river'},geometry:{type:'LineString',coordinates:[[index,0],[index+1,0]]}});
+ const a=fragment('a'),b=fragment('b');
+ const views=[{key:'1',addPacks:[{id:1,features:[a]}]},{key:'1,2',addPacks:[{id:2,features:[b]}]},{key:'2',removePacks:[1]}];
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async()=>{}}),on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async features=>admitted.push(features.map(feature=>feature.id)),onFeatures:()=>{},load:async()=>views[index++],onError:error=>{throw error;}});
+ await water.refresh();await water.refresh();await water.refresh();
+ assert.deepEqual(admitted,[['a'],['a','b'],['b']]);water.dispose();
+});
+
+test('a superseded admission failure cannot fail the newer water view',async()=>{
+ let rejectAdmission,loads=0;const errors=[],published=[];
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async value=>published.push(value)}),on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:()=>rejectAdmission?Promise.resolve():new Promise((_resolve,reject)=>{rejectAdmission=reject;}),onFeatures:()=>{},
+  load:async()=>({key:String(++loads),addPacks:[{id:loads,features:[{id:String(loads),properties:{logicalId:'river',category:'river'}}]}]}),onError:error=>errors.push(error)});
+ const first=water.refresh();while(!rejectAdmission)await new Promise(resolve=>setTimeout(resolve,0));
+ const second=water.refresh();rejectAdmission(new Error('obsolete admission'));
+ await Promise.all([first,second]);assert.deepEqual(errors,[]);assert.equal(published.at(-1).add[0].id,'2');water.dispose();
+});
+
+test('adding a nearby pack does not readmit unchanged logical water objects',async()=>{
+ let index=0;const admitted=[],feature=id=>({id,properties:{logicalId:id,category:'lake'}});
+ const views=[{key:'1',addPacks:[{id:1,features:[feature('a')]}]},{key:'1,2',addPacks:[{id:2,features:[feature('b')]}]}];
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async()=>{}}),on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async features=>admitted.push(features.map(feature=>feature.id)),onFeatures:()=>{},load:async()=>views[index++],onError:error=>{throw error;}});
+ await water.refresh();await water.refresh();assert.deepEqual(admitted,[['a'],['b']]);water.dispose();
+});
+
+test('water source updates wait while the map style is being rebuilt',async()=>{
+ let releaseStyle,source=null,updates=0;const ready=new Promise(resolve=>{releaseStyle=resolve;});
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>source,on(){},off(){}};
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await ready;await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:async()=>({key:'new',addPacks:[{id:1,features:[{id:'a',properties:{logicalId:'a',category:'lake'}}]}]}),onError:()=>{}});
+ const pending=water.refresh();await new Promise(resolve=>setTimeout(resolve,0));
+ source={updateData:async()=>{updates++;}};releaseStyle();await pending;
+ assert.equal(updates,1);water.dispose();
+});

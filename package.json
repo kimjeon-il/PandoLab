@@ -1,0 +1,43 @@
+{
+  "name": "pandolab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "data:prepare": "node tools/data/library-data.mjs",
+    "reports:publish": "node tools/data/library-data.mjs --publish-reports",
+    "reports:check": "node tools/data/library-data.mjs --check-reports",
+    "build:country-default-colors": "node tools/build/build-country-default-colors.mjs",
+    "build:country-schema": "pnpm build:current-world",
+    "build:mesh": "node tools/checks/run-country-validator.mjs && node tools/build/build-world-mesh.mjs",
+    "build:prepared-meshes": "node tools/build/build-prepared-polygon-mesh.mjs",
+    "build:country-packet": "node tools/checks/run-country-validator.mjs && node tools/build/build-world-country-packet.mjs",
+    "build:country-shared-boundaries": "node tools/build/build-country-shared-boundaries.mjs",
+    "build:map-assets": "pnpm build:territorial-library && pnpm build:current-world && pnpm build:builtin-world && pnpm build:mesh && pnpm build:country-packet && pnpm build:world-bundle && pnpm build:country-shared-boundaries && pnpm build:prepared-meshes",
+    "build:world-bundle": "node tools/build/build-world-bundle.mjs",
+    "build:builtin-world": "node tools/build/build-builtin-world.mjs",
+    "generate:build-meta": "node scripts/generate-build-metadata.mjs",
+    "build:territorial-geometry": "node tools/build/build-territorial-geometry.mjs",
+    "build:territorial-library": "node tools/build/build-territorial-entity-chunks.mjs",
+    "build:current-world": "node tools/build/build-territorial-current-world.mjs",
+    "build:places": "node tools/build/build-place-runtime.mjs",
+    "package:shared-core": "node tools/build/package-shared-core-assets.mjs --build-dir build-native/wasm/wasm",
+    "dev:web": "node scripts/frontend-dev-server.mjs --product=viewer",
+    "build:web": "node scripts/generate-build-metadata.mjs --product=viewer",
+    "deps:prepare": "node tools/data/worktree-storage.mjs --prepare-dependencies",
+    "lint": "node scripts/run-application-checks.mjs --group=lint",
+    "test:node": "node scripts/run-application-checks.mjs --group=node",
+    "test:browser": "node scripts/run-application-checks.mjs --group=browser"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "esbuild": "0.25.10",
+    "eslint": "10.9.1",
+    "postcss": "8.5.30",
+    "yaml": "2.9.1"
+  },
+  "dependencies": {
+    "maplibre-gl": "6.18.0"
+  }
+}

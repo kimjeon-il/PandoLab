@@ -1,0 +1,95 @@
+name: Independent country deployment contracts
+on:
+  workflow_dispatch:
+    inputs:
+      data_revision:
+        description: Exact input SHA on the Library data/gis branch, matching the app pin
+        type: string
+        required: true
+      activate:
+        description: Store and push verified country files and the paired work/active pin; never deploy main
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: pando-library-publication-work-active
+  cancel-in-progress: false
+jobs:
+  deployment:
+    if: github.ref == 'refs/heads/work/active' && github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - name: Check storage before pinned dependencies and focused browser setup
+        run: test "$(df -Pk . | awk 'NR==2 {print $4}')" -ge 10485760
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check exact app and Library inputs
+        env:
+          DATA_REVISION: ${{ inputs.data_revision }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
+          node --input-type=module -e 'import assert from "node:assert/strict"; import {libraryConfig} from "./tools/data/library-context.mjs"; const pin=libraryConfig(); assert.equal(pin.repository,"kimjeon-il/PandoLab-library"); assert.match(process.env.DATA_REVISION,/^(?!0{40}$)[a-f0-9]{40}$/); assert.equal(pin.revision,process.env.DATA_REVISION)'
+      - uses: actions/checkout@v4
+        with:
+          repository: kimjeon-il/PandoLab-library
+          ref: data/gis
+          path: .library-data/repository
+          sparse-checkout: archive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare exact pinned library data
+        env:
+          DATA_REVISION: ${{ inputs.data_revision }}
+        run: |
+          set -euo pipefail
+          test "$(git -C .library-data/repository rev-parse HEAD)" = "$DATA_REVISION"
+          node tools/data/library-data.mjs
+      - name: Verify country files and optionally publish the scoped delta
+        env:
+          DATA_REVISION: ${{ inputs.data_revision }}
+          ACTIVATE: ${{ inputs.activate }}
+          PANDOLAB_LIBRARY_WRITE_TOKEN: ${{ inputs.activate && secrets.PANDOLAB_LIBRARY_WRITE_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
+          if [ "$ACTIVATE" = true ]; then test -n "$PANDOLAB_LIBRARY_WRITE_TOKEN"; fi
+          node --input-type=module <<'JS'
+          import {execFileSync} from 'node:child_process';
+          import assert from 'node:assert/strict';
+          import {prepareBuiltinCountryFiles,verifyBuiltinCountryFiles,storeBuiltinCountryDelta} from './tools/data/builtin-country-storage.mjs';
+          const prepared=prepareBuiltinCountryFiles({apply:true});
+          const verified=verifyBuiltinCountryFiles();
+          const push=process.env.ACTIVATE==='true';
+          if(push) assert.equal(execFileSync('git',['ls-remote','origin','refs/heads/work/active'],{encoding:'utf8'}).split(/\s+/)[0],process.env.GITHUB_SHA);
+          const stored=storeBuiltinCountryDelta({push,expectedRevision:process.env.DATA_REVISION,expectedBranch:'data/gis',expectedAppBranch:'work/active'});
+          console.log(JSON.stringify({preparedCountries:prepared.countryCount,changedStoragePaths:prepared.prefixes.length,...verified,...stored}));
+          JS
+      - name: Commit verified data pin to work/active only
+        if: inputs.activate == true
+        run: |-
+          set -euo pipefail
+          git diff --check
+          if git diff --quiet -- config/library-data.json; then echo 'Pin already current'; exit 0; fi
+          test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA" || { echo 'work/active advanced; preserve published data without overwriting newer code'; exit 1; }
+          git add -- config/library-data.json
+          test "$(git diff --cached --name-only)" = 'config/library-data.json'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'data(gis): pin verified independent country publication [skip ci]'
+          git push origin HEAD:refs/heads/work/active
+          test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$(git rev-parse HEAD)"

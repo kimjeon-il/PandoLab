@@ -1,0 +1,141 @@
+import { MESH_ALGORITHM_REVISION, preparedCountrySceneKey } from '../rendering/country-mesh-codec.js';
+// Pure schema and URL contract for immutable built-in world geometry assets.
+export const WORLD_BUNDLE_SCHEMA = 'pandolab-world-bundle';
+const WORLD_BUNDLE_FORMAT = 1;
+const HEX_256 = /^[0-9a-f]{64}$/;
+export const WORLD_BUNDLE_ROLES = Object.freeze({
+  canonicalCountryPacket: ['countries-canonical', '.pcg.gz', 'gzip'],
+  canonicalMesh: ['world-mesh', '.bin.gz', 'gzip'],
+  labelAnchors: ['country-label-anchors', '.json', 'identity'],
+});
+const ROLES = WORLD_BUNDLE_ROLES;
+
+export function contentAddress(role, digest) {
+  const parts = ROLES[role];
+  if (!parts || !HEX_256.test(String(digest))) throw new Error(`Invalid world asset identity: ${role}`);
+  return `world/objects/${parts[0]}-sha256-${digest}${parts[1]}`;
+}
+
+function validRelativePath(path) {
+  return typeof path === 'string' && path.length > 0 && !path.startsWith('/')
+    && !path.includes('\\') && !path.includes('?') && !path.includes('#')
+    && !path.includes('%') && !path.includes('\0')
+    && path.split('/').every(part => part && part !== '.' && part !== '..');
+}
+
+// A display-only scoped correction retains its baseline derivation explicitly.
+// Evidence is verified by the archive producer; runtime receives hashes, never private report URLs.
+export function validateScopedRetirementDerivation(derivation) {
+  // Current canonical-only manifests carry counts but no preview/retirement marker.
+  if(derivation?.preview===undefined&&derivation?.scopedRetirement===undefined
+    &&Number.isInteger(derivation?.coordinateCount)&&derivation.coordinateCount>0
+    &&Number.isInteger(derivation?.meshAlgorithmRevision)&&derivation.meshAlgorithmRevision>0)return false;
+  if(derivation?.preview==='canonical-topology-simplified') {
+    if(derivation.scopedRetirement!==undefined)throw new Error('Unexpected scoped retirement proof');
+    return false;
+  }
+  const proof=derivation?.scopedRetirement;
+  const exact=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  if(derivation?.preview!=='scoped-retirement-patch'||proof?.schemaVersion!==1
+    ||!exact(Object.keys(proof||{}).sort(),['baselinePreview','baselineWorldSha256','detachedCaches','layerPreimages','patchReceiptSha256','recipientIds','retiredIds','schemaVersion'])
+    ||proof.baselinePreview!=='canonical-topology-simplified'
+    ||!HEX_256.test(proof.baselineWorldSha256)||!HEX_256.test(proof.patchReceiptSha256)
+    ||!exact(proof.retiredIds,['KAB','BJN','SER','PGA'])
+    ||!exact(proof.recipientIds,['KAZ','COL','VNM','PHL','CHN','TWN'])
+    ||!exact(proof.detachedCaches,['preparedCountryScene','sharedBoundaries'])
+    ||!exact(Object.keys(proof.layerPreimages||{}).sort(),['currentworld','pcg','preview'])
+    ||!Object.values(proof.layerPreimages).every(v=>HEX_256.test(v)))
+    throw new Error('Invalid scoped world retirement derivation');
+  return true;
+}
+export function validateWorldBundle(bundle) {
+  const scopedRetirement=validateScopedRetirementDerivation(bundle?.derivation);
+  if (bundle?.schema !== WORLD_BUNDLE_SCHEMA || bundle.schemaVersion !== WORLD_BUNDLE_FORMAT) {
+    throw new Error('지원하지 않는 세계지도 데이터 매니페스트입니다.');
+  }
+  if (!HEX_256.test(bundle.source?.sha256) || !Number.isSafeInteger(bundle.source?.countryCount)
+    || bundle.source.countryCount <= 0
+    || !validRelativePath(bundle.source?.url) || !bundle.defaultClassification?.countries
+    || !Number.isInteger(bundle.derivation?.coordinateCount)
+    || !Number.isInteger(bundle.derivation?.meshAlgorithmRevision)) {
+    throw new Error('세계지도 정본·생성 정보가 올바르지 않습니다.');
+  }
+  if(scopedRetirement&&(bundle.assets?.preparedCountryScene||Object.keys(bundle.compatibility?.sharedBoundaries||{}).length))throw new Error('Scoped retirement caches must be detached');
+  const assets = {};
+  for (const [role, [name, ext, encoding]] of Object.entries(ROLES)) {
+    const asset = bundle.assets?.[role];
+    if (!asset || !HEX_256.test(asset.sha256)
+      || asset.url !== `world/objects/${name}-sha256-${asset.sha256}${ext}`
+      || asset.encoding !== encoding
+      || !Number.isSafeInteger(asset.compressedBytes) || asset.compressedBytes <= 0
+      || !Number.isSafeInteger(asset.decodedBytes) || asset.decodedBytes <= 0) {
+      throw new Error(`세계지도 ${role}의 내용 주소·크기·압축 정보가 올바르지 않습니다.`);
+    }
+    if (role === 'canonicalMesh' || role === 'canonicalCountryPacket') {
+      if (!Array.isArray(asset.header) || asset.header.length < 8
+        || asset.header.some(n => !Number.isSafeInteger(n) || n < 0)
+        || asset.decodedBytes < asset.header.length * 4) {
+        throw new Error(`세계지도 ${role} 바이너리 헤더가 올바르지 않습니다.`);
+      }
+    }
+    assets[role] = Object.freeze({ ...asset });
+  }
+  if (bundle.assets?.preparedCountryScene) {
+    const asset=bundle.assets.preparedCountryScene;
+    if(!HEX_256.test(asset.sha256)||asset.url!==`world/objects/country-scene-sha256-${asset.sha256}.bin.gz`
+      ||asset.encoding!=='gzip'||!Number.isSafeInteger(asset.compressedBytes)||asset.compressedBytes<=0
+      ||!Number.isSafeInteger(asset.decodedBytes)||asset.decodedBytes<=0
+      ||!Number.isSafeInteger(asset.algorithmVersion)||asset.algorithmVersion<1)
+      throw new Error('Invalid prepared country scene descriptor');
+    // This is an optional immutable accelerator, not the canonical world.
+    // A pinned previous mesh algorithm must be a cache miss. It must not
+    // prevent the current C++ geometry engine from building a fresh scene.
+    // Current-version descriptors remain strictly verified, and hash/length
+    // checks are never bypassed for any asset actually selected for loading.
+    if(asset.algorithmVersion===MESH_ALGORITHM_REVISION){
+      preparedCountrySceneKey(asset.identity);
+      assets.preparedCountryScene=Object.freeze({...asset});
+    }
+  }
+  const shared = {};
+  for (const quality of ['canonical']) {
+    const name = bundle.compatibility?.sharedBoundaries?.[quality];
+    if (name !== undefined && (!validRelativePath(name)
+      || !new RegExp(`^countries-${quality}-shared-v[0-9]+\\.[0-9]+\\.[0-9]+\\.json\\.gz$`).test(name))) {
+      throw new Error(`세계지도 ${quality} 공유 국경선 경로가 올바르지 않습니다.`);
+    }
+    shared[quality] = name || null;
+  }
+  return Object.freeze({
+    schema: WORLD_BUNDLE_SCHEMA,
+    schemaVersion: WORLD_BUNDLE_FORMAT,
+    sourceSha256: bundle.source.sha256,
+    countryCount: bundle.source.countryCount,
+    defaultClassification: bundle.defaultClassification,
+    assets: Object.freeze(assets),
+    sharedBoundaryCacheUrls: Object.freeze(shared),
+  });
+}
+
+export function worldAssetUrl(asset, dataRootUrl) {
+  if (!asset || !HEX_256.test(asset.sha256) || !validRelativePath(asset.url)
+    || !asset.url.startsWith('world/objects/') || !asset.url.includes(`-sha256-${asset.sha256}`)) {
+    throw new Error('검증되지 않은 세계지도 파일 경로입니다.');
+  }
+  return new URL(asset.url, dataRootUrl);
+}
+
+export async function parseVerifiedWorldBundle(bytes, spec = null) {
+  const stored = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (spec) {
+    if (spec.encoding !== 'identity' || !HEX_256.test(spec.sha256)
+      || stored.byteLength !== spec.compressedBytes || spec.decodedBytes !== stored.byteLength) {
+      throw new Error('게시된 세계지도 매니페스트 크기가 올바르지 않습니다.');
+    }
+    if (!globalThis.crypto?.subtle) throw new Error('게시된 세계지도 무결성을 확인할 수 없습니다.');
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', stored);
+    const actual = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    if (actual !== spec.sha256) throw new Error('게시된 세계지도 매니페스트 무결성이 올바르지 않습니다.');
+  }
+  return validateWorldBundle(JSON.parse(new TextDecoder().decode(stored)));
+}

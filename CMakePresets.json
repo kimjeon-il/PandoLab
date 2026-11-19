@@ -1,0 +1,68 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "pando-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-native/cmake/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "pando-core",
+      "inherits": "pando-base",
+      "cacheVariables": {
+        "PANDO_BUILD_VARIANT": "core"
+      }
+    },
+    {
+      "name": "pando-wasm",
+      "inherits": "pando-base",
+      "cacheVariables": {
+        "PANDO_BUILD_VARIANT": "wasm"
+      }
+    },
+    {
+      "name": "pando-gis-tools",
+      "inherits": "pando-base",
+      "cacheVariables": {
+        "PANDO_BUILD_VARIANT": "gis-tools",
+        "PANDO_BUILD_COUNTRY_VALIDATOR": "OFF",
+        "PANDO_BUILD_TERRITORIAL_RECIPE": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "pando-core",
+      "configurePreset": "pando-core",
+      "targets": [
+        "pandoeditor_core"
+      ],
+      "jobs": 2
+    },
+    {
+      "name": "pando-wasm",
+      "configurePreset": "pando-wasm",
+      "targets": [
+        "pandoeditor_wasm"
+      ],
+      "jobs": 1
+    },
+    {
+      "name": "pando-gis-tools",
+      "configurePreset": "pando-gis-tools",
+      "targets": [
+        "pando-spherical-polygon-normalize"
+      ],
+      "jobs": 2
+    }
+  ]
+}

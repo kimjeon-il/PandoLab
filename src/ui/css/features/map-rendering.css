@@ -1,0 +1,16 @@
+/* Current MapLibre map interactions. Geographic geometry, labels and selections
+   are rendered by MapLibre layers, not by parallel SVG elements. */
+.map-stage.generic-feature-mode { cursor: crosshair; }
+.map-stage.country-pick-mode,
+.map-stage.candidate-pick-mode { cursor: pointer; }
+.map-stage.select-mode { cursor: grab; }
+.map-stage.dragging { cursor: grabbing; }
+
+.map-overlay-layer > * { pointer-events: auto; }
+.gpu-map-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}

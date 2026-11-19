@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="세계지도와 프로젝트를 탐색하는 판도연구소">
+  <title>판도연구소</title>
+  <link rel="icon" href="data:,">
+  <link rel="preload" href="assets/fonts/pretendard-v1.3.9/PretendardVariable.woff2?v={{assetRevision}}" as="font" type="font/woff2" crossorigin>
+
+  <script>(function(){try{var p=JSON.parse(localStorage.getItem('pandolab-user-preferences')||'null')||{};var a=Number(p.version)===2&&p.appearance||{};var t=a.theme;var dark=typeof window.matchMedia==='function'&&window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.dataset.theme=t==='light'||t==='dark'?t:(dark?'dark':'light');}catch(_){document.documentElement.dataset.theme='light';}}());</script>
+  <link rel="stylesheet" href="assets/css/app.css?v={{assetRevision}}">
+  <link rel="stylesheet" href="assets/css/ui-viewer.bundle.css?v={{assetRevision}}" data-pandolab-ui="ui-bundle">
+  <link rel="stylesheet" href="assets/css/viewer.css?v={{assetRevision}}">
+  <script src="assets/js/build-meta.js?v={{assetRevision}}"></script>
+  <script src="assets/js/vendor/d3.min.js?v={{assetRevision}}"></script>
+  <script type="module" src="assets/js/viewer.js?v={{assetRevision}}"></script>
+</head>
+<body>
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+<!-- include:map-icons -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  </svg>
+  <div id="viewer" class="app-root viewer-root" data-layout="wide" data-initial-loading="true">
+    <header class="topbar">
+      <div class="topbar-actions" role="navigation" aria-label="지도 메뉴">
+        <div class="topbar-file-actions">
+          <button id="mobileFileBtn" class="ui-button file-menu-btn topbar-command topbar-text-command" type="button" aria-label="파일 메뉴 열기" data-tooltip="파일 메뉴 열기" aria-haspopup="menu" aria-controls="fileMenu" aria-expanded="false">파일</button>
+        </div>
+        <button id="reviewPanelBtn" class="ui-button topbar-command topbar-text-command" type="button" aria-controls="reviewPanel" aria-expanded="false" hidden>점검</button>
+        <button id="preferencesBtn" class="ui-button topbar-command topbar-text-command" type="button" aria-haspopup="dialog">설정</button>
+      </div>
+      <!-- include:notification -->
+    </header>
+    <div id="viewerWorkspace" class="workspace">
+      <main class="map-wrap" aria-label="지도 작업 공간">
+        <div class="ui-toolbar ui-floating-surface ui-floating-toolbar mobile-menu-toolbar">
+          <button id="mobileMenuBtn" class="ui-button icon-btn mobile-menu-trigger" type="button" aria-label="메뉴 열기" data-tooltip="메뉴 열기" aria-haspopup="menu" aria-controls="mobileGlobalMenu" aria-expanded="false"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        </div>
+        <!-- include:object-chooser -->
+        <div id="map" class="map-stage" aria-label="지도" tabindex="0">
+          <canvas id="viewerCanvas" class="gpu-map-canvas"></canvas>
+        </div>
+        <div class="viewer-map-tools">
+        <div class="ui-toolbar ui-floating-surface ui-floating-toolbar map-command-toolbar" aria-label="지도 명령">
+          <div class="map-command-search">
+            <!-- include:map-search-control -->
+
+          </div>
+          <!-- include:map-fit-control -->
+        </div>
+        <!-- include:timeline -->
+        </div>
+        <div class="viewer-map-notices">
+          <span id="viewerStatus" class="ui-visually-hidden" role="status" aria-live="polite" aria-atomic="true">지도 불러오는 중…</span>
+          <div id="mapPreparationNotice" class="ui-floating-surface viewer-map-error" role="alert" hidden>
+            <span id="mapPreparationStatus"></span>
+            <button id="mapPreparationRetry" class="ui-button btn" type="button" hidden>다시 시도</button>
+          </div>
+        </div>
+        <span id="viewerSelectionStatus" class="ui-visually-hidden" role="status" aria-live="polite"></span>
+      </main>
+
+      <!-- include:object-search -->
+      <!-- include:object-details -->
+
+      <aside id="reviewPanel" class="viewer-review-panel ui-floating-surface" aria-labelledby="reviewPanelTitle" hidden>
+        <div class="viewer-review-header">
+          <div><h2 id="reviewPanelTitle">통합 점검기</h2><p>읽기 전용 지도·변경 검수·성능·오류 진단</p></div>
+          <div class="viewer-inspector-header-actions"><button id="reviewRefreshBtn" class="ui-button" type="button">갱신</button><button id="reviewCloseBtn" class="ui-button" type="button" aria-label="점검기 닫기">닫기</button></div>
+        </div>
+        <nav id="reviewInspectorTabs" class="viewer-inspector-tabs" role="tablist" aria-label="통합 점검 항목">
+          <button id="reviewTabChanges" class="ui-button viewer-inspector-tab" type="button" role="tab" aria-controls="reviewChangePane" aria-selected="true" tabindex="0">변경 검수</button>
+          <button id="reviewTabMap" class="ui-button viewer-inspector-tab" type="button" role="tab" aria-controls="reviewMapPane" aria-selected="false" tabindex="-1">지도·데이터</button>
+          <button id="reviewTabPerformance" class="ui-button viewer-inspector-tab" type="button" role="tab" aria-controls="reviewPerformancePane" aria-selected="false" tabindex="-1">성능</button>
+          <button id="reviewTabErrors" class="ui-button viewer-inspector-tab" type="button" role="tab" aria-controls="reviewErrorsPane" aria-selected="false" tabindex="-1">오류</button>
+        </nav>
+        <div id="reviewChangePane" role="tabpanel" aria-labelledby="reviewTabChanges">
+        <section class="viewer-review-section">
+          <h3>검수 자료 열기</h3>
+          <p class="viewer-review-hint">E3에서 생성한 변경 목록·검증 결과·제안서 JSON을 한 번에 선택하세요. 산출물 목록도 함께 열면 파일 해시를 확인합니다.</p>
+          <button id="reviewLoadBtn" class="ui-button btn" type="button">검수 JSON 선택</button>
+          <input id="reviewEvidenceInput" type="file" accept=".json,application/json" multiple hidden>
+          <p id="reviewLoadStatus" class="viewer-review-feedback" role="status" aria-live="polite">아직 검수 자료를 선택하지 않았습니다.</p>
+        </section>
+        <section id="reviewSummary" class="viewer-review-section" hidden aria-label="검수 개요">
+          <h3>비교 개요</h3>
+          <dl class="viewer-review-kv">
+            <dt>검수 상태</dt><dd id="reviewState"></dd>
+            <dt>변경 국가 / 슬롯</dt><dd id="reviewCounts"></dd>
+            <dt>변경 전 리비전</dt><dd id="reviewBaseRevision"></dd>
+            <dt>변경 후 리비전</dt><dd id="reviewCandidateRevision"></dd>
+            <dt>지도 기준</dt><dd id="reviewMapRevision"></dd>
+          </dl>
+          <p id="reviewTrustNotice" class="viewer-review-hint"></p>
+          <h3>실행한 검증</h3>
+          <ul id="reviewChecks" class="viewer-review-checks"></ul>
+        </section>
+        <section id="reviewBrowse" class="viewer-review-section" hidden>
+          <h3>국가·영토별 변경</h3>
+          <div class="viewer-review-filters">
+            <label for="reviewSearch">객체 찾기</label>
+            <input id="reviewSearch" class="ui-input" type="search" placeholder="예: state:CHN" autocomplete="off">
+            <label for="reviewKindFilter">변경 종류</label>
+            <select id="reviewKindFilter" class="ui-input">
+              <option value="">전체</option>
+              <option value="geometry">국경·영토 형상</option>
+              <option value="name">국명</option>
+              <option value="flag">국기</option>
+              <option value="parent">상위 객체</option>
+              <option value="lifetime">존속기간</option>
+            </select>
+          </div>
+          <div id="reviewObjectList" class="viewer-review-object-list" role="list"></div>
+        </section>
+        <section id="reviewDetail" class="viewer-review-section" hidden aria-labelledby="reviewDetailTitle">
+          <h3 id="reviewDetailTitle">선택한 객체</h3>
+          <p id="reviewSelectedObject" class="viewer-review-object-id"></p>
+          <button id="reviewFocusBtn" class="ui-button btn ghost" type="button">현재 지도에서 찾기</button>
+          <p id="reviewFocusStatus" class="viewer-review-hint" role="status"></p>
+          <h4>수정 전후 기록</h4>
+          <div id="reviewChangeList" class="viewer-review-change-list"></div>
+          <section id="reviewCompareSection" class="viewer-review-compare" hidden>
+            <h4>원본 형상 나란히 보기</h4>
+            <p class="viewer-review-hint">두 자료 리비전의 원본을 요청할 때만 내려받고, SHA-256을 확인한 뒤 같은 투영으로 표시합니다.</p>
+            <button id="reviewFetchGeometry" class="ui-button btn ghost" type="button">변경 전후 형상 불러오기</button>
+            <button id="reviewSourceBtn" class="ui-button btn ghost" type="button">원본 JSON 직접 선택</button>
+            <input id="reviewSourceInput" type="file" accept=".json,application/json" multiple hidden>
+            <p id="reviewCompareStatus" class="viewer-review-feedback" role="status" aria-live="polite">원본 형상을 아직 확인하지 않았습니다.</p>
+            <div id="reviewGeometryPreviews" class="viewer-review-geometry-pair" hidden>
+              <div><h5>변경 전</h5><svg id="reviewBeforeMap" role="img" aria-label="변경 전 지도 형상" viewBox="0 0 320 190"></svg></div>
+              <div><h5>변경 후</h5><svg id="reviewAfterMap" role="img" aria-label="변경 후 지도 형상" viewBox="0 0 320 190"></svg></div>
+            </div>
+          </section>
+          <h4>근거 보고서</h4>
+          <ul id="reviewSourceLinks" class="viewer-review-sources"></ul>
+          <section class="viewer-review-correction">
+            <h4>오류 지정 및 수정 요청서</h4>
+            <label for="reviewIssueKind">문제 유형</label>
+            <select id="reviewIssueKind" class="ui-input">
+              <option value="geometry">지도 형상</option>
+              <option value="date">날짜·적용 시점</option>
+              <option value="attribute">국명·국기·관계</option>
+              <option value="source">근거·출처</option>
+              <option value="other">기타</option>
+            </select>
+            <label for="reviewIssueReason">발견한 오류 (8자 이상)</label>
+            <textarea id="reviewIssueReason" class="ui-input" rows="3" maxlength="3000" placeholder="어느 부분이 잘못되었고 어떤 조사가 필요한지 작성"></textarea>
+            <button id="reviewExportRequest" class="ui-button btn" type="button">수정 요청서 JSON 저장</button>
+            <p id="reviewCorrectionStatus" class="viewer-review-hint" role="status"></p>
+            <p class="viewer-review-hint">로컬 요청서만 저장합니다. GitHub 이슈 등록, 검수 승인, 실제 GIS 반영은 수행하지 않습니다.</p>
+          </section>
+        </section>
+        </div>
+        <section id="reviewMapPane" class="viewer-review-section" role="tabpanel" aria-labelledby="reviewTabMap" hidden>
+          <h3>현재 지도 상태</h3>
+          <dl id="reviewMapMetrics" class="viewer-review-kv"></dl>
+          <h3>데이터 및 검사 범위</h3>
+          <dl id="reviewDataMetrics" class="viewer-review-kv"></dl>
+          <p class="viewer-review-hint">브라우저 상태 조회는 GIS 위상 검증이나 역사적 정확성 확인을 대신하지 않습니다.</p>
+        </section>
+        <section id="reviewPerformancePane" class="viewer-review-section" role="tabpanel" aria-labelledby="reviewTabPerformance" hidden>
+          <h3>브라우저 성능 기록</h3>
+          <dl id="reviewPerformanceMetrics" class="viewer-review-kv"></dl>
+          <p class="viewer-review-hint">상세 계측은 ?perf=1을 설정한 세션에서만 제공됩니다. 없는 측정값은 추정하지 않습니다.</p>
+        </section>
+        <section id="reviewErrorsPane" class="viewer-review-section" role="tabpanel" aria-labelledby="reviewTabErrors" hidden>
+          <h3>최근 내부 진단 기록</h3>
+          <ul id="reviewErrorList" class="viewer-review-checks" aria-live="polite"></ul>
+          <button id="reviewExportDiagnostics" class="ui-button btn" type="button">진단 JSON 저장</button>
+          <p id="reviewExportStatus" class="viewer-review-feedback" role="status" aria-live="polite">진단 기록은 브라우저에만 저장하고 외부로 전송하지 않습니다.</p>
+        </section>
+      </aside>
+    </div>
+    <nav id="mobileGlobalMenu" class="ui-menu ui-popover ui-floating-surface ui-menu-list mobile-global-menu" role="menu" aria-label="모바일 메뉴" hidden>
+        <button id="mobileMenuFileBtn" class="ui-button ui-menu-item" type="button" role="menuitem" aria-haspopup="menu"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-folder-open"/></svg><span>파일</span><svg class="ui-icon ui-menu-chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron-right"/></svg></button>
+        <button id="mobileReviewBtn" class="ui-button ui-menu-item" type="button" role="menuitem" aria-controls="reviewPanel" aria-expanded="false" hidden><span>통합 점검</span></button>
+        <button id="mobilePreferencesBtn" class="ui-button ui-menu-item" type="button" role="menuitem"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-gear"/></svg><span>설정</span></button>
+      </nav>
+    <div id="fileMenu" class="top-actions ui-menu ui-menu-surface ui-menu-list" role="menu" aria-label="파일" hidden>
+      <button id="builtinMapBtn" class="ui-button btn ghost file-menu-item ui-menu-item" type="button" role="menuitem"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-library"/></svg><span>내장 지도</span></button>
+    </div>
+  </div>
+  <!-- include:preferences -->
+  <!-- include:tooltip -->
+</body>
+</html>

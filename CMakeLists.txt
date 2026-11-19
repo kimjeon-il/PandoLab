@@ -1,0 +1,36 @@
+cmake_minimum_required(VERSION 3.21)
+
+# Shared C++/WASM and GIS tools; the application lives in src/app.
+project(PandoLab LANGUAGES CXX)
+include(tools/build/compiler-cache.cmake)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(PANDO_BUILD_VARIANT "core" CACHE STRING "One of: core, wasm, gis-tools")
+set_property(CACHE PANDO_BUILD_VARIANT PROPERTY STRINGS core wasm gis-tools)
+set(_variants core wasm gis-tools)
+if(NOT PANDO_BUILD_VARIANT IN_LIST _variants)
+    message(FATAL_ERROR "Unknown PANDO_BUILD_VARIANT=${PANDO_BUILD_VARIANT}")
+endif()
+if(EMSCRIPTEN AND NOT PANDO_BUILD_VARIANT STREQUAL "wasm")
+    message(FATAL_ERROR "Emscripten builds must select PANDO_BUILD_VARIANT=wasm")
+endif()
+if(PANDO_BUILD_VARIANT STREQUAL "wasm" AND NOT EMSCRIPTEN)
+    message(FATAL_ERROR "PANDO_BUILD_VARIANT=wasm requires emcmake/Emscripten")
+endif()
+
+# Register top-level CTest entries; individual sources decide which tests exist.
+
+
+if(PANDO_BUILD_VARIANT STREQUAL "core" OR PANDO_BUILD_VARIANT STREQUAL "wasm")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/build/native/CMakeLists.txt")
+        message(FATAL_ERROR "This branch has no domain-owned C++ build definition. Sync the integrated branch before building core/WASM.")
+    endif()
+    add_subdirectory(tools/build/native shared)
+else()
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/cpp/CMakeLists.txt")
+        message(FATAL_ERROR "This branch has no tools/cpp/ GIS C++ sources.")
+    endif()
+    add_subdirectory(tools/cpp)
+endif()

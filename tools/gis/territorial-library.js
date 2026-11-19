@@ -1,0 +1,225 @@
+// Preserved GIS data/core calculation contract after retired editor source removal.
+import { normalizeTemporalInterval, parseTemporal, compareTemporal, temporalIntervalsOverlap, sharedCalculationCore } from "../../src/document/temporal.js";
+import {createGeometryVersionStore} from "../../src/geometry/geometry-version-store.js";
+import {territorialSourceLayout} from "../../src/data/territorial-source-format.js";
+import {normalizeAffiliationMetadata} from "../../src/document/territorial-affiliation.js";
+
+export const TERRITORIAL_LIBRARY_SCHEMA_VERSION = 2;
+export const LIBRARY_ENTITY_TYPES = Object.freeze({ GENERAL: 'general', REGIONAL: 'regional', RIVER:'river', LAKE:'lake' });
+export function assertTerritorialIndexEntity(entry,entity){
+  const keys=['schemaVersion','entityId','lineageId','entityKind','names','alternateNames','nameVersions','lifetime','parentEntityId','instantiation','metadata'];
+  const comparable=value=>Array.isArray(value)?value.map(comparable):value&&typeof value==='object'
+    ?Object.fromEntries(Object.keys(value).sort().map(key=>[key,comparable(value[key])])):value;
+  const source=Object.fromEntries(keys.map(key=>[key,entity[key]]));
+  const indexed=Object.fromEntries(keys.map(key=>[key,entry?.[key]]));
+  source.geometryVersions=entity.geometryVersions.map(({geometry,...version})=>version);
+  indexed.geometryVersions=entry?.geometryVersions;
+  if(JSON.stringify(comparable(source))!==JSON.stringify(comparable(indexed)))throw new Error('Territorial index/source metadata mismatch');
+}
+export function historicalSourceAvailability(entity,referenceDate) {
+  const lifetime=lifetimeAt(entity.lifetime,referenceDate);
+  return lifetime ? sharedCalculationCore.timelineSourceAvailability(lifetime,entity.geometryVersions,referenceDate) : 'absent';
+}
+const text = value => String(value ?? '').trim();
+
+function freeze(value) {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function interval(raw) {
+  if (!raw || !Object.hasOwn(raw, 'validFrom') || !Object.hasOwn(raw, 'validTo')) throw new Error('Territorial interval requires both endpoints');
+  for(const value of [raw.validFrom,raw.validTo]) if(value!==null) {
+    if(typeof value!=='string')throw new Error('Territorial endpoints must be strings or null');
+    parseTemporal(value,{nullable:false});
+  }
+  const { validFrom, validTo } = normalizeTemporalInterval(raw.validFrom, raw.validTo);
+  return { validFrom, validTo };
+}
+
+/** Existing single intervals remain valid; discontinuous histories use an ordered array. */
+export function territorialLifetimeIntervals(lifetime) {
+  return Array.isArray(lifetime) ? lifetime : [lifetime];
+}
+function normalizeLifetime(lifetime) {
+  const values=territorialLifetimeIntervals(lifetime);
+  if(!values.length)throw new Error('Territorial lifetime must contain at least one interval');
+  const intervals=values.map(interval);
+  for(let i=1;i<intervals.length;i++) {
+    if(intervals[i].validFrom===null
+        || (intervals[i-1].validFrom!==null
+            && compareTemporal(intervals[i-1].validFrom,intervals[i].validFrom)>=0))
+      throw new Error('Territorial lifetimes must be chronological');
+  }
+  for(let i=0;i<intervals.length;i++)
+    for(let j=i+1;j<intervals.length;j++)
+      if(temporalIntervalsOverlap(intervals[i],intervals[j]))
+        throw new Error('Overlapping territorial lifetimes');
+  return Array.isArray(lifetime) ? intervals : intervals[0];
+}
+function lifetimeAt(lifetime,referenceDate) {
+  const date=parseTemporal(referenceDate,{nullable:false}).canonical;
+  return territorialLifetimeIntervals(lifetime).find(row=>
+    sharedCalculationCore.timelineVersionExistsAt(row,date)) || null;
+}
+function names(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Object.keys(raw).length
+    || Object.values(raw).some(value => typeof value !== 'string' || !value.trim())) throw new Error('Invalid territorial names');
+  return structuredClone(raw);
+}
+
+function relations(raw) {
+  if (!Array.isArray(raw)) throw new Error('Missing lineage relations');
+  const seen = new Set();
+  for (const relation of raw) {
+    const key = JSON.stringify([relation.type, relation.from, relation.to]);
+    if (relation.type !== 'successor' || !relation.from || !relation.to || relation.from === relation.to || seen.has(key)) throw new Error('Invalid lineage relation');
+    seen.add(key);
+  }
+  return structuredClone(raw);
+}
+
+export function normalizeTerritorialLineage(raw) {
+  if (raw?.schemaVersion !== 2 || !/^[a-z0-9][a-z0-9_-]*$/.test(raw.lineageId)
+    || Object.hasOwn(raw,'entities') || !Array.isArray(raw.entityRefs) || !raw.entityRefs.length
+    || raw.entityRefs.some(id=>!/^[a-z][a-z0-9_-]*:[A-Za-z0-9_-]+$/.test(id))) throw new Error('Invalid lineage schema/identity');
+  if (new Set(raw.entityRefs).size !== raw.entityRefs.length) throw new Error('Duplicate lineage entity');
+  return freeze({schemaVersion: 2, lineageId: raw.lineageId, names: names(raw.names), entityRefs:[...raw.entityRefs], relations: relations(raw.relations)});
+}
+
+export function normalizeTerritorialLibraryIndex(raw) {
+  if(raw?.schemaVersion!==2 || !Array.isArray(raw.entities) || !Array.isArray(raw.lineages) || !Array.isArray(raw.snapshots))throw new Error('Invalid territorial index schema');
+  const ids=new Set();
+  for(const entity of raw.entities){
+    if(entity.schemaVersion!==2 || !/^[a-z][a-z0-9_-]*:[A-Za-z0-9_-]+$/.test(entity.entityId) || ids.has(entity.entityId) || !Object.values(LIBRARY_ENTITY_TYPES).includes(entity.entityKind)
+      || entity.file!==`${entity.entityId.replace(':','-')}.json.gz` || (entity.storageLayout!==undefined&&entity.storageLayout!==territorialSourceLayout) || !/^[a-f0-9]{64}$/.test(entity.sha256) || !(entity.compressedBytes>0 && entity.decodedBytes>0)
+      || !entity.geometryVersions?.length || entity.geometryVersionCount!==entity.geometryVersions.length || !Array.isArray(entity.bbox) || entity.bbox.length!==4 || entity.bbox.some(v=>!Number.isFinite(v)))throw new Error('Invalid territorial index entry');
+    names(entity.names);
+    territorialNameData(entity);
+    normalizeAffiliationMetadata(entity.metadata || {});
+    if (['canonicalName','displayNames','libraryId'].some(key=>Object.hasOwn(entity,key))) throw new Error('Retired index names/identity');
+    ids.add(entity.entityId);
+    const lifetime=normalizeLifetime(entity.lifetime);
+    if(Array.isArray(lifetime)
+      ? Object.hasOwn(entity,'validFrom') || Object.hasOwn(entity,'validTo')
+      : entity.validFrom!==lifetime.validFrom || entity.validTo!==lifetime.validTo)
+      throw new Error('Inconsistent indexed lifetime');
+    const versionIds = new Set();
+    for(const v of entity.geometryVersions){if(Object.hasOwn(v,'geometry') || Object.hasOwn(v,'id') || !v.versionId || versionIds.has(v.versionId))throw new Error('Invalid indexed geometry version');versionIds.add(v.versionId);interval(v);}
+    for(let i=0;i<entity.geometryVersions.length;i++)for(let j=i+1;j<entity.geometryVersions.length;j++)if(temporalIntervalsOverlap(entity.geometryVersions[i],entity.geometryVersions[j]))throw new Error('Overlapping indexed geometry versions');
+  }
+  const byId=new Map(raw.entities.map(e=>[e.entityId,e]));
+  const lineageIds = new Set(), membership = new Set();
+  for (const lineage of raw.lineages) {
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(lineage.lineageId) || lineageIds.has(lineage.lineageId) || !Array.isArray(lineage.entityRefs) || !lineage.entityRefs.length) throw new Error('Invalid indexed lineage');
+    lineageIds.add(lineage.lineageId); names(lineage.names); relations(lineage.relations);
+    for (const id of lineage.entityRefs) {
+      if (!ids.has(id) || membership.has(id) || byId.get(id).lineageId !== lineage.lineageId) throw new Error('Invalid lineage membership');
+      membership.add(id);
+    }
+    for (const relation of lineage.relations) if (!ids.has(relation.from) || !ids.has(relation.to)) throw new Error('Missing lineage relation endpoint');
+  }
+  if (membership.size !== ids.size) throw new Error('Missing lineage membership');
+  for(const entity of raw.entities){let parent=entity.parentEntityId;const seen=new Set([entity.entityId]);while(parent){if(!ids.has(parent)||seen.has(parent))throw new Error('Invalid catalog parent');seen.add(parent);parent=byId.get(parent).parentEntityId;}}
+  const snapshots=new Set();
+  for(const s of raw.snapshots){parseTemporal(s.referenceDate,{nullable:false});if(s.schemaVersion!==1 || !s.id || snapshots.has(s.id) || !Array.isArray(s.entityRefs) || new Set(s.entityRefs).size!==s.entityRefs.length || s.entityRefs.some(id=>!ids.has(id)))throw new Error('Invalid territorial snapshot');snapshots.add(s.id);}
+  for(const view of raw.views || []){
+    if(view.schemaVersion!==1 || !view.id || Object.hasOwn(view,'referenceDate') || !Array.isArray(view.selections)
+      || new Set(view.selections.map(row=>row.entityId)).size!==view.selections.length
+      || view.selections.some(row=>!byId.get(row.entityId)?.geometryVersions.some(v=>v.versionId===row.geometryVersionId)))throw new Error('Invalid territorial view');
+  }
+  return freeze(structuredClone(raw));
+}
+
+export function normalizeTerritorialGeometryVersion(version,entityKind,id,entityId) {
+  if (!(entityKind==='river'?['LineString','MultiLineString']:['Polygon', 'MultiPolygon']).includes(version.geometry?.type)
+    || !Array.isArray(version.geometry.coordinates) || !version.geometry.coordinates.length) throw new Error(`${entityId}: expected source Polygon/MultiPolygon or river geometry`);
+  const validated=createGeometryVersionStore([{id,version:1,geojson:version.geometry}]);
+  return {geometry:validated.get({id,version:1})};
+}
+
+export function normalizeTerritorialLibraryEntity(raw,{normalizeVersionGeometry=normalizeTerritorialGeometryVersion}={}) {
+  if (raw?.schemaVersion !== TERRITORIAL_LIBRARY_SCHEMA_VERSION) throw new Error('Territorial entity schemaVersion mismatch');
+  const entityId = text(raw.entityId);
+  if (!/^[a-z][a-z0-9_-]*:[A-Za-z0-9_-]+$/.test(entityId) || !Object.values(LIBRARY_ENTITY_TYPES).includes(raw.entityKind)) throw new Error('Invalid territorial entity identity/kind');
+  if (['isHistorical', 'isCurrent', 'libraryId', 'startDate', 'endDate', 'canonicalName', 'displayNames'].some(key => Object.hasOwn(raw, key))) throw new Error('Retired territorial entity fields');
+  const lifetime = normalizeLifetime(raw.lifetime);
+  if (!Array.isArray(raw.geometryVersions) || !raw.geometryVersions.length) throw new Error(`${entityId}: missing geometry versions`);
+  const ids = new Set();
+  const geometryVersions = raw.geometryVersions.map(version => {
+    if (Object.hasOwn(version, 'id')) throw new Error('Retired geometry version ID');
+    const id = text(version.versionId);
+    if (!id || ids.has(id)) throw new Error(`${entityId}: duplicate/empty geometry version ID`);
+    ids.add(id);
+    // Use the existing archive's structural validator. This isolated registry
+    // validates a snapshot; its reference never becomes a project GeometryRef.
+    const normalized=normalizeVersionGeometry(version,raw.entityKind,id,entityId);
+    return { ...structuredClone(Object.hasOwn(normalized,'geometry')&&Object.hasOwn(version,'geometry')?{...version,geometry:null}:version), ...normalized, versionId:id, ...interval(version) };
+  });
+  for (let i = 0; i < geometryVersions.length; i++) {
+    for (let j = i + 1; j < geometryVersions.length; j++) {
+      if (temporalIntervalsOverlap(geometryVersions[i], geometryVersions[j])) throw new Error(`${entityId}: overlapping geometry versions`);
+    }
+  }
+  const instantiation = structuredClone(raw.instantiation || { mode: 'independent', countryUpdates: {} });
+  if(raw.metadata?.representativeGeometryVersionId && !ids.has(raw.metadata.representativeGeometryVersionId))throw new Error('Missing representative geometry version');
+  if (!['independent', 'territory-replacement'].includes(instantiation.mode)) throw new Error('Invalid territorial instantiation mode');
+  if(['river','lake'].includes(raw.entityKind)&&(text(raw.parentEntityId)||instantiation.mode!=='independent'||Object.keys(instantiation.countryUpdates||{}).length))throw new Error('Water objects cannot have territorial ownership policies');
+  return freeze({
+    schemaVersion: TERRITORIAL_LIBRARY_SCHEMA_VERSION, entityId, entityKind: raw.entityKind,
+    ...(raw.lineageId ? {lineageId:raw.lineageId} : {}),
+    names: names(raw.names), alternateNames: [...new Set((raw.alternateNames || []).map(text).filter(Boolean))],
+    ...(Object.hasOwn(raw,'nameVersions')?{nameVersions:territorialNameData(raw).versions}:{}),
+    lifetime, parentEntityId: text(raw.parentEntityId), geometryVersions, instantiation,
+    metadata: normalizeAffiliationMetadata(raw.metadata || {}), sourceInfo: structuredClone(raw.sourceInfo || {}),
+  });
+}
+
+export function territorialNameData(entity, referenceDate=null) {
+  const lifetime=referenceDate===null
+    ? territorialLifetimeIntervals(entity.lifetime)[0]
+    : lifetimeAt(entity.lifetime,referenceDate) || territorialLifetimeIntervals(entity.lifetime)[0];
+  return sharedCalculationCore.timelineLibraryNames({lifetime,names:entity.names,
+    alternateNames:entity.alternateNames || [],...(Object.hasOwn(entity,'nameVersions')?{nameVersions:entity.nameVersions}:{})},referenceDate);
+}
+
+// P5-4: the historical library has a separate reference date from the map
+// timeline. Its inclusive end-of-year/month version calculations are C++ owned.
+for (const name of ['timelineVersionExistsAt', 'timelineSelectGeometryVersion','timelineLibraryNames']) {
+  if (typeof sharedCalculationCore[name] !== 'function') {
+    throw Object.assign(new Error('Required shared C++ library calculation is missing: ' + name),
+      { code: 'PL-CORE-WASM-CAPABILITY' });
+  }
+}
+
+export function territorialEntityExistsAt(entity, referenceDate) {
+  return lifetimeAt(entity.lifetime,referenceDate)!==null;
+}
+
+export function selectGeometryVersion(entity, referenceDate = null) {
+  const lifetime=referenceDate===null
+    ? territorialLifetimeIntervals(entity.lifetime)[0]
+    : lifetimeAt(entity.lifetime,referenceDate);
+  if(!lifetime)return null;
+  const index = sharedCalculationCore.timelineSelectGeometryVersion(
+    lifetime, entity.geometryVersions, referenceDate);
+  return index < 0 ? null : entity.geometryVersions[index];
+}
+
+export function instantiateLibraryEntity(entity, referenceDate, geometryVersionId = null) {
+  const version = geometryVersionId && referenceDate===null
+    ? entity.geometryVersions.find(row=>row.versionId===geometryVersionId) : selectGeometryVersion(entity, referenceDate);
+  if (!version) throw new Error('선택한 시점에 사용할 경계 버전이 없습니다.');
+  const naming=territorialNameData(entity,referenceDate);
+  if(!naming.name)throw new Error('선택한 시점에 확인된 명칭이 없습니다.');
+  return {
+    entityId: entity.entityId, geometryVersionId: version.versionId, entityKind: entity.entityKind,
+    name: naming.name, parentEntityId: entity.parentEntityId,
+    geometry: structuredClone(version.geometry), rendering:structuredClone(version.rendering || {}), validFrom: null, validTo: null,
+    metadata: {...structuredClone(entity.metadata),nameDetails:naming.names, ...(version.historicalProvenance ? {historicalProvenance:structuredClone(version.historicalProvenance)} : {}), sourceInfo: structuredClone(entity.sourceInfo), sourceLifetime:structuredClone(entity.lifetime), sourceGeometryValidity:{validFrom:version.validFrom,validTo:version.validTo}, sourceReferenceDate:referenceDate, geometryCertainty: version.certainty},
+    instantiation: structuredClone(version.instantiation || entity.instantiation),
+  };
+}

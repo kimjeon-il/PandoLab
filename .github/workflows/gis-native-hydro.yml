@@ -1,0 +1,479 @@
+name: GIS native Hydro junction contracts
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Standalone native tool to build and verify
+        type: choice
+        options:
+          - hydro
+          - hydro-outlets
+          - hydro-encoding
+          - hydro-encoding-integrated
+          - hydro-point-screen
+          - hydro-shared-boundary
+          - hydro-point-windows
+          - physical-hydro
+          - physical-raster
+          - pc-allocation
+          - map-image
+          - map-pdf
+          - map-preview
+        default: hydro
+permissions:
+  contents: read
+jobs:
+  physical-raster:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'physical-raster'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Check space for the existing GDAL SDK
+        shell: pwsh
+        run: |-
+          $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE))
+          if ($drive.AvailableFreeSpace -lt 7GB) { throw 'Need estimated 2 GiB SDK/build space plus 5 GiB headroom' }
+      - uses: mamba-org/setup-micromamba@v3
+        id: physical-gdal
+        with:
+          environment-name: pando-physical-gdal
+          create-args: libgdal-core=3.13.3
+          cache-environment: true
+          cache-downloads: true
+          init-shell: none
+      - name: Build and verify only the physical source reader
+        shell: pwsh
+        run: |-
+          $prefix = '${{ steps.physical-gdal.outputs.environment-path }}'
+          if ($IsWindows) { $sdk = "$prefix/Library"; $env:PATH = "$sdk/bin$([IO.Path]::PathSeparator)$env:PATH" }
+          else { $sdk = $prefix; $env:LD_LIBRARY_PATH = "$sdk/lib$([IO.Path]::PathSeparator)$env:LD_LIBRARY_PATH" }
+          cmake -S tools/cpp/physical-raster -B build-native/physical-raster "-DCMAKE_PREFIX_PATH=$sdk" -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw 'Physical source reader configuration failed' }
+          cmake --build build-native/physical-raster --config Release --target pando-physical-raster
+          if ($LASTEXITCODE -ne 0) { throw 'Physical source reader build failed' }
+          if ($IsWindows) { $env:PANDO_PHYSICAL_RASTER_BINARY = "$env:GITHUB_WORKSPACE/build-native/physical-raster/Release/pando-physical-raster.exe" }
+          else { $env:PANDO_PHYSICAL_RASTER_BINARY = "$env:GITHUB_WORKSPACE/build-native/physical-raster/pando-physical-raster" }
+          node tools/gis/package-physical-raster.mjs --binary $env:PANDO_PHYSICAL_RASTER_BINARY --directory build-native/physical-raster/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Physical source reader packaging failed' }
+          $env:PANDO_PHYSICAL_RASTER_DIRECTORY = "$env:GITHUB_WORKSPACE/build-native/physical-raster/artifact"
+          if ($LASTEXITCODE -ne 0) { throw 'Physical TIFF source pixels differ' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: physical-raster-${{ matrix.os }}-${{ github.sha }}
+          path: build-native/physical-raster/artifact/
+          if-no-files-found: error
+          retention-days: 7
+  physical-raster-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'physical-raster'
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Reuse pinned QGIS SDK archives
+        uses: actions/cache/restore@v4
+        with:
+          path: build-native/qgis-sdk/*.tar.bz2
+          key: qgis-sdk-${{ runner.os }}-qgis-3.44.15-qt-5.15.13-gdal-3.13.3-geos-3.15.0-proj-9.8.1-v1
+      - name: Prepare the pinned GDAL development SDK
+        timeout-minutes: 4
+        shell: pwsh
+        run: |-
+          $sdk = "$env:GITHUB_WORKSPACE/build-native/qgis-sdk"
+          New-Item -ItemType Directory -Force -Path $sdk | Out-Null
+          $archive = "$sdk/gdal.tar.bz2"
+          $hash = '2475B7AB14A8437B925D1E96908AD5E22B8296ADF01E00B9ECA3EF0816B736C2'
+          if (-not (Test-Path -LiteralPath $archive) -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $hash) {
+            curl.exe --proto '=https' --tlsv1.2 --fail --location --max-time 180 --max-filesize 30000000 'https://download-cache.osgeo.org/osgeo4w/v2/x86_64/release/gdal/gdal-devel/gdal-devel-3.13.3-3.tar.bz2' --output $archive
+            if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $hash) { throw 'GDAL SDK download or digest failed' }
+          }
+          $zip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          & $zip x -y $archive "-o$sdk/packed" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GDAL SDK decompression failed' }
+          & $zip x -y "$sdk/packed/gdal.tar" "-o$sdk" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GDAL SDK extraction failed' }
+      - name: Build the physical TIFF reader against the OSGeo4W runtime ABI
+        if: inputs.target == 'physical-raster'
+        shell: pwsh
+        run: |-
+          $sdk = "$env:GITHUB_WORKSPACE/build-native/qgis-sdk"
+          cmake -S tools/cpp/physical-raster -B build-native/physical-raster -A x64 "-DGDAL_INCLUDE_DIR=$sdk/include" "-DGDAL_LIBRARY=$sdk/lib/gdal_i.lib"
+          if ($LASTEXITCODE -ne 0) { throw 'Physical TIFF reader SDK configuration failed' }
+          cmake --build build-native/physical-raster --config Release --target pando-physical-raster
+          if ($LASTEXITCODE -ne 0) { throw 'Physical TIFF reader SDK build failed' }
+          node tools/gis/package-physical-raster.mjs --binary build-native/physical-raster/Release/pando-physical-raster.exe --directory build-native/physical-raster/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Physical TIFF reader SDK packaging failed' }
+      - uses: actions/upload-artifact@v4
+        if: inputs.target == 'physical-raster'
+        with:
+          name: physical-raster-osgeo-windows-${{ github.sha }}
+          path: build-native/physical-raster/artifact/
+          if-no-files-found: error
+          retention-days: 7
+  hydro-encoding:
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'hydro-encoding' || inputs.target == 'hydro-encoding-integrated')
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build the Hydro connector for the integrated repair check
+        if: inputs.target == 'hydro-encoding-integrated'
+        shell: pwsh
+        run: |-
+          cmake -S tools/cpp -B build-native/hydro -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_TERRITORIAL_RECIPE=OFF -DPANDO_BUILD_HYDRO_CONNECTIVITY=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro connector configuration failed' }
+          cmake --build build-native/hydro --config Release --target pando-hydro-connectivity --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro connector build failed' }
+          if ($IsWindows) { $connector = 'build-native/hydro/Release/pando-hydro-connectivity.exe' }
+          else { $connector = 'build-native/hydro/pando-hydro-connectivity' }
+          node tools/gis/package-hydro-connectivity.mjs --binary $connector --directory build-native/hydro/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro connector packaging failed' }
+          Add-Content -Path $env:GITHUB_ENV -Value "PANDO_HYDRO_CONNECTIVITY_DIRECTORY=$env:GITHUB_WORKSPACE/build-native/hydro/artifact"
+      - name: Build and check only the Hydro feature encoder
+        shell: pwsh
+        run: |-
+          cmake -S tools/cpp/hydro-encoding -B build-native/hydro-encoding -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro encoder configuration failed' }
+          cmake --build build-native/hydro-encoding --config Release --target pando-hydro-encoding
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro encoder build failed' }
+          if ($IsWindows) { $env:PANDO_HYDRO_ENCODING_BINARY = "$env:GITHUB_WORKSPACE/build-native/hydro-encoding/Release/pando-hydro-encoding.exe" }
+          else { $env:PANDO_HYDRO_ENCODING_BINARY = "$env:GITHUB_WORKSPACE/build-native/hydro-encoding/pando-hydro-encoding" }
+          node tools/gis/package-hydro-encoding.mjs --binary $env:PANDO_HYDRO_ENCODING_BINARY --directory build-native/hydro-encoding/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro encoder packaging failed' }
+          $env:PANDO_HYDRO_ENCODING_DIRECTORY = "$env:GITHUB_WORKSPACE/build-native/hydro-encoding/artifact"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hydro-encoding-${{ matrix.os }}-${{ github.sha }}
+          path: build-native/hydro-encoding/artifact/
+          retention-days: 7
+  map-preview:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'map-preview'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build preview and its image input and output tool
+        shell: pwsh
+        run: |-
+          cmake -S tools/cpp/map-preview -B build-native/map-preview/native
+          if ($LASTEXITCODE -ne 0) { throw 'Preview configure failed' }
+          cmake --build build-native/map-preview/native --config Release --target pando-map-preview --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Preview build failed' }
+          cmake -S tools/cpp -B build-native/map-image -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_MAP_IMAGE=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Image configure failed' }
+          cmake --build build-native/map-image --config Release --target pando-map-image --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Image build failed' }
+      - name: Compare review overlays with the original pixels
+        shell: pwsh
+        run: |
+          if ($IsWindows) {
+            $preview = 'build-native/map-preview/native/Release/pando-map-preview.exe'
+            $image = 'build-native/map-image/Release/pando-map-image.exe'
+          } else {
+            $preview = 'build-native/map-preview/native/pando-map-preview'
+            $image = 'build-native/map-image/pando-map-image'
+          }
+          node tools/map-image/package-preview.mjs --binary $preview --directory build-native/map-preview/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Preview packaging failed' }
+          node tools/map-image/package-native.mjs --binary $image --directory build-native/map-image/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Image packaging failed' }
+          $env:PANDO_MAP_PREVIEW_ARTIFACT = "$env:GITHUB_WORKSPACE/build-native/map-preview/artifact"
+          $env:PANDO_MAP_IMAGE_ARTIFACT = "$env:GITHUB_WORKSPACE/build-native/map-image/artifact"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-map-preview-${{ matrix.os }}-${{ github.sha }}
+          path: build-native/map-preview/artifact/
+          if-no-files-found: ignore
+          retention-days: 7
+  map-pdf:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'map-pdf'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Obtain the pinned MuPDF SDK
+        shell: pwsh
+        run: |-
+          New-Item -ItemType Directory -Path build-native/map-pdf/sdk | Out-Null
+          if ($IsWindows) {
+            $url = 'https://files.pythonhosted.org/packages/f9/e8/989f4eaa369c7166dc24f0eaa3023f13788c40ff1b96701f7047421554a8/pymupdf-1.26.6-cp310-abi3-win_amd64.whl'
+            $expected = 'ce02ca96ed0d1acfd00331a4d41a34c98584d034155b06fd4ec0f051718de7ba'
+          } else {
+            $url = 'https://files.pythonhosted.org/packages/4f/bf/6e02e3d84b32c137c71a0a3dcdba8f2f6e9950619a3bc272245c7c06a051/pymupdf-1.26.6-cp310-abi3-manylinux_2_28_x86_64.whl'
+            $expected = '7777d0b7124c2ebc94849536b6a1fb85d158df3b9d873935e63036559391534c'
+          }
+          $wheel = 'build-native/map-pdf/mupdf-sdk.zip'
+          Invoke-WebRequest -Uri $url -OutFile $wheel
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $wheel).Hash.ToLowerInvariant() -ne $expected) { throw 'MuPDF SDK hash mismatch' }
+          Expand-Archive -LiteralPath $wheel -DestinationPath build-native/map-pdf/sdk
+      - name: Build the PDF reader and required image resize tool
+        shell: pwsh
+        run: |-
+          $sdk = "$env:GITHUB_WORKSPACE/build-native/map-pdf/sdk/pymupdf"
+          cmake -S tools/cpp/map-pdf -B build-native/map-pdf/native "-DPANDO_MUPDF_SDK_ROOT=$sdk"
+          if ($LASTEXITCODE -ne 0) { throw 'PDF reader configure failed' }
+          cmake --build build-native/map-pdf/native --config Release --target pando-map-pdf --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'PDF reader build failed' }
+          cmake -S tools/cpp -B build-native/map-image -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_MAP_IMAGE=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Image resize configure failed' }
+          cmake --build build-native/map-image --config Release --target pando-map-image --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Image resize build failed' }
+      - name: Compare PDF pages, georeference and rejection paths
+        shell: pwsh
+        run: |-
+          if ($IsWindows) {
+            $pdf = 'build-native/map-pdf/native/Release/pando-map-pdf.exe'
+            $image = 'build-native/map-image/Release/pando-map-image.exe'
+          } else {
+            $pdf = 'build-native/map-pdf/native/pando-map-pdf'
+            $image = 'build-native/map-image/pando-map-image'
+          }
+          node tools/map-image/package-pdf.mjs --binary $pdf --directory build-native/map-pdf/artifact --sdk build-native/map-pdf/sdk/pymupdf
+          if ($LASTEXITCODE -ne 0) { throw 'PDF reader packaging failed' }
+          node tools/map-image/package-native.mjs --binary $image --directory build-native/map-image/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Image resize packaging failed' }
+          $env:PANDO_MAP_PDF_ARTIFACT = "$env:GITHUB_WORKSPACE/build-native/map-pdf/artifact"
+          $env:PANDO_MAP_IMAGE_ARTIFACT = "$env:GITHUB_WORKSPACE/build-native/map-image/artifact"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-map-pdf-${{ matrix.os }}-${{ github.sha }}
+          path: build-native/map-pdf/artifact/
+          if-no-files-found: error
+          retention-days: 7
+  map-image:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'map-image'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build the map image tool
+        shell: pwsh
+        run: |-
+          cmake -S tools/cpp -B build-native/map-image -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_MAP_IMAGE=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Map image configure failed' }
+          cmake --build build-native/map-image --config Release --target pando-map-image --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Map image build failed' }
+      - name: Package and exercise the actual Node-to-native resize path
+        shell: pwsh
+        run: |+
+          if ($IsWindows) { $binary = 'build-native/map-image/Release/pando-map-image.exe' }
+          else { $binary = 'build-native/map-image/pando-map-image' }
+          node tools/map-image/package-native.mjs --binary $binary --directory build-native/map-image/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Map image packaging failed' }
+
+
+
+
+          $env:PANDO_MAP_IMAGE_ARTIFACT = "$env:GITHUB_WORKSPACE/build-native/map-image/artifact"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-map-image-${{ matrix.os }}-${{ github.sha }}
+          path: build-native/map-image/artifact/
+          if-no-files-found: ignore
+          retention-days: 7
+  hydro-point-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'hydro-point-windows'
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Prepare the matching GEOS and PROJ development SDK
+        shell: pwsh
+        run: |-
+          $sdk = "$env:GITHUB_WORKSPACE/build-native/hydro-point-sdk"
+          New-Item -ItemType Directory -Force -Path $sdk | Out-Null
+          $packages = @(
+            @{name='geos'; path='geos/geos-devel/geos-devel-3.15.0-1.tar.bz2'; sha='6D62956B904C0BC5B2825F2EADFBD1DCD2342B82F1881E79AAE6561CE1EE2021'},
+            @{name='proj'; path='proj/proj-devel/proj-devel-9.8.1-1.tar.bz2'; sha='B8A6F4DBB800F019BE4F4C45849B53818F2074213B850DFC38681CC99D0E3889'}
+          )
+          $zip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          foreach ($package in $packages) {
+            $archive = Join-Path $sdk ($package.name + '.tar.bz2')
+            $url = 'https://download-cache.osgeo.org/osgeo4w/v2/x86_64/release/' + $package.path
+            curl.exe --proto '=https' --tlsv1.2 --fail --location --max-time 120 --max-filesize 3000000 $url --output $archive
+            if ($LASTEXITCODE -ne 0) { throw "SDK download failed: $($package.name)" }
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $package.sha) { throw "SDK digest mismatch: $($package.name)" }
+            & $zip x -y $archive "-o$sdk/packed" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "SDK decompression failed: $($package.name)" }
+            & $zip x -y "$sdk/packed/$($package.name).tar" "-o$sdk" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "SDK extraction failed: $($package.name)" }
+          }
+      - name: Build and package the Windows point screen
+        shell: pwsh
+        run: |-
+          cmake -S tools/cpp -B build-native/hydro-point-screen -A x64 -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_HYDRO_POINT_SCREEN=ON -DPANDO_QGIS_SDK_ROOT="$env:GITHUB_WORKSPACE/build-native/hydro-point-sdk"
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro point-screen configure failed' }
+          cmake --build build-native/hydro-point-screen --config Release --target pando-hydro-point-screen --parallel 1
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro point-screen build failed' }
+          node tools/gis/package-hydro-point-screen.mjs --binary build-native/hydro-point-screen/Release/pando-hydro-point-screen.exe --directory build-native/hydro-point-screen/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro point-screen packaging failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-hydro-point-screen-windows-x64-${{ github.sha }}
+          path: build-native/hydro-point-screen/artifact/
+          if-no-files-found: error
+          retention-days: 7
+  hydro-point-screen:
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'hydro-point-screen' || inputs.target == 'hydro-batch01' || inputs.target == 'hydro-batch02' || inputs.target == 'hydro-batch03' || inputs.target == 'hydro-yarra')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install only native geometry development dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libgeos-dev libproj-dev ninja-build
+      - name: Build the point screen
+        run: |-
+          cmake -S tools/cpp -B build-native/hydro-point-screen -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_HYDRO_POINT_SCREEN=ON
+          cmake --build build-native/hydro-point-screen --target pando-hydro-point-screen
+      - name: Package the source-bound point screen
+        run: node tools/gis/package-hydro-point-screen.mjs --binary build-native/hydro-point-screen/pando-hydro-point-screen --directory build-native/hydro-point-screen/artifact
+  native-hydro:
+    if: inputs.target == 'hydro'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build only the standalone C++ Hydro junction engine
+        run: |-
+          cmake -S tools/cpp -B build-native/hydro -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF \
+            -DPANDO_BUILD_TERRITORIAL_RECIPE=OFF \
+            -DPANDO_BUILD_HYDRO_CONNECTIVITY=ON
+          cmake --build build-native/hydro --target pando-hydro-connectivity
+      - name: Package source-bound Hydro connectivity engine
+        run: node tools/gis/package-hydro-connectivity.mjs --binary build-native/hydro/pando-hydro-connectivity --directory build-native/hydro/artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hydro-connectivity-linux-${{ github.sha }}
+          path: build-native/hydro/artifact/
+          retention-days: 7
+  native-hydro-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'hydro'
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build and package the Windows Hydro connectivity engine
+        shell: pwsh
+        run: |-
+          cmake -S tools/cpp -B build-native/hydro -A x64 -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_TERRITORIAL_RECIPE=OFF -DPANDO_BUILD_HYDRO_CONNECTIVITY=ON
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro configuration failed' }
+          cmake --build build-native/hydro --config Release --target pando-hydro-connectivity
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro build failed' }
+          node tools/gis/package-hydro-connectivity.mjs --binary build-native/hydro/Release/pando-hydro-connectivity.exe --directory build-native/hydro/artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Hydro packaging failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hydro-connectivity-windows-${{ github.sha }}
+          path: build-native/hydro/artifact/
+          retention-days: 7
+  pc-allocation:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'pc-allocation'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build only the standalone Windows allocation auditor
+        run: |-
+          cmake -S tools/cpp -B build-native/pc-allocation -A x64 -DPANDO_BUILD_COUNTRY_VALIDATOR=OFF -DPANDO_BUILD_HYDRO_CONNECTIVITY=OFF -DPANDO_BUILD_TERRITORIAL_RECIPE=OFF -DPANDO_BUILD_PC_ALLOCATION=ON
+          cmake --build build-native/pc-allocation --config Release --target pando-pc-file-allocation
+      - name: Package source and binary identities
+        run: node tools/build/package-native-allocation.mjs --binary build-native/pc-allocation/Release/pando-pc-file-allocation.exe --directory build-native/pc-allocation
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-pc-allocation-windows-x64-${{ github.sha }}
+          path: |
+            build-native/pc-allocation/pando-pc-file-allocation.exe
+            build-native/pc-allocation/native-tool.manifest.json
+          if-no-files-found: error
+          retention-days: 7

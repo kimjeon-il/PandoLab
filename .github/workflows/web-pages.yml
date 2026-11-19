@@ -1,0 +1,130 @@
+name: Web-only GitHub Pages
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/**
+      - assets/**
+      - projects/**
+      - config/library-data.json
+      - config/generated-artifacts.json
+      - config/core-source-roots.json
+      - config/toolchain-versions.json
+      - scripts/build-ui-bundle.mjs
+      - scripts/generate-build-metadata.mjs
+      - scripts/lib/frontend-*.mjs
+      - scripts/lib/product-*.mjs
+      - scripts/lib/worker-assets.mjs
+      - scripts/lib/map-catalog-coherence.mjs
+      - scripts/lib/physical-land-display-assets.mjs
+      - scripts/lib/gzip-asset-verification.mjs
+      - tools/build/stage-monorepo-pages.mjs
+      - tools/build/package-shared-core-assets.mjs
+      - tools/data/**
+      - tools/checks/verify-pages-deployment.mjs
+      - tools/checks/verify-pages-identity.mjs
+      - .github/actions/library-data/**
+      - .github/workflows/web-pages.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .pnpmfile.mjs
+      - .nvmrc
+  workflow_dispatch:
+    inputs:
+      skip_checks:
+        description: Skip optional staging metadata checks (pinned transfer hashes remain required)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: web-pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      SKIP_DEPLOY_CHECKS: ${{ inputs.skip_checks && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare pinned external library data
+        uses: ./.github/actions/library-data
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Stage exactly the committed viewer dependency closure
+        shell: bash
+        run: |
+          args=()
+          if [[ "$SKIP_DEPLOY_CHECKS" == "1" ]]; then args+=(--skip-checks); fi
+          node tools/build/stage-monorepo-pages.mjs --root . --stage "$RUNNER_TEMP/pages-site" --manifest "$RUNNER_TEMP/pages-evidence.json" "${args[@]}"
+      - name: Record the final viewer and pinned data artifact
+        run: node tools/build/stage-monorepo-pages.mjs --finalize --stage "$RUNNER_TEMP/pages-site" --manifest "$RUNNER_TEMP/pages-evidence.json"
+      - name: Gate code, WASM, and pinned project data before Pages upload
+        run: node tools/checks/verify-pages-identity.mjs --root . --stage "$RUNNER_TEMP/pages-site" --manifest "$RUNNER_TEMP/pages-evidence.json" --expect-commit "$GITHUB_SHA"
+      # Focused Viewer browser regressions run through application-architecture.yml;
+      # deployment validates committed artifacts and the actual public bytes.
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/pages-site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pages-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/pages-evidence.json
+          if-no-files-found: error
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Refuse to deploy a superseded main commit
+        id: current
+        shell: bash
+        run: |
+          current="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test -n "$current" || { echo 'Cannot verify current main'; exit 1; }
+          if [[ "$current" == "$GITHUB_SHA" ]]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+            echo "Superseded by $current; preserving the current site" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.current.outputs.deploy == 'true'
+        with:
+          name: pages-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/pages-verification
+      - name: Confirm the approved code-WASM-data receipt before Pages deployment
+        if: steps.current.outputs.deploy == 'true'
+        run: node tools/checks/verify-pages-identity.mjs --root . --manifest "$RUNNER_TEMP/pages-verification/pages-evidence.json" --expect-commit "$GITHUB_SHA" --receipt-only
+      - id: deployment
+        if: steps.current.outputs.deploy == 'true'
+        uses: actions/deploy-pages@v4
+      - name: Verify the actual public code and pinned data bytes
+        if: steps.current.outputs.deploy == 'true'
+        run: node tools/checks/verify-pages-deployment.mjs --url '${{ steps.deployment.outputs.page_url }}' --manifest "$RUNNER_TEMP/pages-verification/pages-evidence.json" --output "$RUNNER_TEMP/pages-verification/live.json"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.current.outputs.deploy == 'true'
+        with:
+          name: pages-live-${{ github.sha }}
+          path: ${{ runner.temp }}/pages-verification
+          if-no-files-found: error

@@ -1,0 +1,516 @@
+#include "resample.h"
+#include "png.h"
+#include "image-input.h"
+#include "image-read.h"
+#include "training-scan.h"
+#include "training-tile.h"
+#include "macro-mask.h"
+#include <webp/encode.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+namespace {
+int dimension(const char* value){
+    const std::string text(value);std::size_t used=0;const int number=std::stoi(text,&used);
+    if(used!=text.size()||number<1||number>16384)throw std::invalid_argument("Invalid image dimension");
+    return number;
+}
+int bounded(const char* value,int maximum){
+    const std::string text(value);std::size_t used=0;const int number=std::stoi(text,&used);
+    if(used!=text.size()||number<0||number>maximum)throw std::invalid_argument("Invalid bounded image argument");
+    return number;
+}
+std::uint64_t index64(const char* raw){const std::string text(raw);std::size_t used=0;
+    if(text.empty()||text.find_first_not_of("0123456789")!=std::string::npos)throw std::invalid_argument("Invalid training index");
+    const auto value=std::stoull(text,&used);if(used!=text.size())throw std::invalid_argument("Invalid training index");return value;
+}
+void number(std::uint32_t value){
+    const std::array<char,4> bytes{static_cast<char>(value>>24),static_cast<char>(value>>16),static_cast<char>(value>>8),static_cast<char>(value)};
+    std::cout.write(bytes.data(),bytes.size());
+}
+std::vector<std::uint8_t> encodedInput(){
+    std::vector<std::uint8_t> encoded;std::array<char,65536> buffer{};
+    while(std::cin){std::cin.read(buffer.data(),buffer.size());const auto n=std::cin.gcount();
+        if(n>0){if(encoded.size()+static_cast<std::size_t>(n)>300ULL*1024*1024)throw std::invalid_argument("Image input exceeds encoded byte budget");
+            encoded.insert(encoded.end(),buffer.data(),buffer.data()+n);}}
+    if(!std::cin.eof())throw std::runtime_error("Unable to read image input");return encoded;
+}
+std::pair<int,int> thumbnailSize(int width,int height,int maxWidth,int maxHeight){
+    if(maxWidth>=width&&maxHeight>=height)return {width,height};
+    const double aspect=static_cast<double>(width)/height;
+    if(static_cast<double>(maxWidth)/maxHeight>=aspect){
+        const double n=maxHeight*aspect;const int low=static_cast<int>(std::floor(n)),high=static_cast<int>(std::ceil(n));
+        const int x=std::abs(aspect-static_cast<double>(high)/maxHeight)<std::abs(aspect-static_cast<double>(low)/maxHeight)?high:low;
+        return {std::max(1,x),maxHeight};
+    }
+    const double n=maxWidth/aspect;const int low=static_cast<int>(std::floor(n)),high=static_cast<int>(std::ceil(n));
+    const auto error=[&](int v){return v?std::abs(aspect-static_cast<double>(maxWidth)/v):0;};
+    return {maxWidth,std::max(1,error(high)<error(low)?high:low)};
+}
+std::vector<std::uint8_t> encodeWebpLossless(const std::vector<std::uint8_t>& pixels,int width,int height){
+    WebPConfig config;if(!WebPConfigInit(&config))throw std::runtime_error("WebP encoder version mismatch");
+    config.lossless=1;config.quality=80;config.method=6;config.exact=1;
+    if(!WebPValidateConfig(&config))throw std::runtime_error("Invalid lossless WebP configuration");
+    struct Encoder {WebPPicture picture{};WebPMemoryWriter writer{};
+        Encoder(){if(!WebPPictureInit(&picture))throw std::runtime_error("WebP picture version mismatch");WebPMemoryWriterInit(&writer);}
+        ~Encoder(){WebPPictureFree(&picture);WebPMemoryWriterClear(&writer);}} encoder;
+    encoder.picture.width=width;encoder.picture.height=height;encoder.picture.use_argb=1;
+    encoder.picture.writer=WebPMemoryWrite;encoder.picture.custom_ptr=&encoder.writer;
+    if(!WebPPictureImportRGBA(&encoder.picture,pixels.data(),width*4)||!WebPEncode(&config,&encoder.picture))
+        throw std::runtime_error("Unable to encode lossless WebP");
+    return {encoder.writer.mem,encoder.writer.mem+encoder.writer.size};
+}
+}
+int main(int argc,char** argv){
+    try{
+#ifdef _WIN32
+        if(_setmode(_fileno(stdin),_O_BINARY)==-1||_setmode(_fileno(stdout),_O_BINARY)==-1)throw std::runtime_error("Unable to set binary I/O");
+#endif
+        if(argc<2)throw std::invalid_argument("Expected resize-rgba, rotate-rgba or encode-png");
+        const std::string action=argv[1];
+        if(action=="macro-finish"){
+            if(argc!=7)throw std::invalid_argument("Expected macro finish WIDTH HEIGHT ROTATION GLYPHS EXCLUSIONS");
+            const int width=dimension(argv[2]),height=dimension(argv[3]),rotation=bounded(argv[4],270);
+            const int glyphCount=bounded(argv[5],1000000),exclusionCount=bounded(argv[6],1000000);
+            const auto pixels=std::size_t(width)*height,rectangleCount=std::size_t(glyphCount)+exclusionCount;
+            if(pixels>16777216)throw std::invalid_argument("Macro finish exceeds pixel budget");
+            const auto input=encodedInput();const auto rectangleBytes=rectangleCount*16;
+            if(input.size()!=rectangleBytes+pixels*5)throw std::invalid_argument("Macro finish input length differs");
+            std::vector<std::array<std::int32_t,4>> rectangles(rectangleCount);
+            for(std::size_t i=0;i<rectangleCount*4;++i){std::uint32_t bits=0;for(int b=0;b<4;++b)bits|=std::uint32_t(input[i*4+b])<<(b*8);
+                std::int32_t value;std::memcpy(&value,&bits,sizeof(value));rectangles[i/4][i%4]=value;}
+            const auto first=input.begin()+static_cast<std::ptrdiff_t>(rectangleBytes);
+            const std::vector<std::uint8_t> image(first,first+static_cast<std::ptrdiff_t>(pixels*3));
+            std::vector<std::uint8_t> target(first+static_cast<std::ptrdiff_t>(pixels*3),first+static_cast<std::ptrdiff_t>(pixels*4));
+            std::vector<std::uint8_t> known(first+static_cast<std::ptrdiff_t>(pixels*4),input.end());
+            const std::vector<std::array<std::int32_t,4>> glyphs(rectangles.begin(),rectangles.begin()+glyphCount),exclusions(rectangles.begin()+glyphCount,rectangles.end());
+            const auto output=pando::map_image::macroFinish(image,std::move(target),std::move(known),width,height,rotation,glyphs,exclusions);
+            for(const auto* plane:{&output.image,&output.target,&output.known})std::cout.write(reinterpret_cast<const char*>(plane->data()),static_cast<std::streamsize>(plane->size()));
+            if(!std::cout)throw std::runtime_error("Unable to write finished macro image");return 0;
+        }
+        if(action=="macro-palette"||action=="macro-visible"){
+            if(argc!=5)throw std::invalid_argument("Expected macro color WIDTH HEIGHT COLOR_COUNT");
+            const int width=dimension(argv[2]),height=dimension(argv[3]);const bool visible=action=="macro-visible";
+            const int count=bounded(argv[4],visible?1024:16);const auto pixels=std::size_t(width)*height;
+            if(pixels>16777216||count<(visible?1:2))throw std::invalid_argument("Invalid macro color dimensions or palette");
+            const auto input=encodedInput();const auto paletteBytes=std::size_t(count)*24;
+            if(input.size()!=paletteBytes+pixels*3)throw std::invalid_argument("Macro color input length differs");
+            std::vector<std::array<double,3>> colors(static_cast<std::size_t>(count));
+            for(std::size_t i=0;i<colors.size()*3;++i){std::uint64_t bits=0;for(int b=0;b<8;++b)bits|=std::uint64_t(input[i*8+b])<<(b*8);
+                double value;std::memcpy(&value,&bits,sizeof(value));colors[i/3][i%3]=value;}
+            const std::vector<std::uint8_t> rgb(input.begin()+static_cast<std::ptrdiff_t>(paletteBytes),input.end());
+            const auto result=pando::map_image::macroClassify(rgb,width,height,colors,visible);
+            std::cout.write(reinterpret_cast<const char*>(result.data()),static_cast<std::streamsize>(result.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write macro color result");return 0;
+        }
+        if(action=="macro-adjacency"||action=="macro-dilate"){
+            if(argc!=5)throw std::invalid_argument("Expected macro mask WIDTH HEIGHT RADIUS");
+            const int width=dimension(argv[2]),height=dimension(argv[3]),radius=bounded(argv[4],action=="macro-adjacency"?4:32);
+            const auto pixels=std::size_t(width)*height;if(!radius||pixels>16777216)throw std::invalid_argument("Invalid macro mask dimensions or radius");
+            std::vector<std::uint8_t> input(pixels);
+            if(!std::cin.read(reinterpret_cast<char*>(input.data()),static_cast<std::streamsize>(pixels))||std::cin.peek()!=std::char_traits<char>::eof())throw std::invalid_argument("Macro mask input length differs");
+            if(action=="macro-dilate"){
+                const auto target=pando::map_image::macroDilate(input,width,height,radius);
+                std::cout.write(reinterpret_cast<const char*>(target.data()),static_cast<std::streamsize>(pixels));
+                if(!std::cout)throw std::runtime_error("Unable to write macro mask");return 0;
+            }
+            const auto [target,known]=pando::map_image::macroAdjacency(input,width,height,radius);
+            std::cout.write(reinterpret_cast<const char*>(target.data()),static_cast<std::streamsize>(pixels));
+            std::cout.write(reinterpret_cast<const char*>(known.data()),static_cast<std::streamsize>(pixels));
+            if(!std::cout)throw std::runtime_error("Unable to write macro mask");return 0;
+        }
+        if(action=="diagnostic-overlays"){
+            if(argc!=5)throw std::invalid_argument("Expected diagnostic WIDTH HEIGHT PANELS");
+            const int width=dimension(argv[2]),height=dimension(argv[3]),panels=bounded(argv[4],3);
+            const auto pixels=std::size_t(width)*height;if(pixels>1048576||panels<1)throw std::invalid_argument("Diagnostic overlay exceeds pixel or panel budget");
+            const auto input=encodedInput();const auto plane=pixels*7;
+            if(input.size()!=pixels*3+plane*(1+std::size_t(panels)))throw std::invalid_argument("Invalid diagnostic overlay input length");
+            const auto* original=input.data();const auto* known=original+pixels*3;
+            for(std::size_t i=0;i<plane*(1+std::size_t(panels));++i)if(known[i]>1)throw std::invalid_argument("Diagnostic masks must be binary");
+            static constexpr std::array<std::array<int,3>,7> colors{{{{240,20,20}},{{180,0,220}},{{0,200,200}},{{0,100,255}},{{255,140,0}},{{0,170,0}},{{30,30,30}}}};
+            static constexpr std::array<int,7> order{{3,4,5,6,2,1,0}};
+            std::vector<std::uint8_t> overlay(pixels*3);
+            for(int panel=0;panel<panels;++panel){std::copy_n(original,overlay.size(),overlay.data());const auto* active=known+plane*(1+std::size_t(panel));
+                for(const int c:order)for(std::size_t i=0;i<pixels;++i)if(known[std::size_t(c)*pixels+i]&&active[std::size_t(c)*pixels+i])
+                    for(int k=0;k<3;++k){const auto at=i*3+k;const float tint=static_cast<float>(colors[c][k])*.8f;
+                        overlay[at]=static_cast<std::uint8_t>(static_cast<double>(overlay[at])*.2+static_cast<double>(tint));}
+                std::cout.write(reinterpret_cast<const char*>(overlay.data()),static_cast<std::streamsize>(overlay.size()));
+            }
+            if(!std::cout)throw std::runtime_error("Unable to write diagnostic overlays");return 0;
+        }
+        if(action=="training-jpeg-overview"||action=="training-png-overview"||action=="training-webp-overview"){
+            if(argc!=4)throw std::invalid_argument("Expected raster training tile X Y");
+            struct State {
+                std::uint32_t width=0,height=0,orientation=0,tileX=0,tileY=0;bool composite=false;
+                std::unique_ptr<pando::map_image::OpaqueBilinearAccumulator> accumulator;
+                std::unique_ptr<pando::map_image::OpaqueBilinearColumnAccumulator> columns;
+                std::vector<std::uint8_t> mirrored,tile;std::exception_ptr error;
+            } state;
+            state.composite=action!="training-jpeg-overview";
+            state.tileX=static_cast<std::uint32_t>(bounded(argv[2],65534));state.tileY=static_cast<std::uint32_t>(bounded(argv[3],65534));
+            const auto start=[](void* context,std::uint32_t width,std::uint32_t height,std::uint32_t orientation)->int{
+                auto& s=*static_cast<State*>(context);try{
+                    s.width=width;s.height=height;s.orientation=orientation;
+                    const auto orientedWidth=orientation>=5?height:width,orientedHeight=orientation>=5?width:height;
+                    if(s.tileX>=orientedWidth||s.tileY>=orientedHeight)throw std::invalid_argument("Training tile starts outside JPEG");
+                    s.tile.assign(std::size_t(512)*512*4,255);
+                    if(orientation>=5)s.columns=std::make_unique<pando::map_image::OpaqueBilinearColumnAccumulator>(height,width,256,256);
+                    else s.accumulator=std::make_unique<pando::map_image::OpaqueBilinearAccumulator>(width,height,256,256);
+                    if(s.composite||orientation==2||orientation==3||orientation==7||orientation==8)s.mirrored.resize(std::size_t(width)*4);
+                    return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto row=[](void* context,std::uint32_t y,const std::uint8_t* pixels,std::size_t length)->int{
+                auto& s=*static_cast<State*>(context);try{
+                    if(!s.mirrored.empty()){
+                        const bool reverse=s.orientation==2||s.orientation==3||s.orientation==7||s.orientation==8;
+                        for(std::size_t x=0;x<s.width;++x){
+                            const auto* source=pixels+x*4;auto* destination=s.mirrored.data()+(reverse?s.width-1-x:x)*4;
+                            if(s.composite){const int alpha=source[3];for(int c=0;c<3;++c)destination[c]=std::uint8_t((source[c]*alpha+255*(255-alpha)+127)/255);destination[3]=255;}
+                            else std::copy_n(source,4,destination);
+                        }
+                        pixels=s.mirrored.data();
+                    }
+                    if(s.orientation>=5){
+                        const auto orientedX=(s.orientation==6||s.orientation==7)?s.height-1-y:y;
+                        s.columns->addColumn(static_cast<int>(orientedX),pixels,length);
+                        if(orientedX>=s.tileX&&orientedX-s.tileX<512){
+                            const auto end=std::min(s.width,s.tileY+512);
+                            for(auto yy=s.tileY;yy<end;++yy)
+                                std::copy_n(pixels+std::size_t(yy)*4,4,s.tile.data()+(std::size_t(yy-s.tileY)*512+orientedX-s.tileX)*4);
+                        }
+                    }else{
+                        const auto orientedY=(s.orientation==3||s.orientation==4)?s.height-1-y:y;
+                        s.accumulator->addRow(static_cast<int>(orientedY),pixels,length);
+                        if(orientedY>=s.tileY&&orientedY-s.tileY<512){
+                            const auto count=std::min<std::uint32_t>(512,s.width-s.tileX);
+                            std::copy_n(pixels+std::size_t(s.tileX)*4,std::size_t(count)*4,
+                                        s.tile.data()+std::size_t(orientedY-s.tileY)*512*4);
+                        }
+                    }
+                    return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto encoded=encodedInput();PandoImage image{};
+            const bool ok=action=="training-png-overview"?pando_stream_png_rows(encoded.data(),encoded.size(),&image,start,row,&state):
+                action=="training-webp-overview"?pando_stream_webp_rows(encoded.data(),encoded.size(),&image,start,row,&state):
+                pando_stream_jpeg_rows(encoded.data(),encoded.size(),&image,start,row,&state);
+            if(!ok){
+                if(state.error)std::rethrow_exception(state.error);
+                throw std::runtime_error(std::string("Training raster: ")+image.error);
+            }
+            const auto output=state.orientation>=5?state.columns->finish():state.accumulator->finish();
+            number(state.orientation>=5?image.height:image.width);number(state.orientation>=5?image.width:image.height);number(image.orientation);
+            std::cout.write(reinterpret_cast<const char*>(output.data()),static_cast<std::streamsize>(output.size()));
+            std::cout.write(reinterpret_cast<const char*>(state.tile.data()),static_cast<std::streamsize>(state.tile.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training overview");return 0;
+        }
+        if(action=="read-webp-raw"){
+            if(argc!=2)throw std::invalid_argument("Raw WebP takes no extra arguments");
+            const auto encoded=encodedInput();PandoImage image{};
+            if(!pando_read_webp(encoded.data(),encoded.size(),&image))throw std::runtime_error(std::string("Raw WebP: ")+image.error);
+            std::unique_ptr<std::uint8_t,decltype(&std::free)> pixels(image.rgba,&std::free);
+            number(image.width);number(image.height);const auto bytes=std::size_t(image.width)*image.height*4;
+            std::cout.write(reinterpret_cast<const char*>(pixels.get()),static_cast<std::streamsize>(bytes));
+            if(!std::cout)throw std::runtime_error("Unable to write raw WebP pixels");return 0;
+        }
+        if(action=="semap-image"){
+            if(argc!=2)throw std::invalid_argument("Semap image takes no extra arguments");
+            const auto encoded=encodedInput();PandoImage image{};
+            if(!pando_read_jpeg(encoded.data(),encoded.size(),&image))throw std::runtime_error(std::string("Semap JPEG: ")+image.error);
+            std::unique_ptr<std::uint8_t,decltype(&std::free)> pixels(image.rgba,&std::free);
+            if(image.width>1200||image.height>1200)throw std::invalid_argument("Semap real image exceeds size budget");
+            const std::vector<std::uint8_t> input(pixels.get(),pixels.get()+std::size_t(image.width)*image.height*4);
+            const auto reduced=pando::map_image::resizeOpaqueBicubic(input,image.width,image.height,128,128);
+            std::uint32_t sum=0;for(std::size_t i=0;i<reduced.size();i+=4){const auto lo=std::min({reduced[i],reduced[i+1],reduced[i+2]});
+                const auto hi=std::max({reduced[i],reduced[i+1],reduced[i+2]});sum+=hi-lo;}
+            number(image.width);number(image.height);number(sum);if(!std::cout)throw std::runtime_error("Unable to write Semap image inspection");return 0;
+        }
+        if(action=="semap-labels"||action=="encode-gray"){
+            if(argc!=4)throw std::invalid_argument("Expected grayscale WIDTH HEIGHT");
+            const int width=dimension(argv[2]),height=dimension(argv[3]);const auto pixels=std::size_t(width)*height;
+            if(pixels>16777216)throw std::invalid_argument("Grayscale image exceeds 16MP budget");
+            std::vector<std::uint8_t> input(pixels);
+            if(!std::cin.read(reinterpret_cast<char*>(input.data()),static_cast<std::streamsize>(pixels))||std::cin.peek()!=std::char_traits<char>::eof())
+                throw std::invalid_argument("Grayscale input byte length differs");
+            if(action=="encode-gray"){
+                const auto output=pando::map_image::encodePngGray(input,width,height);
+                std::cout.write(reinterpret_cast<const char*>(output.data()),static_cast<std::streamsize>(output.size()));
+            }else{
+                std::vector<std::uint8_t> target(pixels),known(pixels);std::uint32_t knownCount=0,positiveCount=0;
+                for(std::size_t i=0;i<pixels;++i){const auto value=input[i];if(value>5)throw std::invalid_argument("Unknown Semap semantic class");
+                    if(value>=2){known[i]=24;++knownCount;}if(value==4){target[i]=8;++positiveCount;}else if(value==5){target[i]=16;++positiveCount;}}
+                number(knownCount);number(positiveCount);std::cout.write(reinterpret_cast<const char*>(target.data()),static_cast<std::streamsize>(pixels));
+                std::cout.write(reinterpret_cast<const char*>(known.data()),static_cast<std::streamsize>(pixels));
+            }
+            if(!std::cout)throw std::runtime_error("Unable to write grayscale result");return 0;
+        }
+        if(action=="training-supervision"){
+            if(argc!=4)throw std::invalid_argument("Expected training supervision WIDTH HEIGHT");
+            const int width=dimension(argv[2]),height=dimension(argv[3]);const auto pixels=std::size_t(width)*height;
+            if(pixels>16777216)throw std::invalid_argument("Training supervision exceeds 16MP budget");
+            std::vector<std::uint8_t> target(pixels),known(pixels);
+            if(!std::cin.read(reinterpret_cast<char*>(target.data()),static_cast<std::streamsize>(pixels))||
+               !std::cin.read(reinterpret_cast<char*>(known.data()),static_cast<std::streamsize>(pixels))||std::cin.peek()!=std::char_traits<char>::eof())
+                throw std::invalid_argument("Training supervision input length differs");
+            std::array<std::uint32_t,7> validCount{},positiveCount{};
+            for(std::size_t i=0;i<pixels;++i)for(unsigned channel=0;channel<7;++channel){const auto bit=std::uint8_t(1u<<channel);
+                if(known[i]&bit){++validCount[channel];if(target[i]&bit)++positiveCount[channel];}}
+            for(unsigned channel=0;channel<7;++channel){number(validCount[channel]);number(positiveCount[channel]);}
+            if(!std::cout)throw std::runtime_error("Unable to write training supervision counts");return 0;
+        }
+        if(action=="training-supervision-encoded"||action=="training-diagnostic-tile-counts"){
+            if(argc!=2)throw std::invalid_argument("Encoded training supervision takes no extra arguments");
+            std::array<unsigned char,4> prefix{};
+            if(!std::cin.read(reinterpret_cast<char*>(prefix.data()),4))throw std::invalid_argument("Missing encoded target length");
+            const std::uint32_t length=(std::uint32_t(prefix[0])<<24)|(std::uint32_t(prefix[1])<<16)|(std::uint32_t(prefix[2])<<8)|prefix[3];
+            if(!length||length>300u*1024*1024)throw std::invalid_argument("Encoded target exceeds byte budget");
+            struct Supervision {std::uint32_t width=0,height=0,columns=0;bool known=false,diagnostic=false;std::vector<std::uint8_t> target,tiles;
+                std::vector<std::array<std::uint32_t,7>> tilePositive;
+                std::array<std::uint32_t,7> valid{},positive{};std::exception_ptr error;} state;
+            state.diagnostic=action=="training-diagnostic-tile-counts";
+            const auto start=[](void* context,std::uint32_t width,std::uint32_t height,std::uint32_t)->int{
+                auto& s=*static_cast<Supervision*>(context);try{
+                    if(!s.known){s.width=width;s.height=height;s.target.resize(std::size_t(width)*height);
+                        if(s.diagnostic){s.columns=(width+447)/448;const auto n=std::size_t(s.columns)*((height+447)/448);s.tiles.assign(n,0);s.tilePositive.assign(n,{});}}
+                    else if(width!=s.width||height!=s.height)throw std::invalid_argument("Matching source-coordinate training masks required");
+                    return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto row=[](void* context,std::uint32_t y,const std::uint8_t* rgba,std::size_t count)->int{
+                auto& s=*static_cast<Supervision*>(context);try{
+                    if(count!=std::size_t(s.width)*4)throw std::invalid_argument("Invalid training mask row");
+                    for(std::uint32_t x=0;x<s.width;++x){const auto value=rgba[std::size_t(x)*4];const auto index=std::size_t(y)*s.width+x;
+                        if(!s.known)s.target[index]=value;
+                        else if(value){
+                            const auto positives=std::uint8_t(value&s.target[index]);
+                            for(unsigned c=0;c<7;++c){const auto bit=std::uint8_t(1u<<c);if(value&bit){++s.valid[c];if(positives&bit)++s.positive[c];}}
+                            if(s.diagnostic){const auto tx=x/448,ty=y/448;const bool previousX=tx>0&&x%448<64,previousY=ty>0&&y%448<64;
+                                const auto add=[&](std::uint32_t cx,std::uint32_t cy){const auto i=std::size_t(cy)*s.columns+cx;s.tiles[i]=1;
+                                    if(positives)for(unsigned c=0;c<7;++c)if(positives&(1u<<c))++s.tilePositive[i][c];};
+                                add(tx,ty);if(previousX)add(tx-1,ty);if(previousY){add(tx,ty-1);if(previousX)add(tx-1,ty-1);}
+                            }
+                        }
+                    }
+                    return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            PandoImage image{};
+            {std::vector<std::uint8_t> encoded(length);if(!std::cin.read(reinterpret_cast<char*>(encoded.data()),length))throw std::invalid_argument("Truncated encoded target");
+                if(!pando_stream_gray_mask(encoded.data(),encoded.size(),&image,start,row,&state)){
+                    if(state.error)std::rethrow_exception(state.error);throw std::runtime_error(std::string("Training mask: ")+image.error);}}
+            state.known=true;const auto encoded=encodedInput();
+            if(!pando_stream_gray_mask(encoded.data(),encoded.size(),&image,start,row,&state)){
+                if(state.error)std::rethrow_exception(state.error);throw std::runtime_error(std::string("Training mask: ")+image.error);}
+            number(state.width);number(state.height);
+            if(state.diagnostic){for(std::size_t i=0;i<state.tiles.size();++i){std::cout.put(static_cast<char>(state.tiles[i]));for(const auto count:state.tilePositive[i])number(count);}}
+            else for(unsigned c=0;c<7;++c){number(state.valid[c]);number(state.positive[c]);}
+            if(!std::cout)throw std::runtime_error("Unable to write encoded supervision counts");return 0;
+        }
+        if(action=="training-mask-audit"){
+            if(argc!=2)throw std::invalid_argument("Training mask audit takes no extra arguments");
+            struct MaskAudit {std::uint32_t width=0,height=0;std::uint8_t bits=0;std::exception_ptr error;} state;
+            const auto start=[](void* context,std::uint32_t width,std::uint32_t height,std::uint32_t)->int{
+                auto& s=*static_cast<MaskAudit*>(context);s.width=width;s.height=height;return 1;
+            };
+            const auto row=[](void* context,std::uint32_t,const std::uint8_t* rgba,std::size_t length)->int{
+                auto& s=*static_cast<MaskAudit*>(context);try{
+                    if(length!=std::size_t(s.width)*4)throw std::invalid_argument("Invalid training mask row");
+                    for(std::uint32_t x=0;x<s.width;++x)s.bits|=rgba[std::size_t(x)*4];return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto encoded=encodedInput();PandoImage image{};
+            if(!pando_stream_gray_mask(encoded.data(),encoded.size(),&image,start,row,&state)){
+                if(state.error)std::rethrow_exception(state.error);
+                throw std::runtime_error(std::string("Training mask: ")+image.error);
+            }
+            number(state.width);number(state.height);std::cout.put(static_cast<char>(state.bits));
+            if(!std::cout)throw std::runtime_error("Unable to write training mask audit");return 0;
+        }
+        if(action=="training-mask-tiles"){
+            if(argc!=2)throw std::invalid_argument("Training mask tiles takes no extra arguments");
+            struct MaskTiles {std::uint32_t width=0,height=0,columns=0;std::vector<std::uint8_t> tiles;std::exception_ptr error;} state;
+            const auto start=[](void* context,std::uint32_t width,std::uint32_t height,std::uint32_t)->int{
+                auto& s=*static_cast<MaskTiles*>(context);try{
+                    s.width=width;s.height=height;s.columns=(width+447)/448;
+                    s.tiles.assign(std::size_t(s.columns)*((height+447)/448),0);return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto row=[](void* context,std::uint32_t y,const std::uint8_t* rgba,std::size_t length)->int{
+                auto& s=*static_cast<MaskTiles*>(context);try{
+                    if(length!=std::size_t(s.width)*4)throw std::invalid_argument("Invalid training mask row");
+                    const auto ty=y/448;const bool previousY=ty>0&&y%448<64;
+                    for(std::uint32_t x=0;x<s.width;++x)if(rgba[std::size_t(x)*4]){
+                        const auto tx=x/448;const bool previousX=tx>0&&x%448<64;
+                        s.tiles[std::size_t(ty)*s.columns+tx]=1;
+                        if(previousX)s.tiles[std::size_t(ty)*s.columns+tx-1]=1;
+                        if(previousY){s.tiles[std::size_t(ty-1)*s.columns+tx]=1;
+                            if(previousX)s.tiles[std::size_t(ty-1)*s.columns+tx-1]=1;}
+                    }
+                    return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto encoded=encodedInput();PandoImage image{};
+            if(!pando_stream_gray_mask(encoded.data(),encoded.size(),&image,start,row,&state)){
+                if(state.error)std::rethrow_exception(state.error);
+                throw std::runtime_error(std::string("Training mask: ")+image.error);
+            }
+            number(state.width);number(state.height);std::cout.write(reinterpret_cast<const char*>(state.tiles.data()),static_cast<std::streamsize>(state.tiles.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training mask tile index");return 0;
+        }
+        if(action=="training-mask-window"){
+            if(argc!=4)throw std::invalid_argument("Expected training mask window X Y");
+            struct MaskWindow {std::uint32_t x,y,width=0,height=0;std::vector<std::uint8_t> pixels;std::exception_ptr error;} state{
+                static_cast<std::uint32_t>(bounded(argv[2],65534)),static_cast<std::uint32_t>(bounded(argv[3],65534)),0,0,std::vector<std::uint8_t>(512*512),{}};
+            const auto start=[](void* context,std::uint32_t width,std::uint32_t height,std::uint32_t)->int{
+                auto& s=*static_cast<MaskWindow*>(context);try{
+                    if(s.x>=width||s.y>=height)throw std::invalid_argument("Training mask window starts outside image");
+                    s.width=width;s.height=height;return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto row=[](void* context,std::uint32_t y,const std::uint8_t* rgba,std::size_t length)->int{
+                auto& s=*static_cast<MaskWindow*>(context);try{
+                    if(length!=std::size_t(s.width)*4)throw std::invalid_argument("Invalid training mask row");
+                    if(y>=s.y&&y-s.y<512)for(std::uint32_t x=s.x;x<s.width&&x-s.x<512;++x)
+                        s.pixels[std::size_t(y-s.y)*512+x-s.x]=rgba[std::size_t(x)*4];
+                    return 1;
+                }catch(...){s.error=std::current_exception();return 0;}
+            };
+            const auto encoded=encodedInput();PandoImage image{};
+            if(!pando_stream_gray_mask(encoded.data(),encoded.size(),&image,start,row,&state)){
+                if(state.error)std::rethrow_exception(state.error);
+                throw std::runtime_error(std::string("Training mask: ")+image.error);
+            }
+            number(state.width);number(state.height);std::cout.write(reinterpret_cast<const char*>(state.pixels.data()),static_cast<std::streamsize>(state.pixels.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training mask window");return 0;
+        }
+        if(action=="training-mask"){
+            if(argc!=2)throw std::invalid_argument("Training mask takes no extra arguments");
+            const auto encoded=encodedInput();PandoImage image{};
+            if(!pando_read_gray_mask(encoded.data(),encoded.size(),&image))throw std::runtime_error(std::string("Training mask: ")+image.error);
+            std::unique_ptr<std::uint8_t,decltype(&std::free)> rgba(image.rgba,&std::free);
+            std::vector<std::uint8_t> pixels(std::size_t(image.width)*image.height);
+            for(std::size_t i=0;i<pixels.size();++i)pixels[i]=rgba.get()[i*4];
+            number(image.width);number(image.height);std::cout.write(reinterpret_cast<const char*>(pixels.data()),static_cast<std::streamsize>(pixels.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training mask");return 0;
+        }
+        if(action=="training-pieces"){
+            if(argc!=9)throw std::invalid_argument("Expected training pieces WIDTH HEIGHT X Y AUGMENT EPOCH INDEX");
+            const int width=bounded(argv[2],65535),height=bounded(argv[3],65535),x=bounded(argv[4],65534),y=bounded(argv[5],65534);
+            const std::string augment=argv[6];if(augment!="0"&&augment!="1")throw std::invalid_argument("Invalid training augmentation flag");
+            const auto epoch=index64(argv[7]),index=index64(argv[8]);
+            std::vector<std::uint8_t> tile(std::size_t(512)*512*4),overview(std::size_t(256)*256*4),
+                target(std::size_t(512)*512),known(std::size_t(512)*512);
+            for(auto* plane:{&tile,&overview,&target,&known})
+                if(!std::cin.read(reinterpret_cast<char*>(plane->data()),static_cast<std::streamsize>(plane->size())))
+                    throw std::invalid_argument("Training pieces input is truncated");
+            if(std::cin.peek()!=std::char_traits<char>::eof())throw std::invalid_argument("Training pieces have trailing bytes");
+            const auto output=pando::map_image::trainingTilePieces(std::move(tile),std::move(overview),width,height,x,y,target,known,augment=="1",epoch,index);
+            std::cout.write(reinterpret_cast<const char*>(output.data()),static_cast<std::streamsize>(output.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training tensors");return 0;
+        }
+        if(action=="training-tile"){
+            if(argc!=9)throw std::invalid_argument("Expected training tile WIDTH HEIGHT X Y AUGMENT EPOCH INDEX");
+            const int width=dimension(argv[2]),height=dimension(argv[3]),x=bounded(argv[4],16384),y=bounded(argv[5],16384);
+            const std::string augment=argv[6];if(augment!="0"&&augment!="1")throw std::invalid_argument("Invalid training augmentation flag");
+            const auto epoch=index64(argv[7]),index=index64(argv[8]);constexpr std::size_t pixels=512*512;
+            if(static_cast<std::int64_t>(width)*height>16777216)throw std::invalid_argument("Image exceeds 16MP budget");
+            std::vector<std::uint8_t> input(std::size_t(width)*height*4),target(pixels),known(pixels);
+            if(!std::cin.read(reinterpret_cast<char*>(input.data()),static_cast<std::streamsize>(input.size()))||
+               !std::cin.read(reinterpret_cast<char*>(target.data()),static_cast<std::streamsize>(target.size()))||
+               !std::cin.read(reinterpret_cast<char*>(known.data()),static_cast<std::streamsize>(known.size()))||std::cin.peek()!=std::char_traits<char>::eof())
+                throw std::invalid_argument("Training tile input byte length differs");
+            const auto output=pando::map_image::trainingTile(input,width,height,x,y,target,known,augment=="1",epoch,index);
+            std::cout.write(reinterpret_cast<const char*>(output.data()),static_cast<std::streamsize>(output.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training tile");return 0;
+        }
+        if(action=="training-scan"){
+            if(argc!=6)throw std::invalid_argument("Expected training scan WIDTH HEIGHT EPOCH INDEX");
+            const int width=dimension(argv[2]),height=dimension(argv[3]);
+            if(static_cast<std::int64_t>(width)*height>16777216)throw std::invalid_argument("Image exceeds 16MP budget");
+            const auto epoch=index64(argv[4]),index=index64(argv[5]);
+            std::vector<std::uint8_t> input(std::size_t(width)*height*4);
+            if(!std::cin.read(reinterpret_cast<char*>(input.data()),static_cast<std::streamsize>(input.size()))||std::cin.peek()!=std::char_traits<char>::eof())
+                throw std::invalid_argument("RGBA input byte length differs from dimensions");
+            const auto output=pando::map_image::trainingScan(input,width,height,epoch,index);
+            std::cout.write(reinterpret_cast<const char*>(output.data()),static_cast<std::streamsize>(output.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write training scan");return 0;
+        }
+        if(action=="header-png"||action=="header-jpeg"||action=="header-webp"){
+            if(argc!=2)throw std::invalid_argument("Image header takes no extra arguments");
+            const auto encoded=encodedInput();PandoImage image{};
+            const bool ok=action=="header-png"?pando_inspect_png(encoded.data(),encoded.size(),&image):
+                action=="header-jpeg"?pando_inspect_jpeg(encoded.data(),encoded.size(),&image):pando_inspect_webp(encoded.data(),encoded.size(),&image);
+            if(!ok)throw std::runtime_error(std::string("Image header: ")+image.error);
+            number(image.width);number(image.height);number(image.orientation);return 0;
+        }
+        if(action=="prepare-jpeg"||action=="inspect-jpeg"){
+            if(argc!=3)throw std::invalid_argument("Expected JPEG preparation with MAX_PIXELS");
+            const auto maximum=static_cast<std::uint32_t>(bounded(argv[2],16777216));const auto encoded=encodedInput();
+            PandoImage image{};std::uint32_t originalWidth=0,originalHeight=0,boundWidth=0,boundHeight=0;int cmyk=0;
+            if(!pando_read_jpeg_draft(encoded.data(),encoded.size(),maximum,action=="inspect-jpeg",&image,&originalWidth,&originalHeight,&boundWidth,&boundHeight,&cmyk))
+                throw std::runtime_error(std::string("JPEG preparation: ")+image.error);
+            std::unique_ptr<std::uint8_t,decltype(&std::free)> decoded(image.rgba,&std::free);
+            number(originalWidth);number(originalHeight);
+            if(!decoded){number(originalWidth);number(originalHeight);number(0);return 0;}
+            const auto [width,height]=thumbnailSize(static_cast<int>(image.width),static_cast<int>(image.height),static_cast<int>(boundWidth),static_cast<int>(boundHeight));
+            const std::vector<std::uint8_t> pixels(decoded.get(),decoded.get()+static_cast<std::size_t>(image.width)*image.height*4);
+            const auto resized=cmyk?pando::map_image::resizeCmykThumbnail(pixels,image.width,image.height,width,height):
+                pando::map_image::resizeOpaqueThumbnail(pixels,image.width,image.height,width,height);
+            std::uint8_t* bytes=nullptr;std::size_t length=0;char error[256]{};
+            if(!pando_write_jpeg(resized.data(),width,height,&bytes,&length,error,sizeof(error)))throw std::runtime_error(std::string("JPEG encoding: ")+error);
+            std::unique_ptr<std::uint8_t,decltype(&std::free)> output(bytes,&std::free);
+            number(width);number(height);number(1);std::cout.write(reinterpret_cast<const char*>(output.get()),static_cast<std::streamsize>(length));
+            if(!std::cout)throw std::runtime_error("Unable to write JPEG derivative");return 0;
+        }
+        if(action=="read-png"||action=="read-jpeg"||action=="read-webp"){
+            if(argc!=7)throw std::invalid_argument("Expected image read with MAX_PIXELS X Y WIDTH HEIGHT");
+            const int maximum=bounded(argv[2],16777216),x=bounded(argv[3],16384),y=bounded(argv[4],16384),
+                width=bounded(argv[5],16384),height=bounded(argv[6],16384);
+            const auto encoded=encodedInput();
+            const auto image=pando::map_image::readImage(encoded,action.substr(5),maximum,x,y,width,height);
+            for(const auto field:{image.encodedWidth,image.encodedHeight,image.orientation,image.originalWidth,image.originalHeight,
+                    image.x,image.y,image.rectWidth,image.rectHeight,image.width,image.height})number(static_cast<std::uint32_t>(field));
+            std::cout.write(reinterpret_cast<const char*>(image.data.data()),static_cast<std::streamsize>(image.data.size()));
+            if(!std::cout)throw std::runtime_error("Unable to write decoded pixels");
+            return 0;
+        }
+        if(((action=="resize-rgba"||action=="resize-bilinear"||action=="thumbnail-pdf")&&argc!=6)||(action=="rotate-rgba"&&argc!=5)||((action=="encode-png"||action=="encode-webp-lossless"||action=="encode-jpeg")&&argc!=4)||
+           (action!="resize-rgba"&&action!="resize-bilinear"&&action!="thumbnail-pdf"&&action!="rotate-rgba"&&action!="encode-png"&&action!="encode-webp-lossless"&&action!="encode-jpeg"))
+            throw std::invalid_argument("Invalid native image operation or arguments");
+        const int w=dimension(argv[2]),h=dimension(argv[3]);
+        int ow=0,oh=0,degrees=0;
+        if(action=="resize-rgba"||action=="resize-bilinear"||action=="thumbnail-pdf"){ow=dimension(argv[4]);oh=dimension(argv[5]);}
+        else if(action=="rotate-rgba"){const std::string angle=argv[4];if(angle!="0"&&angle!="90"&&angle!="180"&&angle!="270")throw std::invalid_argument("Invalid clockwise rotation");degrees=std::stoi(angle);}
+        if(static_cast<std::int64_t>(w)*h>16777216||((action=="resize-rgba"||action=="resize-bilinear"||action=="thumbnail-pdf")&&static_cast<std::int64_t>(ow)*oh>16777216))throw std::invalid_argument("Image exceeds 16MP budget");
+        const auto bytes=static_cast<std::size_t>(w)*h*4;std::vector<std::uint8_t> input(bytes);
+        if(!std::cin.read(reinterpret_cast<char*>(input.data()),static_cast<std::streamsize>(bytes))||std::cin.peek()!=std::char_traits<char>::eof())
+            throw std::invalid_argument("RGBA input byte length differs from dimensions");
+        if(action=="encode-jpeg"){
+            for(std::size_t i=3;i<input.size();i+=4)if(input[i]!=255)throw std::invalid_argument("JPEG input must be opaque");
+            std::uint8_t* encoded=nullptr;std::size_t length=0;char error[256]{};
+            if(!pando_write_jpeg(input.data(),w,h,&encoded,&length,error,sizeof(error)))throw std::runtime_error(std::string("JPEG encoding: ")+error);
+            std::unique_ptr<std::uint8_t,decltype(&std::free)> output(encoded,&std::free);
+            std::cout.write(reinterpret_cast<const char*>(output.get()),static_cast<std::streamsize>(length));
+            if(!std::cout)throw std::runtime_error("Unable to write JPEG image");return 0;
+        }
+        const auto output=action=="resize-rgba"?pando::map_image::resizeRgba(input,w,h,ow,oh):action=="resize-bilinear"?pando::map_image::resizeOpaqueBilinear(input,w,h,ow,oh):action=="thumbnail-pdf"?pando::map_image::resizeOpaqueThumbnail(input,w,h,ow,oh):
+            action=="rotate-rgba"?pando::map_image::rotateRgba(input,w,h,degrees):action=="encode-webp-lossless"?encodeWebpLossless(input,w,h):pando::map_image::encodePngRgba(input,w,h);
+        std::cout.write(reinterpret_cast<const char*>(output.data()),static_cast<std::streamsize>(output.size()));
+        if(!std::cout)throw std::runtime_error("Unable to write resized pixels");
+        return 0;
+    }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+}

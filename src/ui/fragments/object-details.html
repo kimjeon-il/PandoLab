@@ -1,0 +1,42 @@
+<aside id="objectDetailSurface" class="workspace-surface surface-details ui-sheet ui-surface--seamless" aria-labelledby="objectDetailSheetTitle" inert>
+  <header class="surface-header">
+    <button class="ui-button sheet-drag-handle" type="button" role="slider" data-sheet-handle="objectDetailSurface"
+      aria-label="정보창 높이 조절" data-tooltip="정보창 높이 조절" aria-orientation="vertical"
+      aria-valuemin="0" aria-valuemax="2" aria-valuenow="0" aria-valuetext="접힌 상태"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron-right"/></svg></button>
+    <div class="surface-header-title"><strong id="objectDetailSheetTitle">객체 정보</strong></div>
+    <div class="surface-header-actions">
+      <button id="objectDetailCloseBtn" class="ui-button icon-btn sheet-close-btn" type="button" aria-label="객체 정보 닫기" data-tooltip="객체 정보 닫기">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg>
+      </button>
+    </div>
+  </header>
+  <div class="ui-object-context ui-panel object-details-context">
+    <div class="ui-object-context-main">
+      <img id="objectDetailFlag" class="object-details-flag" alt="" hidden />
+      <div class="ui-object-context-heading">
+        <h2 id="objectDetailObjectName">선택한 객체</h2>
+        <div id="objectDetailType" class="ui-status object-details-type" hidden></div>
+        <div id="objectDetailAffiliation" class="ui-status object-details-affiliation" hidden></div>
+      </div>
+    </div>
+  </div>
+  <nav id="objectDetailTabs" class="ui-tabs surface-tabs" role="tablist" aria-label="선택 객체 정보 탭">
+    <button id="objectDetailTabInfo" class="ui-button ui-tab active" type="button" role="tab"
+      aria-controls="objectDetailInfoPane" aria-selected="true" tabindex="0">정보</button>
+    <button id="objectDetailTabHistory" class="ui-button ui-tab" type="button" role="tab"
+      aria-controls="objectDetailHistoryPane" aria-selected="false" tabindex="-1">연혁</button>
+  </nav>
+  <div class="surface-body ui-scroll-surface object-details-body">
+    <section id="objectDetailInfoPane" class="ui-panel" role="tabpanel" aria-labelledby="objectDetailTabInfo">
+      <div id="objectDetailInfoEmpty" class="empty-state ui-empty-state ui-empty-state--compact">
+        <strong>정보</strong><p>표시할 정보 항목은 추후 구성합니다.</p>
+      </div>
+      <div id="objectDetailGroups" class="ui-content-section object-details-groups" aria-label="유형별 소속 객체"></div>
+    </section>
+    <section id="objectDetailHistoryPane" class="ui-panel" role="tabpanel" aria-labelledby="objectDetailTabHistory" hidden>
+      <div class="empty-state ui-empty-state ui-empty-state--compact">
+        <strong>연혁</strong><p>표시할 연혁 항목은 추후 구성합니다.</p>
+      </div>
+    </section>
+  </div>
+</aside>
