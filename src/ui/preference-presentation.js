@@ -1,5 +1,5 @@
 import {loadUserPreferences,saveUserPreferences,effectiveTheme} from "./user-preferences.js";
-import {applyAppAccent} from "./app-accent.js";
+import {resolveMapAccent} from "./app-accent.js";
 import {resolveMapInteractionStyle,applyInteractionCssProperties} from "../map/map-interaction-style.js";
 
 const FONT_STACKS=Object.freeze({default:'var(--ui-font-family)',gothic:'"Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif',serif:'"Noto Serif KR", "Nanum Myeongjo", "AppleMyungjo", serif'});
@@ -14,7 +14,7 @@ export function createPreferencePresentation({document,window,productMode,onChan
     const root=document.documentElement,theme=effectiveTheme(current,systemTheme==='dark');
     root.dataset.systemTheme=systemTheme;root.dataset.theme=theme;
     root.dataset.smoothLines=String(current.appearance.smoothLines);
-    accent=applyAppAccent(document);
+    accent=resolveMapAccent(document,theme);
     for(const kind of ['country','place']){
       const labels=current.labels[kind];root.style.setProperty(`--${kind}-label-font-family`,FONT_STACKS[labels.font]||FONT_STACKS.default);
       const key=`--${kind}-label-color`;if(labels.color)root.style.setProperty(key,labels.color);else root.style.removeProperty(key);

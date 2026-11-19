@@ -90,11 +90,18 @@
   white-space: nowrap;
 }
 
-.app-root .topbar .topbar-command:is(:hover, :active, [aria-expanded="true"]):not(:disabled) {
+.app-root .topbar .topbar-command:hover:not(:disabled) {
   --topbar-command-background: var(--ui-button-subtle-hover);
-  border-color: transparent;
-  background: var(--ui-button-subtle-hover);
   color: var(--text-strong);
+}
+
+.app-root .topbar .topbar-command:is([aria-expanded="true"], .sheet-open):not(:disabled) {
+  --topbar-command-background: var(--ui-button-selected);
+  color: var(--accent);
+}
+
+.app-root .topbar .topbar-command:active:not(:disabled) {
+  --topbar-command-background: var(--ui-control-bg-pressed);
 }
 
 .app-root .topbar-center {

@@ -56,6 +56,62 @@ async function open(page,query=''){
 }
 const camera=page=>page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState());
 
+test('Viewer dialogs share readable action colors across layouts and themes',async({browser,baseURL,page})=>{
+ const install=async target=>{
+  await target.addInitScript(()=>{
+   const get=window.getComputedStyle.bind(window);
+   window.getComputedStyle=(element,...args)=>element.style?.color.toLowerCase()==='accentcolor'
+    ?{color:'rgb(0, 117, 255)'}:get(element,...args);
+  });
+  await open(target);
+  await target.addStyleTag({content:'.ui-button { transition: none !important; }'});
+ };
+ const palette=async(target,{theme,layout,mobile=false})=>{
+  await target.emulateMedia({colorScheme:theme});
+  await expect(target.locator('html')).toHaveAttribute('data-theme',theme);
+  await expect(target.locator('#viewer')).toHaveAttribute('data-layout',layout);
+  const read=selector=>target.locator(selector).evaluate(button=>{
+   const style=getComputedStyle(button),tokens=getComputedStyle(button.closest('.ui-dialog-card'));
+   return {ink:style.color,fill:style.backgroundColor,edge:style.borderTopColor,paper:tokens.backgroundColor,
+    states:['--accent','--ui-button-selected','--ui-control-bg-pressed','--text','--focus-ring'].map(key=>style.getPropertyValue(key))};
+  });
+  const clickMenu=async id=>{
+   if(mobile)await target.locator('#mobileMenuBtn').click();
+   await target.locator(id).click();
+  };
+  await clickMenu(mobile?'#mobilePreferencesBtn':'#preferencesBtn');
+  await expect(target.locator('#preferencesCloseBtn')).toBeVisible();
+  await target.mouse.move(0,0);
+  const settings=await read('#preferencesCloseBtn');
+  expect(settings.ink).toBe('rgb(255, 255, 255)');
+  if(!mobile){
+   const button=target.locator('#preferencesCloseBtn');await button.hover();
+   expect((await read('#preferencesCloseBtn')).ink).toBe(settings.ink);
+   await target.mouse.down();expect((await read('#preferencesCloseBtn')).ink).toBe(settings.ink);
+   await target.mouse.up();
+  }else await target.locator('#preferencesCloseBtn').click();
+  await clickMenu(mobile?'#mobileMenuFileBtn':'#fileBtn');
+  await expect(target.locator('#projectPickerCloseBtn')).toBeVisible();
+  await target.mouse.move(0,0);
+  expect(await read('#projectPickerCloseBtn')).toEqual(settings);
+  await target.locator('#projectPickerCloseBtn').click();
+  return settings;
+ };
+ await page.setViewportSize({width:1440,height:900});
+ await install(page);
+ const wide={light:await palette(page,{theme:'light',layout:'wide'}),dark:await palette(page,{theme:'dark',layout:'wide'})};
+ expect(wide.light.fill).not.toBe(wide.dark.fill);
+ const context=await browser.newContext({baseURL,viewport:{width:1024,height:768},hasTouch:true,isMobile:true});
+ try{
+  const touch=await context.newPage();await install(touch);
+  for(const [width,height,layout] of [[1024,768,'compact'],[390,844,'mobile'],[844,390,'phone-landscape']]){
+   await touch.setViewportSize({width,height});
+   for(const theme of ['light','dark'])
+    expect(await palette(touch,{theme,layout,mobile:layout!=='compact'})).toEqual(wide[theme]);
+  }
+ }finally{await context.close();}
+});
+
 test('graticule draws above the colored map and below selection and labels',async({page})=>{
  await page.emulateMedia({reducedMotion:'no-preference'});
  await page.addInitScript(()=>{

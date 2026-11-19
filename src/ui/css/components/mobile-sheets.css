@@ -85,7 +85,7 @@
     align-items: stretch;
     padding: var(--ui-space-1) max(var(--ui-space-1), env(safe-area-inset-right)) calc(var(--ui-mobile-bottom-nav-padding) + env(safe-area-inset-bottom)) max(var(--ui-space-1), env(safe-area-inset-left));
     border-top: 1px solid var(--border);
-    background: var(--mobile-nav-bg);
+    background: var(--surface-elevated);
   }
 
   [data-layout="mobile"] .mobile-bottom-bar {
@@ -375,7 +375,7 @@
 }
 
 .app-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-workspace-controls {
-  background: var(--mobile-nav-bg);
+  background: var(--surface-elevated);
 }
 
 .app-root[data-layout="phone-landscape"] .mobile-workspace-controls {
