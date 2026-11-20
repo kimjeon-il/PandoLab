@@ -310,7 +310,6 @@ PolygonFillMesh buildPolygonFillMesh(const Polygon& polygon,double maxEdgeDegree
             chain.visible.push_back(!artificialClosure(clean[i],clean[(i+1)%clean.size()]));
             mesh.geographic.push_back(clean[i]);mesh.parameter.push_back(parameter[i]);
         }
-        mesh.sourceRingOffsets.push_back(static_cast<std::uint32_t>(mesh.geographic.size()));
         mesh.boundaryChains.push_back(std::move(chain));rings.push_back(std::move(parameter));
     }
     // A common local frame avoids Earcut's winding cancellation near a large

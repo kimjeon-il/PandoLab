@@ -24,9 +24,6 @@ struct PolygonFillMesh {
     std::vector<MeshPosition> geographic,parameter;
     std::vector<MeshTriangle> triangles,removedTriangles;
     std::vector<MeshBoundaryChain> boundaryChains;
-    // Clean source vertices precede derived refinement vertices. These offsets
-    // preserve editable ring identity independently from display subdivision.
-    std::vector<std::uint32_t> sourceRingOffsets{0};
 };
 // Display-only mesh: seam unwrap, polar projection, checked hole triangulation
 // and conforming spherical refinement have one owner for Qt and Web/WASM.

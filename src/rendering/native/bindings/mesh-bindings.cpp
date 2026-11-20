@@ -22,7 +22,7 @@ EM_JS(EM_VAL, packFillPolygon, (EM_VAL input), {
     }
     return Emval.toHandle([offsets,points]);
 });
-EM_JS(EM_VAL, unpackFillMesh, (EM_VAL geographic,EM_VAL parameter,EM_VAL triangles,
+EM_JS(EM_VAL, unpackFillMesh, (EM_VAL geographic,EM_VAL triangles,
     EM_VAL removed,EM_VAL offsets,EM_VAL vertices,EM_VAL visible,int pole), {
     const points=view=>{const input=Emval.toValue(view),result=[];
         for(let i=0;i<input.length;i+=2)result.push([input[i],input[i+1]]);return result;};
@@ -34,7 +34,7 @@ EM_JS(EM_VAL, unpackFillMesh, (EM_VAL geographic,EM_VAL parameter,EM_VAL triangl
     });
     const discarded=flat(removed),removedTriangles=[];
     for(let i=0;i<discarded.length;i+=3)removedTriangles.push(discarded.slice(i,i+3));
-    return Emval.toHandle({geographic:points(geographic),parameter:points(parameter),
+    return Emval.toHandle({geographic:points(geographic),
         triangles:flat(triangles),removedTriangles,boundaryChains:chains,pole});
 });
 template<class T> val view(const std::vector<T>& values) {
@@ -55,11 +55,10 @@ val buildFillMesh(val input,double maxEdgeDegrees,bool validate,val cancellation
         const std::function<void()> checkCancelled=cancellation.typeOf().as<std::string>()=="function"
             ?std::function<void()>([&]{cancellation();}):std::function<void()>{};
         const auto mesh=pandoeditor::buildPolygonFillMesh(polygon,maxEdgeDegrees,validate,checkCancelled);
-        std::vector<double> geo,parameter;
+        std::vector<double> geo;
         std::vector<std::uint32_t> triangles,removed,chainOffsets{0},vertices;
         std::vector<std::uint8_t> visible;
         for(const auto& p:mesh.geographic)geo.insert(geo.end(),p.begin(),p.end());
-        for(const auto& p:mesh.parameter)parameter.insert(parameter.end(),p.begin(),p.end());
         for(const auto& t:mesh.triangles)triangles.insert(triangles.end(),t.begin(),t.end());
         for(const auto& t:mesh.removedTriangles)removed.insert(removed.end(),t.begin(),t.end());
         for(const auto& chain:mesh.boundaryChains){
@@ -67,7 +66,7 @@ val buildFillMesh(val input,double maxEdgeDegrees,bool validate,val cancellation
             visible.insert(visible.end(),chain.visible.begin(),chain.visible.end());
             chainOffsets.push_back(static_cast<std::uint32_t>(vertices.size()));
         }
-        return val::take_ownership(unpackFillMesh(view(geo).as_handle(),view(parameter).as_handle(),
+        return val::take_ownership(unpackFillMesh(view(geo).as_handle(),
             view(triangles).as_handle(),view(removed).as_handle(),view(chainOffsets).as_handle(),
             view(vertices).as_handle(),view(visible).as_handle(),mesh.space.pole));
     }catch(const std::exception& error){

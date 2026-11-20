@@ -344,9 +344,8 @@ val countryContactsForWeb(val features,val pairs) {
     std::terminate();
 }
 
-// The wire format deliberately includes only immutable source endpoints and
-// owner identifiers. Worker feature indexes and SVG/GPU styling stay in JS.
-std::vector<SharedStrokeSource> readStrokeSources(val input,bool sharedOnly) {
+// The verifier accepts immutable source endpoints and shared owner identifiers.
+std::vector<SharedStrokeSource> readStrokeSources(val input) {
     requireArray(input,"INVALID_SHARED_STROKE");
     const unsigned count=input["length"].as<unsigned>();
     if(count>1'000'000)throw std::invalid_argument("INVALID_SHARED_STROKE: excessive input");
@@ -359,7 +358,7 @@ std::vector<SharedStrokeSource> readStrokeSources(val input,bool sharedOnly) {
         const auto owners=row[2];
         requireArray(owners,"INVALID_SHARED_STROKE");
         const unsigned n=owners["length"].as<unsigned>();
-        if(!n||(sharedOnly&&n<2)||n>100)
+        if(n<2||n>100)
             throw std::invalid_argument("INVALID_SHARED_STROKE: invalid owner count");
         SharedStrokeSource source;
         source.edge={readPoint(row[0]),readPoint(row[1])};
@@ -373,55 +372,9 @@ std::vector<SharedStrokeSource> readStrokeSources(val input,bool sharedOnly) {
     }
     return sources;
 }
-val floatArray(std::vector<float>& values) {
-    val result=val::global("Float32Array").new_(static_cast<unsigned>(values.size()));
-    if(!values.empty())result.call<void>("set",val(emscripten::typed_memory_view(values.size(),values.data())));
-    return result;
-}
-val assembleSharedStrokeForWeb(val input,double maxEdgeDegrees) {
-    try {
-        const auto sources=readStrokeSources(input,false);
-        const auto packet=assembleSharedStrokePacket(sources,maxEdgeDegrees);
-        auto result=val::object(),segments=val::array(),owners=val::array(),ranges=val::object();
-        std::vector<float> endpoints;endpoints.reserve(packet.segments.size()*4);
-        std::vector<float> phases;phases.reserve(packet.segments.size());
-        unsigned i=0;
-        for(const auto& segment:packet.segments) {
-            auto ids=val::array();
-            for(unsigned j=0;j<segment.ownerIds.size();++j)ids.set(j,segment.ownerIds[j]);
-            auto row=val::object();
-            row.set("start",webPoint(segment.edge.first));
-            row.set("end",webPoint(segment.edge.second));
-            row.set("ownerIds",ids);
-            segments.set(i++,row);
-            endpoints.insert(endpoints.end(),{
-                static_cast<float>(segment.edge.first.x),static_cast<float>(segment.edge.first.y),
-                static_cast<float>(segment.edge.second.x),static_cast<float>(segment.edge.second.y)});
-            phases.push_back(segment.chainPhase);
-        }
-        for(unsigned o=0;o<packet.ownerIds.size();++o)owners.set(o,packet.ownerIds[o]);
-        for(const auto& range:packet.ownerRanges) {
-            auto value=val::object();
-            value.set("first",static_cast<unsigned>(range.first));
-            value.set("count",static_cast<unsigned>(range.count));
-            ranges.set(range.ownerKey,value);
-        }
-        result.set("segments",segments);
-        result.set("startsEnds",floatArray(endpoints));
-        result.set("chainPhase",floatArray(phases));
-        result.set("ownerRanges",ranges);
-        result.set("ownerIds",owners);
-        return result;
-    }catch(const std::exception& error) {
-        auto js=val::global("Error").new_(std::string(error.what()));
-        js.set("code",std::string("PL-BOUNDARY-PACKET"));
-        js.throw_();
-    }
-    std::terminate();
-}
 unsigned verifySharedStrokeForWeb(val input) {
     try {
-        const auto sources=readStrokeSources(input,true);
+        const auto sources=readStrokeSources(input);
         return static_cast<unsigned>(verifySharedStrokeChains(sources));
     }catch(const std::exception& error) {
         auto js=val::global("Error").new_(std::string(error.what()));
@@ -433,7 +386,6 @@ unsigned verifySharedStrokeForWeb(val input) {
 
 EMSCRIPTEN_BINDINGS(pandoeditor_boundary_chains) {
     emscripten::function("boundaryConnectChains",&boundaryConnectForWeb);
-    emscripten::function("boundaryAssembleStrokePacket",&assembleSharedStrokeForWeb);
     emscripten::function("boundaryVerifyStrokeChains",&verifySharedStrokeForWeb);
     emscripten::function("boundaryOpposingInteriors",&boundaryOpposingForWeb);
     emscripten::function("boundaryOpposingInteriorsBatch",&boundaryOpposingBatchForWeb);
