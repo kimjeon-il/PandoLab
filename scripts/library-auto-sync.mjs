@@ -147,7 +147,7 @@ export function createAutomaticAdapters({root,env=process.env,settings,io={}}){
   const removed=result.changedPaths.filter(path=>!result.sourcePaths.includes(path)&&path!==RECEIPT_PATH&&!Object.hasOwn(result.autoReceipt.outputs,path));
   const prefixes=[...new Set([...Object.keys(result.autoReceipt.outputs),...result.sourcePaths,...removed,RECEIPT_PATH])];
   console.log(JSON.stringify({phase:'store-start',inputDataSha:p.h.data}));
-  stored=(io.storeLibraryData||storeLibraryData)({root,push:true,prefixes,removePaths:removed,expectedRevision:p.h.data,expectedBranch:branch,expectedAppBranch:branch===appBranch?undefined:appBranch});
+  stored=(io.storeLibraryData||storeLibraryData)({root,push:true,prefixes,removePaths:removed,expectedRevision:p.h.data,expectedBranch:branch,expectedAppBranch:branch==='work/active'?appBranch:undefined});
   console.log(JSON.stringify({phase:'store-complete',dataSha:stored}));
   const after=heads();if(after.app!==p.h.app||after.data!==stored)fail('HEAD_MOVED');
  }
