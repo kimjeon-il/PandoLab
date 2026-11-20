@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       data_revision:
-        description: Exact input SHA on the Library data/places branch, matching the app pin
+        description: Exact input SHA on the Library work/active branch, matching the app pin
         type: string
         required: true
 permissions:
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kimjeon-il/PandoLab-library
-          ref: data/places
+          ref: work/active
           path: .library-data/repository
           sparse-checkout: archive
           fetch-depth: 0
@@ -93,7 +93,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
           node --input-type=module <<'JS'
           import {storeLibraryData} from './tools/data/library-store.mjs';
-          storeLibraryData({push:true,expectedRevision:process.env.DATA_REVISION,expectedBranch:'data/places',expectedAppBranch:'work/active',prefixes:[
+          storeLibraryData({push:true,expectedRevision:process.env.DATA_REVISION,expectedBranch:'work/active',expectedAppBranch:'work/active',prefixes:[
             'assets/data/places/reviewed-records-v1.json',
             'assets/data/places/places-v1.bin',
             'assets/data/places/manifest.json',

@@ -28,7 +28,7 @@ function assertDedicatedJob(env,branch){
 export function parseAutomaticEnvironment(env){
  if(env.GITHUB_ACTIONS!=='true')fail('GITHUB_ACTIONS_REQUIRED');
  const branch=env.LIBRARY_AUTO_BRANCH,dataSha=env.LIBRARY_AUTO_DATA_SHA;
- if(!['main','data/gis'].includes(branch))fail('INVALID_DATA_BRANCH');
+ if(!['main','work/active'].includes(branch))fail('INVALID_DATA_BRANCH');
  if(!SHA.test(dataSha||''))fail('INVALID_DATA_SHA');
  const productionEnabled=env.LIBRARY_AUTO_PRODUCTION_ENABLED==='true';
  if(branch==='main'&&!productionEnabled)fail('MAIN_PRODUCTION_DISABLED');

@@ -84,7 +84,7 @@ function verifyNativeProjection(root,writes){
  * only after successful guarded local publication; failures restore owned bytes.
  */
 export async function deriveAutomaticRuntime({root,inputProjection,inputDataSha,expectedAppSha,expectedDataSha,branch,generatorIdentity,stageDir,regenerationOnly=false,dependencies={}}){
- if(!['main','data/gis'].includes(branch))fail('BRANCH');
+ if(!['main','work/active'].includes(branch))fail('BRANCH');
  for(const value of [inputDataSha,expectedAppSha,expectedDataSha])if(!/^(?!0{40}$)[a-f0-9]{40}$/.test(value||''))fail('SHA');
  if(!/^(?!0{64}$)[a-f0-9]{64}$/.test(generatorIdentity||'')||!/^(?!0{64}$)[a-f0-9]{64}$/.test(inputProjection?.inputFingerprint||''))fail('IDENTITY');
  if(typeof stageDir!=='string'||!stageDir.startsWith('build-native/generated-artifacts/'))fail('STAGE_LOCATION');safePath(root,stageDir);

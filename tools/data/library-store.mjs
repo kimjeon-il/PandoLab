@@ -25,7 +25,7 @@ function validateExpectedLibraryRevision(expectedRevision) {
 }
 
 function validateExpectedBranch(expectedBranch) {
-  if (expectedBranch !== undefined && !['main', 'data/gis', 'data/places'].includes(expectedBranch)) throw Error('Invalid expected library branch.');
+  if (expectedBranch !== undefined && !['main', 'work/active'].includes(expectedBranch)) throw Error('Invalid expected library branch.');
 }
 
 export function libraryPublicationRef(branch) {
@@ -42,7 +42,7 @@ export function assertExpectedLibraryRevision({ expectedRevision, expectedBranch
   validateExpectedLibraryRevision(expectedRevision);
   if (expectedRevision === undefined) return;
   if (head !== expectedRevision) throw Error('Library checkout HEAD differs from the expected revision; regenerate against the latest data before storing.');
-  if (remote !== expectedRevision) throw Error(`Library remote ${expectedBranch || 'data/gis'} differs from the expected revision; regenerate against the latest data before storing.`);
+  if (remote !== expectedRevision) throw Error(`Library remote ${expectedBranch || 'work/active'} differs from the expected revision; regenerate against the latest data before storing.`);
 }
 
 export function storeLibraryData({ root = defaultRoot, push = false, prefixes = null, removePaths = [], expectedRevision, expectedBranch, expectedAppBranch, readPreviousCountry,readPreviousSource,retirement=null,worldRetirementFiles=null,materialized } = {}) {
@@ -258,7 +258,7 @@ export function runtimeStoreIndex(pinned, current) {
 
 export function storeOwnedLibraryData({ root, push, prefixes, removePaths, reportData, expectedRevision, expectedBranch, expectedAppBranch, readPreviousCountry,readPreviousSource,retirement,worldRetirementFiles,materialized: explicitView }) {
   if (expectedAppBranch !== undefined &&
-      (expectedAppBranch !== 'work/active' || !['data/gis', 'data/places'].includes(expectedBranch) || expectedRevision === undefined)) {
+      (expectedAppBranch !== 'work/active' || expectedBranch !== 'work/active' || expectedRevision === undefined)) {
     throw Error('Invalid application/library publication pair.');
   }
   const publicationBranch=reportData?'main':git(root,['symbolic-ref','--short','HEAD']);
@@ -284,7 +284,7 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
     // concurrent publication is still rejected by the normal non-force push.
     const token = process.env.PANDOLAB_LIBRARY_WRITE_TOKEN;
     const env = libraryWriteGitEnvironment(token);
-    const remote = execFileSync('git', [...gitOptions, 'ls-remote', '--exit-code', 'origin', `refs/heads/${expectedBranch || 'data/gis'}`], { cwd: data.checkout, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().split(/\s+/)[0];
+    const remote = execFileSync('git', [...gitOptions, 'ls-remote', '--exit-code', 'origin', `refs/heads/${expectedBranch || 'work/active'}`], { cwd: data.checkout, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().split(/\s+/)[0];
     assertExpectedLibraryRevision({ expectedRevision, expectedBranch, branch: git(data.checkout, ['branch', '--show-current']), head: git(data.checkout, ['rev-parse', 'HEAD']), remote });
   }
   if (libraryWriteLeases(librarySharedCheckout(root)).some(lease => lease.alive && lease.owner === libraryOwnerId(root) && lease.prefixes.some(a => prefixes.some(b => scopesOverlap(a, b))))) throw Error('Finish the active library write lease before storing this scope');

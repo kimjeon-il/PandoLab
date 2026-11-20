@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       data_revision:
-        description: Exact input SHA on the Library data/gis branch, matching the app pin
+        description: Exact input SHA on the Library work/active branch, matching the app pin
         type: string
         required: true
       activate:
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kimjeon-il/PandoLab-library
-          ref: data/gis
+          ref: work/active
           path: .library-data/repository
           sparse-checkout: archive
           fetch-depth: 0
@@ -76,7 +76,7 @@ jobs:
           const verified=verifyBuiltinCountryFiles();
           const push=process.env.ACTIVATE==='true';
           if(push) assert.equal(execFileSync('git',['ls-remote','origin','refs/heads/work/active'],{encoding:'utf8'}).split(/\s+/)[0],process.env.GITHUB_SHA);
-          const stored=storeBuiltinCountryDelta({push,expectedRevision:process.env.DATA_REVISION,expectedBranch:'data/gis',expectedAppBranch:'work/active'});
+          const stored=storeBuiltinCountryDelta({push,expectedRevision:process.env.DATA_REVISION,expectedBranch:'work/active',expectedAppBranch:'work/active'});
           console.log(JSON.stringify({preparedCountries:prepared.countryCount,changedStoragePaths:prepared.prefixes.length,...verified,...stored}));
           JS
       - name: Commit verified data pin to work/active only

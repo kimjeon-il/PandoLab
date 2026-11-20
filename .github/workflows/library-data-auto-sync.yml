@@ -11,7 +11,7 @@ on:
         type: choice
         options:
           - main
-          - data/gis
+          - work/active
         required: true
   schedule:
     - cron: 17 * * * *
@@ -25,7 +25,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: pando-library-publication-${{ inputs.data_branch == 'data/gis' && 'work-active' || 'main' }}
+  group: pando-library-publication-${{ inputs.data_branch == 'work/active' && 'work-active' || 'main' }}
   cancel-in-progress: false
 jobs:
   gate:
@@ -55,7 +55,7 @@ jobs:
             const fs = require('node:fs');
             const branch = context.eventName === 'workflow_dispatch' ? process.env.DATA_BRANCH : 'main';
             const revision = process.env.DATA_REVISION || '';
-            if (!['main', 'data/gis'].includes(branch)) throw new Error('Invalid branch');
+            if (!['main', 'work/active'].includes(branch)) throw new Error('Invalid branch');
             const appBranch = branch === 'main' ? 'main' : 'work/active';
             const {execFileSync} = require('node:child_process');
             const appRevision = execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();

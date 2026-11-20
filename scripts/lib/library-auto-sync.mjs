@@ -5,7 +5,7 @@
  * evidence, never event claims. Receipt identity binds current canonical inputs
  * and generator identity, not merely a notification commit (reports may change).
  * All objects have exact required keys; null is explicit for missing evidence.
- * Branches must be paired (Library main/app main or Library data/gis/app work/active); zero-only SHA
+ * Branches must be paired (Library main/app main or Library work/active/app work/active); zero-only SHA
  * and fingerprints are forbidden in every state field.
  * policy: {productionEnabled:boolean}; request: REQUEST_KEYS below.
  * desired: request + {inputFingerprint:hex64,generatorIdentity:hex64,supported:boolean}.
@@ -25,7 +25,7 @@ function check(ok,name){if(!ok)throw new TypeError(`Invalid ${name}`);}
 function validatePolicy(policy){exact(policy,['productionEnabled'],'policy');check(typeof policy.productionEnabled==='boolean','productionEnabled');}
 export function pairedApplicationBranch(dataBranch) {
   if (dataBranch === 'main') return 'main';
-  if (dataBranch === 'data/gis') return 'work/active';
+  if (dataBranch === 'work/active') return 'work/active';
   throw new TypeError('Invalid data branch');
 }
 function tuple(request){exact(request,REQUEST_KEYS,'request');check(request.dataRepository==='kimjeon-il/PandoLab-library','data repository');check(request.appRepository==='kimjeon-il/Pando','app repository');check(pairedApplicationBranch(request.dataBranch)===request.appBranch,'paired branches');check(SHA.test(request.dataSha)&&typeof request.dataSha==='string','data SHA');check(SHA.test(request.appSha)&&typeof request.appSha==='string','app SHA');check(typeof request.production==='boolean','production');return {...request};}
