@@ -71,8 +71,8 @@ function listFiles(dir,root=dir) {
 }
 export async function verifyWorker(root,manifest,packed,{supportsRange}) {
   const requests=[],messages=[],baseUrl='https://hydro-audit.invalid/current/';
-  const scope={self:{fflate:{gunzipSync:bytes=>new Uint8Array(gunzipSync(bytes))}},
-    crypto:webcrypto,TextDecoder,Uint8Array,Response,URL,Map,setTimeout,clearTimeout,onmessage:null,
+  const scope={fflate:{gunzipSync:bytes=>new Uint8Array(gunzipSync(bytes))},
+    crypto:webcrypto,TextDecoder,Uint8Array,Response,URL,AbortSignal,Map,setTimeout,clearTimeout,onmessage:null,
     performance:{now:()=>0},importScripts(){},postMessage:message=>messages.push(message),
     async fetch(input,init={}) {
       const url=new URL(input),expected=new URL(manifest.container.url,baseUrl);
@@ -84,15 +84,17 @@ export async function verifyWorker(root,manifest,packed,{supportsRange}) {
       ensure(Number.isSafeInteger(first)&&Number.isSafeInteger(last)&&first>=0&&last>=first&&last<packed.length,'Worker Range outside container');
       return new Response(packed.subarray(first,last+1),{status:206,headers:{'Content-Range':'bytes '+first+'-'+last+'/'+packed.length}});
     }};
+  scope.self=scope;
   const context=vm.createContext(scope);
   const frontend=buildFrontendIndex(root);
   for(const file of ['hydro-shard-store.js','hydro-tile-worker.js'])vm.runInContext(
     frontendAsset(root,'assets/js/workers/'+file,{index:frontend}).bytes.toString('utf8'),context,{filename:file,timeout:5000});
-  await scope.onmessage({data:{type:'init',manifest,baseUrl,assetRevision:manifest.version,dataRevision:manifest.version,includeGeometry:false}});
+  await scope.onmessage({data:{type:'init',manifest,baseUrl,dataRevision:manifest.version}});
   ensure(messages.at(-1)?.type==='ready','Current hydro Worker rejected package: '+(messages.at(-1)?.message||'missing ready result'));
   await vm.runInContext('rangeSupportPromise',context);
   const initialRequests=[...requests];
-  await vm.runInContext('ensureDetailMetadata()',context);
+  const detail=JSON.parse(new TextDecoder().decode(await vm.runInContext('fetchGzip(manifest.metadata.detail)',context)));
+  ensure(detail?.version===5&&Array.isArray(detail.features),'Invalid hydro detail metadata');
   if(supportsRange)for(const spec of [manifest.index,manifest.metadata.core,manifest.metadata.detail])
     ensure(requests.includes('bytes='+spec.offset+'-'+(spec.offset+spec.bytes-1)),'Worker did not read the declared subresource range');
   else ensure(requests.length===1,'Worker did not reuse its validated whole-container response');

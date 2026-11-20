@@ -82,6 +82,7 @@ export function validatePlaceManifest(raw) {
 /** Worker-only owner of loaded tile data. No project objects or DOM here. */
 export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localhost/', fetchBytes = null, cacheBytes = PLACE_LIMITS.cacheBytes } = {}) {
   const manifest = validatePlaceManifest(raw), cache = new Map(), inflight = new Map();
+  const inflightShards = new Map();
   const budget = Math.max(0, Math.min(PLACE_LIMITS.cacheBytes, Number(cacheBytes) || 0));
   let used = 0; const metrics = { queryCount: 0, networkCount: 0, evictions: 0, lastTileCount: 0, lastCandidateCount: 0, peakWorkingRecords: 0 };
   function get(key) { const entry=cache.get(key); if (!entry) return null; cache.delete(key); cache.set(key,entry); return entry.value; }
@@ -91,44 +92,85 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
     while (used + bytes > budget && cache.size) { const oldest=cache.keys().next().value; used-=cache.get(oldest).bytes; cache.delete(oldest); metrics.evictions++; }
     cache.set(key,{value,bytes}); used+=bytes; return value;
   }
+  async function fetchTileBytes(row, context) {
+    context.throwIfCancelled();
+    const spec = manifest.shards[row.shard];
+    let full;
+    metrics.networkCount++;
+    if (fetchBytes) {
+      full = await fetchBytes(spec, { signal: context.signal });
+      if (full.byteLength !== spec.bytes || full.byteLength > PLACE_LIMITS.shardBytes)
+        throw new RangeError('Invalid place shard length/budget');
+    } else {
+      const url = new URL(spec.url, baseUrl);
+      url.searchParams.set('v', manifest.revision);
+      const wholeShard = row.offset === 0 && row.length === spec.bytes;
+      const range = `${row.offset}-${row.offset + row.length - 1}`;
+      const headers = wholeShard ? {} : { Range: `bytes=${range}` };
+      const response = await fetch(url, { headers, signal: context.signal });
+      if (!response.ok) throw new Error('Place HTTP ' + response.status + ': ' + row.shard);
+      const payload = await readPlaceResponse(response, spec.bytes);
+      if (response.status === 206) {
+        const expected = `bytes ${range}/${spec.bytes}`;
+        const actual = response.headers.get('Content-Range');
+        if (actual !== expected || payload.length !== row.length)
+          throw new RangeError('Invalid place range response: expected ' + expected + ' (' + row.length +
+            ' bytes), received ' + actual + ' (' + payload.length + ' bytes)');
+        return { bytes: payload };
+      }
+      if (response.status !== 200 || payload.length !== spec.bytes)
+        throw new RangeError('Invalid place shard response');
+      full = payload;
+    }
+    if (spec.sha256 && await sha256Hex(full) !== spec.sha256) throw new Error('Invalid place shard hash');
+    context.throwIfCancelled();
+    return { full: put('shard:' + row.shard, full, full.byteLength) };
+  }
+  async function loadTileBytes(row, context) {
+    const hit = get('shard:' + row.shard);
+    if (hit) return { full: hit };
+    const pending = inflightShards.get(row.shard);
+    if (pending) {
+      // The first request may receive the entire shard even if it asked for a range.
+      // Share that verified response even when it exceeds the resident cache budget.
+      try {
+        const result = await pending;
+        context.throwIfCancelled();
+        if (result.full) return result;
+      } catch (error) {
+        context.throwIfCancelled();
+        if (error.cancelled || error.name === "AbortError") return loadTileBytes(row, context);
+        if (fetchBytes) throw error;
+      }
+      // A partial response only serves the tile whose range was requested.
+      return fetchTileBytes(row, context);
+    }
+    const task = fetchTileBytes(row, context);
+    inflightShards.set(row.shard, task);
+    try { return await task; }
+    finally { inflightShards.delete(row.shard); }
+  }
   async function loadTile(row, context) {
     context.throwIfCancelled();
-    const key=`${row.shard}:${row.offset}:${row.length}`, hit=get(`tile:${key}`); if (hit) return hit;
-    if (inflight.has(key)) {
-      const pending=inflight.get(key);
-      if (pending.context === context) return pending.task;
-      try { await pending.task; } catch (error) { if (!error.cancelled && error.name !== 'AbortError') throw error; }
-      context.throwIfCancelled();
-      return loadTile(row,context);
+    const key = `${row.shard}:${row.offset}:${row.length}:${row.sha256}`;
+    const hit = get('tile:' + key);
+    if (hit) return hit;
+    const pending = inflight.get(key);
+    if (pending) {
+      try {
+        const records = await pending;
+        context.throwIfCancelled();
+        return records;
+      } catch (error) {
+        context.throwIfCancelled();
+        if (!error.cancelled && error.name !== "AbortError") throw error;
+        return loadTile(row, context);
+      }
     }
     const task=(async () => {
-      const spec=manifest.shards[row.shard]; let full=get(`shard:${row.shard}`), bytes;
-      if (!full) {
-        metrics.networkCount++;
-        if (fetchBytes) { full=await fetchBytes(spec,{signal:context.signal}); if (full.byteLength !== spec.bytes || full.byteLength > PLACE_LIMITS.shardBytes) throw new RangeError('Invalid place shard length/budget'); }
-        else {
-          const url=new URL(spec.url,baseUrl);
-          url.searchParams.set('v',manifest.revision);
-          const wholeShard=row.offset===0 && row.length===spec.bytes;
-          const headers=wholeShard ? {} : { Range: `bytes=${row.offset}-${row.offset+row.length-1}` };
-          const response=await fetch(url, { headers, signal: context.signal });
-          if (!response.ok) throw new Error(`Place HTTP ${response.status}: ${row.shard}`);
-          const payload=await readPlaceResponse(response, spec.bytes);
-          if (response.status === 206) {
-            const expected=`bytes ${row.offset}-${row.offset+row.length-1}/${spec.bytes}`;
-            const actual=response.headers.get('Content-Range');
-            if (actual !== expected || payload.length !== row.length) throw new RangeError(
-              `Invalid place range response: expected ${expected} (${row.length} bytes), received ${actual} (${payload.length} bytes)`);
-            bytes=payload;
-          } else if (response.status === 200 && payload.length === spec.bytes) full=payload;
-          else throw new RangeError('Invalid place shard response');
-        }
-        if (full) {
-          if (spec.sha256 && await sha256Hex(full) !== spec.sha256) throw new Error('Invalid place shard hash');
-          context.throwIfCancelled(); put(`shard:${row.shard}`,full,full.byteLength);
-        }
-      }
-      context.throwIfCancelled(); bytes ||= full.subarray(row.offset,row.offset+row.length);
+      const { bytes: rangeBytes, full } = await loadTileBytes(row, context);
+      context.throwIfCancelled();
+      const bytes = rangeBytes ?? full.subarray(row.offset, row.offset + row.length);
       if (await sha256Hex(bytes) !== row.sha256) throw new Error('Invalid place tile hash');
       context.throwIfCancelled();
       const records=decodePlaceTile(bytes).map(record => {
@@ -140,7 +182,7 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
       const decodedBytes=records.reduce((total,record) => total+512+Object.values(record).reduce((sum,value)=>sum+(typeof value === 'string' ? value.length*2 : 0),0)+record.nameNativeExtras.reduce((sum,name)=>sum+name.length*2,0)+JSON.stringify(record.nameTimeline).length*2,0);
       context.throwIfCancelled(); return put(`tile:${key}`,records,decodedBytes);
     })();
-    inflight.set(key,{task,context});
+    inflight.set(key,task);
     try { return await task; } finally { inflight.delete(key); }
   }
   async function loadRows(rows, context, accepts, limit) {

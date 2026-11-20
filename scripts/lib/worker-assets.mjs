@@ -21,25 +21,6 @@ function classicDependencies(source, path, moduleUrls, add) {
   function argument(node) {
     if (script(node)) { add(node.value); return; }
     if (moduleUrls.has(text(node))) return;
-    if (node.type === 'CallExpression' && node.callee.name === 'versionedWorkerAssetUrl'
-      && node.arguments.length === 1 && script(node.arguments[0])) { add(node.arguments[0].value); return; }
-    // The Canvas bootstrap versions a literal list without changing its identities.
-    if (node.type === 'SpreadElement') {
-      const call = node.argument, list = call.callee?.object, callback = call.arguments?.[0];
-      if (call.type === 'CallExpression' && call.callee.property?.name === 'map' && list?.type === 'ArrayExpression'
-        && list.elements.every(script) && call.arguments.length === 1 && callback?.type === 'ArrowFunctionExpression'
-        && callback.params.length === 1 && callback.params[0].type === 'Identifier') {
-        const statements = callback.body.body;
-        const declaration = statements?.[0]?.declarations?.[0];
-        const init = declaration?.init;
-        if (init?.type === 'NewExpression' && init.callee.name === 'URL' && init.arguments.length === 2
-          && init.arguments[0].name === callback.params[0].name && text(init.arguments[1]) === 'self.location.href'
-          && statements.length === 3 && text(statements[1]).startsWith(`${declaration.id.name}.searchParams.set(`)
-          && statements[2].type === 'ReturnStatement' && text(statements[2].argument) === `${declaration.id.name}.href`) {
-          list.elements.forEach(item => add(item.value)); return;
-        }
-      }
-    }
     reject(node);
   }
   function visit(node) {
@@ -74,7 +55,7 @@ export async function buildWorkerAsset({ root, entry, readSource = path => readF
         const original = readSource(path).replace(/\r\n?/g, '\n').trimEnd() + '\n';
         sources.set(path, original);
         if (!path.startsWith('assets/js/') || /\/vendor\//.test(path)) return { contents: '', loader: 'js' };
-        let source = fixedImports(original).replace(/\bimport\(versionedWorkerAssetUrl\([^)]*\)\)/g, 'Promise.resolve({})');
+        let source = fixedImports(original);
         const dependencies = new Set((runtimeDependencies[path] || []).filter(value => value.endsWith('.js')));
         const moduleUrls = new Set([...original.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*new URL\(['"][^'"]+\.js['"]/g)]
           .flatMap(match => [match[1], `${match[1]}.href`]));

@@ -45,7 +45,6 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
     builtinPaletteKey = cache;
     builtinPaletteVisibility = visibility;
     dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true }, 'builtin-subunit-presentation');
-    dependencies.rendering.mapRenderer.syncCountryBoundaryScene();
   }
 
   return Object.freeze({

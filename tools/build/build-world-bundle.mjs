@@ -1,8 +1,6 @@
-import { validateScopedRetirementDerivation, WORLD_BUNDLE_ROLES as ROLES, contentAddress } from '../../src/data/world-bundle-manifest.js';
+import { canonicalSharedBoundaryPath, validateScopedRetirementDerivation, WORLD_BUNDLE_ROLES as ROLES, contentAddress } from '../../src/data/world-bundle-manifest.js';
 import { createHash } from 'node:crypto';
-import {loadBoundedCurrentWorld,hashFileInChunks} from '../data/current-world-bounded-loader.mjs';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
-import {withLibraryOutputs} from "../data/library-runtime.mjs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { resolve, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readProjectGenerationContext, readProjectWorldGenerationContext } from './project-generation-context.mjs';
@@ -49,9 +47,7 @@ export function bundleDescriptor({ seed, legacy, assets, sourceBytes, sourceSha2
       ...(old.header ? { header: old.header } : {}),
     };
   }
-  // Shared-boundary caches keep legacy URLs until the renderer migrates in phase 3.
-  const boundaries = {};
-  for (const role of ['canonical']) boundaries[role] = assertDataPath(seed.sharedBoundaries?.[role]);
+  const canonicalBoundary = canonicalSharedBoundaryPath(seed.sharedBoundaries);
   return {
     schema: WORLD_BUNDLE_SCHEMA, schemaVersion: WORLD_BUNDLE_FORMAT,
     source: { url: seed.canonicalSource, sha256: sourceDigest, countryCount: legacy.countries },
@@ -59,7 +55,7 @@ export function bundleDescriptor({ seed, legacy, assets, sourceBytes, sourceSha2
       meshAlgorithmRevision: legacy.meshAlgorithmRevision },
     defaultClassification: legacy.defaultClassification,
     assets: outAssets,
-    compatibility: { sharedBoundaries: boundaries },
+    compatibility: { sharedBoundaries: canonicalBoundary ? { canonical: canonicalBoundary } : {} },
   };
 }
 
@@ -76,14 +72,17 @@ export function verifyPublishedWorldBundle({root,catalogPath='assets/data/world/
     ||!catalogue.defaultClassification?.countries)
     throw new TypeError('Invalid published world catalogue');
   assertDataPath(catalogue.source.url);
-  function verified(asset,role,immutable=true) {
+  function verified(asset,role) {
+    const retiredScene = role === 'preparedCountryScene';
     if(!asset||!/^[a-f0-9]{64}$/.test(asset.sha256||'')
       ||!['gzip','identity'].includes(asset.encoding)
+      ||(retiredScene&&asset.encoding!=='gzip')
       ||!Number.isSafeInteger(asset.compressedBytes)||asset.compressedBytes<=0
       ||!Number.isSafeInteger(asset.decodedBytes)||asset.decodedBytes<=0)
       throw new TypeError('Invalid published world resource: '+role);
     assertDataPath(asset.url);
-    if(immutable && asset.url!==contentAddress(role,asset.sha256))
+    const expectedUrl = retiredScene ? `world/objects/country-scene-sha256-${asset.sha256}.bin.gz` : contentAddress(role,asset.sha256);
+    if(asset.url!==expectedUrl)
       throw new Error('Published world content address mismatch: '+role);
     const stored=readFileSync(resolve(data,asset.url));
     if(stored.byteLength!==asset.compressedBytes||sha256(stored)!==asset.sha256)
@@ -100,21 +99,18 @@ export function verifyPublishedWorldBundle({root,catalogPath='assets/data/world/
     }
   }
   for(const role of Object.keys(ROLES))verified(catalogue.assets?.[role],role);
-  const prepared=catalogue.assets?.preparedCountryScene;
-  if(prepared)verified(prepared,'prepared-country-scene',false);
   const scopedRetirement=validateScopedRetirementDerivation(catalogue.derivation);
-  if(scopedRetirement&&(prepared||Object.keys(catalogue.compatibility?.sharedBoundaries||{}).length))throw Error('Scoped retirement caches must be detached');
-  for(const role of ['canonical']) {
-    if(scopedRetirement)continue;
-    const reference=assertDataPath(catalogue.compatibility?.sharedBoundaries?.[role]);
-    if(!existsSync(resolve(data,reference)))
-      throw new Error('Missing published shared boundary: '+role);
-  }
-  return {bundle:catalogue,validatedAssets:Object.keys(ROLES).length+(prepared?1:0),
+  const retiredScene=catalogue.assets?.preparedCountryScene;
+  if(scopedRetirement&&(retiredScene!==undefined||Object.keys(catalogue.compatibility?.sharedBoundaries||{}).length))throw Error('Scoped retirement caches must be detached');
+  if(retiredScene!==undefined)verified(retiredScene,'preparedCountryScene');
+  const reference=canonicalSharedBoundaryPath(catalogue.compatibility?.sharedBoundaries);
+  if(reference&&!statSync(resolve(data,reference),{throwIfNoEntry:false})?.isFile())
+    throw new Error('Missing published shared boundary: canonical');
+  return {bundle:catalogue,validatedAssets:Object.keys(ROLES).length+Number(retiredScene!==undefined),
     check:true,sourceFree:true};
 }
 
-export function publishWorldBundle({ root, check = false, manifestOverride = null, projectId = null } = {}) {
+export async function publishWorldBundle({ root, check = false, manifestOverride = null, projectId = null } = {}) {
   if (!root) throw new Error('Repository root required');
   const data = resolve(root, 'assets/data');
   const readData = name => readFileSync(resolve(data, assertDataPath(name)));
@@ -123,6 +119,7 @@ export function publishWorldBundle({ root, check = false, manifestOverride = nul
   if(check&&!manifestOverride&&!existsSync(resolve(root,recipePath)))
     return verifyPublishedWorldBundle({root,
       catalogPath:project?.catalogs.world||'assets/data/world/current.json'});
+  const { loadBoundedCurrentWorld, hashFileInChunks } = await import('../data/current-world-bounded-loader.mjs');
   const selected=projectId?readProjectWorldGenerationContext({root,projectId}):null;
   const seedPath=selected?resolve(root,selected.worldRecipePath):resolve(data,'world/build-input.json');
   const seed=selected?structuredClone(selected.worldRecipe):JSON.parse(readFileSync(seedPath,'utf8'));
@@ -143,18 +140,6 @@ export function publishWorldBundle({ root, check = false, manifestOverride = nul
   for (const role of Object.keys(ROLES)) original[role] = readData(legacy.assets?.[role]?.url);
   const bundle = bundleDescriptor({ seed, legacy, assets: original, sourceSha256 });
   const currentPath = selected ? resolve(root,selected.catalogs.world) : resolve(data,'world/current.json');
-  // A metadata-only world publication must not discard the prepared Viewer
-  // derivative. Its exact geometry/hierarchy identity is checked by its loader.
-  const previous = existsSync(currentPath) ? JSON.parse(readFileSync(currentPath, 'utf8')) : null;
-  const prepared = previous?.assets?.preparedCountryScene;
-  if (prepared && prepared.source?.canonicalMesh === bundle.assets.canonicalMesh.sha256
-    && prepared.source?.countryPacket === bundle.assets.canonicalCountryPacket.sha256) {
-    assertDataPath(prepared.url);
-    const bytes = readData(prepared.url);
-    if (sha256(bytes) !== prepared.sha256 || bytes.length !== prepared.compressedBytes)
-      throw new Error('Corrupt prepared country scene publication');
-    bundle.assets.preparedCountryScene = prepared;
-  }
   const expected = `${JSON.stringify(bundle, null, 2)}\n`;
   if (check) {
     if (!existsSync(currentPath) || readFileSync(currentPath, 'utf8') !== expected) throw new Error('Stale world/current.json');
@@ -181,7 +166,10 @@ export function publishWorldBundle({ root, check = false, manifestOverride = nul
   }
   };
   if (check) publish();
-  else withLibraryOutputs({ root, paths: [currentPath, ...(manifestOverride ? [seedPath] : []), ...Object.values(bundle.assets).map(asset => resolve(data, asset.url)).filter(path => !existsSync(path))] }, publish);
+  else {
+    const { withLibraryOutputs } = await import('../data/library-runtime.mjs');
+    withLibraryOutputs({ root, paths: [currentPath, ...(manifestOverride ? [seedPath] : []), ...Object.values(bundle.assets).map(asset => resolve(data, asset.url)).filter(path => !existsSync(path))] }, publish);
+  }
   return { bundle, validatedAssets: Object.keys(ROLES).length, check };
 }
 
@@ -192,7 +180,7 @@ if (invoked) {
   const arg = process.argv.find(value => value.startsWith('--source-manifest='));
   try {
     const projectId=process.argv.find(value=>value.startsWith('--project='))?.slice('--project='.length)||'default-world';
-    const result = publishWorldBundle({ root, projectId, check, manifestOverride: arg?.slice('--source-manifest='.length) || null });
+    const result = await publishWorldBundle({ root, projectId, check, manifestOverride: arg?.slice('--source-manifest='.length) || null });
     console.log(JSON.stringify({ mode: result.sourceFree ? 'check-published' : check ? 'check' : 'build', worldDataVersion: result.bundle.source.sha256,
       assets: result.validatedAssets, programVersionDependency: false }));
   } catch (error) {

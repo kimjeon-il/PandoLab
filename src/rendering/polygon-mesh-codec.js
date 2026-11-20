@@ -23,7 +23,7 @@ export function encodePolygonMesh(packet) {
   return buffer;
 }
 
-export function decodePolygonMesh(buffer, { algorithmVersion } = {}) {
+export function decodePolygonMesh(buffer, { algorithmVersion, includeStrokeEndpoints = true } = {}) {
   const fail = detail => { throw Object.assign(new Error(`Invalid prepared polygon mesh: ${detail}`), { code: 'PL-MESH-ASSET' }); };
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < headerWords * 4) fail('header');
   const header = new Uint32Array(buffer, 0, headerWords);
@@ -48,7 +48,7 @@ export function decodePolygonMesh(buffer, { algorithmVersion } = {}) {
 
   // Persist boundary indices only. Decode stroke endpoints from the exact
   // quantized position buffer used by fill triangles.
-  const startsEnds = new Float32Array(packet.boundaryIndices.length * 2);
+  const startsEnds = includeStrokeEndpoints ? new Float32Array(packet.boundaryIndices.length * 2) : null;
   for (let i = 0; i < packet.boundaryIndices.length; i += 2) {
     const a = packet.boundaryIndices[i], b = packet.boundaryIndices[i + 1];
     if (a >= packet.vertexCount || b >= packet.vertexCount) fail('boundary vertex index');
@@ -56,8 +56,8 @@ export function decodePolygonMesh(buffer, { algorithmVersion } = {}) {
     const bx = packet.positions[b * 2], by = packet.positions[b * 2 + 1];
     if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)
       || (ax === bx && ay === by)) fail('boundary edge');
-    startsEnds.set([ax, ay, bx, by], i * 2);
+    if (startsEnds) startsEnds.set([ax, ay, bx, by], i * 2);
   }
-  packet.startsEnds = startsEnds;
+  if (startsEnds) packet.startsEnds = startsEnds;
   return Object.freeze(packet);
 }

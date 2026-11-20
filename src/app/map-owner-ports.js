@@ -3,7 +3,7 @@ export const MAP_OWNER_PORTS=Object.freeze({
   projectResourcePorts:Object.freeze(["domains","runtimeConfiguration","territorialObjectModel","layerStyleServices","countries","layerPresentation","objectDefinitions","platform","projectState","rendering","territorialModel"]),
   workspaceSurfaces:Object.freeze(["mapHostView","platform","uiControlServices","projectState","surfaceFactories","domains"]),
   projectSession:Object.freeze(["domains","applicationConstants","modelValidation","physicalConfig","runtimeConfiguration","mapFactories"]),
-  renderQuality:Object.freeze(["domains","mapFactories","preferences","projectState","rendering","selectionServices"]),
+  renderQuality:Object.freeze(["domains","mapFactories","preferences","projectState","rendering"]),
   pointerTargets:Object.freeze(["domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectPicking","physicalResources","physicalServices","platform","projectState","rendering","surfaces"]),
   cameraNavigation:Object.freeze(["countries","domains","feedback","mapView","objectLookup","physicalData","platform","projectState","rendering","surfaces"]),
   countryIndex:Object.freeze(["countries","domains","geometryModel","objectDisplay","mapView","platform","projectState","spatialQuery"]),
@@ -16,14 +16,14 @@ export const MAP_OWNER_PORTS=Object.freeze({
   physicalResources:Object.freeze(["geometryBounds","domains","feedback","hydroPresentation","layerPresentation","operationFeedback","physicalConfig","physicalServices","platform","projectState","rendering"]),
   mapScene:Object.freeze(["countries","projectState","rendering"]),
   mapHost:Object.freeze(["applicationConstants","domains","lifecycleUi","mapLayout","mapView","navigation","platform","runtimeConfiguration","preferences","projectState","projectionView","readiness","renderFactories","renderQuality","rendering","surfaces","workspaceUi"]),
-  objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","pointerInteraction","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
+  objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
 });
 
 export const MAP_OWNER_REQUIRED_PORTS=Object.freeze({
   projectResourcePorts:Object.freeze(["domains","runtimeConfiguration","territorialObjectModel","layerStyleServices","layerPresentation","objectDefinitions","projectState","rendering","territorialModel"]),
   workspaceSurfaces:Object.freeze(["mapHostView","platform","uiControlServices","projectState","surfaceFactories","domains"]),
   projectSession:Object.freeze(["domains","applicationConstants","modelValidation","physicalConfig","mapFactories"]),
-  renderQuality:Object.freeze(["domains","mapFactories","preferences","projectState","rendering","selectionServices"]),
+  renderQuality:Object.freeze(["domains","mapFactories","preferences","projectState","rendering"]),
   pointerTargets:Object.freeze(["domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectPicking","physicalResources","physicalServices","platform","projectState","rendering","surfaces"]),
   cameraNavigation:Object.freeze(["countries","domains","mapView","objectLookup","physicalData","platform","projectState","rendering","surfaces"]),
   countryIndex:Object.freeze(["countries","domains","objectDisplay","mapView","platform","projectState"]),
@@ -36,7 +36,7 @@ export const MAP_OWNER_REQUIRED_PORTS=Object.freeze({
   physicalResources:Object.freeze(["geometryBounds","domains","feedback","hydroPresentation","layerPresentation","operationFeedback","physicalConfig","physicalServices","platform","projectState","rendering"]),
   mapScene:Object.freeze(["countries","projectState","rendering"]),
   mapHost:Object.freeze(["applicationConstants","domains","mapLayout","mapView","navigation","platform","runtimeConfiguration","preferences","projectState","projectionView","readiness","renderFactories","renderQuality","rendering","surfaces","workspaceUi"]),
-  objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","pointerInteraction","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
+  objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
 });
 
 export function connectMapOwner(name,owner,ports){
@@ -60,7 +60,7 @@ const MAP_READ_PORT_SPECS=Object.freeze({
   builtinCountries:Object.freeze([["syncBuiltinPalette","territorialSceneRuntime","syncBuiltinPalette"]]),
   colorModel:Object.freeze([["genericFeatureColor","objectPresentation","genericFeatureColor"],["territorialEntityColor","objectPresentation","territorialEntityColor"]]),
   countries:Object.freeze([["builtinTerritorialScene","territorialSceneRuntime","builtinTerritorialScene"],["territorialLabelFeatureById","territorialSceneRuntime","territorialLabelFeatureById"],["countryLandRevision","countryIndex","countryLandRevision"],["scheduleCountryLabelAnchors","countryIndex","scheduleCountryLabelAnchors"],["validLabelAnchor","countryIndex","validLabelAnchor"]]),
-  countryLabelModel:Object.freeze([["builtinPlaces","territorialLabels","builtinPlaces"],["builtinPlaceSelectionReferences","territorialLabels","builtinPlaceSelectionReferences"],["preparePlaces","territorialLabels","preparePlaces"],["disposePlaces","territorialLabels","disposePlaces"],["labelById","territorialLabels","labelById"],["countryOutlineFeature","territorialLabels","countryOutlineFeature"],["labelLayoutMetrics","territorialLabels","labelLayoutMetrics"],["visibleLabelLayout","territorialLabels","visibleLabelLayout"]]),
+  countryLabelModel:Object.freeze([["builtinPlaces","territorialLabels","builtinPlaces"],["builtinPlaceSelectionReferences","territorialLabels","builtinPlaceSelectionReferences"],["preparePlaces","territorialLabels","preparePlaces"],["disposePlaces","territorialLabels","disposePlaces"],["labelById","territorialLabels","labelById"],["labelLayoutMetrics","territorialLabels","labelLayoutMetrics"],["visibleLabelLayout","territorialLabels","visibleLabelLayout"]]),
   distributionPresentation:Object.freeze([["distributionColor","objectPresentation","distributionColor"]]),
   hydroPresentation:Object.freeze([["allBuiltInHydroFeatures","hydroSettings","allBuiltInHydroFeatures"],["hydroCategoryKey","objectPresentation","hydroCategoryKey"],["hydroCategoryLabel","objectPresentation","hydroCategoryLabel"],["hydroDisplayColor","hydroSettings","hydroDisplayColor"],["projectHydroById","hydroSettings","projectHydroById"],["hydroDisplayName","objectPresentation","hydroDisplayName"],["hydroFallbackName","objectPresentation","hydroFallbackName"],["hydroLayerVisible","hydroSettings","hydroLayerVisible"],["hydroLineParts","hydroSettings","hydroLineParts"]]),
   labelPresentation:Object.freeze([["labelById","territorialLabels","labelById"],["builtinPlaces","territorialLabels","builtinPlaces"],["countryLabelAnchors","countryIndex","countryLabelAnchors"],["pendingCountryLabelAnchors","countryIndex","pendingCountryLabelAnchors"]]),
@@ -71,7 +71,7 @@ const MAP_READ_PORT_SPECS=Object.freeze({
   objectDisplay:Object.freeze([["invalidateObjectPresentation","objectCatalog","invalidateObjectPresentation"]]),
   territorialObjectModel:Object.freeze([["territorialScope","objectPresentation","territorialScope"],["territorialStyleColor","objectPresentation","territorialStyleColor"]]),
   objectPresentation:Object.freeze([["genericFeatureName","objectPresentation","genericFeatureName"],["genericFeatureRoleLabel","objectPresentation","genericFeatureRoleLabel"],["territorialRootName","objectPresentation","territorialRootName"],["territorialEntityName","objectPresentation","territorialEntityName"]]),
-  physicalResources:Object.freeze([["physicalContextState","physicalResources","physicalContextState"],["isHydroObjectActive","physicalResources","isHydroObjectActive"],["loadPhysicalLandMask","physicalResources","loadPhysicalLandMask"],["loadPhysicalLandDisplay","physicalResources","loadPhysicalLandDisplay"],["admitHydroFeatures","physicalResources","admitHydroFeatures"],["builtinHydroSelectionReferences","physicalResources","builtinHydroSelectionReferences"],["loadPhysicalData","physicalResources","loadPhysicalData"],["loadTerrainManifest","physicalResources","loadTerrainManifest"],["prepareHydroFeature","physicalResources","prepareHydroFeature"]]),
+  physicalResources:Object.freeze([["physicalContextState","physicalResources","physicalContextState"],["isHydroObjectActive","physicalResources","isHydroObjectActive"],["loadPhysicalLandMask","physicalResources","loadPhysicalLandMask"],["loadPhysicalLandDisplay","physicalResources","loadPhysicalLandDisplay"],["admitHydroFeatures","physicalResources","admitHydroFeatures"],["builtinHydroSelectionReferences","physicalResources","builtinHydroSelectionReferences"],["loadPhysicalData","physicalResources","loadPhysicalData"],["prepareHydroFeature","physicalResources","prepareHydroFeature"]]),
   physicalServices:Object.freeze([["isHydroFeatureVisible","hydroSettings","isHydroFeatureVisible"]]),
   projectState:Object.freeze([["mapWorkScheduler","projectSession","mapWorkScheduler"],["state","projectSession","state"]]),
   projectionView:Object.freeze([["currentMapSafeInsets","mapProjection","currentMapSafeInsets"],["graticule","mapProjection","graticule"],["mapLayoutMetricsRefreshCount","mapProjection","mapLayoutMetricsRefreshCount"],["refreshMapLayoutMetrics","mapProjection","refreshMapLayoutMetrics"]]),

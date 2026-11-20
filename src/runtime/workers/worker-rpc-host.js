@@ -125,8 +125,28 @@
         controllers.delete(requestId);
         cancelled.delete(requestId);
       }
-      if (transferables.length) scope.postMessage(response, transferables);
-      else scope.postMessage(response);
+      try {
+        if (transferables.length) scope.postMessage(response, transferables);
+        else scope.postMessage(response);
+      } catch (_) {
+        emitEvent('worker-rpc.transport-error', { message: 'Worker 응답을 전송하지 못했습니다.' });
+      }
+    }
+
+    async function handleEvent(message) {
+      try {
+        await onEvent(message.operation, message.payload, {
+          projectRevision: revision(message.projectRevision),
+          priority: Number(message.priority || 0),
+          metadata: message.metadata || null,
+          emitEvent,
+        });
+      } catch (error) {
+        emitEvent('worker-rpc.event-error', {
+          operation: text(message.operation),
+          error: serializeError(error, message.operation, 0, message.projectRevision),
+        }, { projectRevision: message.projectRevision });
+      }
     }
 
     scope.onmessage = event => {
@@ -138,19 +158,12 @@
         return;
       }
       if (message.type === TYPES.EVENT) {
-        if (typeof onEvent === 'function') Promise.resolve(onEvent(message.operation, message.payload, {
-          projectRevision: revision(message.projectRevision),
-          priority: Number(message.priority || 0),
-          metadata: message.metadata || null,
-          emitEvent,
-        })).catch(error => emitEvent('worker-rpc.event-error', {
-          operation: text(message.operation),
-          error: serializeError(error, message.operation, 0, message.projectRevision),
-        }, { projectRevision: message.projectRevision }));
+        if (typeof onEvent === 'function') void handleEvent(message);
         return;
       }
       if (message.type === TYPES.REQUEST) void handleRequest(message);
     };
+    scope.onmessageerror = () => emitEvent('worker-rpc.transport-error', { message: 'Worker 요청을 읽지 못했습니다.' });
 
     return Object.freeze({ register, emitEvent, isCancelled: requestId => cancelled.has(Number(requestId || 0)) });
   }

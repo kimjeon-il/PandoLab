@@ -1,6 +1,4 @@
-import { buildRefinedBoundarySegments } from "../geometry/geographic-boundary.js";
 import { polygonGeometryDigest } from "./prepared-polygon-mesh.js";
-import { decodeCountryMesh, extractCountryMeshSlot } from "./country-mesh-codec.js";
 
 // Display-only tile parts share the existing source-aware LRU with canonical
 // country parts. The renderer still receives one ordered country slot per ID.
@@ -10,56 +8,11 @@ export function createCountryMeshPreparation({ engine, loadPreparedPart = null, 
   const cache = new Map();
   let cacheBytes = 0;
   const fields = ['positions', 'countryIndices', 'triangleIndices', 'lineIndices',
-    'strokeStartsEnds', 'countryTriangleRanges', 'countryBoundaryRanges',
+    'countryTriangleRanges', 'countryBoundaryRanges',
     'countryBounds', 'countryBoundsFlags'];
   const types = [Int32Array, Uint16Array, Uint32Array, Uint32Array,
-    Float32Array, Uint32Array, Uint32Array, Int32Array, Uint32Array];
-
-  function setByteBudget(value) {
-    if (!Number.isFinite(value) || value < 0) throw new TypeError('Invalid mesh cache budget');
-    byteBudget = value;
-    while (cacheBytes > byteBudget) {
-      const key=cache.keys().next().value;
-      cacheBytes-=bytesOf(cache.get(key));cache.delete(key);
-    }
-  }
+    Uint32Array, Uint32Array, Int32Array, Uint32Array];
   const bytesOf = part => fields.reduce((sum, field) => sum + (part[field]?.byteLength || 0), 0);
-  let seededParts=0,seededBytes=0;
-  async function seedVerifiedCountryParts({buffer,countryIds,fills},context){
-    if(!(buffer instanceof ArrayBuffer)||!Array.isArray(countryIds)||!Array.isArray(fills)
-      ||countryIds.length!==fills.length)throw new TypeError('Exact source seed required');
-    const {mesh}=decodeCountryMesh(buffer,countryIds);
-    const digests=new Map(fills);
-    if(digests.size!==countryIds.length||countryIds.some(id=>!/^[a-f0-9]{64}$/.test(digests.get(id)||'')))
-      throw new Error('Country source identity mismatch');
-    // The immutable canonical asset groups each country in one vertex span.
-    const spans=Array.from({length:countryIds.length},()=>null);
-    let contiguous=true;
-    for(let v=0;v<mesh.countryIndices.length;v++){
-      const slot=mesh.countryIndices[v],span=spans[slot];
-      if(!span)spans[slot]=[v,v+1];
-      else if(span[1]===v)span[1]++;
-      else contiguous=false;
-    }
-    let admitted=0,bytesAdmitted=0;
-    for(let slot=0;slot<countryIds.length;slot++){
-      context?.throwIfCancelled?.();
-      const key=`${engine.MESH_ALGORITHM_REVISION}:${engine.MAX_RENDER_EDGE_DEGREES}:canonical:${digests.get(countryIds[slot])}`;
-      if(!cache.has(key)){
-        const part=extractCountryMeshSlot(mesh,slot,contiguous?spans:null),bytes=bytesOf(part);
-        if(bytes<=byteBudget){
-          cache.set(key,part);cacheBytes+=bytes;admitted++;bytesAdmitted+=bytes;
-          while(cacheBytes>byteBudget){
-            const oldest=cache.keys().next().value,prior=cache.get(oldest);
-            cacheBytes-=bytesOf(prior);cache.delete(oldest);
-          }
-        }
-      }
-      if((slot&15)===15)await yieldTask();
-    }
-    seededParts+=admitted;seededBytes+=bytesAdmitted;
-    return {admitted,bytesAdmitted};
-  }
   async function build(features, context, progress = () => {}, {
     validate = false, maxEdgeDegrees = engine.MAX_RENDER_EDGE_DEGREES,
   } = {}) {
@@ -94,7 +47,7 @@ export function createCountryMeshPreparation({ engine, loadPreparedPart = null, 
           context.throwIfCancelled();
           if (part) preparation.reusedCount++;
           else {
-            part = engine.buildGpuMeshFeatures([job], { validate, maxEdgeDegrees,
+            part = engine.buildPolygonMeshFeatures([job], { validate, maxEdgeDegrees,
               throwIfCancelled: () => context.throwIfCancelled() });
             preparation.triangulationMs += performance.now() - begin;
             preparation.builtCount++;
@@ -127,27 +80,21 @@ export function createCountryMeshPreparation({ engine, loadPreparedPart = null, 
     }
     const assembly = performance.now();
     const parts = groups.flat();
-    // Tile rectangles belong to fill preparation, never to object outlines.
-    const outlines = features.map((feature,index) => feature.lodParts?.length
-      ? Float32Array.from(buildRefinedBoundarySegments(feature.outlineGeometry).flatMap(([a,b])=>[...a,...b]))
-      : groups[index][0].strokeStartsEnds);
     const mesh = { countryIds: features.map((feature, index) => String(feature.id ?? index)),
-      strokeOwnerRanges: {},
       stats: { algorithmRevision: engine.MESH_ALGORITHM_REVISION,
         polygonCount: 0, polarPolygonCount: 0, maxEdgeDegrees: 0,
         removedDegenerateTriangleCount: 0 } };
-    const concatenated = ['positions', 'countryIndices', 'triangleIndices', 'lineIndices', 'strokeStartsEnds'];
+    const concatenated = ['positions', 'countryIndices', 'triangleIndices', 'lineIndices'];
     for (const [index, field] of fields.entries()) {
-      const count = field === 'strokeStartsEnds' ? outlines.reduce((n,a)=>n+a.length,0) : concatenated.includes(field)
+      const count = concatenated.includes(field)
         ? parts.reduce((sum, part) => sum + part[field].length, 0)
         : field === 'countryBounds' ? features.length * 4
         : field === 'countryBoundsFlags' ? features.length : features.length * 2;
       mesh[field] = new types[index](count);
     }
-    let vertices = 0, triangles = 0, lines = 0, strokes = 0;
+    let vertices = 0, triangles = 0, lines = 0;
     groups.forEach((countryParts, countryIndex) => {
-      const id = mesh.countryIds[countryIndex], startTriangle = triangles;
-      const startBoundary = lines, startStroke = strokes;
+      const startTriangle = triangles, startBoundary = lines;
       const bounds = [Infinity, Infinity, -Infinity, -Infinity];
       let flags = 0;
       for (const part of countryParts) {
@@ -185,9 +132,6 @@ export function createCountryMeshPreparation({ engine, loadPreparedPart = null, 
       }
       mesh.countryTriangleRanges.set([startTriangle, triangles - startTriangle], countryIndex * 2);
       mesh.countryBoundaryRanges.set([startBoundary, lines - startBoundary], countryIndex * 2);
-      mesh.strokeStartsEnds.set(outlines[countryIndex],strokes);
-      strokes += outlines[countryIndex].length;
-      mesh.strokeOwnerRanges[id] = { first: startStroke / 4, count: (strokes - startStroke) / 4 };
     });
     preparation.assemblyMs = performance.now() - assembly;
     preparation.cacheBytes = cacheBytes;
@@ -195,5 +139,5 @@ export function createCountryMeshPreparation({ engine, loadPreparedPart = null, 
     progress(features.length + 1, 'assembly');
     return mesh;
   }
-  return { build, seedVerifiedCountryParts, setByteBudget, stats:()=>({bytes:cacheBytes,byteBudget,seededParts,seededBytes}) };
+  return { build };
 }

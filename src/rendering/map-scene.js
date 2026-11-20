@@ -23,21 +23,13 @@ export function createMapScene() {
   }
   function replaceSceneDomain(domain, {polygons = [], strokes = []} = {}) {
     const name = String(domain);
-    const independent = ['base-graticule','generic-features','distributions'].includes(name);
-    const normalize = item => Object.freeze({
-      ...item, domain:name,
-      chunkKey:String(item?.chunkKey || `${name}:${item?.key || ''}`),
-      lodPolicy:String(item?.lodPolicy || (independent ? 'independent' : 'exact')),
-      priority:Number(item?.priority ?? (item?.protected ? 100 : 0)),
-    });
-    const nextPolygons = polygons.filter(item => item?.key && item?.geometry).map(normalize);
-    const nextStrokes = strokes.filter(item => item?.key && (item?.geometry || item?.startsEnds)).map(normalize);
+    const renderable = item => item?.key && item?.geometry;
+    const snapshot = item => Object.freeze({...item});
+    const nextPolygons = polygons.filter(renderable).map(snapshot);
+    const nextStrokes = strokes.filter(renderable).map(snapshot);
     const items = [...nextPolygons,...nextStrokes];
     const signature = JSON.stringify(items.map(item => [
-      item.key,item.geometryRevision,item.objectKey || '',item.chunkKey,
-      item.lodPolicy,item.priority,item.protected === true,item.role,
-      item.ownerId,item.parentId,item.territoryDepth,
-      item.order,item.blendMode,item.style,
+      item.key,item.geometryRevision,item.objectKey,item.role,item.order,item.blendMode,item.style,
     ]));
     if (domains.get(name)?.signature === signature) return false;
     domains.set(name,{signature,polygons:nextPolygons,strokes:nextStrokes});

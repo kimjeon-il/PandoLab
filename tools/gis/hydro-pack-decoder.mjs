@@ -139,11 +139,14 @@ export function createHydroWorkerDecoder(manifest,{root=defaultRoot}={}){
   const context=vm.createContext({TextDecoder,URL,performance,structuredClone,inputManifest:manifest});
   context.self=context;context.onmessage=null;context.importScripts=()=>{};
   const index=buildFrontendIndex(root);
-  for(const file of ['vendor/earcut.min.js','workers/geographic-boundary-core.js','workers/hydro-tile-worker.js']){
-    const item=frontendAsset(root,'assets/js/'+file,{index});vm.runInContext(item.bytes.toString('utf8'),context,{filename:item.sourcePath});
-  }
+  const item=frontendAsset(root,'assets/js/workers/hydro-tile-worker.js',{index});
+  vm.runInContext(item.bytes.toString('utf8'),context,{filename:item.sourcePath});
   vm.runInContext('manifest = inputManifest',context);
-  return vm.runInContext('({readGlobalIndex,readFeatureMetadata,readPack,packSpecs,logicalPacks,featureMetadata})',context);
+  return vm.runInContext(`(() => {
+    const logicalPacks = new Map();
+    return {readGlobalIndex: bytes => readGlobalIndex(bytes, logicalPacks),
+      readFeatureMetadata,readPack,packSpecs,logicalPacks,featureMetadata};
+  })()`,context);
 }
 function prepareHydroPack({files,layout,stages},root){
   if(!(files instanceof Map)||!layout?.index||!layout.metadata?.core||!layout.metadata?.detail||
@@ -163,9 +166,9 @@ function prepareHydroPack({files,layout,stages},root){
 function readVerifiedHydroPack(decoder,shard,spec){
   const raw=gunzipSync(shard.subarray(spec.offset,spec.offset+spec.length));
   if(raw.length<12||raw.readUInt16LE(6)!==spec.stage)throw Error('Hydro pack stage differs from index');
-  const decoded=decoder.readPack(raw,spec.id);
-  if(decoded.features.some(feature=>feature.properties.stage!==spec.stage))throw Error('Hydro pack feature stage differs');
-  return decoded.features;
+  const features=decoder.readPack(raw,spec.id);
+  if(features.some(feature=>feature.properties.stage!==spec.stage))throw Error('Hydro pack feature stage differs');
+  return features;
 }
 function verifiedHydroFeature(decoder,feature,spec){
   const metadata=decoder.featureMetadata.get(feature.properties.__fid);

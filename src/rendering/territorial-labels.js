@@ -20,7 +20,6 @@ const PLACE_SEARCH_LANGUAGES = Object.freeze({ ko: true, en: true, native: true 
 export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eagerBuiltinPlaces:true},
   placeCatalog=null,placeLifetimesCatalog=null } = {}) {
   let dependencies;
-  let countryOutlineCache;
   let labelLayoutMetrics;
   let builtinPlaces,activeSource='unbound';
 
@@ -71,14 +70,6 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     const builtin = builtinPlaces.resolve(id);
     if (builtin) builtinPlaces.retain(builtin);
     return builtin;
-  }
-
-  function countryOutlineFeature(feature) {
-    const geometry = feature?.geometry;
-    if (geometry && countryOutlineCache.has(geometry)) return countryOutlineCache.get(geometry);
-    const outline = (0, dependencies.labelPresentation.buildRenderableStrokeFeature)(feature);
-    if (geometry) countryOutlineCache.set(geometry, outline);
-    return outline;
   }
 
   function territorialLabelScreenMetrics(feature, fontSize, projectedExtent, labelFeature, frame) {
@@ -240,7 +231,6 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
   }
 
   function initializeCountryOutlineCache() {
-    (countryOutlineCache = new WeakMap());
   }
 
   function initializeLabelLayoutMetrics() {
@@ -280,10 +270,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     builtinPlaceSelectionReferences:()=>activeSource==='builtin'?builtinPlaces.selectionReferences():[],
     initializeCountryOutlineCache,
     initializeLabelLayoutMetrics,
-    get countryOutlineCache() { return countryOutlineCache; },
-    get countryOutlineFeature() { return countryOutlineFeature; },
     get labelLayoutMetrics() { return labelLayoutMetrics; },
-    labelPlacementWorkerStats: () => null,
     get visibleLabelLayout() { return visibleLabelLayout; },
   });
 }

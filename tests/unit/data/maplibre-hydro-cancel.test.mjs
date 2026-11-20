@@ -48,7 +48,7 @@ test('the hydro worker publishes successful ranges and retries failed ranges on 
  context.self=context;
  vm.runInContext(await readFile(new URL('../../../src/rendering/workers/hydro-tile-worker.js',import.meta.url),'utf8'),context);
  const run=vm.runInContext(`async()=>{
-  delivery='geojson'; rangeSupportPromise=Promise.resolve(true);
+  rangeSupportPromise=Promise.resolve(true);
   tilePacks.set('0/0-0',[1,2]);
   for(const id of [1,2]){
    packSpecs.set(id,{id,shard:id,offset:0,length:12});
@@ -68,5 +68,8 @@ test('the hydro worker publishes successful ranges and retries failed ranges on 
  await run();
  const ready=messages.filter(row=>row.type==='view-ready');
  assert.deepEqual(ready.map(row=>[row.packIds,row.failedPacks.map(pack=>pack.id)]),[[[1],[2]],[[1,2],[]]]);
- assert.deepEqual(messages.filter(row=>row.type==='pack').map(row=>[row.revision,row.packId]),[[1,1],[2,2]]);
+ assert.deepEqual(messages,[
+  {type:'pack',revision:1,packId:1,features:[]},ready[0],
+  {type:'pack',revision:2,packId:2,features:[]},ready[1],
+ ]);
 });

@@ -61,7 +61,7 @@ export async function createHydroBrowserLoader({
  worker.onerror=event=>stop(event.error||Error(event.message||'Hydro worker failed'));
  worker.onmessageerror=()=>stop(Error('Hydro worker reply could not be decoded'));
  try{
-  worker.postMessage({type:'init',manifest,baseUrl,dataRevision,delivery:'geojson'});
+  worker.postMessage({type:'init',manifest,baseUrl,dataRevision});
   await ready;
   signal?.throwIfAborted();
  }catch(error){stop(error);throw error;}

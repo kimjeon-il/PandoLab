@@ -14,12 +14,15 @@ if (assetRevision) {
 }
 importScripts('./geographic-boundary-core.js', rasterContractUrl.href, meshCoreUrl.href, rpcHostUrl.href);
 
-const meshCoreReady = import("../../document/temporal.js")
+let meshCorePromise;
+const meshCoreReady = () => meshCorePromise ||= import("../../document/temporal.js")
   .then(({ sharedCalculationCore }) => {
     self.PandoLabPolygonMeshCore.setSharedCore(sharedCalculationCore);
     return sharedCalculationCore;
+  }).catch(cause=>{
+    meshCorePromise=null;
+    throw Object.assign(new Error(cause?.message||String(cause),{cause}),{code:'PL-MAP-GEOMETRY-INITIALIZATION'});
   });
-meshCoreReady.catch(() => {}); // Each mesh operation awaits this prerequisite.
 // The polygon asset catalog is not needed by a line-only overlay job.
 let polygonPreparation = null;
 let countryBoundary=null;
@@ -30,9 +33,9 @@ async function boundarySeed(){
   const meta=workerBuildMeta(self.location.href,globalThis.PANDOLAB_BUILD_META);
   const store=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',resolveUrl:spec=>runtimeDataAssetUrl(self.location.href,spec)});
   return loadCountryBoundarySeed(meta,async spec=>(await store.loadAsset(spec,'background','country-boundary-seed','Country boundary seed',bytes=>JSON.parse(new TextDecoder().decode(bytes)))).value);
- }).catch(error=>{boundarySeedFailure=error?.message||String(error);return null;});
+ }).catch(error=>{boundarySeedPromise=null;boundarySeedFailure=error?.message||String(error);return null;});
 }
-const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady.then(() => Promise.all([
+const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady().then(() => Promise.all([
   import(`../prepared-polygon-mesh.js?v=${encodeURIComponent(assetRevision)}`),
   import(`../../data/stored-asset-loader.js?v=${encodeURIComponent(assetRevision)}`),
   import(`../../runtime/worker-asset-url.js?v=${encodeURIComponent(assetRevision)}`),
@@ -76,13 +79,13 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady.then(() 
     },
     loadAsset: async asset => (await loadAsset(asset, 'mesh', asset.sha256, 'Prepared polygon mesh', buffer => buffer)).value,
   });
-});
+}).catch(error=>{polygonPreparation=null;throw error;});
 let physicalDisplay=null;
 
 async function prepareCountryBoundary(input,context){
   const [{createCountrySharedBoundaryState,visibleCountrySharedSegments},
     {countryBoundaryOwner,countryBoundarySeedOptions},seed]=await Promise.all([
-    import('../country-shared-boundary-state.js'),import('../country-boundary-seed.js'),boundarySeed(),meshCoreReady,
+    import('../country-shared-boundary-state.js'),import('../country-boundary-seed.js'),boundarySeed(),meshCoreReady(),
   ]);
   context.throwIfCancelled();
   if(countryBoundary?.key!==input.key){
@@ -127,7 +130,7 @@ self.PandoLabWorkerRpc.install({
       context.throwIfCancelled();
       if(typeof payload.sourceKey!=='string'||!payload.sourceKey)throw new TypeError('Physical display needs its effective source identity.');
       if(physicalDisplay?.key===payload.sourceKey)return physicalDisplay.result;
-      const [{dissolvePhysicalLand},core]=await Promise.all([import('../physical-land-display.js'),meshCoreReady]);
+      const [{dissolvePhysicalLand},core]=await Promise.all([import('../physical-land-display.js'),meshCoreReady()]);
       const started=performance.now();
       const geometry=await dissolvePhysicalLand(payload.geometry,{
         union:coordinates=>core.polygonOperation('union',[coordinates],false),
@@ -172,6 +175,7 @@ self.PandoLabWorkerRpc.install({
             packetBytes:Object.values(prepared.packet||{}).reduce((n,value)=>n+(ArrayBuffer.isView(value)?value.byteLength:0),0),
             assetHitsBefore:before?.assetHits??null,assetHitsAfter:after?.assetHits??null}};
         }));
+        await new Promise(resolve=>setTimeout(resolve,0));
         context.throwIfCancelled();
         for(let j=0;j<rows.length;j++){
           packets[index+j]=rows[j].prepared;packetTimings.push(rows[j].timing);
@@ -181,7 +185,7 @@ self.PandoLabWorkerRpc.install({
         .filter(ArrayBuffer.isView).map(value => value.buffer)))];
       const finishedAt=performance.now();
       return self.PandoLabWorkerRpc.transferResult({packets,stats:{...(store?.stats()||{}),boundarySeedFailure,boundarySeeded,boundaryChangedCount,
-        startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
+        transferBytes:buffers.reduce((total,buffer)=>total+buffer.byteLength,0),startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
         slowestPackets:packetTimings.sort((a,b)=>b.durationMs-a.durationMs).slice(0,8)}},buffers);
     },
   },

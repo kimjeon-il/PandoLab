@@ -210,7 +210,7 @@ test('graticule draws above the colored map and below selection and labels',asyn
   const map=window.__PANDOLAB_MAPLIBRE__,order=map.getLayersOrder();
   const grid=order.indexOf('map-graticule');
   const selection=order.indexOf('interaction-fill'),labels=order.indexOf('viewer-label-text');
-  return grid>order.indexOf('map-base-fallback')&&grid>order.indexOf('territories')
+  return grid>order.indexOf('physical-land-fill')&&grid>order.indexOf('territories')
    &&grid>order.indexOf('physical-water')&&grid>order.indexOf('borders')&&grid<selection&&grid<labels;
  });
  await expect.poll(ordered).toBe(true);
@@ -300,7 +300,7 @@ test('prepared land and country coverage remain visible while panning',async({pa
   const sources=ids.map(id=>map.getSource(id)),samples=[];
   const read=()=>{const point=map.project([20,45]),canvas=map.getCanvas();
    if(point.x<0||point.y<0||point.x>=canvas.clientWidth||point.y>=canvas.clientHeight)return;
-   const layers=['map-base-fallback','territories'];
+   const layers=['physical-land-fill','territories'];
    const hits=new Set(map.queryRenderedFeatures(point,{layers}).map(feature=>feature.layer.id));
    samples.push({missing:layers.filter(id=>!hits.has(id)),sameSources:ids.every((id,index)=>map.getSource(id)===sources[index])});
   };
@@ -743,7 +743,7 @@ test('dated physical water is restored across timeline changes',async({page})=>{
   const map=window.__PANDOLAB_MAPLIBRE__,{water:id}=window.__PANDOLAB_VIEWER__.rendererStats().datedSources;
   const water=await map.getSource(id).getData();
   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(water)));
-  return {water:[...new Uint8Array(bytes)].join(','),base:map.getLayer('map-base-fallback')?.source};
+  return {water:[...new Uint8Array(bytes)].join(','),base:map.getLayer('physical-land-fill')?.source};
  });
  const modern=await physical();await month(page,'1922-12');const historical=await physical();
  expect(historical.water).not.toBe(modern.water);
@@ -1077,7 +1077,7 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
   expect(await viewerFaceRgba(page.locator('.preferences-card'))).toEqual([23,27,32,255]);
   await page.locator('#preferencesCloseBtn').click();await ready(page);
   expect(await viewerFaceRgba(dateBar)).toEqual([23,27,32,255]);
-  expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getLayer('map-base-fallback').source)).toBe('physical-land');
+  expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getLayer('physical-land-fill').source)).toBe('physical-land');
   await page.keyboard.press('Delete');await page.keyboard.press('Control+z');
   expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentSnapshot())).toEqual(before.project);
   const after=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState());
@@ -1192,8 +1192,8 @@ test('selection outlines omit the antimeridian polygon closure',async({page})=>{
  const point=await page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,r=m.getCanvas().getBoundingClientRect(),p=m.project([175,66]);return {x:p.x+r.x,y:p.y+r.y};});await page.mouse.click(point.x,point.y);
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe('territorial:entity:RUS');
  await ready(page,'dateline selection');
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getStyle().layers.some(l=>l.id.includes('multiply-line-10000')))).toBe(true);
- const result=await page.evaluate(async()=>{const m=window.__PANDOLAB_MAPLIBRE__,layer=m.getStyle().layers.find(l=>l.id.includes('multiply-line-10000'));const d=await m.getSource(layer.source).getData();let edges=0,closures=0;for(const f of d.features)for(const line of f.geometry.coordinates)for(let i=1;i<line.length;i++){edges++;const a=line[i-1],b=line[i];if(Math.abs(Math.abs(a[0])-180)<1e-6&&Math.abs(Math.abs(b[0])-180)<1e-6&&Math.abs(a[1]-b[1])>1e-6)closures++;}return {edges,closures};});expect(result.edges).toBeGreaterThan(100);expect(result.closures).toBe(0);
+ await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getStyle().layers.some(l=>l.id.includes('vector-line-10000')))).toBe(true);
+ const result=await page.evaluate(async()=>{const m=window.__PANDOLAB_MAPLIBRE__,layer=m.getStyle().layers.find(l=>l.id.includes('vector-line-10000'));const d=await m.getSource(layer.source).getData();let edges=0,closures=0;for(const f of d.features)for(const line of f.geometry.coordinates)for(let i=1;i<line.length;i++){edges++;const a=line[i-1],b=line[i];if(Math.abs(Math.abs(a[0])-180)<1e-6&&Math.abs(Math.abs(b[0])-180)<1e-6&&Math.abs(a[1]-b[1])>1e-6)closures++;}return {edges,closures};});expect(result.edges).toBeGreaterThan(100);expect(result.closures).toBe(0);
 });
 
 test('first Antarctic hover colors both sides of the polar handoff in one frame',async({page})=>{

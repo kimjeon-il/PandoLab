@@ -40,8 +40,7 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   territorialLabelPriorities:new Map(),userLabelRows:new Map(),userLabelPriorities:new Map()};
  const domain=createMapLibreRenderingDomain({
   mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
-  countryResources:{getState:()=>state,mapPalette:()=>({defaultLand:'#ffffff'}),replaceSceneDomain(){},
-   syncMapScene(){sceneSubmissions++;}},
+  mapPalette:()=>({defaultLand:'#ffffff'}),syncMapScene(){sceneSubmissions++;},
   territorialResources:{getState:()=>state,displayEntities:()=>[],visibleMapObjectCandidates:()=>[],
    entityRepository:{},replaceSceneDomain(){}},
   genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){overlayRuns++;}},

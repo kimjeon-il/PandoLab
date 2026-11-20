@@ -86,15 +86,6 @@ export function createPointerTargets() {
     }, 50);
   }
 
-  async function hydroAtScreenPoint(screenPoint, coord) {
-    const hydroCategoryVisible = dependencies.projectState.state.layerVisibility.rivers || dependencies.projectState.state.layerVisibility.lakes;
-    if (!hydroCategoryVisible) return null;
-    for (const feature of [...dependencies.projectState.state.hydroEdits].reverse()) {
-      if (!(0, dependencies.physicalServices.isHydroFeatureVisible)(feature) || !(0, dependencies.objectPicking.geometryHitsScreenPoint)(feature.geometry, coord, screenPoint, (0, dependencies.surfaces.isMobile)() ? 14 : 8)) continue;
-      return feature;
-    }
-    return dependencies.rendering.mapRenderer.pickHydro(screenPoint)?.feature ?? null;
-  }
 
   function mapClickBlocked(event = dependencies.platform.d3.event) {
     if (dependencies.projectState.state.projectReplacing) {
@@ -146,7 +137,6 @@ export function createPointerTargets() {
     connect,
     initializeHoverPickFrame,
     get cancelCountryHoverPick() { return cancelCountryHoverPick; },
-    get hydroAtScreenPoint() { return hydroAtScreenPoint; },
     get lastHoverPickPoint() { return lastHoverPickPoint; },
     get lastHoverPickViewRevision() { return lastHoverPickViewRevision; },
     get mapClickBlocked() { return mapClickBlocked; },

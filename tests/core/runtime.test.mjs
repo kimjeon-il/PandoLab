@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, webcrypto} from 'node:crypto';
 import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
 import {loadNodeCore} from '../../tools/build/load-node-core.mjs';
 import {createWorkerRpcClient, WORKER_RPC_PROTOCOL, WORKER_RPC_PROTOCOL_VERSION} from '../../src/runtime/worker-rpc.js';
 import {mapProjectCatalogSpec} from '../../src/data/map-project-runtime.js';
@@ -229,6 +230,67 @@ test('failed Worker request settles with its operation error and releases pendin
     await assert.rejects(pending,error=>error.code==='MESH_FAILURE' && error.message==='mesh preparation failed'
       && error.category==='OPERATION' && error.cause.stack==='worker:mesh');
     assert.equal(client.stats().pendingCount,0);
+  } finally {client.stop();}
+});
+
+test('Worker RPC messageerror rejects every pending request as outcome unknown and does not replay', async()=>{
+  const workers=[];
+  const client=createWorkerRpcClient({createWorker:()=>{const worker=workerPort();workers.push(worker);return worker;}});
+  try {
+    const first=client.request('first', null, {timeoutMs:0});
+    const second=client.request('second', null, {timeoutMs:0});
+    const pending=Promise.allSettled([first,second]);
+    const discarded=workers[0].onmessage;
+    workers[0].onmessageerror(new Event('messageerror'));
+    const failure=await pending;
+    assert.deepEqual(failure.map(({status,reason})=>[status,reason.code,reason.operation,reason.requestId,reason.outcomeUnknown]),
+      [['rejected','PL-WORKER-RPC-MESSAGEERROR','first',1,true],['rejected','PL-WORKER-RPC-MESSAGEERROR','second',2,true]]);
+    assert.equal(workers[0].terminated,true);
+    assert.equal(client.stats().pendingCount,0);
+    const third=client.request('third',null,{timeoutMs:0});
+    assert.deepEqual(workers[1].messages.map(({operation})=>operation),['third']);
+    const response={data:reply(workers[1].messages[0],'fresh')};
+    discarded(response);
+    assert.equal(client.stats().pendingCount,1);
+    workers[1].onmessage(response);
+    assert.equal((await third).result,'fresh');
+    assert.equal(client.stats().restarted,1);
+  } finally {client.stop();}
+});
+
+test('Worker RPC honors restartOnCrash false after retiring a crashed worker',async()=>{
+  let instances=0;
+  const worker=workerPort();
+  const client=createWorkerRpcClient({restartOnCrash:false,createWorker:()=>{instances++;return worker;}});
+  try {
+    const pending=client.request('write',null,{timeoutMs:0});
+    const rejection=assert.rejects(pending,{code:'PL-WORKER-RPC-CRASH',outcomeUnknown:true});
+    worker.onerror(new Event('error'));
+    await rejection;
+    await assert.rejects(client.request('read',null,{timeoutMs:0}),{code:'PL-WORKER-RPC-RESTART-DISABLED'});
+    assert.equal(instances,1);
+  } finally {client.stop();}
+});
+
+test('Worker RPC host reports an uncloneable reply and preserves synchronous event errors',async()=>{
+  const worker=workerPort(),events=[];
+  const scope={AbortController,postMessage(data,transfer){
+    const message=structuredClone(data,{transfer:transfer??[]});
+    queueMicrotask(()=>worker.onmessage?.({data:message}));
+  }};
+  scope.self=scope;
+  vm.runInNewContext(readFileSync(new URL('../../src/runtime/workers/worker-rpc-host.js',import.meta.url),'utf8'),scope);
+  scope.PandoLabWorkerRpc.install({handlers:{write(){return ()=>{};}},onEvent(){throw new Error('event failed');}});
+  worker.postMessage=data=>scope.onmessage({data});
+  const client=createWorkerRpcClient({createWorker:()=>worker,onEvent:event=>events.push(event)});
+  try {
+    assert.doesNotThrow(()=>client.notify('test-event'));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(events[0].operation,'worker-rpc.event-error');
+    assert.equal(events[0].payload.error.message,'event failed');
+    await assert.rejects(client.request('write',null,{timeoutMs:100}),
+      {code:'PL-WORKER-RPC-MESSAGEERROR',operation:'write',outcomeUnknown:true});
+    assert.equal(worker.terminated,true);
   } finally {client.stop();}
 });
 

@@ -37,7 +37,9 @@ export function createCoreDocumentClient({
   ]);
   const cancelled = (code,message) => Object.assign(new Error(message),
     { code,name:'AbortError',cancelled:true });
-  const rpc = createWorkerRpcClient({ createWorker, isCurrent: () => true, restartOnCrash: false,
+  // After a lost reply the document state is unknown. Only load or initialize
+  // can open a new session, since all other operations require currentState.
+  const rpc = createWorkerRpcClient({ createWorker, isCurrent: () => true,
     onCrash: () => { currentState = null; } });
   function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument, geometryReceipt = null) {
     const result = queue.then(async () => {

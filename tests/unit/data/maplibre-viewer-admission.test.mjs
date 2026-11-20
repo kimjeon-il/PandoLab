@@ -51,13 +51,56 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    renderer.setInitialMapLoading(true);
    if(renderer.map.getMinZoom()!==-2||renderer.map.getMaxZoom()!==22)throw new Error('Expected native MapLibre zoom range');
    renderer.map.jumpTo({center:[-4,0],zoom:renderer.map.getMaxZoom()});
-   if(renderer.map.getCanvas().style.visibility!=='hidden'||document.querySelector('[data-map-preserved-frame]'))
+   if(renderer.map.getCanvas().style.visibility!=='hidden'||globalThis.document.querySelector('[data-map-preserved-frame]'))
     throw new Error('A jump before first publication exposed an unprepared canvas');
    await settle();
    if(renderer.map.getCanvas().style.visibility!=='hidden')throw new Error('The loading surface retired before the full map drew');
    renderer.setInitialMapLoading(false);
    await settle();
    if(renderer.map.getCanvas().style.visibility==='hidden')throw new Error('The first full map never became visible');
+   const originalGetStyle=renderer.map.getStyle;
+   let approvalSerializations=0;
+   renderer.map.getStyle=function(...args){
+    if(new Error().stack.includes('requiredSourcesReady'))approvalSerializations++;
+    return originalGetStyle.apply(this,args);
+   };
+   await settle();
+   renderer.map.getStyle=originalGetStyle;
+   if(approvalSerializations)throw new Error('Frame approval serialized the entire style '+approvalSerializations+' times');
+
+   const refFor=feature=>({domain:'territorial',type:'entity',id:feature.id,key:'territorial:entity:'+encodeURIComponent(feature.id)});
+   const beforeRef=refFor(before),afterRef=refFor(after);
+   const interactionSnapshot=(items,hover=null)=>({selection:{items,primaryKey:items[0]?.key},hover});
+   renderer.setSelection(interactionSnapshot([]));await settle();
+   const interaction=renderer.map.getSource('interaction'),writeInteraction=interaction.setData.bind(interaction);
+   const writes=[];
+   let beginWrite,releaseWrite;
+   const began=new Promise(resolve=>beginWrite=resolve);
+   interaction.setData=data=>{
+    writes.push(data);
+    if(writes.length!==1)return writeInteraction(data);
+    beginWrite();
+    return new Promise(resolve=>releaseWrite=()=>resolve(writeInteraction(data)));
+   };
+   renderer.setSelection(interactionSnapshot([beforeRef]));
+   await began;
+   renderer.setSelection(interactionSnapshot([beforeRef],afterRef));
+   renderer.setSelection(interactionSnapshot([afterRef],beforeRef));
+   renderer.setSelection(interactionSnapshot([afterRef]));
+   releaseWrite();
+   await settle();
+   interaction.setData=writeInteraction;
+   if(writes.length!==2||writes[1].features.length!==1||writes[1].features[0].geometry!==after.geometry)
+    throw new Error('The interaction queue applied a superseded hover or lost the final selection');
+   const originalMoveLayer=renderer.map.moveLayer;
+   let orderMoves=0;
+   renderer.map.moveLayer=function(...args){orderMoves++;return originalMoveLayer.apply(this,args);};
+   renderer.setSelection(interactionSnapshot([afterRef]));
+   await settle();
+   renderer.map.moveLayer=originalMoveLayer;
+   if(orderMoves)throw new Error('An unchanged interaction moved '+orderMoves+' layers');
+   renderer.setSelection(interactionSnapshot([]));await settle();
+
    renderer.map.jumpTo({center:[0,0],zoom:1});
    await settle();
    for(const center of [[13.84,50.77],[18,0]]){
@@ -413,7 +456,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const optionalStroke={key:'optional-hydro',role:'hydro-detail',geometryRevision:'one',geometry:{type:'LineString',coordinates:[[24,0],[26,0]]},order:200,style:{color:'#1234ff',width:1,alpha:1}};
    const optionalScene=()=>new Map([['water-detail',{polygons:[],strokes:[optionalStroke]}]]);
    renderer.setSceneDomains(optionalScene());await settle();
-   const optionalSource=renderer.map.getSource('multiply-line-200-hydro-detail'),writeOptional=optionalSource.setData.bind(optionalSource);let releaseOptional;
+   const optionalSource=renderer.map.getSource('vector-line-200-hydro-detail'),writeOptional=optionalSource.setData.bind(optionalSource);let releaseOptional;
    optionalSource.setData=data=>new Promise(resolve=>{releaseOptional=()=>resolve(writeOptional(data));});
    optionalStroke.geometryRevision='two';renderer.setSceneDomains(optionalScene());
    for(let i=0;i<100&&!releaseOptional;i++)await new Promise(resolve=>setTimeout(resolve,5));

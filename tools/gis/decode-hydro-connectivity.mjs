@@ -39,7 +39,7 @@ const seen = new Set();
 for (const spec of decoder.packSpecs.values()) {
   const shard = shards.get(spec.shard);
   if (!shard || spec.offset + spec.length > shard.length) throw new Error(`Invalid range: ${spec.id}`);
-  for (const feature of decoder.readPack(gunzipSync(shard.subarray(spec.offset, spec.offset + spec.length)), spec.id).features) {
+  for (const feature of decoder.readPack(gunzipSync(shard.subarray(spec.offset, spec.offset + spec.length)), spec.id)) {
     const fid = feature.properties.__fid;
     if (seen.has(fid)) throw new Error(`Duplicate feature: ${fid}`);
     seen.add(fid);

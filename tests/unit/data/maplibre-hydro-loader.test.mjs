@@ -8,7 +8,8 @@ test('browser worker delivers only newly visible water packs and can release the
  class FakeWorker {constructor(){worker=this;} postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view')queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:1,features:[{id:'1:10',properties:{logicalId:'lake',featureId:'1:10'}}]}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[1]}});});}terminate(){}}
  const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),tilesForView:()=>[{stage:0,x:0,y:0}],baseUrl:'http://example/'});
  const result=await loader.view({knownKey:''});assert.equal(result.addPacks[0].features[0].id,'1:10');
- const reused=await loader.view({knownKey:'1'});assert.deepEqual(reused.addPacks,[]);assert.equal(sent[0].delivery,'geojson');
+ const reused=await loader.view({knownKey:'1'});assert.deepEqual(reused.addPacks,[]);
+ assert.deepEqual(sent[0],{type:'init',manifest:{},baseUrl:'http://example/',dataRevision:undefined});
  loader.dispose();assert.ok(worker);
 });
 test('cancelling a view rejects its request and informs the worker',async()=>{

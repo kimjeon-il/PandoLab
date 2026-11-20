@@ -29,7 +29,6 @@ export function createRenderQuality() {
   }
 
   function syncResolvedInteractionStyle({ redraw = false } = {}) {
-    (0, dependencies.selectionServices.setSelectionInteractionStyle)(dependencies.preferences.resolvedInteractionStyle);
     dependencies.rendering.mapRenderer.setInteractionStyle?.(dependencies.preferences.resolvedInteractionStyle);
     if (redraw) {
       dependencies.domains.renderingDomain?.invalidateSelectionStyle?.('selection-style');
@@ -40,7 +39,6 @@ export function createRenderQuality() {
   function applyMapAppearanceChange({ reason = 'user-preferences', rerender = true } = {}) {
     syncResolvedInteractionStyle({ redraw: rerender });
     dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true, emphasis: true }, reason);
-    dependencies.rendering.mapRenderer.invalidatePhysicalStyle(reason);
     if (rerender) dependencies.domains.renderingDomain.invalidateBaseScene(reason);
   }
 

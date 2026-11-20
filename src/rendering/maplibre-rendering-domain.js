@@ -38,10 +38,11 @@ export function createMapLibreRenderingDomain(options){
   onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready'),
   onSourceError:renderer.failMapPreparation,
   onError:error=>reportDiagnostic({operation:'map-labels',stage:'prepare',result:'failed',message:error.message,error})});
- const content=createMapContentPresentation({countries:options.countryResources,
+ const content=createMapContentPresentation({mapPalette:options.mapPalette,
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
   territorialBoundary:options.territorialBoundaryResources,base:options.baseResources,isDisposed:()=>disposed,
-  prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>invalidate('display-ready',true),reportDiagnostic});
+  prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>invalidate('display-ready',true),
+  onMapDisplayFailed:error=>{if(renderer.isFramePreserved())renderer.failMapPreparation(error);},reportDiagnostic});
  function render(){
   queued=false;if(disposed||!renderer.loaded||!renderer.isStyleReady()||renderer.getRuntimeState().webglContextLost)return;
   try{
@@ -59,8 +60,7 @@ export function createMapLibreRenderingDomain(options){
     viewportOverlaysDirty=false;
     content.renderTerritorialUnits(frame);content.renderGenericFeatures(frame);content.renderDistributions(frame);
    }
-   if(refreshContent)content.renderCountries(frame);
-   if(refreshContent||refreshViewportOverlays)options.countryResources.syncMapScene();
+   if(refreshContent||refreshViewportOverlays)options.syncMapScene();
    if(selectionDirty){selectionDirty=false;renderer.setSelection(selectionDomain.snapshot());}
    // Prepare symbol sources alongside geometry, behind the preserved temporal
    // frame. Publication still waits for both sources and a subsequent render.
@@ -75,7 +75,8 @@ export function createMapLibreRenderingDomain(options){
    const result=renderer.renderFrame(frame);
    const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(labelsDirty||labels.pending);
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
-   if(result.deferred||waitingForVisibleLabels||waitingForPlaces||!renderer.canPresentVisualFrame(frame,result))return;
+   const waitingForBoundaries=renderer.isFramePreserved()&&content.territorialBoundariesPending();
+   if(result.deferred||waitingForVisibleLabels||waitingForPlaces||waitingForBoundaries||!renderer.canPresentVisualFrame(frame,result))return;
    if(!renderer.commitVisualFrame(frame))return;
    labels.publishOptionalFlags();
    stats.visualFrameCommittedCount++;stats.lastCommittedVisualFrameId=frame.frameId;
@@ -85,7 +86,7 @@ export function createMapLibreRenderingDomain(options){
  const methods={
   isPreparingTemporalFrame:()=>renderer.getRuntimeState().temporalPresentationPending,
   invalidateView:reason=>{
-   if(reason==='map-retry')labels.retry();
+   if(reason==='map-retry'){labels.retry();content.retryTerritorialBoundaries();return invalidate(reason,true);}
    if(reason==='maplibre-camera'){
     if(renderer.labelZoomVisibility().places)prepareMovingPlaces();
     else if(previousLabelVisibility?.places)options.labelResources.preparePlaces();
@@ -101,8 +102,6 @@ export function createMapLibreRenderingDomain(options){
   invalidateLabels:reason=>invalidate(reason),invalidateQuality:reason=>invalidate(reason),
   invalidateBaseScene:reason=>invalidate(reason,true),invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},
-  invalidateGpuFrame:reason=>invalidate(reason),invalidateGpuInteraction:reason=>{selectionDirty=true;return invalidate(reason);},
-  invalidateGpuContext:reason=>invalidate(reason,true),
   beginInteraction(){lastPlaceQueryAt=-Infinity;options.labelResources.getState().mapMoving=true;options.labelResources.beginPlaceInteraction();},
   endInteraction(reason){lastPlaceQueryAt=-Infinity;options.labelResources.getState().mapMoving=false;preparePlacesForPublication();viewportOverlaysDirty=true;return invalidate(reason);},
   resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetTerritorialBoundaryCache();contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},

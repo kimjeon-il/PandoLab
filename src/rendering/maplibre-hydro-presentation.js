@@ -20,7 +20,7 @@ export function mapLibreHydroStages(stages){
  });
 }
 
-export function mapLibreHydroStyle({antiAlias=true,historical=false,stylePaint=null}={}){
+export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){
  const paints=stylePaint||{
   lakes:{'fill-antialias':antiAlias,'fill-color':'#5aa9d6'},
   rivers:{'line-color':'#3b82c4','line-width':0.8},
@@ -28,7 +28,7 @@ export function mapLibreHydroStyle({antiAlias=true,historical=false,stylePaint=n
  return {sources:{hydro:{type:'geojson',data:{type:'FeatureCollection',features:[]},promoteId:'featureId'}},
   layers:hydroLayers.map(({id,baseId,category,type,zoom})=>({
    id,type,source:'hydro',filter:layerFilter(category,zoom,[]),
-   paint:mapLibreHydroPaint(paints[baseId],type,zoom,historical&&type==='fill'?0.48:1),
+   paint:mapLibreHydroPaint(paints[baseId],type,zoom),
    ...(category==='river'?{layout:{'line-join':'round','line-cap':'round'}}:{}),
   }))};
 }

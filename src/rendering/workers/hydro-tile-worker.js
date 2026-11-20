@@ -1,43 +1,28 @@
-/* PandoLab v0.24.0 water-system shard, Range, and persistent-cache worker. */
+/* Hydro GeoJSON viewport worker. */
 'use strict';
 
-importScripts('../vendor/fflate/fflate.min.js', '../vendor/earcut.min.js', 'geographic-boundary-core.js', 'hydro-shard-store.js');
+importScripts('../vendor/fflate/fflate.min.js', 'hydro-shard-store.js');
 
 const textDecoder = new TextDecoder('utf-8');
 let manifest = null;
 let baseUrl = '';
-let assetRevision = '';
 let dataRevision = '';
 let latestRevision = 0;
 let busy = false;
 let pendingView = null;
-let firstViewReady = false;
 const tilePacks = new Map();
-const logicalPacks = new Map();
 const packSpecs = new Map();
 const shardSpecs = new Map();
 const postedPacks = new Set();
-const inFlightPacks = new Map();
 let shardStore;
 let rangeSupportPromise = null;
-let interactionActive = false;
-let foregroundActive = false;
-let cacheStarted = false;
-let cacheProgressAt = 0;
 const featureMetadata = new Map();
-let detailMetadataPromise = null;
-let mobileSession = false;
-let backgroundCacheController = null;
-let backgroundCacheTimer = 0;
-let cacheCompleted = false;
 let wholeHydroBundle = null;
-let fetchRuntimeData = (...args) => fetch(...args);
-let delivery = 'mesh';
 let foregroundController = null;
 
 function resolveUrl(path) {
   const url = new URL(path, baseUrl);
-  if (dataRevision || assetRevision) url.searchParams.set('v', dataRevision || assetRevision);
+  if (dataRevision) url.searchParams.set('v', dataRevision);
   return url.href;
 }
 
@@ -74,7 +59,7 @@ async function fetchWithRetry(input, init = {}, {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
     try {
-      const response = await fetchRuntimeData(input, { ...init, signal });
+      const response = await fetch(input, { ...init, signal });
       if (!response.ok && retryableStatus(response.status)) {
         const error = new Error(`HTTP ${response.status}`);
         error.httpStatus = response.status;
@@ -106,7 +91,7 @@ async function saveWholeHydroBundle(bytes) {
 }
 
 async function fetchGzip(asset) {
-  const signal = AbortSignal.timeout(15000);
+  const signal = globalThis.AbortSignal.timeout(15000);
   if (typeof asset === 'string') {
     const response = await fetchWithRetry(resolveUrl(asset), {signal});
     if (!response.ok) throw responseError(asset, response);
@@ -141,7 +126,7 @@ async function fetchGzip(asset) {
   return self.fflate.gunzipSync(content);
 }
 
-function readGlobalIndex(bytes) {
+function readGlobalIndex(bytes, logicalPacks = null) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== 0x34495741 || view.getUint16(4, true) !== 4) {
     throw new Error('수계 공간 인덱스 버전이 올바르지 않습니다.');
@@ -164,9 +149,11 @@ function readGlobalIndex(bytes) {
     const logicalFid = view.getUint32(offset, true);
     const count = view.getUint16(offset + 4, true);
     offset += 6;
-    const packs = new Array(count);
-    for (let item = 0; item < count; item += 1, offset += 4) packs[item] = view.getUint32(offset, true);
-    logicalPacks.set(logicalFid, packs);
+    if (logicalPacks) {
+      const packs = Array.from({ length: count }, (_, item) => view.getUint32(offset + item * 4, true));
+      logicalPacks.set(logicalFid, packs);
+    }
+    offset += count * 4;
   }
   for (let index = 0; index < packCount; index += 1) {
     const id = view.getUint32(offset, true);
@@ -188,23 +175,6 @@ function readFeatureMetadata(bytes) {
   for (const row of payload.features) featureMetadata.set(Number(row.fid), row);
 }
 
-async function ensureDetailMetadata() {
-  if (detailMetadataPromise) return detailMetadataPromise;
-  const detailUrl = manifest.metadata?.detail?.url;
-  if (!detailUrl) return null;
-  detailMetadataPromise = fetchGzip(manifest.container ? manifest.metadata.detail : detailUrl).then(bytes => {
-    const payload = JSON.parse(textDecoder.decode(bytes));
-    if (Number(payload?.version) !== 5 || !Array.isArray(payload?.features)) {
-      throw new Error('수계 상세 메타데이터 버전이 올바르지 않습니다.');
-    }
-    for (const row of payload.features) {
-      const metadata = featureMetadata.get(Number(row.fid));
-      if (metadata) Object.assign(metadata, row);
-    }
-  });
-  return detailMetadataPromise;
-}
-
 async function openHydroCache() {
   if (!('caches' in self)) return null;
   try { return await caches.open(manifest.cache?.name || `pandolab-hydro-v${manifest.version}`); }
@@ -224,7 +194,7 @@ async function detectRangeSupport() {
   if (!first) return false;
   try {
     const response = await fetchWithRetry(resolveUrl(first.url), {
-      signal:AbortSignal.timeout(15000), headers: { Range: 'bytes=0-0' },
+      signal:globalThis.AbortSignal.timeout(15000), headers: { Range: 'bytes=0-0' },
     }, { attempts: 2 });
     if (response.status !== 206) { await response.body?.cancel(); return false; }
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -293,12 +263,6 @@ function lineParts(geometry) {
   return [];
 }
 
-function polygonParts(geometry) {
-  if (geometry.type === 'Polygon') return [geometry.coordinates];
-  if (geometry.type === 'MultiPolygon') return geometry.coordinates;
-  return [];
-}
-
 function readWidthProfile(bytes, geometry) {
   if (!bytes.length) return [];
   const cursor = { offset: 0 };
@@ -318,77 +282,11 @@ function readWidthProfile(bytes, geometry) {
   });
 }
 
-function buildMesh(features) {
-  const riverStarts = [], riverEnds = [], riverFeatureIds = [], riverStartWidths = [], riverEndWidths = [];
-  const borderRiverStarts = [], borderRiverEnds = [], borderRiverFeatureIds = [], borderRiverStartWidths = [], borderRiverEndWidths = [];
-  const lakePositions = [], lakeFeatureIds = [], lakeIndices = [];
-  const lakeBoundaryStarts = [], lakeBoundaryEnds = [], lakeBoundaryFeatureIds = [], lakeBoundaryWidths = [];
-  for (const feature of features) {
-    const fid = Number(feature.properties.__fid);
-    if (feature.properties.category === 'river') {
-      const aligned = (Number(feature.properties.__flags || 0) & 1) !== 0;
-      const starts = aligned ? borderRiverStarts : riverStarts;
-      const ends = aligned ? borderRiverEnds : riverEnds;
-      const featureIds = aligned ? borderRiverFeatureIds : riverFeatureIds;
-      const startWidths = aligned ? borderRiverStartWidths : riverStartWidths;
-      const endWidths = aligned ? borderRiverEndWidths : riverEndWidths;
-      const parts = lineParts(feature.geometry);
-      const profiles = feature.properties.stroke_widths || [];
-      for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
-        const part = parts[partIndex], widths = profiles[partIndex] || [];
-        for (let index = 0; index < part.length - 1; index += 1) {
-          starts.push(Math.round(part[index][0] * 1e6), Math.round(part[index][1] * 1e6));
-          ends.push(Math.round(part[index + 1][0] * 1e6), Math.round(part[index + 1][1] * 1e6));
-          featureIds.push(fid);
-          startWidths.push(Number(widths[index] ?? feature.properties.stroke_width ?? 0.8));
-          endWidths.push(Number(widths[index + 1] ?? widths[index] ?? feature.properties.stroke_width ?? 0.8));
-        }
-      }
-      continue;
-    }
-    for (const polygon of polygonParts(feature.geometry)) {
-      const vertices = [], holes = [];
-      for (let ringIndex = 0; ringIndex < polygon.length; ringIndex += 1) {
-        const sourceRing = polygon[ringIndex] || [];
-        const last = sourceRing[sourceRing.length - 1];
-        const ring = sourceRing.length > 1 && sourceRing[0][0] === last[0] && sourceRing[0][1] === last[1] ? sourceRing.slice(0, -1) : sourceRing;
-        if (ring.length < 3) continue;
-        if (ringIndex) holes.push(vertices.length / 2);
-        for (const point of ring) vertices.push(point[0], point[1]);
-      }
-      if (vertices.length < 6) continue;
-      const base = lakePositions.length / 2;
-      const triangles = self.earcut(vertices, holes, 2);
-      for (let index = 0; index < vertices.length; index += 2) {
-        lakePositions.push(Math.round(vertices[index] * 1e6), Math.round(vertices[index + 1] * 1e6));
-        lakeFeatureIds.push(fid);
-      }
-      for (const triangle of triangles) lakeIndices.push(base + triangle);
-    }
-    for (const [start, end] of self.PandoLabGeographicBoundary.buildRenderableBoundarySegments(feature.geometry)) {
-      lakeBoundaryStarts.push(Math.round(start[0] * 1e6), Math.round(start[1] * 1e6));
-      lakeBoundaryEnds.push(Math.round(end[0] * 1e6), Math.round(end[1] * 1e6));
-      lakeBoundaryFeatureIds.push(fid);
-      lakeBoundaryWidths.push(1);
-    }
-  }
-  return {
-    riverStarts: new Int32Array(riverStarts), riverEnds: new Int32Array(riverEnds), riverFeatureIds: new Uint32Array(riverFeatureIds),
-    riverStartWidths: new Float32Array(riverStartWidths), riverEndWidths: new Float32Array(riverEndWidths),
-    borderRiverStarts: new Int32Array(borderRiverStarts), borderRiverEnds: new Int32Array(borderRiverEnds), borderRiverFeatureIds: new Uint32Array(borderRiverFeatureIds),
-    borderRiverStartWidths: new Float32Array(borderRiverStartWidths), borderRiverEndWidths: new Float32Array(borderRiverEndWidths),
-    lakePositions: new Int32Array(lakePositions), lakeFeatureIds: new Uint32Array(lakeFeatureIds), lakeIndices: new Uint32Array(lakeIndices),
-    lakeBoundaryStarts: new Int32Array(lakeBoundaryStarts), lakeBoundaryEnds: new Int32Array(lakeBoundaryEnds),
-    lakeBoundaryFeatureIds: new Uint32Array(lakeBoundaryFeatureIds), lakeBoundaryWidths: new Float32Array(lakeBoundaryWidths),
-  };
-}
-
-function readPack(bytes, packId, { prepareMesh = true } = {}) {
+function readPack(bytes, packId) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== 0x46485741 || view.getUint16(4, true) !== 4) throw new Error('수계 feature pack 버전이 올바르지 않습니다.');
   const count = view.getUint32(8, true);
   const features = [];
-  const descriptors = [];
   let offset = 12;
   for (let index = 0; index < count; index += 1) {
     const fid = view.getUint32(offset, true);
@@ -424,25 +322,13 @@ function readPack(bytes, packId, { prepareMesh = true } = {}) {
       geometry, __awBounds: bounds,
     };
     features.push(feature);
-    descriptors.push({
-      fid, logicalFid, flags, fragmentIndex, fragmentCount,
-      awId: metadata.awId, name: metadata.name || '', source: metadata.source || '',
-      systemId: metadata.systemId || '', mainstemNameKo: metadata.mainstemNameKo || metadata.name || '', role: metadata.role || '',
-      sourceId: metadata.sourceId || '', layerId: metadata.layerId,
-      category: kind === 1 ? 'river' : 'lake', minZoom: manifest.stages[stage].minZoom,
-      stage, width, packId, bounds: metadata.bounds || bounds.map(value => Math.round(value * 1e6)),
-    });
   }
   if (offset !== bytes.length) throw new Error(`수계 pack ${packId}에 불필요한 데이터가 있습니다.`);
-  const mesh = prepareMesh ? buildMesh(features) : null;
-  return { features, descriptors, mesh };
+  return features;
 }
 
-async function loadPack(packId, signal = null) {
-  if (inFlightPacks.has(packId)) return inFlightPacks.get(packId);
-  const promise = fetchPackBytes(packId, signal).then(bytes => readPack(bytes, packId, {prepareMesh:delivery !== 'geojson'})).finally(() => inFlightPacks.delete(packId));
-  inFlightPacks.set(packId, promise);
-  return promise;
+async function loadPack(packId, signal) {
+  return readPack(await fetchPackBytes(packId, signal), packId);
 }
 
 function coalescePackRanges(packIds) {
@@ -476,68 +362,38 @@ async function loadPackRangeGroup(group, signal = null) {
   if (!shard) throw new Error('Unknown hydro shard ' + group.shard);
   const rows = await shardStore.read(shard, group.rows, group.start, group.end, signal);
   return rows.map(([id, bytes]) => {
-    try { return {id,pack:readPack(bytes,id,{prepareMesh:delivery!=='geojson'})}; }
+    try { return { id, features: readPack(bytes, id) }; }
     catch(error){ return {id,error}; }
   });
 }
 
-function postPack(packId, pack, revision) {
-  if (delivery === 'geojson') {
-    const features=pack.features.map(feature=>{const featureId=`${packId}:${feature.properties.__fid}`;return {
-      type:'Feature',id:featureId,properties:{...feature.properties,featureId,logicalId:String(feature.id),category:feature.properties.category,
-        layerId:feature.properties.layer_id,sourceId:feature.properties.source_id},geometry:feature.geometry};});
-    postMessage({type:'pack',revision,packId,features});postedPacks.add(packId);return;
-  }
-  const mesh = pack.mesh;
-  postMessage({
-    type: 'pack', revision, packId, descriptors: pack.descriptors,
-
-    mesh: {
-      riverStarts: mesh.riverStarts.buffer, riverEnds: mesh.riverEnds.buffer, riverFeatureIds: mesh.riverFeatureIds.buffer,
-      riverStartWidths: mesh.riverStartWidths.buffer, riverEndWidths: mesh.riverEndWidths.buffer,
-      borderRiverStarts: mesh.borderRiverStarts.buffer, borderRiverEnds: mesh.borderRiverEnds.buffer, borderRiverFeatureIds: mesh.borderRiverFeatureIds.buffer,
-      borderRiverStartWidths: mesh.borderRiverStartWidths.buffer, borderRiverEndWidths: mesh.borderRiverEndWidths.buffer,
-      lakePositions: mesh.lakePositions.buffer, lakeFeatureIds: mesh.lakeFeatureIds.buffer, lakeIndices: mesh.lakeIndices.buffer,
-      lakeBoundaryStarts: mesh.lakeBoundaryStarts.buffer, lakeBoundaryEnds: mesh.lakeBoundaryEnds.buffer,
-      lakeBoundaryFeatureIds: mesh.lakeBoundaryFeatureIds.buffer, lakeBoundaryWidths: mesh.lakeBoundaryWidths.buffer,
-    },
-  }, [
-    mesh.riverStarts.buffer, mesh.riverEnds.buffer, mesh.riverFeatureIds.buffer, mesh.riverStartWidths.buffer, mesh.riverEndWidths.buffer,
-    mesh.borderRiverStarts.buffer, mesh.borderRiverEnds.buffer, mesh.borderRiverFeatureIds.buffer,
-    mesh.borderRiverStartWidths.buffer, mesh.borderRiverEndWidths.buffer,
-    mesh.lakePositions.buffer, mesh.lakeFeatureIds.buffer, mesh.lakeIndices.buffer,
-    mesh.lakeBoundaryStarts.buffer, mesh.lakeBoundaryEnds.buffer, mesh.lakeBoundaryFeatureIds.buffer, mesh.lakeBoundaryWidths.buffer,
-  ]);
+function postPack(packId, decodedFeatures, revision) {
+  const features = decodedFeatures.map(feature => {
+    const featureId = packId + ':' + feature.properties.__fid;
+    return {
+      type: 'Feature',
+      id: featureId,
+      geometry: feature.geometry,
+      properties: {
+        ...feature.properties, featureId, logicalId: String(feature.id),
+        layerId: feature.properties.layer_id, sourceId: feature.properties.source_id,
+      },
+    };
+  });
+  postMessage({ type: 'pack', revision, packId, features });
   postedPacks.add(packId);
-}
-
-function postActive(revision, packIds) {
-  postMessage({ type: 'active', revision, packIds });
-}
-
-function abortBackgroundCache() {
-  if (backgroundCacheTimer) clearTimeout(backgroundCacheTimer);
-  backgroundCacheTimer = 0;
-  backgroundCacheController?.abort();
-  backgroundCacheController = null;
-  cacheStarted = false;
 }
 
 async function processView(message) {
   const controller = new AbortController();foregroundController=controller;
   latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-  mobileSession = message.mobile === true;
-  abortBackgroundCache();
   const packIds = [...new Set((message.tiles || []).flatMap(spec => tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`) || []))].sort((a, b) => a - b);
   const needed = packIds.filter(packId => !postedPacks.has(packId));
   const failedPacks=[];
   const isCurrent=()=>message.revision>=latestRevision&&!controller.signal.aborted;
   const recordFailure=(id,error)=>failedPacks.push({id,message:error.message,diagnostic:error.diagnostic});
-  let activated = needed.length === 0 || packIds.some(packId => postedPacks.has(packId));
-  if (activated) postActive(message.revision, packIds);
-  const supportsRange = await (rangeSupportPromise || Promise.resolve(false));
-  const concurrency = message.mobile ? 2 : 4;
-  foregroundActive = true;
+  const supportsRange = await rangeSupportPromise;
+  const concurrency = 4;
   try {
     if (supportsRange) {
       const groups = coalescePackRanges(needed);
@@ -554,18 +410,14 @@ async function processView(message) {
               rows=[];
               for(const spec of group.rows){
                 if(!isCurrent())return;
-                try{rows.push({id:spec.id,pack:await loadPack(spec.id,controller.signal)});}
+                try{rows.push({id:spec.id,features:await loadPack(spec.id,controller.signal)});}
                 catch(cause){rows.push({id:spec.id,error:cause});}
               }
             }else rows=group.rows.map(spec=>({id:spec.id,error}));
           }
           if(!isCurrent())return;
-          for(const {id,pack,error} of rows){
-            if(error)recordFailure(id,error);else postPack(id,pack,message.revision);
-          }
-          if (!activated && rows.length) {
-            activated = true;
-            postActive(message.revision, packIds);
+          for(const {id,features,error} of rows){
+            if(error)recordFailure(id,error);else postPack(id,features,message.revision);
           }
         }
       }));
@@ -583,36 +435,28 @@ async function processView(message) {
           const packIdsForShard = shardGroups[cursor++];
           for (const packId of packIdsForShard) {
             if (message.revision < latestRevision) return;
-            let pack;
-            try{pack=await loadPack(packId,controller.signal);}
+            let features;
+            try{features=await loadPack(packId,controller.signal);}
             catch(error){if(!isCurrent())return;recordFailure(packId,error);continue;}
             if(!isCurrent())return;
-            postPack(packId, pack, message.revision);
-            if (!activated) {
-              activated = true;
-              postActive(message.revision, packIds);
-            }
+            postPack(packId, features, message.revision);
           }
         }
       }));
     }
   } finally {
     if(foregroundController===controller)foregroundController=null;
-    foregroundActive = false;
   }
   if (message.revision < latestRevision) return;
-  if (!activated) postActive(message.revision, packIds);
   postMessage({ type: 'view-ready', revision: message.revision,
     packIds:packIds.filter(id=>postedPacks.has(id)),failedPacks });
-  firstViewReady = true;
-  if(delivery!=='geojson')scheduleBackgroundCache();
 }
 
 async function drain(message) {
   if (busy) {
     pendingView = message;
     latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-    if(delivery==='geojson')foregroundController?.abort();
+    foregroundController?.abort();
     return;
   }
   busy = true;
@@ -637,111 +481,6 @@ async function drain(message) {
     }
   } finally {
     busy = false;
-    foregroundActive = false;
-  }
-}
-
-function scheduleBackgroundCache(force = false) {
-  if (mobileSession && !force) return;
-  if (cacheCompleted && !force) return;
-  if (cacheStarted) return;
-  cacheStarted = true;
-  backgroundCacheTimer = setTimeout(() => {
-    backgroundCacheTimer = 0;
-    backgroundCacheController = new AbortController();
-    backgroundCacheShards(backgroundCacheController.signal)
-      .then(completed => { if (completed) cacheCompleted = true; })
-      .catch(error => {
-        if (error?.name !== 'AbortError') postMessage({ type: 'cache-unavailable', message: error?.message || String(error) });
-      })
-      .finally(() => {
-        backgroundCacheController = null;
-        cacheStarted = false;
-      });
-  }, force ? 0 : 2000);
-}
-
-async function waitForCacheIdle(signal) {
-  while (interactionActive || foregroundActive || busy) {
-    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-    await sleep(250, signal);
-  }
-}
-
-async function backgroundCacheShards(signal = null) {
-  const cache = await openHydroCache();
-  if (!cache) {
-    postMessage({ type: 'cache-unavailable', message: '이 브라우저에서는 수계 영구 저장소를 사용할 수 없습니다.' });
-    return false;
-  }
-  const shards = [...shardSpecs.values()];
-  const totalBytes = shards.reduce((sum, shard) => sum + Number(shard.bytes || 0), 0);
-  let loadedBytes = 0;
-  let loadedShards = 0;
-  for (const shard of shards) {
-    await waitForCacheIdle(signal);
-    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-    await shardStore.full(shard, signal);
-    loadedBytes += Number(shard.bytes || 0);
-    loadedShards += 1;
-    const now = performance.now();
-    if (now - cacheProgressAt >= 250 || loadedShards === shards.length) {
-      cacheProgressAt = now;
-      postMessage({ type: 'cache-progress', loadedBytes, totalBytes, loadedShards, totalShards: shards.length, percent: totalBytes ? Math.round(loadedBytes / totalBytes * 100) : 100 });
-    }
-    await sleep(0, signal);
-  }
-  postMessage({ type: 'cache-complete', loadedBytes, totalBytes, loadedShards, totalShards: shards.length, percent: 100 });
-  return true;
-}
-
-function mergeLogicalFragments(features) {
-  const ordered = features.slice().sort((a, b) => a.properties.fragment_index - b.properties.fragment_index);
-  const first = ordered[0];
-  if (!first || first.properties.category !== 'river') return first || null;
-  const parts = ordered.flatMap(feature => lineParts(feature.geometry));
-  const widths = ordered.flatMap(feature => feature.properties.stroke_widths || []);
-  const sourceIds = [...new Set(ordered.flatMap(feature => String(feature.properties.source_id || '').split(',').filter(Boolean)))];
-  return {
-    type: 'Feature', id: first.id,
-    properties: { ...first.properties, source_id: sourceIds.join(','), stroke_widths: widths, fragment_index: 0, fragment_count: ordered.length, pack_ids: [...new Set(ordered.map(feature => feature.properties.pack_id))] },
-    geometry: parts.length === 1 ? { type: 'LineString', coordinates: parts[0] } : { type: 'MultiLineString', coordinates: parts },
-  };
-}
-
-async function loadLogicalFeature(message) {
-  try {
-    await ensureDetailMetadata();
-    const logicalFid = Number(message.logicalFid);
-    const packs = logicalPacks.get(logicalFid) || [];
-    const decoded = await Promise.all(packs.map(async packId => readPack(await fetchPackBytes(packId), packId)));
-    const features = decoded.flatMap(pack => pack.features).filter(feature => Number(feature.properties.__logicalFid) === logicalFid);
-    postMessage({ type: 'feature', requestId: message.requestId, feature: mergeLogicalFragments(features) });
-  } catch (error) {
-    postMessage({ type: 'feature-error', requestId: message.requestId, message: error?.message || String(error) });
-  }
-}
-
-function boundsOverlap(left, right) {
-  return left[0] <= right[2] && left[2] >= right[0] && left[1] <= right[3] && left[3] >= right[1];
-}
-
-function queryLogicalFeatures(message) {
-  try {
-    const category = String(message.category || 'river');
-    const queryBounds = Array.isArray(message.bounds) && message.bounds.length === 4
-      ? message.bounds.map(Number)
-      : null;
-    if (!queryBounds?.every(Number.isFinite)) throw new Error('수계 후보 탐색 범위가 올바르지 않습니다.');
-    const logicalFids = new Set();
-    for (const metadata of featureMetadata.values()) {
-      if (metadata.category !== category || !Array.isArray(metadata.bounds) || metadata.bounds.length !== 4) continue;
-      const bounds = metadata.bounds.map(value => Number(value) / 1e6);
-      if (boundsOverlap(bounds, queryBounds)) logicalFids.add(Number(metadata.logicalFid));
-    }
-    postMessage({ type: 'logical-features', requestId: message.requestId, logicalFids: [...logicalFids].sort((left, right) => left - right) });
-  } catch (error) {
-    postMessage({ type: 'logical-features-error', requestId: message.requestId, message: error?.message || String(error) });
   }
 }
 
@@ -750,7 +489,6 @@ onmessage = async event => {
   if (message.type === 'init') {
     try {
       manifest = message.manifest;
-      delivery = message.delivery === 'geojson' ? 'geojson' : 'mesh';
       if (manifest.container) {
         const isSourceIndependentHydro = manifest.version === '0.13.4'
           && manifest.stats?.osmWaterwayMatchCount === 0
@@ -765,21 +503,12 @@ onmessage = async event => {
       }
       wholeHydroBundle = null;
       baseUrl = message.baseUrl;
-      assetRevision = message.assetRevision || manifest.version || '';
-      dataRevision = message.dataRevision || assetRevision;
-      if (message.externalRuntimeData) {
-        const moduleUrl = new URL('../modules/external-runtime-data.js', self.location.href);
-        moduleUrl.searchParams.set('v', new URL(self.location.href).searchParams.get('v') || '');
-        const { createExternalRuntimeDataFetch } = await import(moduleUrl.href);
-        fetchRuntimeData = createExternalRuntimeDataFetch({meta:{externalRuntimeData:message.externalRuntimeData}});
-      } else fetchRuntimeData = (...args) => fetch(...args);
+      dataRevision = message.dataRevision || manifest.version || '';
       tilePacks.clear();
-      logicalPacks.clear();
       packSpecs.clear();
       shardSpecs.clear();
       featureMetadata.clear();
       postedPacks.clear();
-      inFlightPacks.clear();
       shardStore = self.createHydroShardStore({
         fetchResponse: fetchWithRetry,
         openCache: openHydroCache,
@@ -788,10 +517,7 @@ onmessage = async event => {
         digest: hydroDigest,
         sharedBundle: async () => wholeHydroBundle,
         onWholeBundle: saveWholeHydroBundle,
-        verifiedExternal: !!message.externalRuntimeData,
       });
-      cacheCompleted = false;
-      firstViewReady = false;
       for (const shard of manifest.shards || [])
         shardSpecs.set(Number(shard.id), manifest.container
           ? { ...shard, fileBytes: manifest.container.bytes } : shard);
@@ -799,8 +525,7 @@ onmessage = async event => {
       readFeatureMetadata(await fetchGzip(manifest.container
         ? manifest.metadata.core : manifest.metadata?.core?.url || manifest.metadata?.url));
       // The container reads already proved whether the host served ranges.
-      rangeSupportPromise = message.externalRuntimeData ? Promise.resolve(true)
-        : manifest.container ? Promise.resolve(!wholeHydroBundle) : detectRangeSupport();
+      rangeSupportPromise = manifest.container ? Promise.resolve(!wholeHydroBundle) : detectRangeSupport();
       postMessage({ type: 'ready' });
     } catch (error) {
       postMessage({ type: 'init-error', message: error?.message || String(error) });
@@ -808,23 +533,12 @@ onmessage = async event => {
     return;
   }
   if (message.type === 'view') drain(message);
-  else if (message.type === 'cancel-view' && delivery === 'geojson') {
-    latestRevision=Math.max(latestRevision,Number(message.revision||0));pendingView=null;foregroundController?.abort();
+  else if (message.type === 'cancel-view') {
+    latestRevision = Math.max(latestRevision, Number(message.revision || 0));
+    pendingView = null;
+    foregroundController?.abort();
   }
   else if (message.type === 'release') {
     for (const packId of message.packIds || []) postedPacks.delete(packId);
-  }
-
-  else if (message.type === 'load-feature') loadLogicalFeature(message);
-  else if (message.type === 'query-logical-features') queryLogicalFeatures(message);
-  else if (message.type === 'interaction') {
-    interactionActive = message.active === true;
-    if (interactionActive) abortBackgroundCache();
-    else if (firstViewReady) scheduleBackgroundCache();
-  }
-  else if (message.type === 'retry-cache') {
-    cacheCompleted = false;
-    abortBackgroundCache();
-    scheduleBackgroundCache(true);
   }
 };

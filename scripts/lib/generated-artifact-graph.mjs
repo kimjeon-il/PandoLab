@@ -10,12 +10,13 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import {libraryConfig,libraryCheckout,decodeArchiveEntry,libraryReportRoot,libraryMaterializedRoot} from "../../tools/data/library-context.mjs";
 import {prepareLibraryData,withLibraryOutputs} from "../../tools/data/library-runtime.mjs";
 import {reportPath} from "../../tools/data/report-paths.mjs";
-import {contentAddress} from "../../src/data/world-bundle-manifest.js";
+import {canonicalSharedBoundaryPath,contentAddress,WORLD_BUNDLE_ROLES} from "../../src/data/world-bundle-manifest.js";
 import {mapProjectResourcePath} from '../../src/data/map-project-manifest.js';
 
 export const GRAPH_PATH='config/generated-artifacts.json';
 export const RECEIPT_PATH='assets/data/generated-artifacts/p2-manifest.json';
 const WASM_OUTPUTS=['assets/wasm/pandoeditor-core.js','assets/wasm/pandoeditor-core.wasm','assets/wasm/pandoeditor-core.manifest.json'];
+const WORLD_ROLES=Object.keys(WORLD_BUNDLE_ROLES);
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const canonical=value=>JSON.stringify(value);
 const normalize=p=>p.replaceAll('\\','/');
@@ -121,7 +122,17 @@ export function artifactGraph(root,{archive=null,readGeneratedJson=p=>archive&&p
       // require those unpublished generation sources.
       const seed=present('assets/data/world/build-input.json')?readGeneratedJson('assets/data/world/build-input.json'):null;
       const current=readGeneratedJson('assets/data/world/current.json');
-      if(seed){
+      if(!seed&&current?.schema!=='pandolab-world-bundle')throw Error('Missing pinned world output for source-free planning');
+      if(f.resolve==='shared-boundaries') {
+        const path=canonicalSharedBoundaryPath(seed?seed.sharedBoundaries:current?.compatibility?.sharedBoundaries);
+        if(path)f.outputs.push('assets/data/'+path);
+        else {
+          f.manual=true;
+          f.allowEmptyOutputs=true;
+        }
+      }else if(f.resolve==='world-bundle'){
+        f.outputs.push(...WORLD_ROLES.map(role=>current.assets[role]).filter(Boolean).map(asset=>'assets/data/'+asset.url));
+      }else if(seed){
         const manifest='assets/data/'+seed.legacyPreviewManifest;
         const legacy=readGeneratedJson(manifest);
         if(f.resolve==='world-mesh'){
@@ -131,13 +142,10 @@ export function artifactGraph(root,{archive=null,readGeneratedJson=p=>archive&&p
           f.outputs.push(manifest,...['canonicalCountryPacket'].map(k=>'assets/data/'+legacy.assets[k].url));
           f.inputs.push('assets/data/'+legacy.assets.labelAnchors.url);
           f.layout={manifest,assets:Object.fromEntries(Object.entries(legacy.assets).filter(([role])=>['canonicalCountryPacket','canonicalMesh','labelAnchors'].includes(role)).map(([k,v])=>[k,v.url]))};
-        }else if(f.resolve==='world-bundle'){
-          f.outputs.push(...['canonicalCountryPacket','canonicalMesh','labelAnchors','preparedCountryScene'].map(role=>current.assets[role]).filter(Boolean).map(asset=>'assets/data/'+asset.url));
-        }else f.outputs.push(...[seed.sharedBoundaries.canonical].map(p=>'assets/data/'+p));
+        }
       }else{
         // The archived source manifest cannot be reconstructed from a runtime
         // bundle; only derive known output ownership from its pinned manifest.
-        if(current?.schema!=='pandolab-world-bundle')throw Error('Missing pinned world output for source-free planning');
         if(f.resolve==='world-mesh'){
           f.outputs.push('assets/data/'+current.assets.canonicalMesh.url);
           f.layout={canonicalMesh:current.assets.canonicalMesh.url};
@@ -146,10 +154,6 @@ export function artifactGraph(root,{archive=null,readGeneratedJson=p=>archive&&p
           f.outputs.push(...roles.slice(0,1).map(k=>'assets/data/'+current.assets[k].url));
           f.inputs.push('assets/data/'+current.assets.labelAnchors.url);
           f.layout={assets:Object.fromEntries(roles.map(k=>[k,current.assets[k].url]))};
-        }else if(f.resolve==='world-bundle'){
-          f.outputs.push(...['canonicalCountryPacket','canonicalMesh','labelAnchors','preparedCountryScene'].map(role=>current.assets[role]).filter(Boolean).map(asset=>'assets/data/'+asset.url));
-        }else{
-          f.outputs.push(...[current.compatibility.sharedBoundaries.canonical].map(p=>'assets/data/'+p));
         }
       }
     }
@@ -213,7 +217,7 @@ export function graphStatus(root,{wasm=null,requested=[],force=false,archive=nul
       if(old.outputFingerprint!==outputFingerprint)reasons.push('output bytes/hash');
     }
     const missing=Object.entries({...inputs,...generatorHashes,...outputs}).filter(([,v])=>v===null).map(([p])=>p);
-    if(!Object.keys(outputs).length)missing.push('declared outputs');
+    if(!Object.keys(outputs).length&&!f.allowEmptyOutputs)missing.push('declared outputs');
     if(missing.length)reasons.push('missing: '+missing.join(', '));
     const dependencyChanged=f.dependencies.filter(id=>id==='wasm'?wasm?.needed:statuses[id].selected);
     if(dependencyChanged.length)reasons.push('upstream: '+dependencyChanged.join(', '));
@@ -238,10 +242,12 @@ export function recordArtifactReceipts(root,{families,sourceSha,sourceDirty=fals
   assert.match(sourceSha||'',/^[a-f0-9]{40}$/,'ARTIFACT_SOURCE_SHA_REQUIRED');
   assert.ok(Array.isArray(families)&&families.length,'ARTIFACT_FAMILIES_REQUIRED');
   const status=graphStatus(root,{requested:families});
+  const byId=new Map(status.graph.map(f=>[f.id,f]));
   const receipt=optionalJson(root,RECEIPT_PATH)||{schema:'pandolab-generated-artifact-receipt',schemaVersion:1,families:{}};
   for(const id of families) {
     const current=status.statuses[id],old=receipt.families[id];
-    assert.ok(Object.keys(current.outputs).length&&Object.values(current.outputs).every(value=>value!==null),'ARTIFACT_MISSING_RECEIPT_OUTPUT: '+id);
+    assert.ok((byId.get(id).allowEmptyOutputs||Object.keys(current.outputs).length)
+      &&Object.values(current.outputs).every(value=>value!==null),'ARTIFACT_MISSING_RECEIPT_OUTPUT: '+id);
     if(old?.inputFingerprint===current.inputFingerprint&&old?.outputFingerprint===current.outputFingerprint)continue;
     receipt.families[id]={...current,selected:undefined,blocked:undefined,reasons:undefined,needed:undefined,
       sourceSha,...(sourceDirty?{sourceDirty:true}:{})};

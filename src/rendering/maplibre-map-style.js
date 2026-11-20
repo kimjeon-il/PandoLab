@@ -21,7 +21,7 @@ export function resolveMapLibreMapStyle({
  const loading=palette.loadingSurface||{};
  const paint=freezeEntries({
   ocean:{'background-color':ocean},
-  'map-base-fallback':{'fill-color':land,'fill-antialias':smooth},
+  'physical-land-fill':{'fill-color':land,'fill-antialias':smooth},
   territories:territorialFillPaint,
   borders:{
    'line-color':['coalesce',['get','borderColor'],countryStroke.color||'#515151'],

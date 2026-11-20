@@ -138,7 +138,7 @@ const sourceCoordinateCount = countCoordinates(countries.features.map(feature =>
 if (!Number.isSafeInteger(sourceCoordinateCount) || sourceCoordinateCount <= 0) throw new Error('원본 좌표 수가 올바르지 않습니다.');
 
 const startedAt = performance.now();
-const mesh = meshCore.buildGpuMeshFeatures(countries.features, { validate: true });
+const mesh = meshCore.buildPolygonMeshFeatures(countries.features, { validate: true });
 const vertexCount = mesh.positions.length / 2;
 validateIndices(mesh.triangleIndices, vertexCount, 3, '삼각형');
 validateIndices(mesh.lineIndices, vertexCount, 2, '국경선');

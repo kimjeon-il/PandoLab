@@ -62,10 +62,9 @@ export function boundarySourceSegments(feature, fallbackId = 0, { compactPrepare
       else if (area < -2 * Math.PI) area += 4 * Math.PI;
       // Spherical winding has the opposite sign to the former planar area.
       const interiorSide = -Math.sign(area) * (ringIndex ? -1 : 1);
-      // The long-lived shared-boundary Worker only needs one copy of the
-      // country/ring/winding metadata. Keep immutable per-edge identities and
-      // original coordinate ARRAY references in ordinary JS objects.
-      // Internal boundary topology uses complete source records.
+      // Long-lived Worker caches only need one copy of the feature/ring/winding
+      // metadata. Keep immutable per-edge identities and original coordinate
+      // arrays in ordinary JS objects.
       // Keep inherited fields visible through property reads; consumers that
       // persist a contact ref must snapshot those fields into own properties.
       const shared = compactPrepared
@@ -348,7 +347,9 @@ export function hasOpposingBoundaryInteriors(segment, ownerIds = segment.ownerId
   return sharedCalculationCore.boundaryOpposingInteriors(...boundaryInteriorComparison(segment, ownerIds));
 }
 
-export function buildTerritorialInternalBoundarySegments(countries = [], units = [], { precision = 7, epsilon = 1e-7 } = {}) {
+export function buildTerritorialInternalBoundarySegments(countries = [], units = [], {
+  precision = 7, epsilon = 1e-7, sourceSegments = boundarySourceSegments,
+} = {}) {
   // No unit can own an internal boundary: do not even inspect country geometry.
   if (!(units || []).some(feature => ['Polygon', 'MultiPolygon'].includes(feature?.geometry?.type))) return [];
   const rootIds = new Set((countries || [])
@@ -379,7 +380,9 @@ export function buildTerritorialInternalBoundarySegments(countries = [], units =
         [feature, ...members].map(item => multiCoordinates(item.geometry)), false) } : feature.geometry;
       return topologyFeature({ ...feature, geometry }, 'country', index);
     });
-  const topology = buildBoundaryTopology([...countryFeatures, ...unitFeatures], { precision, epsilon });
+  const topology = buildBoundaryTopologyFromSegments(
+    [...countryFeatures, ...unitFeatures].flatMap((feature, index) => sourceSegments(feature, index)), { precision, epsilon },
+  );
   const countryEdges = [...topology.segments.values()].filter(segment => [...segment.ownerIds].some(ownerId => ownerId.startsWith('country:')));
   const boundaryTolerance = Math.max(1e-4, epsilon * 1000);
   const bucketSize = 1;

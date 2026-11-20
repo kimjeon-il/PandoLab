@@ -1,4 +1,3 @@
-import { MESH_ALGORITHM_REVISION, preparedCountrySceneKey } from '../rendering/country-mesh-codec.js';
 // Pure schema and URL contract for immutable built-in world geometry assets.
 export const WORLD_BUNDLE_SCHEMA = 'pandolab-world-bundle';
 const WORLD_BUNDLE_FORMAT = 1;
@@ -21,6 +20,15 @@ function validRelativePath(path) {
     && !path.includes('\\') && !path.includes('?') && !path.includes('#')
     && !path.includes('%') && !path.includes('\0')
     && path.split('/').every(part => part && part !== '.' && part !== '..');
+}
+
+export function canonicalSharedBoundaryPath(sharedBoundaries) {
+  const name = sharedBoundaries?.canonical;
+  if (name === undefined) return null;
+  if (!validRelativePath(name) || !/^countries-canonical-shared-v[0-9]+\.[0-9]+\.[0-9]+\.json\.gz$/.test(name)) {
+    throw new Error('세계지도 canonical 공유 국경선 경로가 올바르지 않습니다.');
+  }
+  return name;
 }
 
 // A display-only scoped correction retains its baseline derivation explicitly.
@@ -80,32 +88,7 @@ export function validateWorldBundle(bundle) {
     }
     assets[role] = Object.freeze({ ...asset });
   }
-  if (bundle.assets?.preparedCountryScene) {
-    const asset=bundle.assets.preparedCountryScene;
-    if(!HEX_256.test(asset.sha256)||asset.url!==`world/objects/country-scene-sha256-${asset.sha256}.bin.gz`
-      ||asset.encoding!=='gzip'||!Number.isSafeInteger(asset.compressedBytes)||asset.compressedBytes<=0
-      ||!Number.isSafeInteger(asset.decodedBytes)||asset.decodedBytes<=0
-      ||!Number.isSafeInteger(asset.algorithmVersion)||asset.algorithmVersion<1)
-      throw new Error('Invalid prepared country scene descriptor');
-    // This is an optional immutable accelerator, not the canonical world.
-    // A pinned previous mesh algorithm must be a cache miss. It must not
-    // prevent the current C++ geometry engine from building a fresh scene.
-    // Current-version descriptors remain strictly verified, and hash/length
-    // checks are never bypassed for any asset actually selected for loading.
-    if(asset.algorithmVersion===MESH_ALGORITHM_REVISION){
-      preparedCountrySceneKey(asset.identity);
-      assets.preparedCountryScene=Object.freeze({...asset});
-    }
-  }
-  const shared = {};
-  for (const quality of ['canonical']) {
-    const name = bundle.compatibility?.sharedBoundaries?.[quality];
-    if (name !== undefined && (!validRelativePath(name)
-      || !new RegExp(`^countries-${quality}-shared-v[0-9]+\\.[0-9]+\\.[0-9]+\\.json\\.gz$`).test(name))) {
-      throw new Error(`세계지도 ${quality} 공유 국경선 경로가 올바르지 않습니다.`);
-    }
-    shared[quality] = name || null;
-  }
+  canonicalSharedBoundaryPath(bundle.compatibility?.sharedBoundaries);
   return Object.freeze({
     schema: WORLD_BUNDLE_SCHEMA,
     schemaVersion: WORLD_BUNDLE_FORMAT,
@@ -113,7 +96,6 @@ export function validateWorldBundle(bundle) {
     countryCount: bundle.source.countryCount,
     defaultClassification: bundle.defaultClassification,
     assets: Object.freeze(assets),
-    sharedBoundaryCacheUrls: Object.freeze(shared),
   });
 }
 

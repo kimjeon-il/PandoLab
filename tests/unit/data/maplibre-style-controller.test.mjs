@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {resolveMapLibreMapStyle} from '../../../src/rendering/maplibre-map-style.js';
 import {createMapLibreStyleController} from '../../../src/rendering/maplibre-style-controller.js';
-const types={ocean:'background','map-base-fallback':'fill',territories:'fill',
+const types={ocean:'background','physical-land-fill':'fill',territories:'fill',
  'territories-fill-1':'fill',borders:'line','physical-water':'fill',lakes:'fill',rivers:'line'};
 function fixture(){
  const layers=new Map(Object.entries(types).map(([id,type])=>[id,{id,type,paint:{},layout:{}}])),calls=[];
@@ -32,7 +32,7 @@ const palette={ocean:'#ffffff',defaultLand:'#f1f1f1',borderAlpha:1,
 test('single white-map styles expose only canonical active paint and layout',()=>{
  const style=resolveMapLibreMapStyle({palette,layerVisibility:{rivers:false,lakes:true}});
  assert.deepEqual(Object.keys(style.layout).sort(),['lakes','rivers']);
- assert.equal(style.paint['map-base-fallback']['fill-color'],'#f1f1f1');
+ assert.equal(style.paint['physical-land-fill']['fill-color'],'#f1f1f1');
  assert.equal(style.paint.ocean['background-color'],'#ffffff');
  assert.equal(style.paint.lakes['fill-color'],style.paint.ocean['background-color']);
  assert.equal(style.paint.rivers['line-color'],style.paint.ocean['background-color']);
@@ -54,7 +54,7 @@ test('country paint updates are idempotent and never change sources or geometry'
  assert.equal(controller.apply(second),true);
  assert.equal(map.layers.get('rivers').layout.visibility,'visible');
  assert.equal(map.layers.get('lakes').layout.visibility,'none');
- assert.equal(map.layers.get('map-base-fallback').paint['fill-antialias'],false);
+ assert.equal(map.layers.get('physical-land-fill').paint['fill-antialias'],false);
  assert.ok(map.calls.every(row=>['paint','layout'].includes(row[0])));
  map.layers.get('ocean').paint={};
  assert.equal(controller.apply(first),true);

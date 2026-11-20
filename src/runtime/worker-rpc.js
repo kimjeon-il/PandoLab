@@ -29,6 +29,7 @@ function createWorkerRpcError({
   requestId = 0,
   projectRevision = 0,
   retryable = false,
+  outcomeUnknown = false,
   cause = null,
   missingGeometryRefs = null,
 } = {}) {
@@ -39,6 +40,7 @@ function createWorkerRpcError({
   error.requestId = Number(requestId || 0);
   error.projectRevision = finiteRevision(projectRevision);
   error.retryable = retryable === true;
+  if (outcomeUnknown) error.outcomeUnknown = true;
   if(Array.isArray(missingGeometryRefs))error.missingGeometryRefs=missingGeometryRefs;
   if (error.category === WORKER_RPC_ERROR_CATEGORIES.CANCELLED || error.category === WORKER_RPC_ERROR_CATEGORIES.STALE_RESULT) {
     error.name = 'AbortError';
@@ -90,6 +92,7 @@ export function createWorkerRpcClient({
   let worker = null;
   let sequence = 0;
   let closed = false;
+  let transportFailure = null;
   const pending = new Map();
   const metrics = {
     submitted: 0,
@@ -149,6 +152,10 @@ export function createWorkerRpcClient({
     const decoded = codec.decodeMessage(event?.data);
     if (!decoded) return;
     if (decoded.kind === 'event') {
+      if (decoded.operation === 'worker-rpc.transport-error') {
+        handleCrash('PL-WORKER-RPC-MESSAGEERROR', decoded.payload?.message);
+        return;
+      }
       const entry = pending.get(Number(decoded.payload?.requestId));
       const completed = decoded.payload?.completed;
       if (entry?.progress && decoded.operation === entry.progress.operation
@@ -193,36 +200,50 @@ export function createWorkerRpcClient({
     }
   }
 
-  function rejectAll(error) {
-    for (const entry of [...pending.values()]) rejectEntry(entry, error);
-  }
-
   function retireWorker() {
     const retiredWorker = worker;
     // Invalidate callbacks before disposal, including already captured callbacks.
     worker = null;
     if (!retiredWorker) return;
     retiredWorker.onmessage = null;
+    retiredWorker.onmessageerror = null;
     // Termination can dispatch a late importScripts ErrorEvent.
     retiredWorker.onerror = event => event.preventDefault?.();
     try { retiredWorker.terminate?.(); } catch (_) { /* best effort */ }
   }
 
-  function handleCrash(event) {
+  function handleCrash(code, message) {
     metrics.crashes += 1;
-    const error = createWorkerRpcError({
-      message: event?.message || 'Worker가 예기치 않게 종료되었습니다.',
+    const details = {
+      message,
       category: WORKER_RPC_ERROR_CATEGORIES.WORKER,
-      code: 'PL-WORKER-RPC-CRASH',
-      retryable: true,
-    });
-    rejectAll(error);
+      code,
+      outcomeUnknown: true,
+    };
+    transportFailure = createWorkerRpcError(details);
+    for (const entry of pending.values()) {
+      rejectEntry(entry, createWorkerRpcError({ ...details, operation: entry.operation,
+        requestId: entry.requestId, projectRevision: entry.projectRevision }));
+    }
     retireWorker();
-    onCrash(error);
+    onCrash(transportFailure);
+  }
+
+  function unavailable() {
+    if (closed) return {
+      message: 'Worker RPC client가 종료되었습니다.', category: WORKER_RPC_ERROR_CATEGORIES.CANCELLED,
+      code: 'PL-WORKER-RPC-CLOSED',
+    };
+    if (transportFailure && !restartOnCrash) return {
+      message: '종료된 Worker의 자동 복구가 비활성화되었습니다.',
+      code: 'PL-WORKER-RPC-RESTART-DISABLED', cause: transportFailure,
+    };
+    return null;
   }
 
   function ensureWorker() {
-    if (closed) throw createWorkerRpcError({ message: 'Worker RPC client가 종료되었습니다.', category: WORKER_RPC_ERROR_CATEGORIES.CANCELLED, code: 'PL-WORKER-RPC-CLOSED' });
+    const failure = unavailable();
+    if (failure) throw createWorkerRpcError(failure);
     if (worker) return worker;
     const currentWorker = createWorker();
     worker = currentWorker;
@@ -235,9 +256,14 @@ export function createWorkerRpcClient({
       // Pending operations report their rejection. An idle crash has no such
       // owner, so retain the browser's native diagnostic and global boundary.
       if (pending.size) event.preventDefault?.();
-      handleCrash(event);
+      handleCrash('PL-WORKER-RPC-CRASH', event?.message || 'Worker가 예기치 않게 종료되었습니다.');
     };
-    if (metrics.crashes && restartOnCrash) metrics.restarted += 1;
+    currentWorker.onmessageerror = () => {
+      if (closed || worker !== currentWorker) return;
+      handleCrash('PL-WORKER-RPC-MESSAGEERROR', 'Worker 응답을 읽지 못해 작업 결과를 확인할 수 없습니다.');
+    };
+    if (transportFailure) metrics.restarted += 1;
+    transportFailure = null;
     return worker;
   }
 
@@ -289,6 +315,9 @@ export function createWorkerRpcClient({
     if (!Number.isInteger(resolvedRequestId) || resolvedRequestId <= 0) throw new TypeError('Worker RPC requestId must be a positive integer.');
     sequence = Math.max(sequence, resolvedRequestId);
     if (pending.has(resolvedRequestId)) throw new Error(`Worker RPC requestId ${resolvedRequestId} is already pending.`);
+    const failure = unavailable();
+    if (failure) return Promise.reject(createWorkerRpcError({ ...failure, operation: resolvedOperation,
+      requestId: resolvedRequestId, projectRevision }));
     if (signal?.aborted) {
       return Promise.reject(createWorkerRpcError({
         message: 'Worker 작업을 취소했습니다.',

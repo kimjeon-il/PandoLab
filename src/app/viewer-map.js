@@ -8,7 +8,6 @@ import {createMapRenderingResources} from "../rendering/map-renderer-composition
 import {createMapLibreViewerRenderer} from "../rendering/maplibre-viewer-renderer.js";
 import {createPhysicalSourceConfiguration,HYDRO_LAYER_META,HYDRO_CATEGORY_STYLES,PHYSICAL_DATASET} from "../data/physical-source-configuration.js";
 import {createMapSurfaceHost} from "../ui/map-surface-host.js";
-import {setInteractionStyle as setSelectionInteractionStyle} from "../rendering/selection-style.js";
 import "../geometry/polygon-geometry.js";
 import "../geometry/polygon-clipping-core.js";
 import {MAP_OBJECT_CATEGORIES,MAP_OBJECT_TYPES} from "../document/map-object-categories.js";
@@ -24,7 +23,6 @@ import {createMapDisplayClient} from "../ui/map-display-client.js";
 import {OVERLAY_GROUPS} from "../ui/layer-presentation.js";
 import {initializeMapReadOwners} from "./map-owner-composition.js";
 import {builtinSubunitSourceId} from "../document/territorial-display-identity.js";
-import {buildRenderableStrokeFeature} from "../geometry/geographic-boundary.js";
 import { createMapLayoutMetricsSnapshot, DEFAULT_SAFE_INSETS } from "../map/map-layout-metrics.js";
 import { MAP_HOST_KINDS } from "../ui/map-host.js";
 import { createMapVisualFrame } from "../rendering/map-visual-frame.js";
@@ -99,7 +97,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
 
   connectMapOwner('renderQuality',renderQuality,mergeCapabilityPorts(commonPorts,{projectState:{mapWorkScheduler},mapFactories:{createAdaptiveRenderQualityController},
     rendering:{get mapRenderer(){return renderer;}},
-    preferences:{get resolvedInteractionStyle(){return getInteractionStyle();}},selectionServices:{setSelectionInteractionStyle},
+    preferences:{get resolvedInteractionStyle(){return getInteractionStyle();}},
     domains:{get renderingDomain(){return renderingDomain;}}}));
   renderQuality.initializeRenderQualityController();
 
@@ -192,7 +190,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     countries:{...countryPorts.countries,scheduleCountryLabelAnchors:countryIndex.scheduleCountryLabelAnchors},
     mapView:mapProjection,mapHostView:{projectionViewSnapshot:mapHost.projectionViewSnapshot},
     layerPresentation:{...readPorts.layerPresentation,isLayerItemVisible:objectCatalog.isLayerItemVisible,isCountryVisibleById:objectCatalog.isCountryVisibleById},
-    labelPresentation:{automaticLabelSettings,labelKey,LABEL_PRIORITIES,buildRenderableStrokeFeature,
+    labelPresentation:{automaticLabelSettings,labelKey,LABEL_PRIORITIES,
       get pendingCountryLabelAnchors(){return countryIndex.pendingCountryLabelAnchors;},get countryLabelAnchors(){return countryIndex.countryLabelAnchors;}},
     preferences:{get userPreferences(){return getPreferences();}},surfaces:{isMobile},renderScene:{get currentRenderQuality(){return renderQuality.currentRenderQuality;}},
     spatialQuery:{geometryBounds:spatialIndex.geometryBounds,visibleMapObjectCandidates:spatialIndex.visibleMapObjectCandidates,viewportCullingMetrics:spatialIndex.viewportCullingMetrics},
@@ -208,7 +206,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     .catch(error=>onError(error,'지도 표시를 준비하지 못했습니다.','PL-MAP-INITIALIZE-001'));
   const selectionDomain=documentSession.selectionDomain;
 
-  const mapDisplay=createMapDisplayClient({getEntities:territorialScope.displayEntities,getRevision:()=>spatialIndex.mapObjectGeometryRevisions.territorial});
+  const mapDisplay=createMapDisplayClient();
   renderingDomain=createMapLibreRenderingDomain({mapRenderer:renderer,projectDomain,selectionDomain:selectionDomain,
     mapHost:()=>mapHost.mapHost,
     prepareMapDisplay:mapDisplay.prepare,disposeMapDisplay:mapDisplay.dispose,
@@ -270,7 +268,6 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     landRelations:{pointInCountryFeature:(coord,feature)=>hitTester.containsGeometry(coord,feature.geometry)},
     hydroModel:{hydroFeatureById:hydroById},rendering:{mapRenderer:renderer,selectionPerformanceMetrics},hydroPresentation:{projectHydroById},surfaces:{isMobile},
 
-    pointerInteraction:{get hydroAtScreenPoint(){return pointerTargets.hydroAtScreenPoint;}},
     domains:{projectDomain,selectionDomain:selectionDomain,get selectionUiController(){return documentSession.selectionUiController;}},
 
     feedback:{reportOperationError:onError}}));

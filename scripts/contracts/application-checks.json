@@ -9,6 +9,7 @@
         "tests/core/runtime.test.mjs",
         "tests/core/storage.test.mjs",
         "tests/core/current-world-stream.test.mjs",
+        "tests/core/world-bundle.test.mjs",
         "tests/core/builtin-geometry-packs.test.mjs",
         "tests/unit/data/core-timeline-preparation.test.mjs",
         "tests/unit/data/maplibre-projection.test.mjs",
@@ -27,7 +28,7 @@
       "argv": [
         "node",
         "--test",
-        "tests/unit/data/map-country-submission.test.mjs",
+        "tests/unit/data/maplibre-territorial-boundaries.test.mjs",
         "tests/unit/data/maplibre-feature-lifecycle.test.mjs",
         "tests/unit/data/maplibre-viewer-admission.test.mjs",
         "tests/unit/data/maplibre-base-layer.test.mjs",

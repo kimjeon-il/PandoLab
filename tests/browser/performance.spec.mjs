@@ -143,7 +143,21 @@ for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance
   await page.evaluate(() => {
     const gaps = [];
     let last = 0;
-    const state = { gaps, active: true };
+    const map=window.__PANDOLAB_MAPLIBRE__,viewer=window.__PANDOLAB_VIEWER__;
+    const before=viewer.rendererStats(),nativeGaps=[];
+    let lastNative=null,moves=0;
+    const moveLayer=map.moveLayer;
+    map.moveLayer=function(...args){moves++;return moveLayer.apply(this,args);};
+    const native=()=>{
+      const now=performance.now();
+      if(!map.isMoving()||document.hidden){lastNative=null;return;}
+      if(lastNative!==null)nativeGaps.push(now-lastNative);
+      lastNative=now;
+    };
+    map.on('render',native);
+    const state = { gaps, nativeGaps, before, active: true, finish(){
+      map.off('render',native);map.moveLayer=moveLayer;return moves;
+    } };
     window.__PANDO_PERF_CAPTURE__ = state;
     const tick = now => {
       if (!state.active) return;
@@ -161,6 +175,9 @@ for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance
     const state = window.__PANDO_PERF_CAPTURE__;
     state.active = false;
     delete window.__PANDO_PERF_CAPTURE__;
+    const layerMoves=state.finish();
+    const native=state.nativeGaps.sort((a,b)=>a-b);
+    const nativePercentile=p=>native.length?native[Math.ceil(native.length*p)-1]:null;
     const sorted = state.gaps.filter(Number.isFinite).sort((a, b) => a - b);
     const percentile = p => sorted.length ? sorted[Math.ceil(sorted.length * p) - 1] : null;
     const stats = window.__PANDOLAB_VIEWER__.rendererStats();
@@ -171,6 +188,11 @@ for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance
       camera:map?{center:map.getCenter().toArray(),zoom:map.getZoom(),bearing:map.getBearing(),pitch:map.getPitch()}:null};
     return {
       sampleCount: sorted.length,
+      nativeSampleCount:native.length,nativeFrameGapP95Ms:nativePercentile(.95),nativeFrameGapP99Ms:nativePercentile(.99),
+      layerMoves,sourceUpdates:stats.sourceUpdates-state.before.sourceUpdates,
+      sourceWrites:Number.isFinite(stats.sourceWrites)?stats.sourceWrites-state.before.sourceWrites:null,
+      geometryWorkerRequests:Number.isFinite(stats.geometryWorkerRequests)?stats.geometryWorkerRequests-state.before.geometryWorkerRequests:null,
+      geometryWorkerTransferBytes:Number.isFinite(stats.geometryWorkerTransferBytes)?stats.geometryWorkerTransferBytes-state.before.geometryWorkerTransferBytes:null,
       frameGapP50Ms: percentile(0.50),
       frameGapP95Ms: percentile(0.95),
       frameGapP99Ms: percentile(0.99),

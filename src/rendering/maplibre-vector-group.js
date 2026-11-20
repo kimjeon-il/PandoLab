@@ -62,6 +62,6 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
   layers.clear();for(const key of desired.keys())layers.add(key);
   pending=false;onChange();
  }
- return {update,move(before){for(const layer of layers)if(map.getLayer(layer))map.moveLayer(layer,before);},get pending(){return pending;},restore:()=>update(rows),
+ return {update,move(before){for(const layer of layers)if(map.getLayer(layer))map.moveLayer(layer,before);},get pending(){return pending;},
   dispose(){disposed=true;version++;clear();if(!sharedSource&&map.getSource(id))map.removeSource(id);}};
 }

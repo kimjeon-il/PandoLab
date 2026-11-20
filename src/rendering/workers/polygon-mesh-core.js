@@ -307,7 +307,7 @@
     });
   }
 
-  function buildGpuMeshFeatures(features, options = {}) {
+  function buildPolygonMeshFeatures(features, options = {}) {
     const core = requireSharedCore();
     const validate = !!options.validate;
     const maxEdgeDegrees = Number.isFinite(Number(options.maxEdgeDegrees))
@@ -317,8 +317,6 @@
     const countryIndices = [];
     const triangleIndices = [];
     const lineIndices = [];
-    const strokeStartsEnds = [];
-    const strokeOwnerRanges = {};
     const countryTriangleRanges = [];
     const countryBoundaryRanges = [];
     const countryBounds = [];
@@ -339,7 +337,6 @@
       countryIds.push(countryId);
       const countryTriangleStart = triangleIndices.length;
       const countryBoundaryStart = lineIndices.length;
-      const countryStrokeStart = strokeStartsEnds.length / 4;
       for (const polygon of polygonsFor(feature.geometry)) {
         if (!polygon?.length) continue;
         options.throwIfCancelled?.();
@@ -373,11 +370,7 @@
         // and discarded degenerate triangles have been decided.
         for (const [a, b] of finalTriangleBoundaryEdges(geoPoints, localTriangles, boundaryChains,
           removedTriangles.concat(packedTriangles.removedTriangles))) {
-          const start = vertexOffset + a, end = vertexOffset + b;
-          const ax = positions[start * 2], ay = positions[start * 2 + 1];
-          const bx = positions[end * 2], by = positions[end * 2 + 1];
-          lineIndices.push(start, end);
-          strokeStartsEnds.push(ax * 1e-6, ay * 1e-6, bx * 1e-6, by * 1e-6);
+          lineIndices.push(vertexOffset + a, vertexOffset + b);
         }
 
         for (let index = 0; index < localTriangles.length; index += 3) {
@@ -394,10 +387,6 @@
         stats.polygonCount += 1;
         if (parameterSpace.kind !== 'unwrapped-lonlat') stats.polarPolygonCount += 1;
       }
-      strokeOwnerRanges[countryId] = Object.freeze({
-        first: countryStrokeStart,
-        count: strokeStartsEnds.length / 4 - countryStrokeStart,
-      });
       countryTriangleRanges.push(countryTriangleStart, triangleIndices.length - countryTriangleStart);
       countryBoundaryRanges.push(countryBoundaryStart, lineIndices.length - countryBoundaryStart);
       const geographicBounds = countryGeographicBounds(feature?.geometry);
@@ -417,8 +406,6 @@
       countryIndices: new Uint16Array(countryIndices),
       triangleIndices: new Uint32Array(triangleIndices),
       lineIndices: new Uint32Array(lineIndices),
-      strokeStartsEnds: new Float32Array(strokeStartsEnds),
-      strokeOwnerRanges: Object.freeze(strokeOwnerRanges),
       countryTriangleRanges: new Uint32Array(countryTriangleRanges),
       countryBoundaryRanges: new Uint32Array(countryBoundaryRanges),
       countryBounds: new Int32Array(countryBounds),
@@ -428,7 +415,7 @@
   }
 
   function buildPolygonGeometryPacket(geometry, options = {}) {
-    const mesh = buildGpuMeshFeatures([{ id: options.ownerId || 'overlay', geometry }],
+    const mesh = buildPolygonMeshFeatures([{ id: options.ownerId || 'overlay', geometry }],
       { validate: true, maxEdgeDegrees: MAX_RENDER_EDGE_DEGREES, throwIfCancelled: options.throwIfCancelled });
     if (!mesh.triangleIndices.length && mesh.rasterState !== 'grid-collapsed') throw Object.assign(new Error('GPU 삼각분할 실패: empty polygon'), { code: 'PL-MESH-TRIANGULATION' });
     const ringCoordinates = [], ringOffsets = [0], polygonOffsets = [0];
@@ -477,7 +464,7 @@
     COUNTRY_BOUNDS_FLAG_FULL_LONGITUDE,
     isArtificialPolarClosureEdge,
     countryGeographicBounds,
-    buildGpuMeshFeatures,
+    buildPolygonMeshFeatures,
     buildPolygonGeometryPacket,
   };
   scope.PandoLabPolygonMeshCore = api;

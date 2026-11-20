@@ -97,7 +97,6 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
       spatialIndex: [],
       mapMoving: false,
       historyDirtyEntityIds: readonlyIds(Object.freeze([])),
-      pendingCountryRenderIds: new Set(),
       stateRevision: 0,
       transitionRevision: 0,
       spacePanActive: false,

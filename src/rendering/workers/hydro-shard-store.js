@@ -1,11 +1,12 @@
-/* Shared by foreground packs and background cache writes in the hydro Worker. */
+/* Verified shard and range reads for the hydro Worker. */
 'use strict';
 function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, digest,
-  sharedBundle = null, onWholeBundle = null, verifiedExternal = false }) {
+  sharedBundle = null, onWholeBundle = null }) {
   const memory = new Map();
   const queues = new Map();
   const deadline = signal => signal
-    ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
+    ? globalThis.AbortSignal.any([signal, globalThis.AbortSignal.timeout(15000)])
+    : globalThis.AbortSignal.timeout(15000);
   const inContainer = spec => Number.isSafeInteger(spec.offset) &&
     Number.isSafeInteger(spec.fileBytes) && spec.offset >= 0 &&
     spec.bytes > 0 && spec.offset + spec.bytes <= spec.fileBytes;
@@ -64,9 +65,9 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     await validate(spec, bytes, { shardId: spec.id, source: 'cache' });
     return { bytes: remember(spec, bytes), source: 'cache' };
   }
-  async function downloadFull(spec, recovery = false, signal) {
+  async function downloadRecoveryShard(spec, signal) {
     signal.throwIfAborted();
-    const diagnostic = { shardId: spec.id, source: recovery ? 'recovery' : 'network-full', recovery };
+    const diagnostic = { shardId: spec.id, source: 'recovery', recovery: true };
     const shared = await cachedBundlePart(spec, diagnostic);
     if (shared) return save(spec, shared);
     const contained = inContainer(spec);
@@ -75,8 +76,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     const init = contained
       ? { cache: 'no-store', signal, headers: { Range: `bytes=${absoluteStart}-${absoluteEnd - 1}` } }
       : { cache: 'no-store', signal };
-    const response = await fetchResponse(resolveUrl(spec.url), init,
-      recovery ? { attempts: 1, signal } : { signal });
+    const response = await fetchResponse(resolveUrl(spec.url), init, { attempts: 1, signal });
     diagnostic.status = response.status;
     diagnostic.contentRange = response.headers.get('Content-Range');
     const raw = new Uint8Array(await response.arrayBuffer());
@@ -103,7 +103,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     memory.delete(spec.id);
     const cache = await openCache();
     try { await cache?.delete(cacheKey(spec)); } catch (_) { /* Memory recovery still works. */ }
-    try { return await downloadFull(spec, true, signal); }
+    try { return await downloadRecoveryShard(spec, signal); }
     catch (failure) {
       signal.throwIfAborted();
       failure.diagnostic = { ...error.diagnostic, ...failure.diagnostic, recovery: true, stage: failure.diagnostic?.stage || 'recovery-download' };
@@ -128,7 +128,6 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
           const hit = await cached(spec);
           signal.throwIfAborted();
           if (hit) return decode(spec, rows, hit.bytes, 0, hit.source);
-          if (verifiedExternal) return decode(spec, rows, await downloadFull(spec, false, signal), 0, 'network-verified-shard');
           const contained = inContainer(spec);
           const bundlePart = await cachedBundlePart(spec, { shardId: spec.id, source: 'shared-container' });
           signal.throwIfAborted();
@@ -170,22 +169,6 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
             try { await cache?.delete(cacheKey(spec)); } catch (_) {}
             throw failure;
           }
-        }
-      });
-    },
-    full(spec, viewSignal) {
-      return serial(spec, async () => {
-        const signal = deadline(viewSignal);
-        signal.throwIfAborted();
-        try {
-          const hit = await cached(spec);
-          signal.throwIfAborted();
-          return hit?.bytes || await downloadFull(spec, false, signal);
-        }
-        catch (error) {
-          signal.throwIfAborted();
-          if (!error.corrupt) throw error;
-          return recover(spec, error, signal);
         }
       });
     },

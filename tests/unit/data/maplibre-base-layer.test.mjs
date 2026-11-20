@@ -10,15 +10,15 @@ function mockMap(){
   addLayer(layer,before){assert.equal(before,'territories');assert.equal(layers.has(layer.id),false);layers.set(layer.id,layer);calls.push(['layer',layer.id]);},
  };
 }
-const style={paint:{'map-base-fallback':{'fill-color':'#f1f1f1','fill-antialias':true}}};
+const style={paint:{'physical-land-fill':{'fill-color':'#f1f1f1','fill-antialias':true}}};
 test('one immutable canonical vector base with stable physical-land ownership',()=>{
  const map=mockMap(),geometry={type:'MultiPolygon',coordinates:[[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]]};
  assert.equal(syncMapLibreBaseLayer(map,{style,landGeometry:geometry}),true);
- assert.deepEqual(map.calls,[['source','physical-land'],['layer','map-base-fallback']]);
+ assert.deepEqual(map.calls,[['source','physical-land'],['layer','physical-land-fill']]);
  assert.equal(map.getSource('physical-land').type,'geojson');
  assert.deepEqual(map.getSource('physical-land').data.features[0].geometry,geometry);
- assert.equal(map.getLayer('map-base-fallback').type,'fill');
- assert.equal(map.getLayer('map-base-fallback').source,'physical-land');
+ assert.equal(map.getLayer('physical-land-fill').type,'fill');
+ assert.equal(map.getLayer('physical-land-fill').source,'physical-land');
  const source=map.getSource('physical-land'),count=map.calls.length;
  assert.equal(syncMapLibreBaseLayer(map,{style,landGeometry:{type:'Polygon',coordinates:[]}}),false);
  assert.equal(map.calls.length,count);
@@ -29,7 +29,7 @@ test('existing canonical land remains stable and source ownership is required',(
  map.sources.set('physical-land',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
  assert.equal(syncMapLibreBaseLayer(map,{style}),true);
  assert.equal(syncMapLibreBaseLayer(map,{style}),false);
- map.layers.get('map-base-fallback').source='incorrect';
+ map.layers.get('physical-land-fill').source='incorrect';
  assert.throws(()=>syncMapLibreBaseLayer(map,{style}),/Incorrect canonical land owner/);
 });
 test('initial publication waits for the admitted canonical frame, not optional tiles',()=>{

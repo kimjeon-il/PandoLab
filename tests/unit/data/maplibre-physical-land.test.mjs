@@ -58,3 +58,29 @@ test('external archive routing permits only the explicitly published display ass
  assert.equal(calls.length,1);assert.ok(calls[0].startsWith('https://fixture.test/'));
  await assert.rejects(fetchData('https://fixture.test/assets/data/display-land/unpublished.json.gz'),/Missing pinned/);
 });
+
+
+test('polar geometry retries a failed manifest and transfers only detached fill arrays',async()=>{
+ const {createPreparedPolygonMeshStore}=await import('../../../src/rendering/prepared-polygon-mesh.js');
+ const geometry={type:'Polygon',coordinates:square(0,-88)};
+ const packet={
+  algorithmVersion:6,maxEdgeDegrees:.4,positions:new Float32Array([0,-88,1,-88,0,-87]),
+  indices:new Uint32Array([0,1,2]),featureIds:new Uint32Array([0,0,0]),boundaryIndices:new Uint32Array([0,1,1,2,2,0]),
+  ringCoordinates:new Float64Array(),ringOffsets:new Uint32Array(),polygonOffsets:new Uint32Array(),
+ };
+ let manifests=0,builds=0;
+ const store=createPreparedPolygonMeshStore({engine:{MESH_ALGORITHM_REVISION:6,buildPolygonGeometryPacket(){builds++;return packet;}},
+  loadManifest:async()=>{if(++manifests===1)throw Error('temporary catalog failure');return null;}});
+ const job={cacheKey:'first',geometry},context={throwIfCancelled(){}};
+ await assert.rejects(store.prepare(job,context),/temporary catalog failure/);
+ const first=(await store.prepare(job,context)).packet;
+ assert.deepEqual(Object.keys(first).sort(),['indices','maxEdgeDegrees','positions']);
+ assert.equal(first.indices.byteLength,first.indices.buffer.byteLength);
+ assert.equal(first.positions.byteLength,first.positions.buffer.byteLength);
+ structuredClone(first,{transfer:[first.positions.buffer,first.indices.buffer]});
+ const again=(await store.prepare({...job,cacheKey:'same-geometry'},context)).packet;
+ assert.deepEqual(again.positions,packet.positions);
+ assert.deepEqual(again.indices,packet.indices);
+ assert.equal(manifests,2);
+ assert.equal(builds,1);
+});
