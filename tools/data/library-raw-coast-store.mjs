@@ -2,7 +2,7 @@ import {closeSync,existsSync,fstatSync,lstatSync,openSync,realpathSync,unlinkSyn
 import {isAbsolute,resolve} from 'node:path';
 import {defaultRoot,git,librarySharedCheckout} from './library-context.mjs';
 import {libraryWriteLeases,scopesOverlap} from './library-runtime.mjs';
-import {assertRawBranchTarget,readRawGitBlob,stageRawBranchCommit} from './library-raw-branch-git.mjs';
+import {assertRawBranchTarget,rawLibraryBranchRef,readRawGitBlob,stageRawBranchCommit} from './library-raw-branch-git.mjs';
 import {planRawCoastStore} from './library-raw-coast-plan.mjs';
 
 const pinPath='config/library-data.json',indexPath='archive/index.json';
@@ -112,7 +112,7 @@ export function storeRawCoastData(options){
       // A CAS may have completed before its post-write readback failed. Never
       // roll back or rerun writes without inspecting the two live revisions.
       const live=repo=>{
-        try{return git(repo,['--no-replace-objects','show-ref','--verify','--hash','refs/heads/work/gis-raw-modern']);}
+        try{return git(repo,['--no-replace-objects','show-ref','--verify','--hash',rawLibraryBranchRef]);}
         catch{return null;}
       };
       const liveData=live(state.library),liveApp=live(state.root);

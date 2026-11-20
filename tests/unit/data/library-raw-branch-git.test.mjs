@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import test from 'node:test';
 import {stageRawBranchCommit,readRawGitBlob,assertRawBranchTarget} from '../../../tools/data/library-raw-branch-git.mjs';
 
-const raw='refs/heads/work/gis-raw-modern';
+const raw='refs/pando/private/gis-raw-modern';
 const main='refs/heads/main';
 const git=(cwd, args, input)=>execFileSync('git', ['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args], {cwd,input,stdio:['pipe','pipe','pipe']});
 const oid=(cwd,args,input)=>git(cwd,args,input).toString().trim();

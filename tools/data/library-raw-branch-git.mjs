@@ -3,7 +3,7 @@ import {mkdtempSync, realpathSync, rmdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {isAbsolute, join} from 'node:path';
 
-export const rawLibraryBranchRef='refs/heads/work/gis-raw-modern';
+export const rawLibraryBranchRef='refs/pando/private/gis-raw-modern';
 const oidPattern=/^[a-f0-9]{40}$/;
 const modePattern=/^100644 blob /;
 const error=(code,message,cause)=>Object.assign(new Error(message,{cause}),{code:'PANDO_RAW_BRANCH_'+code});

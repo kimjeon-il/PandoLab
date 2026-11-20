@@ -93,7 +93,7 @@ function pairedCoastFixture(t){
   });
   const git=(repo,...args)=>execFileSync('git',['-C',repo,...args],{stdio:['ignore','pipe','pipe']});
   const tell=(repo,...args)=>git(repo,...args).toString().trim();
-  const head=repo=>tell(repo,'rev-parse','HEAD'), raw=repo=>tell(repo,'rev-parse','refs/heads/work/gis-raw-modern');
+  const head=repo=>tell(repo,'rev-parse','HEAD'), raw=repo=>tell(repo,'rev-parse','refs/pando/private/gis-raw-modern');
   function init(repo){
     mkdirSync(repo);
     git(repo,'init','--initial-branch=main');
@@ -105,7 +105,7 @@ function pairedCoastFixture(t){
   function commit(repo){git(repo,'add','--all');git(repo,'commit','-m','initial fixture');}
   function branch(repo){
     const revision=tell(repo,'commit-tree',tell(repo,'rev-parse','HEAD^{tree}'),'-p',head(repo),'-m','raw fixture root');
-    git(repo,'update-ref','refs/heads/work/gis-raw-modern',revision,'0'.repeat(40));
+    git(repo,'update-ref','refs/pando/private/gis-raw-modern',revision,'0'.repeat(40));
     return revision;
   }
   const {args,pinned}=coastStoreFixture();
