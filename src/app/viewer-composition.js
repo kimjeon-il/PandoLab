@@ -78,6 +78,18 @@ export async function composeViewer({ productMode, meta }) {
   const selectController=createSelectController({document,window});selectController.enhanceAll();
   const notifications=createNotificationPresentation({document,getElement:get,isMobile:()=>surfaces.isMobile(),protectErrorNotices:true});
   const report=(error,message='작업을 완료하지 못했습니다.',code='PL-MAP-OPERATION')=>notifications.reportOperationError(error,message,code);
+  const readSavedCamera=async()=>{
+    try {
+      const camera=await viewStorage.readCamera(runtimeContext.meta.mapProject.projectId);
+      if(camera?.projection==='globe'&&Array.isArray(camera.center)&&camera.center.length===2&&camera.center.every(Number.isFinite)&&Number.isFinite(camera.zoom)){
+        return {globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],
+          zoom:camera.zoom,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll};
+      }
+    } catch(error) {
+      report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');
+    }
+    return null;
+  };
   const documentSession=createDocumentSession({productMode,readOnly:true,initialProject:createInitialDocument({appVersion:meta.appVersion})});
   const disposables=[tooltipController,selectController,preferencePresentation,surfaces,notifications,documentSession.commandOwner,initialPresentation];
   async function composeMap() {
@@ -88,20 +100,19 @@ export async function composeViewer({ productMode, meta }) {
     onProjectReset:async event=>{postPresentation.invalidate();searchController.cancelSearch();previousView=map.capturePresentation();await selectionDomain.resetProject(event.generation);selectionUiController.resetProject();map.renderingDomain.resetProjectGeneration(event.generation,{presentation:event.presentation,isCurrent:event.isCurrent,onPresented:event.onPresented});},
     replaceSnapshot:async(_project,{reason})=>{await map.setSession(activeSession,{source:reason==='builtin'?'builtin':'project',prepareView:async()=>{
       const project=activeSession.documentModel.snapshot(),bounds=project.projectSetup.initialMapBounds;let restoredCamera=false;
+      const startupWorld=reason==='builtin'&&!initialPresentation.hasPresented();
       if(openingPreserved)map.projectSession.restoreViewingPresentation({documentId:project.documentId,viewingPresentation:openingPreserved});
       else {
         let workspace=null;
         try{workspace=await viewStorage.readView(viewDocumentId);}catch(error){report(error,'보기 설정을 복원하지 못했습니다.','PL-WORKSPACE-READ-001');}
         map.projectSession.restoreViewingPresentation(workspace?{...workspace,documentId:project.documentId}:null);
-        let camera=null;try{camera=await viewStorage.readCamera(runtimeContext.meta.mapProject.projectId);}catch(error){report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');}
-        if(camera?.projection==='globe'&&Array.isArray(camera.center)&&camera.center.length===2&&camera.center.every(Number.isFinite)&&Number.isFinite(camera.zoom)){
-          map.viewState.view={globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],zoom:camera.zoom};
-          map.renderer.syncCameraFromState({...map.viewState.view,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll});
-          restoredCamera=true;
+        if(!startupWorld){
+          const camera=await readSavedCamera();
+          if(camera){map.renderer.syncCameraFromState(camera);restoredCamera=true;}
         }
       }
       await map.loadPhysicalLandMask();
-      if(!openingPreserved&&!restoredCamera){
+      if(!startupWorld&&!openingPreserved&&!restoredCamera){
         if(bounds)map.renderer.fitMapBounds([[bounds.west,bounds.south],[bounds.east,bounds.north]],map.mapProjection.currentMapSafeInsets());
         else map.navigation.resetView();
       }
@@ -119,7 +130,7 @@ export async function composeViewer({ productMode, meta }) {
       inspectorController?.syncMapSelection(snapshot);
     },
     onHoverChanged:snapshot=>tooltipController.setMapHover(snapshot.hover?map.objectQuery.objectDisplayInfo(snapshot.hover):null),
-    requestRender:()=>map.refreshSelection()});
+    requestRender:reason=>map.refreshSelection(reason)});
   disposables.push(selectionDomain);
   const selectionStatus=get('viewerSelectionStatus');
   selectionUiController=createSelectionUiController({window,document,selectionDomain,elements:{selectionStatus},
@@ -157,7 +168,8 @@ export async function composeViewer({ productMode, meta }) {
     onError:error=>report(error,'소속 객체를 선택하지 못했습니다.','PL-OBJECT-DETAIL-SELECTION'),
   });
   disposables.push(objectDetailsPanel);
-  map=createViewerMap({owners,runtimeContext,element:get('map'),canvas:get('viewerCanvas'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,isSafeKoreanErrorMessage:notifications.isSafeKoreanErrorMessage,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
+  map=createViewerMap({owners,runtimeContext,element:get('map'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,isSafeKoreanErrorMessage:notifications.isSafeKoreanErrorMessage,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
+    initialCamera:readSavedCamera(),
     onMapPreparationStatus:(presentation,generation)=>{initialPresentation.observe(presentation,generation);mapSkeleton.reconsider();},isInitialPresentation:()=>!initialPresentation.hasPresented()});
   map.renderer.setInitialMapLoading(true);
   map.ready.then(()=>{
@@ -244,20 +256,21 @@ export async function composeViewer({ productMode, meta }) {
   });
   disposables.push(postPresentation);
   // Both imported files and the builtin map use the same C++ time cursor.
-  const applyDocumentMonth=async(month,{isCurrent=()=>true,waitForFrame=false,admitPresentation=null}={})=>{
+  const applyDocumentMonth=async(month,{isCurrent=()=>true,waitForFrame=false,admitPresentation=null,geometryPreparation}={})=>{
     projectDomain.requireTimelineMonth(month);
     const before=map.features(),generation=projectDomain.getGeneration();
-    await activeSession.commandOwner.setTimelineCursor(month,{isCurrent});
+    const previousMonth=activeSession.commandOwner.state().timelineCursor;
+    await map.renderer.measureWork('core.timeline-cursor',()=>activeSession.commandOwner.setTimelineCursor(month,{isCurrent,geometryPreparation}));
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    if(territorialMembershipDelta(before,map.features()).changed)
+    if(before!==map.features()&&territorialMembershipDelta(before,map.features()).changed)
       await map.objectCatalog.pruneLayerItemVisibility();
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     // Country sources can tile while place data loads. Keep temporal admission
     // closed until both owners finish preparing the accepted Core month.
     await Promise.all([
-      map.update(),
+      map.update({previousMonth}),
       waitForFrame&&map.viewState.layerVisibility.labels!==false
-        ?owners.territorialLabels.preparePlaces({force:true}):null,
+        ?owners.territorialLabels.preparePlaces():null,
     ]);
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     if(admitPresentation?.()===false)return false;
@@ -371,19 +384,20 @@ export async function composeViewer({ productMode, meta }) {
       // Physical resources are scoped to this document; one C++ cursor owns
       // the date for both builtin and GeoPackage projects.
       let preparing=true;
+      let geometryPreparation;
       const preparationCurrent=()=>preparing&&current();
       try{
-        await Promise.all([
+        [,geometryPreparation]=await Promise.all([
           owners.physicalResources.preparePhysicalContext(month,{
             isCurrent:preparationCurrent,activeProject:projectDomain.activeProject()}),
-          activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent}),
+          map.renderer.measureWork('core.timeline-geometry',()=>activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent})),
         ]);
       }finally{preparing=false;}
       if(!current())return false;
       // Keep the current map interactive while immutable physical data loads.
       // The existing frame guard is still needed once the cursor can change.
       map.renderer.preserveTemporalFrame();
-      if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,
+      if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,geometryPreparation,
         admitPresentation:()=>map.renderer.admitTemporalViewTransition(temporalTicket)}))return false;
       if(!current()||!commit())return false;
       status.dataset.ready='true';presentViewerLoadStatus(status,'지도 준비 완료.');
@@ -449,7 +463,7 @@ export async function composeViewer({ productMode, meta }) {
   display.connect({
     layerResources:{loadHydroData:owners.physicalResources.loadHydroData,preparePlaces:owners.territorialLabels.preparePlaces},
     platform:{$:id=>get(id==='app'?'viewer':id),deepClone:structuredClone,clamp:(value,min,max)=>Math.max(min,Math.min(max,value))},
-    navigation:map.navigation,domains:{renderingDomain:map.renderingDomain,objectSearchController:searchController},rendering:{gpuMapRenderer:map.renderer},objectDisplay:map.objectCatalog,distributionPresentation:map.distributionPresentation,feedback:{reportOperationError:report},
+    navigation:map.navigation,domains:{renderingDomain:map.renderingDomain,objectSearchController:searchController},rendering:{mapRenderer:map.renderer},objectDisplay:map.objectCatalog,distributionPresentation:map.distributionPresentation,feedback:{reportOperationError:report},
     projectState:{get state(){return map.displayState();}},
     mapDisplayModel:{expandedMapDisplayGroups:map.objectPresentation.expandedMapDisplayGroups},territorialModel:{entityRepository:map.entityRepository},
     layerStyleServices:{layerStyle},applicationConstants:{DISTRIBUTION_RENDER_MODES},

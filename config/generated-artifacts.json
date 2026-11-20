@@ -108,7 +108,7 @@
       ],
       "inputs": [
         "assets/data/world/build-input.json",
-        "src/rendering/workers/gpu-mesh-core.js",
+        "src/rendering/workers/polygon-mesh-core.js",
         "projects/default-world/generation-inputs.json",
         "projects/default-world/manifest.json"
       ],
@@ -197,9 +197,7 @@
           "--check"
         ]
       ],
-      "consumers": [
-        "src/data/workers/data-loader-worker.js"
-      ],
+      "consumers": [],
       "tools": [
         "node"
       ]
@@ -242,7 +240,7 @@
         "wasm"
       ],
       "inputs": [
-        "src/rendering/workers/gpu-mesh-core.js",
+        "src/rendering/workers/polygon-mesh-core.js",
         "projects/default-world/generation-inputs.json",
         "projects/default-world/manifest.json",
         "src/rendering/workers/polygon-raster-contract.js",
@@ -318,9 +316,7 @@
       "outputs": [],
       "generate": [],
       "validate": [],
-      "consumers": [
-        "src/data/workers/data-loader-worker.js"
-      ],
+      "consumers": [],
       "tools": [
         "node",
         "cmake"

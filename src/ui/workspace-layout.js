@@ -1,3 +1,9 @@
+export const WORKSPACE_COARSE_POINTER = '(pointer: coarse)';
+
+export function readWorkspaceViewport(document, coarse = document.defaultView.matchMedia(WORKSPACE_COARSE_POINTER).matches) {
+  return { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight, coarse };
+}
+
 export function isMobileWorkspaceLayout(layout) {
   return layout === 'mobile' || layout === 'phone-landscape';
 }

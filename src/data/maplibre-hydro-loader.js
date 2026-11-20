@@ -1,31 +1,90 @@
-export async function createHydroBrowserLoader({manifest,baseUrl,createWorker,tilesForView,dataRevision,packLimit=32}){
+const packIdsFromKey=key=>new Set((key||'').split(',').filter(Boolean).map(Number));
+
+export async function createHydroBrowserLoader({
+ manifest,baseUrl,createWorker,tilesForView,dataRevision,packLimit=32,viewTimeoutMs=30000,signal,
+}){
  if(!Number.isInteger(packLimit)||packLimit<1)throw new TypeError('A positive hydro pack limit is required');
- const worker=createWorker(),packs=new Map(),pending=new Map();let revision=0,disposed=false;
- let readyResolve,readyReject;const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
+ signal?.throwIfAborted();
+ const worker=createWorker(),packs=new Map(),pending=new Map();
+ let revision=0,disposed=false,protectedPacks=new Set();
+ let readyResolve,readyReject;
+ const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
  const timeout=setTimeout(()=>readyReject(Error('Hydro worker startup timed out')),30000);
- worker.onmessage=event=>{const message=event.data||{};
-  if(message.type==='ready'){clearTimeout(timeout);readyResolve();return;}
-  if(message.type==='init-error'){clearTimeout(timeout);readyReject(Error(message.message));return;}
-  if(message.type==='pack'){const id=Number(message.packId);packs.delete(id);packs.set(id,message.features);return;}
-  const request=pending.get(message.revision);if(!request)return;
-  if(message.type==='view-error'){pending.delete(message.revision);request.reject(Object.assign(Error(message.message),{diagnostic:message.diagnostic}));return;}
-  if(message.type==='view-ready'){
-   pending.delete(message.revision);try{const ids=message.packIds.map(Number).sort((a,b)=>a-b),key=ids.join(','),old=new Set((request.knownKey||'').split(',').filter(Boolean).map(Number)),current=new Set(ids);
-    const addPacks=ids.filter(id=>!old.has(id)).map(id=>{if(!packs.has(id))throw Error('Hydro worker did not deliver pack '+id);return {id,features:packs.get(id)};});
-    for(const id of ids){if(!packs.has(id))throw Error('Hydro worker cache lost active pack '+id);const value=packs.get(id);packs.delete(id);packs.set(id,value);}
-    const released=[];for(const id of packs.keys()){if(packs.size<=packLimit)break;if(!current.has(id)){packs.delete(id);released.push(id);}}
-    if(released.length)worker.postMessage({type:'release',packIds:released});
-    request.resolve({key,addPacks,removePacks:[...old].filter(id=>!current.has(id))});
-   }catch(error){request.reject(error);}
+ const cancelInit=()=>readyReject(signal.reason);
+ signal?.addEventListener('abort',cancelInit,{once:true});
+ function settleRequests(error){
+  for(const request of pending.values()){clearTimeout(request.timeout);request.reject(error);}
+  pending.clear();
+ }
+ function stop(error){
+  if(disposed)return;
+  disposed=true;clearTimeout(timeout);worker.terminate();packs.clear();
+  readyReject(error);settleRequests(error);
+ }
+ function trim(){
+  const released=[];
+  for(const id of packs.keys()){
+   if(packs.size<=packLimit)break;
+   if(!protectedPacks.has(id)){packs.delete(id);released.push(id);}
   }
+  if(released.length)worker.postMessage({type:'release',packIds:released});
+ }
+ worker.onmessage=event=>{
+  if(disposed)return;
+  const message=event.data||{};
+  if(message.type==='ready'){readyResolve();return;}
+  if(message.type==='init-error'){readyReject(Error(message.message));return;}
+  if(message.type==='pack'){
+   const id=Number(message.packId);packs.delete(id);packs.set(id,message.features);
+   if(!pending.size)trim();
+   return;
+  }
+  const request=pending.get(message.revision);
+  if(!request||!['view-ready','view-error'].includes(message.type))return;
+  pending.delete(message.revision);clearTimeout(request.timeout);
+  try{
+   if(message.type==='view-error')throw Object.assign(Error(message.message),{diagnostic:message.diagnostic});
+   const ids=message.packIds.map(Number),failedPacks=message.failedPacks||[];
+   const current=new Set([...ids,...failedPacks.map(({id})=>Number(id)).filter(id=>request.old.has(id))]);
+   const addPacks=[];
+   for(const id of ids){
+    if(!packs.has(id))throw Error('Hydro worker did not deliver pack '+id);
+    const features=packs.get(id);packs.delete(id);packs.set(id,features);
+    if(!request.old.has(id))addPacks.push({id,features});
+   }
+   protectedPacks=current;
+   request.resolve({key:[...current].sort((a,b)=>a-b).join(','),addPacks,
+    removePacks:[...request.old].filter(id=>!current.has(id)),failedPacks});
+  }catch(error){request.reject(error);}
+  finally{trim();}
  };
- worker.onerror=event=>{const error=event.error||Error(event.message||'Hydro worker failed');disposed=true;worker.terminate();clearTimeout(timeout);readyReject(error);for(const request of pending.values())request.reject(error);pending.clear();};
- worker.postMessage({type:'init',manifest,baseUrl,dataRevision,delivery:'geojson'});try{await ready;}catch(error){disposed=true;clearTimeout(timeout);worker.terminate();throw error;}
+ worker.onerror=event=>stop(event.error||Error(event.message||'Hydro worker failed'));
+ worker.onmessageerror=()=>stop(Error('Hydro worker reply could not be decoded'));
+ try{
+  worker.postMessage({type:'init',manifest,baseUrl,dataRevision,delivery:'geojson'});
+  await ready;
+  signal?.throwIfAborted();
+ }catch(error){stop(error);throw error;}
+ finally{clearTimeout(timeout);signal?.removeEventListener('abort',cancelInit);}
  return {
-  view(view){if(disposed)return Promise.reject(Error('Hydro worker is disposed'));const id=++revision,tiles=tilesForView(view);
-   return new Promise((resolve,reject)=>{pending.set(id,{resolve,reject,knownKey:view.knownKey});worker.postMessage({type:'view',revision:id,tiles});});},
-  cancel(){if(disposed)return;const id=++revision;for(const request of pending.values())request.reject(new DOMException('Hydro view superseded','AbortError'));pending.clear();worker.postMessage({type:'cancel-view',revision:id});},
+  view(view){
+   if(disposed)return Promise.reject(Error('Hydro worker is disposed'));
+   const id=++revision,tiles=tilesForView(view),old=packIdsFromKey(view.knownKey);
+   protectedPacks=old;
+   return new Promise((resolve,reject)=>{
+    const timeout=setTimeout(()=>stop(new DOMException('Hydro viewport timed out','TimeoutError')),viewTimeoutMs);
+    pending.set(id,{resolve,reject,old,timeout});
+    try{worker.postMessage({type:'view',revision:id,tiles});}catch(error){stop(error);}
+   });
+  },
+  cancel(){
+   if(disposed)return;
+   settleRequests(new DOMException('Hydro view superseded','AbortError'));
+   worker.postMessage({type:'cancel-view',revision:++revision});
+   trim();
+  },
+  get disposed(){return disposed;},
   stats:()=>({cached:packs.size}),
-  dispose(){disposed=true;clearTimeout(timeout);for(const request of pending.values())request.reject(new DOMException('Hydro worker disposed','AbortError'));pending.clear();worker.terminate();packs.clear();},
+  dispose(){stop(new DOMException('Hydro worker disposed','AbortError'));},
  };
 }

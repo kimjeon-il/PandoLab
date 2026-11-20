@@ -23,7 +23,7 @@ std::string nextRecordId(const TimelineRecords& rows,const std::string& base) {
     for(unsigned suffix=1;ids.count(result);++suffix)result=base+":"+std::to_string(suffix);
     return result;
 }
-template<class Rows,class Change> TimelineEditResult replace(const TimelineRecords& original,Rows TimelineRecords::* field,
+template<class Rows,class Change> TimelineRecords replace(const TimelineRecords& original,Rows TimelineRecords::* field,
         const ObjectRef& id,const std::string& cursor,Change change) {
     const auto month=parseTemporal(cursor);
     if(month.precision!="month")throw TimelineError("INVALID_TIMELINE_CURSOR","month precision required");
@@ -33,15 +33,15 @@ template<class Rows,class Change> TimelineEditResult replace(const TimelineRecor
     const auto it=std::find_if(rows.begin(),rows.end(),[&](const auto& row){return row.objectRef==id&&active(row.validity,point);});
     if(it==rows.end())throw TimelineError("TIMELINE_INACTIVE","entity has no record at month end");
     auto changed=*it;
-    if(!change(changed))return {original,false};
+    if(!change(changed))return original;
     const bool split=!it->validity.from || parseTemporal(*it->validity.from).startKey<month.startKey;
-    if(!split){*it=std::move(changed);return {std::move(result),true};}
+    if(!split){*it=std::move(changed);return result;}
     const auto index=std::distance(rows.begin(),it);
     changed.id=nextRecordId(original,it->id+":"+month.canonical);
     changed.validity.from=month.canonical;
     rows[index].validity.to=shiftTemporalMonth(month.canonical,-1);
     rows.insert(rows.begin()+index+1,std::move(changed));
-    return {std::move(result),true};
+    return result;
 }
 }
 TimelineRecords replaceGeometryBindingAtMonth(const TimelineRecords& rows,const ObjectRef& id,
@@ -49,7 +49,7 @@ TimelineRecords replaceGeometryBindingAtMonth(const TimelineRecords& rows,const 
     return replace(rows,&TimelineRecords::geometryBindings,id,month,[&](auto& row){
         const auto metadata=rendering.value_or(row.rendering);
         if(row.geometryRef==next&&row.rendering==metadata)return false;row.geometryRef=next;row.rendering=metadata;return true;
-    }).records;
+    });
 }
 TimelineRecords replaceParentRelationAtMonth(const TimelineRecords& rows,const ObjectRef& id,
                                               const std::string& month,const std::string& parentId,
@@ -57,27 +57,7 @@ TimelineRecords replaceParentRelationAtMonth(const TimelineRecords& rows,const O
     return replace(rows,&TimelineRecords::parentRelations,id,month,[&](auto& row){
         if(row.parentId==parentId&&row.coverageMode==coverageMode)return false;
         row.parentId=parentId;row.coverageMode=coverageMode;return true;
-    }).records;
-}
-TimelineEditResult editTimelineRecordAtMonth(const TimelineRecords& original,const std::string& collection,
-    const ObjectRef& id,const std::string& month,const TimelineEditPatch& patch) {
-    if(collection=="geometryBindings") {
-        if(patch.parentId||patch.coverageMode)throw TimelineError("TIMELINE_EDIT_PATCH","Unexpected parent patch field.");
-        return replace(original,&TimelineRecords::geometryBindings,id,month,[&](auto& row) {
-            const auto ref=patch.geometryRef.value_or(row.geometryRef);const auto metadata=patch.rendering.value_or(row.rendering);
-            if(row.geometryRef==ref&&row.rendering==metadata)return false;row.geometryRef=ref;row.rendering=metadata;return true;
-        });
-    }
-    if(collection=="parentRelations") {
-        if(patch.geometryRef||patch.rendering)throw TimelineError("TIMELINE_EDIT_PATCH","Unexpected geometry patch field.");
-        return replace(original,&TimelineRecords::parentRelations,id,month,[&](auto& row) {
-            const auto nextParent=patch.parentId.value_or(row.parentId);
-            const auto nextCoverage=patch.coverageMode.value_or(row.coverageMode);
-            if(row.parentId==nextParent&&row.coverageMode==nextCoverage)return false;
-            row.parentId=nextParent;row.coverageMode=nextCoverage;return true;
-        });
-    }
-    throw TimelineError("TIMELINE_EDIT_COLLECTION","Unsupported timeline record collection.");
+    });
 }
 TimelineRecords truncateTimelineEntityAtMonth(const TimelineRecords& original,const ObjectRef& id,
                                               const std::string& cursor,bool preserveFutureChanges) {

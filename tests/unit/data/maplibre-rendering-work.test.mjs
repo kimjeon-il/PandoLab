@@ -39,16 +39,16 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   territorialFlags:new Map(),territorialLabelNames:new Map(),territorialLabelRows:new Map(),
   territorialLabelPriorities:new Map(),userLabelRows:new Map(),userLabelPriorities:new Map()};
  const domain=createMapLibreRenderingDomain({
-  gpuMapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
-  countryResources:{getState:()=>state,mapPalette:()=>({defaultLand:'#ffffff'}),replaceGpuSceneDomain(){},
-   syncGpuRenderScene(){sceneSubmissions++;}},
+  mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
+  countryResources:{getState:()=>state,mapPalette:()=>({defaultLand:'#ffffff'}),replaceSceneDomain(){},
+   syncMapScene(){sceneSubmissions++;}},
   territorialResources:{getState:()=>state,displayEntities:()=>[],visibleMapObjectCandidates:()=>[],
-   entityRepository:{},replaceGpuSceneDomain(){}},
-  genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceGpuSceneDomain(){overlayRuns++;}},
-  distributionResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceGpuSceneDomain(){}},
-  territorialBoundaryResources:{getState:()=>state,replaceGpuSceneDomain(){}},
+   entityRepository:{},replaceSceneDomain(){}},
+  genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){overlayRuns++;}},
+  distributionResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){}},
+  territorialBoundaryResources:{getState:()=>state,replaceSceneDomain(){}},
   baseResources:{getState:()=>({resourceCapabilities:{graticule:false}}),
-   replaceGpuSceneDomain(){contentRuns++;}},
+   replaceSceneDomain(){contentRuns++;}},
   renderers:{labelLayout(){labelRuns++;return layout;}},
   prepareView(options){frames.push(options);prepared++;return {frameId:options.frameId,size:{width:800,height:500}};},
   reportDiagnostic(error){throw error;},
@@ -70,9 +70,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   for(let i=0;i<25;i++){time+=16;domain.invalidateView('maplibre-camera');await flush();}
   assert.equal(labelRuns,1,'Native camera movement cannot rebuild unchanged labels');
   assert.equal(contentRuns,1,'Native camera movement cannot rebuild the geographic scene');
-  for(const event of ['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready']){
+  for(const event of ['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint']){
    domain.invalidateView(event);await flush();
   }
+  domain.invalidateSelection('selection-hover');await flush();
   assert.equal(labelRuns,1,'Native source completion must not recompile the unchanged symbol source');
   assert.equal(contentRuns,1,'Native source completion must not rebuild unrelated geometry');
   assert.ok(frames.slice(1).every(frame=>frame.withBounds===false),'Camera frames must not query geographic bounds');

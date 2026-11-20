@@ -28,15 +28,15 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     ports.objectDisplay.invalidateObjectPresentation();
     ports.domains.objectSearchController?.render();
     if (key === 'distributions') ports.distributionPresentation.bumpVisibilityRevision();
-    if (key === 'objects') ports.rendering.gpuMapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-layer-visibility');
-    if (key === 'rivers' || key === 'lakes') ports.rendering.gpuMapRenderer.invalidateHydroVisibility();
+    if (key === 'objects') ports.rendering.mapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-layer-visibility');
+    if (key === 'rivers' || key === 'lakes') ports.rendering.mapRenderer.invalidateHydroVisibility();
     if (key === 'labels' || key === 'objectNames' || key === 'objectFlags')
       ports.domains.renderingDomain.invalidateLabels('label-visibility');
     else {
       ports.domains.renderingDomain.invalidateBaseScene('layer-visibility');
       if (key === 'objects') ports.domains.renderingDomain.invalidateLabels('layer-visibility');
     }
-    if (visible && (key === 'rivers' || key === 'lakes')) await ports.layerResources.loadHydroData(true);
+    if (key === 'rivers' || key === 'lakes') await ports.layerResources.loadHydroData(true);
     if (visible && key === 'labels') await ports.layerResources.preparePlaces({force:true});
     return true;
   }
@@ -46,10 +46,14 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (Object.entries(patch).every(([key,value]) => current[key] === value)) return false;
     const result = await viewPresentation.applyPresentation({ action: 'groupStyle', group, patch });
     if (!result) throw new Error('Layer style command rejected: ' + group);
+    if(group==='objects'&&Object.keys(patch).length===1&&Object.hasOwn(patch,'colorVisible')){
+      ports.rendering.mapRenderer.invalidateCountryColors();
+      return true;
+    }
     if (group === 'objects')
-      ports.rendering.gpuMapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-presentation');
+      ports.rendering.mapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-presentation');
     if (group === 'rivers' || group === 'lakes')
-      ports.rendering.gpuMapRenderer.invalidatePhysicalStyle('hydro-presentation');
+      ports.rendering.mapRenderer.invalidatePhysicalStyle('hydro-presentation');
     ports.domains.renderingDomain.invalidateOverlayStyle('layer-presentation-style');
     return true;
   }

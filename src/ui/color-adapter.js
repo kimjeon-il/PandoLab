@@ -34,21 +34,7 @@ export function readDomainColor(domain, target = {}, { fallback = DEFAULT_GENERI
   };
 }
 
-export function writeDomainColor(domain, target = {}, value, { clear = false, fallback = DEFAULT_GENERIC_FEATURE_COLOR } = {}) {
-  const color = clear ? '' : normalizeColorValue(value, fallback);
-  if (domain === COLOR_DOMAINS.TERRITORIAL && target.feature?.properties) {
-    target.feature.properties.style = { ...(target.feature.properties.style || {}) };
-    if (color) target.feature.properties.style.color = color;
-    else delete target.feature.properties.style.color;
-  } else if (domain === COLOR_DOMAINS.GENERIC && target.feature?.properties) {
-    if (color) target.feature.properties.color = color;
-    else delete target.feature.properties.color;
-  } else if (domain === COLOR_DOMAINS.DISTRIBUTION && target.layer) {
-    if (color) target.layer.color = color;
-    else delete target.layer.color;
-  }
-  return color;
-}
+
 /** Stable source identity, never an edited display name or a saved color override. */
 export function countryDefaultColor(feature) {
   if (feature?.properties?.entityKind !== 'general' || feature.properties.parentId) return '';

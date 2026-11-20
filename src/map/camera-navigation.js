@@ -11,7 +11,7 @@ export function createCameraNavigation() {
   }
 
   function panMapViewBy(dx, dy) {
-    return dependencies.rendering.gpuMapRenderer.panBy(dx,dy);
+    return dependencies.rendering.mapRenderer.panBy(dx,dy);
   }
 
   function dragMapBy(dx, dy) {
@@ -23,7 +23,7 @@ export function createCameraNavigation() {
 
   function fitMapToFeature(feature) {
     if (!feature?.geometry && feature?.type !== 'FeatureCollection') return;
-    dependencies.rendering.gpuMapRenderer.fitGeometry(feature,dependencies.mapView.projectionLayoutMetrics().safe);
+    dependencies.rendering.mapRenderer.fitGeometry(feature,dependencies.mapView.projectionLayoutMetrics().safe);
     dependencies.domains.renderingDomain.invalidateView('focus-object');
   }
 
@@ -42,7 +42,7 @@ export function createCameraNavigation() {
         else {
           const cacheState = dependencies.projectState.state.physicalLoadState.hydroCache;
           if (cacheState === 'error') {
-            dependencies.rendering.gpuMapRenderer.retryHydroCache?.();
+            dependencies.rendering.mapRenderer.retryHydroCache?.();
             (0, dependencies.feedback.setActionStatus)('전 세계 강·호수 자료의 오프라인 저장을 다시 시도합니다.', 'working', 0);
           } else {
             const suffix = cacheState === 'ready' ? '오프라인에서도 바로 사용할 수 있습니다.' : `전 세계 강·호수 자료를 백그라운드에서 준비하고 있습니다. ${Math.round(dependencies.projectState.state.physicalLoadState.hydroCachePercent || 0)}%`;
@@ -57,7 +57,7 @@ export function createCameraNavigation() {
   }
 
   function resetView() {
-    return dependencies.rendering.gpuMapRenderer.fitWorld(dependencies.mapView.projectionLayoutMetrics().safe);
+    return dependencies.rendering.mapRenderer.fitWorld(dependencies.mapView.projectionLayoutMetrics().safe);
   }
 
   return Object.freeze({

@@ -11,8 +11,9 @@ export function resolveMapLibreMapStyle({
 }={}){
  const smooth=antiAlias!==false,land=palette.defaultLand||'#f1f1f1',ocean=palette.ocean||'#ffffff';
  const water=ocean,river=ocean;
- const sourceOpacity=['coalesce',['get','alpha'],0];
- const fillColor=['coalesce',['get','color'],land];
+ const neutral=['boolean',['feature-state','neutral'],false];
+ const sourceOpacity=['case',neutral,1,['coalesce',['get','displayAlpha'],0]];
+ const fillColor=['case',neutral,land,['coalesce',['feature-state','countryColor'],['get','color'],land]];
  const territorialFillPaint=Object.freeze({
   'fill-antialias':false,'fill-color':fillColor,'fill-opacity':sourceOpacity,
  });
@@ -21,10 +22,7 @@ export function resolveMapLibreMapStyle({
  const paint=freezeEntries({
   ocean:{'background-color':ocean},
   'map-base-fallback':{'fill-color':land,'fill-antialias':smooth},
-  territories:{
-   'fill-antialias':false,'fill-color':fillColor,
-   'fill-opacity':['case',['==',['get','paintBatch'],0],sourceOpacity,0],
-  },
+  territories:territorialFillPaint,
   borders:{
    'line-color':['coalesce',['get','borderColor'],countryStroke.color||'#515151'],
    'line-opacity':['coalesce',['get','borderAlpha'],0],'line-width':['coalesce',['get','borderWidth'],0.6],

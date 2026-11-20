@@ -1,4 +1,5 @@
 import { sharedCalculationCore } from '../document/temporal.js';
+import { geometryCoordinateFingerprint, geometryRevisionKey } from './geometry-versions.js';
 // Persistent geometry IDs/versions are not renderer revisions or snapshot-pool keys.
 const fail = (code, detail) => { throw Object.assign(new Error(`${code}: ${detail}`), { code }); };
 const invalid = detail => fail('INVALID_GEOMETRY', detail);
@@ -63,7 +64,54 @@ const immutableGeometries = new WeakSet();
 const immutableCanonicalGeometries = new WeakSet();
 const geometryReferences = new WeakMap();
 export const geometryReferenceFor = value => geometryReferences.get(value) || null;
-function geometry(value, validateRing, admitted) {
+const contentByGeometry = new WeakMap();
+const contentBuckets = new Map();
+const verifiedContent = new Map();
+let nextContentId = 0;
+const removeCollectedContent = new FinalizationRegistry(({key,entry})=>{
+  const bucket=contentBuckets.get(key);
+  bucket?.delete(entry);
+  if(bucket?.size===0)contentBuckets.delete(key);
+});
+const removeCollectedAsset = new FinalizationRegistry(({hash,entry})=>{
+  if(verifiedContent.get(hash)===entry)verifiedContent.delete(hash);
+});
+const sameCoordinates=(left,right)=>Object.is(left,right)
+  ||Array.isArray(left)&&Array.isArray(right)&&left.length===right.length
+    &&left.every((value,index)=>sameCoordinates(value,right[index]));
+
+// A fingerprint selects a bucket only. Exact canonical coordinates admit
+// sharing, even across unrelated documents and different local references.
+function registerGeometryContent(value,hash){
+  const hasVerifiedHash=typeof hash==='string'&&/^[a-f0-9]{64}$/.test(hash);
+  const content=hasVerifiedHash&&verifiedContent.get(hash)?.deref();
+  if(content){
+    contentByGeometry.set(value,content);return;
+  }
+  const key=value.type+':'+geometryCoordinateFingerprint(value);
+  let bucket=contentBuckets.get(key);
+  if(!bucket){bucket=new Set();contentBuckets.set(key,bucket);}
+  let accepted;
+  for(const ref of bucket){
+    const sibling=ref.deref();
+    if(sibling&&sameCoordinates(sibling.geometry.coordinates,value.coordinates)){accepted=sibling;break;}
+  }
+  if(!accepted){
+    accepted={id:++nextContentId,geometry:value};
+    const entry=new WeakRef(accepted);
+    bucket.add(entry);removeCollectedContent.register(accepted,{key,entry});
+  }
+  contentByGeometry.set(value,accepted);
+  if(hasVerifiedHash){
+    const entry=new WeakRef(accepted);
+    verifiedContent.set(hash,entry);removeCollectedAsset.register(accepted,{hash,entry});
+  }
+}
+export function admittedGeometryKey(value){
+  const content=contentByGeometry.get(value);
+  return content?'canonical:'+content.id:geometryRevisionKey(value);
+}
+function geometry(value, validateRing, admitted,verifiedHash) {
   if (admitted.has(value)) return value;
   fields(value, ['type', 'coordinates']);
   const copy = structuredClone(value), c = copy.coordinates;
@@ -79,6 +127,7 @@ function geometry(value, validateRing, admitted) {
   // Structural validation matches GeometryStore::insert in the native core.
   // Topology/partition checks remain the editing owner's responsibility.
   freeze(copy);
+  registerGeometryContent(copy,verifiedHash);
   admitted.add(copy);
   return copy;
 }
@@ -92,15 +141,15 @@ function compareIds(a, b) {
 }
 
 /** Append-only geometry registry. Restoration constructs an isolated candidate. */
-function createStore(entries, { reuse = null }, validateRing, admitted) {
+function createStore(entries, { reuse = null, verifiedContentHashes = null }, validateRing, admitted) {
   if (!Array.isArray(entries)) invalid('Geometry versions must be an array.');
   const versions = new Map();
   function insert(ref, value) {
     const key = reference(ref);
     if (versions.has(key)) fail('DUPLICATE_ID', 'Geometry version already exists.');
-    const validated = geometry(value, validateRing, admitted);
+    const validated = geometry(value, validateRing, admitted,verifiedContentHashes?.get(key));
     const previous = reuse?.get(ref);
-    const geojson = previous && admitted.has(previous) && (previous === validated || JSON.stringify(previous) === JSON.stringify(validated)) ? previous : validated;
+    const geojson = previous && admitted.has(previous) && contentByGeometry.get(previous)===contentByGeometry.get(validated) ? previous : validated;
     if (!geometryReferences.has(geojson)) geometryReferences.set(geojson, Object.freeze({ id: ref.id, version: ref.version }));
     // No registry changes are made until validation and copying have succeeded.
     versions.set(key, Object.freeze({ id: ref.id, version: ref.version, geojson }));

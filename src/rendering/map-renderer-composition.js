@@ -3,7 +3,7 @@ import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {automaticLabelSettings,labelKey} from './label-layout.js';
 import {buildRenderableStrokeFeature} from '../geometry/geographic-boundary.js';
 import {DISTRIBUTION_MODES,DISTRIBUTION_RENDER_MODES} from '../document/distribution-model.js';
-import {geometryRevisionKey} from '../geometry/geometry-versions.js';
+import {admittedGeometryKey} from '../geometry/geometry-version-store.js';
 
 /** Source preparation ports for the single MapLibre scene; no SVG layer refresh. */
 export function createMapRenderingResources({ports,session}) {
@@ -44,22 +44,21 @@ export function createMapRenderingResources({ports,session}) {
       selectionGeometryRevision:ports.renderScene.selectionGeometryRevision,
       mapPalette:ports.preferences.mapPalette,
       resolvedInteractionStyle:()=>ports.preferences.resolvedInteractionStyle,
-      replaceGpuSceneDomain:ports.gpuSceneServices.replaceGpuSceneDomain,
-      syncGpuRenderScene:ports.gpuSceneServices.syncGpuRenderScene,
+      replaceSceneDomain:ports.mapSceneServices.replaceSceneDomain,
+      syncMapScene:ports.mapSceneServices.syncMapScene,
     },
     territorialResources:{
       ...common,
       displayEntities:()=>ports.territorialObjectModel.territorialScope.displayEntities(),
       entityRepository:ports.territorialModel.entityRepository,
-      isNativeBuiltinSubunit:ports.builtinCountries.isNativeBuiltinSubunit,
       syncBuiltinPalette:ports.builtinCountries.syncBuiltinPalette,
       isLayerItemVisible:ports.layerPresentation.isLayerItemVisible,
       territorialStyleColor:ports.territorialObjectModel.territorialStyleColor,
       territorialEntityColor:ports.colorModel.territorialEntityColor,
       selectionGeometryRevision:ports.renderScene.selectionGeometryRevision,
-      gpuSceneOrder:ports.gpuSceneServices.gpuSceneOrder,
+      sceneOrder:ports.mapSceneServices.sceneOrder,
       resolvedInteractionStyle:()=>ports.preferences.resolvedInteractionStyle,
-      replaceGpuSceneDomain:ports.gpuSceneServices.replaceGpuSceneDomain,
+      replaceSceneDomain:ports.mapSceneServices.replaceSceneDomain,
     },
     genericResources:{
       ...common,
@@ -67,9 +66,9 @@ export function createMapRenderingResources({ports,session}) {
       isLayerItemVisible:ports.layerPresentation.isLayerItemVisible,
       selectionSnapshot:()=>session.selectionDomain.snapshot().selection,
       selectionGeometryRevision:ports.renderScene.selectionGeometryRevision,
-      gpuSceneOrder:ports.gpuSceneServices.gpuSceneOrder,
+      sceneOrder:ports.mapSceneServices.sceneOrder,
       resolvedInteractionStyle:()=>ports.preferences.resolvedInteractionStyle,
-      replaceGpuSceneDomain:ports.gpuSceneServices.replaceGpuSceneDomain,
+      replaceSceneDomain:ports.mapSceneServices.replaceSceneDomain,
     },
     distributionResources:{
       ...common,
@@ -81,8 +80,8 @@ export function createMapRenderingResources({ports,session}) {
       DISTRIBUTION_MODES,DISTRIBUTION_RENDER_MODES,
       isLayerItemVisible:ports.layerPresentation.isLayerItemVisible,
       selectionGeometryRevision:ports.renderScene.selectionGeometryRevision,
-      gpuSceneOrder:ports.gpuSceneServices.gpuSceneOrder,
-      replaceGpuSceneDomain:ports.gpuSceneServices.replaceGpuSceneDomain,
+      sceneOrder:ports.mapSceneServices.sceneOrder,
+      replaceSceneDomain:ports.mapSceneServices.replaceSceneDomain,
       getCountryGeometryRevision:()=>ports.countries.countryLandRevision,
       getDistributionVisibilityRevision:()=>ports.mapDisplayModel.distributionVisibilityRevision,
     },
@@ -90,17 +89,17 @@ export function createMapRenderingResources({ports,session}) {
       getState:()=>ports.projectState.state,
       getCountryLandRevision:()=>ports.countries.countryLandRevision,
       getTerritorialGeometryRevision:()=>ports.spatialQuery.mapObjectGeometryRevisions.territorial,
-      geometryToken:geometry=>geometryRevisionKey(geometry),
+      geometryToken:admittedGeometryKey,
       territorialEntityColor:ports.colorModel.territorialEntityColor,
       layerStyle,
       mapPalette:ports.preferences.mapPalette,
-      replaceGpuSceneDomain:ports.gpuSceneServices.replaceGpuSceneDomain,
-      gpuSceneOrder:ports.gpuSceneServices.gpuSceneOrder,
+      replaceSceneDomain:ports.mapSceneServices.replaceSceneDomain,
+      sceneOrder:ports.mapSceneServices.sceneOrder,
     },
     baseResources:{
       getState:()=>ports.projectState.state,
       graticule:ports.projectionView.graticule,
-      replaceGpuSceneDomain:ports.gpuSceneServices.replaceGpuSceneDomain,
+      replaceSceneDomain:ports.mapSceneServices.replaceSceneDomain,
       isLightTheme:()=>true,
     },
   };

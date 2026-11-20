@@ -39,7 +39,7 @@ function loadClassicScript(relativePath, globalName) {
   return value;
 }
 
-const meshCore = loadClassicScript(path.join('assets', 'js', 'workers', 'gpu-mesh-core.js'), 'PandoLabGpuMeshCore');
+const meshCore = loadClassicScript(path.join('assets', 'js', 'workers', 'polygon-mesh-core.js'), 'PandoLabPolygonMeshCore');
 
 function countCoordinates(value) {
   if (Array.isArray(value) && value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') return 1;

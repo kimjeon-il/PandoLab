@@ -3,7 +3,7 @@ import {createMapLibreLabelPresentation} from './maplibre-label-presentation.js'
 
 /** Assemble geographic sources before MapLibre draws; publish labels after its render event. */
 export function createMapLibreRenderingDomain(options){
- const {gpuMapRenderer:renderer,selectionDomain,prepareView,renderers,reportDiagnostic}=options;
+ const {mapRenderer:renderer,selectionDomain,prepareView,renderers,reportDiagnostic}=options;
  let disposed=false,queued=false,frameId=0,contentDirty=true,selectionDirty=true,labelsDirty=true,lastFrame=null;
  let viewportOverlaysDirty=false;
  let lastPlaceQueryAt=-Infinity;
@@ -35,7 +35,8 @@ export function createMapLibreRenderingDomain(options){
   },error=>{if(pendingPlaceViewport===task&&!disposed)renderer.failMapPreparation(error);});
  };
  const labels=createMapLibreLabelPresentation({renderer,labels:options.labelResources,
-  onChange:()=>invalidate('map-labels-ready',false,false),onSourceError:renderer.failMapPreparation,
+  onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready'),
+  onSourceError:renderer.failMapPreparation,
   onError:error=>reportDiagnostic({operation:'map-labels',stage:'prepare',result:'failed',message:error.message,error})});
  const content=createMapContentPresentation({countries:options.countryResources,
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
@@ -59,7 +60,7 @@ export function createMapLibreRenderingDomain(options){
     content.renderTerritorialUnits(frame);content.renderGenericFeatures(frame);content.renderDistributions(frame);
    }
    if(refreshContent)content.renderCountries(frame);
-   if(refreshContent||refreshViewportOverlays)options.countryResources.syncGpuRenderScene();
+   if(refreshContent||refreshViewportOverlays)options.countryResources.syncMapScene();
    if(selectionDirty){selectionDirty=false;renderer.setSelection(selectionDomain.snapshot());}
    // Prepare symbol sources alongside geometry, behind the preserved temporal
    // frame. Publication still waits for both sources and a subsequent render.
@@ -76,6 +77,7 @@ export function createMapLibreRenderingDomain(options){
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
    if(result.deferred||waitingForVisibleLabels||waitingForPlaces||!renderer.canPresentVisualFrame(frame,result))return;
    if(!renderer.commitVisualFrame(frame))return;
+   labels.publishOptionalFlags();
    stats.visualFrameCommittedCount++;stats.lastCommittedVisualFrameId=frame.frameId;
    options.onFrameComplete?.({durationMs:0,viewFrame:true,frameId:frame.frameId});
   }catch(error){renderer.failMapPreparation(error);}
@@ -91,11 +93,11 @@ export function createMapLibreRenderingDomain(options){
    }
    // Source/render certificates never change label identities. Keep the
    // existing symbol source while waiting for the native frame to publish.
-   if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready'].includes(reason))
+   if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint','temporal-source-admitted','await-current-map-frame'].includes(reason))
     return invalidate(reason,false,false);
    return invalidate(reason);
   },invalidateViewport:reason=>{renderer.verifyLayout();return invalidate(reason,true);},
-  invalidateProject:reason=>invalidate(reason,true),invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason);},
+  invalidateProject:reason=>invalidate(reason,true),invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason,false,reason!=='selection-hover');},
   invalidateLabels:reason=>invalidate(reason),invalidateQuality:reason=>invalidate(reason),
   invalidateBaseScene:reason=>invalidate(reason,true),invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},

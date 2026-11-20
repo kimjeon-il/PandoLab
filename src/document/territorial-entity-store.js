@@ -1,6 +1,5 @@
-import { resourceKey, resourceUpdate } from "../rendering/resource-update-policy.js";
-import { geometryRevisionKey } from "../geometry/geometry-versions.js";
-import { geometryReferenceFor } from "../geometry/geometry-version-store.js";
+import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
+import { admittedGeometryKey, geometryReferenceFor } from "../geometry/geometry-version-store.js";
 // A fast path is allowed only for *verified* presentation-only differences.
 // The full Core and renderer path stays authoritative for any uncertainty.
 function sameValue(left,right,budget){
@@ -100,7 +99,7 @@ export function createTerritorialEntityStore({ documentModel,commandOwner,onEnti
   let previous=documentModel.territorialViews();
   const dependencies = rows => ({ source: 'territorial-root-geometry',
     content: resourceKey(rows.filter(feature => feature.properties.entityKind === 'general' && !feature.properties.parentId)
-      .map(feature => [feature.id, geometryRevisionKey(feature.geometry)])), preparation: 'roots-v1', context: null, presentation: 'roots' });
+      .map(feature => [feature.id, admittedGeometryKey(feature.geometry)])), preparation: 'roots-v1', context: null, presentation: 'roots' });
   const unsubscribe=commandOwner.subscribeTransitions(() => {
     const next=documentModel.territorialViews();
     const before=new Map(previous.map(row => [row.id,row])),after=new Map(next.map(row => [row.id,row]));

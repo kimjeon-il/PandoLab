@@ -14,6 +14,7 @@
   --design-color-accent-2: #4f8cff;
   --design-color-accent-surface: #274c80;
   --design-color-accent-surface-hover: #345f9f;
+  --design-color-accent-surface-pressed: color-mix(in srgb, var(--design-color-accent-surface), black 18%);
   --design-color-accent-border: #4f8cff;
   --design-color-accent-text: #ffffff;
   --design-color-danger: #d97070;
@@ -60,7 +61,6 @@
   --design-color-overlay-border: rgba(57, 69, 80, .9);
   --design-color-toolbar-bg: rgba(22, 27, 32, .96);
   --design-color-toolbar-border: rgba(57, 69, 80, .9);
-  --design-color-mobile-nav-bg: rgba(23, 27, 32, .98);
   --design-color-focus-ring: rgba(79, 140, 255, .72);
   --design-font-family: "Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
   --design-font-xs: 0.8125rem;
@@ -139,13 +139,7 @@
   --design-control-shadow: 0 16px 42px rgba(0, 0, 0, .28);
   --design-toolbar-shadow: 0 4px 14px rgba(0, 0, 0, .18);
   --design-overlay-blur: 8px;
-  --design-mobile-paper: light-dark(#f8f7f3, #1d2427);
-  --design-mobile-edge: light-dark(#d3d4cc, #445054);
-  --design-mobile-ink: light-dark(#2d566b, #abcbdc);
-  --design-mobile-on-ink: light-dark(#fff, #162329);
-  --design-mobile-hover: light-dark(#eeeee8, #2b3337);
-  --design-mobile-pressed: light-dark(#e4e6de, #394348);
-  --design-mobile-shadow: 0 1px 3px light-dark(rgb(33 42 41 / .14), rgb(0 0 0 / .34));
+  --design-viewer-surface-shadow: 0 1px 3px light-dark(rgb(0 0 0 / .14), rgb(0 0 0 / .34));
   --ui-border-width: 1px;
   --ui-menu-width: 17.5rem;
   --ui-menu-trigger-gap: 6px;
@@ -238,7 +232,6 @@
   --design-color-overlay-border: var(--design-color-border);
   --design-color-toolbar-bg: color-mix(in oklch, var(--design-color-panel) 92%, transparent);
   --design-color-toolbar-border: var(--design-color-border);
-  --design-color-mobile-nav-bg: color-mix(in oklch, var(--design-color-panel) 98%, transparent);
   --design-color-focus-ring: color-mix(in oklch, var(--design-color-accent) 42%, transparent);
   --design-shadow: 0 5px 18px color-mix(in oklch, var(--design-color-text) 13%, transparent);
   --design-control-shadow: 0 5px 18px color-mix(in oklch, var(--design-color-text) 13%, transparent);

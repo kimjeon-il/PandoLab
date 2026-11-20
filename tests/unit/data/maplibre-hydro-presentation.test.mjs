@@ -125,3 +125,30 @@ test('water source updates wait while the map style is being rebuilt',async()=>{
  source={updateData:async()=>{updates++;}};releaseStyle();await pending;
  assert.equal(updates,1);water.dispose();
 });
+
+test('partial water stays optional and only native tiles admitted to Core are selectable',async()=>{
+ const handlers=new Map(),errors=[],visible=[];
+ let enabled=false,loads=0,releaseTiles,releaseCore;
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>5,getCanvas:()=>({clientWidth:100,clientHeight:100}),
+  on:(type,fn)=>handlers.set(type,fn),off:type=>handlers.delete(type)};
+ const feature={id:'1:1',properties:{logicalId:'lake-a'}};
+ const water=createMapLibreHydroPresentation({map,isEnabled:()=>enabled,updateSource:async()=>true,
+  waitForSource:()=>new Promise(resolve=>{releaseTiles=resolve;}),
+  admitFeatures:()=>new Promise(resolve=>{releaseCore=resolve;}),onFeatures:features=>visible.push(features),
+  load:async()=>{loads++;return {key:'1',addPacks:[{id:1,features:[feature]}],failedPacks:[{id:2,message:'bad pack'}]};},
+  onError:error=>errors.push(error),
+ });
+ const tick=()=>new Promise(resolve=>setImmediate(resolve));
+ try{
+  await handlers.get('moveend')();assert.equal(loads,0);
+  enabled=true;const task=water.refresh();await tick();
+  assert.equal(water.canPick(feature.id,'lake-a'),false);
+  releaseTiles(true);await tick();
+  assert.equal(water.canPick(feature.id,'lake-a'),false);
+  releaseCore(true);await task;
+  assert.equal(water.canPick(feature.id,'lake-a'),true);assert.equal(water.canPick('2:1','lake-a'),false);
+  assert.deepEqual(visible,[[feature]]);assert.equal(errors[0].failedPacks[0].id,2);
+  enabled=false;water.suspend();await handlers.get('moveend')();assert.equal(loads,1);
+  assert.equal(water.canPick(feature.id,'lake-a'),false);
+ }finally{water.dispose();}
+});

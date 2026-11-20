@@ -1,5 +1,5 @@
-import { normalizeClippedPolygonGeometry } from "../geometry/map-edit-geometry.js";
-import { geometryRevisionKey } from "../geometry/geometry-versions.js";
+import { normalizeClippedPolygonGeometry } from "../geometry/polygon-geometry-utils.js";
+import { admittedGeometryKey } from "../geometry/geometry-version-store.js";
 
 const polygons = geometry => geometry?.type === 'Polygon' ? [geometry.coordinates]
   : geometry?.type === 'MultiPolygon' ? geometry.coordinates : [];
@@ -36,7 +36,7 @@ export function createTerritorialScopeResolver({ entityRepository, clipper }) {
     const id = String(entityId);
     const entity = entityRepository.get(id);
     const descendants = entity?.properties.entityKind === 'general' ? members(id) : [];
-    const signature = [geometryRevisionKey(entity?.geometry), ...descendants.map(unit => `${unit.id}:${geometryRevisionKey(unit.geometry)}`)].join('|');
+    const signature = [admittedGeometryKey(entity?.geometry), ...descendants.map(unit => `${unit.id}:${admittedGeometryKey(unit.geometry)}`)].join('|');
     const previous = scopes.get(id);
     if (previous?.signature === signature) {
       if (previous.result.entity === entity && descendants.every((unit, index) => unit === previous.result.members[index])) return previous.result;

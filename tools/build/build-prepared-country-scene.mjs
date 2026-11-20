@@ -22,12 +22,12 @@ const asBuffer=bytes=>bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes
 export async function buildPreparedCountryScene({root=defaultRoot,month,write=true,projectId='default-world'}={}) {
   if(!/^\d{4}-\d{2}$/.test(month||''))throw new Error('An explicit reference month is required');
   await import('./load-spherical-core.mjs');
-  await import('../../src/rendering/workers/gpu-mesh-core.js');
+  await import('../../src/rendering/workers/polygon-mesh-core.js');
   const [{assembleBuiltinWorld},{createCanonicalGeometryVersionStore:createGeometryVersionStore},{resolveWorld},
-    {territorialSceneDisplayId},{territorialRootId},{createCountrySharedBoundaryState,prepareCountrySharedBoundaryPacket}]=await Promise.all([
+    {territorialSceneDisplayId},{territorialRootId},{createCountrySharedBoundaryState},{prepareCountrySharedBoundaryPacket}]=await Promise.all([
     import('../../src/data/builtin-world-loader.js'),import('../../src/geometry/geometry-version-store.js'),
     import('../../src/document/timeline-resolver.js'),import('../../src/document/territorial-display-identity.js'),
-    import('../../src/document/territorial-units.js'),import('../../src/rendering/country-shared-boundary-packet.js')]);
+    import('../../src/document/territorial-units.js'),import('../../src/rendering/country-shared-boundary-state.js'),import('../../src/rendering/country-shared-boundary-packet.js')]);
   const context=readProjectGenerationContext({root,projectId});
   const data=resolve(root,'assets/data'),worldPath=resolve(root,context.catalogs.world);
   const countryRoot=dirname(resolve(root,context.catalogs.territorial));
@@ -61,7 +61,7 @@ export async function buildPreparedCountryScene({root=defaultRoot,month,write=tr
   const identity={fills:roots.map(f=>[String(f.id),hashes.get(f.geometry)]),
     boundaries:boundaries.map(f=>[String(f.id),hashes.get(f.geometry),String(f.boundaryRootId||f.id),String(f.properties.parentId||''),String(f.properties.entityKind||'')])};
   const reused=[],built=[];
-  const engine=globalThis.PandoLabGpuMeshCore;
+  const engine=globalThis.PandoLabPolygonMeshCore;
   engine.setSharedCore(globalThis.PandoLabSphericalCore);
   if(world.derivation.meshAlgorithmRevision!==engine.MESH_ALGORITHM_REVISION)throw new Error('Canonical mesh algorithm identity mismatch');
   const sourceReceipt={countryPacket:world.assets.canonicalCountryPacket.sha256,

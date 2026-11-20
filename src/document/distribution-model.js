@@ -135,18 +135,6 @@ export function normalizeDistributionEntries(value, { layerExists = () => true, 
   return output;
 }
 
-export function createDistributionLayer(options) {
-  const layer = normalizeDistributionLayer({ ...options, schemaVersion: DISTRIBUTION_SCHEMA_VERSION });
-  if (!layer) throw new Error('분포 레이어 형식이 올바르지 않습니다.');
-  return layer;
-}
-
-export function createDistributionEntry(options) {
-  const entry = normalizeDistributionEntry({ ...options, schemaVersion: DISTRIBUTION_SCHEMA_VERSION });
-  if (!entry) throw new Error('분포 엔트리 형식이 올바르지 않습니다.');
-  return entry;
-}
-
 export function distributionEntriesForLayer(entries, layerId) {
   const key = text(layerId);
   return (entries || []).filter(entry => text(entry.layerId) === key);

@@ -1,7 +1,7 @@
 import { normalizeObjectRef } from "../document/object-ref-identity.js";
 import { normalizePlaceQuery, PLACE_LIMITS } from "../document/place-contract.js";
 import { createObjectSearchModel, visibleObjectSearchRows } from "../document/object-search-model.js";
-import { resourceKey, resourceUpdate } from "../rendering/resource-update-policy.js";
+import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
 
 /**
  * Object search is deliberately flat. The project still owns object grouping and

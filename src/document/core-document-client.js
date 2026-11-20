@@ -19,6 +19,12 @@ export function createCoreDocumentClient({
   let disposed = false;
   let queue = Promise.resolve();
   let geometryLoader=null;
+  let documentGeneration=0;
+  const staleGeometryReceipt=Symbol('stale geometry preparation');
+  const geometryReceipts=new WeakMap();
+  const verifiedResourceAdmissions=new WeakMap();
+  const replacesDocument=new Set(['core.document-load','core.document-load-baseline','core.document-initialize',
+    'core.storage-baseline-load','core.document-temporal-candidate-adopt','core.document-replacement-rollback']);
   const subscribers = new Set();
   const detachedOps = new Set([
     'core.document-temporal-source-prepare','core.document-temporal-source-stats',
@@ -33,7 +39,7 @@ export function createCoreDocumentClient({
     { code,name:'AbortError',cancelled:true });
   const rpc = createWorkerRpcClient({ createWorker, isCurrent: () => true, restartOnCrash: false,
     onCrash: () => { currentState = null; } });
-  function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument) {
+  function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument, geometryReceipt = null) {
     const result = queue.then(async () => {
       policy.assertOperation(operation);
       if (disposed) throw Object.assign(new Error('The C++ document owner was disposed.'),
@@ -43,6 +49,8 @@ export function createCoreDocumentClient({
       const speculative=speculativeOps.get(operation);
       if ((atomic || speculative) && options.signal?.aborted)
         throw cancelled('PL-CORE-CANCELLED','Document operation was cancelled before dispatch.');
+      if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration))
+        return staleGeometryReceipt;
       const request = injectEpoch ? { ...payload,
         expectedEpoch: Object.hasOwn(payload, 'expectedEpoch') ? payload.expectedEpoch : currentState?.epoch ?? 0 } : payload;
       // A synchronous C++ confirm cannot be interrupted. Once dispatched, its
@@ -71,6 +79,7 @@ export function createCoreDocumentClient({
       // transition. The accepted adopt response alone publishes Core state.
       if (detachedOps.has(operation))
         return result;
+      if(replacesDocument.has(operation))documentGeneration++;
       const next = stateResponses.has(operation) ? result : result?.state;
       if (next) {
         if (!Number.isSafeInteger(next.epoch) || next.epoch < 0) fail('PL-CORE-RESPONSE', 'A current document operation epoch is required.');
@@ -78,7 +87,7 @@ export function createCoreDocumentClient({
           ? { dirtyTerritorialIds: Object.freeze([...next.dirtyTerritorialIds]) }: {}) });
       }
       try {
-        onTransition(result, operation, payload);
+        onTransition(result, operation, payload, verifiedResourceAdmissions.get(payload));
         // Accepted read projections publish synchronously in this queue. A
         // subscriber must not dispatch and await another queued Core request.
         for (const listener of subscribers) listener(result, operation, payload);
@@ -95,22 +104,31 @@ export function createCoreDocumentClient({
     return result;
   }
   async function ensureGeometryResources(month,options={}){
+    const generation=documentGeneration;
     const query=await ordered('core.document-geometry-requirements',{month},options);
     if(!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
-    if(!query.resources.length)return;
-    if(typeof geometryLoader!=='function')fail('GEOMETRY_UNLOADED','Required immutable geometry loader is unavailable.');
-    const isCurrent=()=>!disposed&&currentState?.epoch===query.sourceEpoch&&options.isCurrent?.()!==false&&!options.signal?.aborted;
-    const resources=await geometryLoader(query.resources,{...options,isCurrent});
+    const isCurrent=()=>!disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
+      &&options.isCurrent?.()!==false&&!options.signal?.aborted;
+    if(query.resources.length){
+      if(typeof geometryLoader!=='function')fail('GEOMETRY_UNLOADED','Required immutable geometry loader is unavailable.');
+      const resources=await geometryLoader(query.resources,{...options,isCurrent});
+      if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
+      const admission={resources,expectedEpoch:query.sourceEpoch};
+      verifiedResourceAdmissions.set(admission,query.resources);
+      await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
+    }
     if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
-    await ordered('core.document-geometry-admit',{resources,expectedEpoch:query.sourceEpoch},{...options,isCurrent},true,true);
+    const receipt=Object.freeze({});
+    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation});
+    return receipt;
   }
   async function prepareTimelineGeometry(month,options={}){
     for(;;){
-      const epoch=currentState?.epoch;
+      const epoch=currentState?.epoch,generation=documentGeneration;
       try{return await ensureGeometryResources(month,options);}
       catch(error){
         if((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
-          ||options.isCurrent?.()===false||currentState?.epoch===epoch||!currentState)throw error;
+          ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation)||!currentState)throw error;
       }
     }
   }
@@ -149,10 +167,15 @@ export function createCoreDocumentClient({
     temporalCandidateAdopt:({candidateId,sourceId,targetMonth,sourceFingerprint,worldSha256,replacementId,expectedEpoch},options)=>
       ordered('core.document-temporal-candidate-adopt',
         {candidateId,sourceId,targetMonth,sourceFingerprint,worldSha256,replacementId,expectedEpoch},options,true,true),
-    setTimelineCursor: async(month, options) => {
+    setTimelineCursor: async(month, options={}) => {
       try {
-        await ensureGeometryResources(month,options);
-        return await ordered('core.document-timeline-cursor', { month }, options, true, true);
+        let receipt=geometryReceipts.get(options.geometryPreparation);
+        for(;;){
+          if(receipt?.month!==month)receipt=geometryReceipts.get(await prepareTimelineGeometry(month,options));
+          const accepted=await ordered('core.document-timeline-cursor',{month},options,true,true,true,receipt);
+          if(accepted!==staleGeometryReceipt)return accepted;
+          receipt=null;
+        }
       } catch(error) {
         // Geometry admission queries happen before cursor dispatch. Preserve
         // the cursor API's rejection contract for invalid calendar precision.

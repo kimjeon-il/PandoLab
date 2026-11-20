@@ -14,7 +14,7 @@ import {createHydroSettings} from "../ui/physical-settings.js";
 import {createObjectCatalog} from "../document/object-catalog.js";
 import {createTerritorialLabels} from "../rendering/territorial-labels.js";
 import {createPhysicalResources} from "../rendering/physical-map-controller.js";
-import {createGpuScene} from "../rendering/gpu-scene.js";
+import {createMapScene} from "../rendering/map-scene.js";
 import {createMapHost} from "../ui/map-workspace-host.js";
 import {createObjectPicking} from "../map/object-picking.js";
 import {mapProjectResourcePath} from "../data/map-project-manifest.js";
@@ -65,8 +65,8 @@ export function createMapOwners({productMode,readOnly=true,projection='globe',pl
     placeCatalog:buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'places'):null,
     placeLifetimesCatalog:buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'placeLifetimes'):null});
   const physicalResources=createPhysicalResources({capabilities,buildMeta});
-  const gpuScene=createGpuScene();
+  const mapScene=createMapScene();
   const mapHost=createMapHost({productMode,readOnly,projection});
   const objectPicking=createObjectPicking({closeActiveOverlay});
-  return Object.freeze({capabilities,projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,workspaceSurfaces,projectSession,renderQuality,pointerTargets,cameraNavigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings,objectCatalog,territorialLabels,physicalResources,gpuScene,mapHost,objectPicking});
+  return Object.freeze({capabilities,projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,workspaceSurfaces,projectSession,renderQuality,pointerTargets,cameraNavigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings,objectCatalog,territorialLabels,physicalResources,mapScene,mapHost,objectPicking});
 }

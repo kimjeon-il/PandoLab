@@ -1,4 +1,4 @@
-import { resourceKey, resourceUpdate } from "../rendering/resource-update-policy.js";
+import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
 import { geometryRevisionKey } from "../geometry/geometry-versions.js";
 import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
 import {countryBoundaryOwner,matchesCountryGeometrySignature} from '../rendering/country-boundary-seed.js';
@@ -49,18 +49,6 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
 
   function validLabelAnchor(value) {
     return Array.isArray(value) && value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]));
-  }
-
-  function applyPristineLabelAnchors(collection, onlyIds = null) {
-    const filter = onlyIds ? new Set([...onlyIds].map(String)) : null;
-    for (const feature of collection?.features || []) {
-      const id = String(feature?.id || '');
-      if (filter && !filter.has(id)) continue;
-      const anchor = dependencies.countries.PRISTINE_LABEL_ANCHORS[id];
-      if (!validLabelAnchor(anchor)) continue;
-      countryLabelAnchors.set(id, [Number(anchor[0]), Number(anchor[1])]);
-      pendingCountryLabelAnchors.delete(id);
-    }
   }
 
   function largestCountryComponentFeature(feature) {
@@ -310,7 +298,6 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
     initializeCountryLandRevision,
     initializeCountryLabelAnchorWorker,
     initializeLabelFallbackQueue,
-    get applyPristineLabelAnchors() { return applyPristineLabelAnchors; },
 
     get countryLabelAnchors() { return countryLabelAnchors; },
     get countryLandRevision() { return countryLandRevision; },

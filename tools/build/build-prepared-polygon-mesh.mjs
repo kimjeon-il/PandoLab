@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import {builtinCountryAssets} from "../../src/data/builtin-country-files.js";
 import {readBuiltinCountry} from "../data/builtin-country-bytes.mjs";
-import "../../src/rendering/workers/gpu-mesh-core.js";
+import "../../src/rendering/workers/polygon-mesh-core.js";
 import { decodePolygonMesh, encodePolygonMesh, POLYGON_MESH_FORMAT_VERSION } from "../../src/rendering/polygon-mesh-codec.js";
 import "./load-spherical-core.mjs";
 import "../../assets/js-vendor/polygon-clipping.min.js";
@@ -180,7 +180,7 @@ for(const month of [...months].sort()){
  }
 }
 }
-const engine = globalThis.PandoLabGpuMeshCore;
+const engine = globalThis.PandoLabPolygonMeshCore;
 const meshes = {};
 const algorithmSourceSha256 = sourceIdentity(root).sourceSha256;
 const oldManifestPath=resolve(root,`${destination}/manifest.json`);

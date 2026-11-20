@@ -1,7 +1,7 @@
 #include <pandoeditor/document-session.h>
 #include <limits>
 #include <algorithm>
-#include <pandoeditor/webterritorialcommands.h>
+#include <pandoeditor/webterritorial-source-codec.h>
 #include <pandoeditor/objectproperties.h>
 #include <cmath>
 

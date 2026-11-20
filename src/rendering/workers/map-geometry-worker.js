@@ -5,7 +5,7 @@ buildMetaUrl.searchParams.set('v', new URL(self.location.href).searchParams.get(
 importScripts(buildMetaUrl.href);
 const assetRevision = globalThis.PANDOLAB_BUILD_META?.assetRevision || '';
 const rasterContractUrl = new URL('./polygon-raster-contract.js', self.location.href);
-const meshCoreUrl = new URL('./gpu-mesh-core.js', self.location.href);
+const meshCoreUrl = new URL('./polygon-mesh-core.js', self.location.href);
 const rpcHostUrl = new URL('./worker-rpc-host.js', self.location.href);
 if (assetRevision) {
   rasterContractUrl.searchParams.set('v', assetRevision);
@@ -16,13 +16,13 @@ importScripts('./geographic-boundary-core.js', rasterContractUrl.href, meshCoreU
 
 const meshCoreReady = import("../../document/temporal.js")
   .then(({ sharedCalculationCore }) => {
-    self.PandoLabGpuMeshCore.setSharedCore(sharedCalculationCore);
+    self.PandoLabPolygonMeshCore.setSharedCore(sharedCalculationCore);
     return sharedCalculationCore;
   });
 meshCoreReady.catch(() => {}); // Each mesh operation awaits this prerequisite.
 // The polygon asset catalog is not needed by a line-only overlay job.
 let polygonPreparation = null;
-let countryBoundaryState=null;
+let countryBoundary=null;
 let boundarySeedPromise;
 let boundarySeedFailure=null,boundarySeeded=false,boundaryChangedCount=0;
 async function boundarySeed(){
@@ -40,7 +40,7 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady.then(() 
   import(`../../data/prepared-mesh-publication.js?v=${encodeURIComponent(assetRevision)}`),
 ])).then(async ([{ createPreparedPolygonMeshStore }, { createStoredAssetLoader },
   { runtimeDataAssetUrl, workerBuildMeta },{mapProjectCatalogSpec},{publishedPreparedMeshManifest}]) => {
-  const engine = self.PandoLabGpuMeshCore;
+  const engine = self.PandoLabPolygonMeshCore;
   const meta = workerBuildMeta(self.location.href, globalThis.PANDOLAB_BUILD_META);
   const spec=mapProjectCatalogSpec(meta,'preparedMeshes');
   const catalogDirectory=spec.url.slice(0,spec.url.lastIndexOf('/')+1);
@@ -79,6 +79,48 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady.then(() 
 });
 let physicalDisplay=null;
 
+async function prepareCountryBoundary(input,context){
+  const [{createCountrySharedBoundaryState,visibleCountrySharedSegments},
+    {countryBoundaryOwner,countryBoundarySeedOptions},seed]=await Promise.all([
+    import('../country-shared-boundary-state.js'),import('../country-boundary-seed.js'),boundarySeed(),meshCoreReady,
+  ]);
+  context.throwIfCancelled();
+  if(countryBoundary?.key!==input.key){
+    if(input.baseKey!==null&&countryBoundary?.key!==input.baseKey)return null;
+    const upserts=input.upserts.map(({id,geometry})=>({type:'Feature',id:countryBoundaryOwner(id),geometry}));
+    if(input.baseKey===null){
+      const options=countryBoundarySeedOptions(upserts,seed);
+      boundarySeeded=!!options;
+      boundaryChangedCount=options?.changedIds.size??upserts.length;
+      let state=null,segments=options?.cachedSegments;
+      // The exact published topology can be used before the editable index is needed.
+      if(!options||options.changedIds.size){
+        state=createCountrySharedBoundaryState();
+        state.replace(upserts,options);
+        segments=state.segments();
+      }
+      countryBoundary={key:input.key,state,segments,seedRows:state?null:upserts};
+    }else{
+      const previous=countryBoundary;
+      countryBoundary=null;
+      const state=previous.state??createCountrySharedBoundaryState();
+      const removed=input.remove.map(countryBoundaryOwner);
+      if(previous.state){
+        boundaryChangedCount=state.patch(upserts,removed).size;
+      }else{
+        const rows=new Map(previous.seedRows.map(row=>[row.id,row]));
+        const changedIds=new Set(removed);
+        for(const id of removed)rows.delete(id);
+        for(const row of upserts){rows.set(row.id,row);changedIds.add(row.id);}
+        state.replace([...rows.values()],{cachedSegments:previous.segments,changedIds});
+        boundaryChangedCount=changedIds.size;
+      }
+      countryBoundary={key:input.key,state,segments:state.segments()};
+    }
+  }
+  return {segments:countryBoundary.segments,visibleCountrySharedSegments,countryBoundaryOwner};
+}
+
 self.PandoLabWorkerRpc.install({
   handlers: {
     'geometry.physical-land':async(payload,context)=>{
@@ -96,15 +138,14 @@ self.PandoLabWorkerRpc.install({
       physicalDisplay={key:payload.sourceKey,result};return result;
     },
     'geometry.prepare': async (payload, context) => {
+      const startedAt=performance.now();
+      const boundary=payload.boundary?await prepareCountryBoundary(payload.boundary,context):null;
+      if(payload.boundary&&!boundary)return {boundaryMiss:true};
       // A line-only overlay does not require the polygon prepared-mesh store,
       // immutable polygon catalogs or their initialization before it can draw.
       const requiresPolygons = payload.items.some(item => item.kind !== 'stroke');
       const store = requiresPolygons ? await preparedPolygonStore() : null;
       const packets = new Array(payload.items.length), packetTimings=[];
-      const total = payload.items.length + 1;
-      const progress = (completed, phase) => context.emitEvent('geometry.prepare-progress',
-        { requestId: context.requestId, completed, total, phase }, { projectRevision: context.projectRevision });
-      progress(1, 'initialized');
       // Two independent immutable asset reads may overlap without growing
       // the mobile decode/triangulation working set beyond two packets.
       for(let index=0;index<payload.items.length;index+=2){
@@ -114,18 +155,10 @@ self.PandoLabWorkerRpc.install({
           const started=performance.now(),before=store?.stats?.()||null;
           let prepared;
           if(item.kind==='stroke'){
-            if(item.countryFeatures){
-              await meshCoreReady;
-              const {createCountrySharedBoundaryState,visibleCountrySharedSegments}=await import('../country-shared-boundary-packet.js');
-              if(!Array.isArray(item.countryVisibleIds))throw new TypeError('Shared country strokes require visible owner IDs.');
-              const {countryBoundaryOwner,countryBoundarySeedOptions}=await import('../country-boundary-seed.js');
-              const features=item.countryFeatures.map(feature=>({...feature,id:countryBoundaryOwner(feature.id)}));
-              const options=countryBoundarySeedOptions(features,await boundarySeed());boundarySeeded=!!options;boundaryChangedCount=options?.changedIds.size??features.length;
-              let segments;
-              if(options&&!options.changedIds.size)segments=options.cachedSegments;
-              else{if(!countryBoundaryState){countryBoundaryState=createCountrySharedBoundaryState();countryBoundaryState.replace(features,options);}else countryBoundaryState.replace(features);segments=countryBoundaryState.segments();}
-              const visibleIds=new Set(item.countryVisibleIds.map(countryBoundaryOwner));
-              item={...item,geometry:{type:'MultiLineString',coordinates:visibleCountrySharedSegments(segments,id=>visibleIds.has(id)).map(segment=>[segment.start,segment.end])}};
+            if(item.countryVisibleIds){
+              if(!boundary)throw new TypeError('Shared country strokes require admitted topology');
+              const visibleIds=new Set(item.countryVisibleIds.map(boundary.countryBoundaryOwner));
+              item={...item,geometry:{type:'MultiLineString',coordinates:boundary.visibleCountrySharedSegments(boundary.segments,id=>visibleIds.has(id)).map(segment=>[segment.start,segment.end])}};
             }
             if(!['LineString','MultiLineString'].includes(item.geometry?.type))
               throw new TypeError('Only line strokes may use the geographic stroke Worker path');
@@ -142,12 +175,13 @@ self.PandoLabWorkerRpc.install({
         context.throwIfCancelled();
         for(let j=0;j<rows.length;j++){
           packets[index+j]=rows[j].prepared;packetTimings.push(rows[j].timing);
-          progress(index+j+2,batch[j].kind==='stroke'?'stroke':'polygon');
         }
       }
       const buffers = [...new Set(packets.flatMap(({ packet }) => Object.values(packet||{})
         .filter(ArrayBuffer.isView).map(value => value.buffer)))];
-        return self.PandoLabWorkerRpc.transferResult({packets,stats:{...(store?.stats()||{}),boundarySeedFailure,boundarySeeded,boundaryChangedCount,
+      const finishedAt=performance.now();
+      return self.PandoLabWorkerRpc.transferResult({packets,stats:{...(store?.stats()||{}),boundarySeedFailure,boundarySeeded,boundaryChangedCount,
+        startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
         slowestPackets:packetTimings.sort((a,b)=>b.durationMs-a.durationMs).slice(0,8)}},buffers);
     },
   },

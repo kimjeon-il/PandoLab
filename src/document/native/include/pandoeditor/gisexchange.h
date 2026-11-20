@@ -1,6 +1,5 @@
 #pragma once
 #include <pandoeditor/document.h>
-#include <pandoeditor/territorialmutation.h>
 #include <cstdint>
 #include <functional>
 #include <optional>

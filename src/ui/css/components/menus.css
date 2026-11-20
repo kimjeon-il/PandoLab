@@ -187,13 +187,18 @@
   color: var(--text-strong);
 }
 
+.ui-menu-list .ui-menu-item[aria-expanded="true"]:not(:disabled, [aria-disabled="true"]) {
+  background: var(--ui-button-selected);
+  color: var(--accent);
+}
+
 .ui-menu-list .ui-menu-item:has(> input:focus-visible):not([aria-disabled="true"]) {
   background: var(--surface-hover);
   color: var(--text-strong);
 }
 
 .ui-menu-list .ui-menu-item:is(:hover, :focus-visible, [aria-expanded="true"]):not(:disabled, [aria-disabled="true"], :has(> input:disabled)) .ui-icon {
-  color: var(--text-strong);
+  color: inherit;
 }
 
 .ui-menu-list .ui-menu-item:has(> input:focus-visible) .ui-icon {

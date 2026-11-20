@@ -5,7 +5,7 @@ on:
       - work/active
     paths:
       - src/**/native/**
-      - src/rendering/workers/gpu-mesh-core.js
+      - src/rendering/workers/polygon-mesh-core.js
       - src/rendering/workers/polygon-raster-contract.js
       - src/rendering/polygon-mesh-codec.js
       - src/rendering/canonical-country-packet.js

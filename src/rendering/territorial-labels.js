@@ -52,7 +52,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     if(activeSource!=='builtin')return Promise.resolve(false);
     if (!capabilities.builtinPlaces || (!capabilities.eagerBuiltinPlaces && !force && builtinPlaces.snapshot().revision === 0)) return Promise.resolve(false);
     if (!force && (dependencies.projectState.state.layerVisibility.labels === false ||
-      !dependencies.rendering.gpuMapRenderer.labelZoomVisibility().places)) {
+      !dependencies.rendering.mapRenderer.labelZoomVisibility().places)) {
       builtinPlaces.cancelViewport(); return builtinPlaces.settle(null);
     }
     const view=placeView();
@@ -185,7 +185,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       {isReferenceActive:builtinPlaces.isActive});
     const labelSources = resources.records;
     const showNativeNames = dependencies.preferences.userPreferences.labels.place.showNativeNames === true;
-    if (dependencies.projectState.state.layerVisibility.labels && dependencies.rendering.gpuMapRenderer.labelZoomVisibility().places) for (const label of labelSources) {
+    if (dependencies.projectState.state.layerVisibility.labels && dependencies.rendering.mapRenderer.labelZoomVisibility().places) for (const label of labelSources) {
       const selected = selectedIds.has(String(label.id));
       const settings = (0, dependencies.labelPresentation.automaticLabelSettings)(label.kind, dependencies.projectState.state.labelSettings[(0, dependencies.labelPresentation.labelKey)('label', label.id)] || {});
       // Validated places carry their continuous population/spatial rank from the

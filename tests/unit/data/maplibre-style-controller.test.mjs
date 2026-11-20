@@ -38,9 +38,7 @@ test('single white-map styles expose only canonical active paint and layout',()=
  assert.equal(style.paint.rivers['line-color'],style.paint.ocean['background-color']);
  assert.equal(style.paint['physical-water']['fill-opacity'],1);
  assert.equal(style.layout.rivers.visibility,'none');
- assert.deepEqual(style.paint.territories['fill-opacity'],
-  ['case',['==',['get','paintBatch'],0],['coalesce',['get','alpha'],0],0]);
- assert.deepEqual(style.territorialFillPaint['fill-opacity'],['coalesce',['get','alpha'],0]);
+ assert.deepEqual(style.paint.territories,style.territorialFillPaint);
 });
 test('country paint updates are idempotent and never change sources or geometry',()=>{
  const map=fixture(),controller=createMapLibreStyleController(map);

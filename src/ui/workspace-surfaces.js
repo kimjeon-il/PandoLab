@@ -1,5 +1,5 @@
 import { createMobileSheetPresentation } from "./mobile-sheet-presentation.js";
-import { createWorkspaceLayoutDetector, isMobileWorkspaceLayout } from "./workspace-layout.js";
+import { createWorkspaceLayoutDetector, isMobileWorkspaceLayout, readWorkspaceViewport, WORKSPACE_COARSE_POINTER } from "./workspace-layout.js";
 import { createMenuPositionScheduler } from "./menu-presentation.js";
 import { createSearchToolbarPresentation } from "./search-toolbar-presentation.js";
 
@@ -219,11 +219,9 @@ export function createWorkspaceSurfaces() {
 
   function initializeWorkspaceSurfaces() {
     const detect = createWorkspaceLayoutDetector();
-    const coarsePointer = window.matchMedia('(pointer: coarse)');
+    const coarsePointer = window.matchMedia(WORKSPACE_COARSE_POINTER);
     detectLayoutMode = () => detect({
-      width: document.documentElement.clientWidth,
-      height: document.documentElement.clientHeight,
-      coarse: coarsePointer.matches,
+      ...readWorkspaceViewport(document, coarsePointer.matches),
       editingText: searchComposing || !!document.activeElement?.matches('input, textarea, select, [contenteditable="true"]'),
     });
     listen(coarsePointer,'change', () => applyLayoutMode());

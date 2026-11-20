@@ -56,15 +56,9 @@ export function collectRuntimeDataAssets({availablePaths,readManifest,entryPaths
       throw Error('Missing project-owned catalog: '+role+' '+path);
     }
     include(path);
-    if(role==='placeLifetimes')continue;
+    if(role==='world'||role==='placeLifetimes')continue;
     const manifest=readManifest(path),base=path.slice(0,path.lastIndexOf('/')+1);
-    if(role==='world'){
-      for(const role of ['canonicalCountryPacket','canonicalMesh','labelAnchors','preparedCountryScene']) {
-        const item=manifest.assets?.[role];if(item)dataAsset(item.url,'assets/data/',item);
-      }
-      const boundary=manifest.compatibility?.sharedBoundaries?.canonical;
-      if(boundary)dataAsset(boundary,'assets/data/');
-    }else if(role==='territorial'){
+    if(role==='territorial'){
       for(const item of builtinCountryAssets(manifest))dataAsset(item.file,base,item);
     }
     else if(role==='preparedMeshes'){

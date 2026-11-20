@@ -178,11 +178,9 @@ const char* commandErrorCode(CommandError error) noexcept
     case CommandError::InvalidTargets: return "INVALID_TARGETS";
     case CommandError::InvalidArguments: return "INVALID_ARGUMENTS";
     case CommandError::Locked: return "LOCKED";
-    case CommandError::UnsupportedDependency: return "UNSUPPORTED_DEPENDENCY";
     case CommandError::ValidationFailed: return "VALIDATION_FAILED";
     case CommandError::PrepareFailed: return "PREPARE_FAILED";
     case CommandError::CommitFailed: return "COMMIT_FAILED";
-    case CommandError::PreviewConsumed: return "PREVIEW_CONSUMED";
     case CommandError::RevisionOverflow: return "REVISION_OVERFLOW";
     }
     return "UNKNOWN_ERROR";

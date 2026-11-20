@@ -85,13 +85,17 @@ for(const profile of ['desktop','mobile'])test.describe(profile,()=>{
   await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__),null,{timeout:90000});
   const initial=await page.evaluate(()=>({presentedAtMs:window.__PANDO_PERF_INITIAL_MS__,stats:window.__PANDOLAB_VIEWER__.rendererStats(),diagnostics:window.__PANDO_PERF_DIAGNOSTICS__()}));
   const dateTransitions=[];
-  for(const month of ['2025-12','2024-12','2025-12']){
-   await page.locator('#timelineDateButton').click();await page.locator('#timelineViewUnit').selectOption('month');await page.locator('#timelineYearInput').fill(month.slice(0,4));await page.locator('#timelineMonthInput').selectOption('12');
+  for(const month of ['2026-11','1922-12','2026-11']){
+   await page.locator('#timelineDateButton').click();await page.locator('#timelineViewUnit').selectOption('month');await page.locator('#timelineYearInput').fill(month.slice(0,4));await page.locator('#timelineMonthInput').selectOption(String(Number(month.slice(5))));
    await page.evaluate(month=>{window.__PANDO_PERF_DATE_MS__=null;document.querySelector('#timelineGoBtn').addEventListener('click',()=>{const started=performance.now();const probe=()=>{const v=window.__PANDOLAB_VIEWER__,s=v.rendererStats();if(v.documentState().timelineCursor===month&&s.mapReadiness.mapReady&&s.certifiedRevision===s.sourceRevision&&document.querySelector('#viewerStatus').dataset.ready==='true'){window.__PANDO_PERF_DATE_MS__=performance.now()-started;return;}requestAnimationFrame(probe);};requestAnimationFrame(probe);},{once:true,capture:true});},month);
    await page.locator('#timelineGoBtn').click();await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_DATE_MS__),null,{timeout:90000});
    dateTransitions.push(await page.evaluate(month=>({month,elapsedMs:window.__PANDO_PERF_DATE_MS__,stats:window.__PANDOLAB_VIEWER__.rendererStats(),diagnostics:window.__PANDO_PERF_DIAGNOSTICS__()}),month));
   }
-  const output={metricVersion:5,scenario:'startup-date',profile,iteration,label:process.env.PANDO_PERF_LABEL,identity:await performanceIdentity(page,navigation),initial,dateTransitions,measured:{stats:await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats())}};
+  const identity=await performanceIdentity(page,navigation);
+  await page.reload({waitUntil:'domcontentloaded'});
+  await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__),null,{timeout:90000});
+  const warmInitialMs=await page.evaluate(()=>window.__PANDO_PERF_INITIAL_MS__);
+  const output={metricVersion:6,scenario:'startup-date',profile,iteration,label:process.env.PANDO_PERF_LABEL,identity,initial,warmInitialMs,dateTransitions,measured:{stats:await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats())}};
   await writeFile(testInfo.outputPath('globe-performance.json'),JSON.stringify(output,null,2));
   expect(dateTransitions.every(row=>row.elapsedMs>0)).toBe(true);
  });
@@ -121,6 +125,7 @@ for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance
   const admitted = await page.waitForFunction(() => {
     const map = window.__PANDOLAB_MAPLIBRE__;
     const stats = window.__PANDOLAB_VIEWER__?.rendererStats();
+    if(stats?.projectRenderBlocked)throw new Error('MapLibre rejected the zoom frame: '+stats.errorMessage);
     if(!map?.getCanvas()?.isConnected||!stats?.mapReadiness?.mapReady||stats.displayedRevision<=0||stats.certifiedRevision!==stats.sourceRevision)return null;
     return {revision:window.__PANDOLAB_VIEWER__.documentState()?.timelineCursor,
       camera:window.__PANDOLAB_MAP_HOST__.getViewState(),stats,

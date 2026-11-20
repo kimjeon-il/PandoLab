@@ -22,7 +22,6 @@
     "build:territorial-library": "node tools/build/build-territorial-entity-chunks.mjs",
     "build:current-world": "node tools/build/build-territorial-current-world.mjs",
     "build:places": "node tools/build/build-place-runtime.mjs",
-    "package:shared-core": "node tools/build/package-shared-core-assets.mjs --build-dir build-native/wasm/wasm",
     "dev:web": "node scripts/frontend-dev-server.mjs --product=viewer",
     "build:web": "node scripts/generate-build-metadata.mjs --product=viewer",
     "deps:prepare": "node tools/data/worktree-storage.mjs --prepare-dependencies",
