@@ -18,7 +18,11 @@ test('performance comparison rejects regressions, unstable baselines and missing
 test('startup and date comparisons are independent of drag captures and reject changed environments',()=>{
  const make=()=>['desktop','mobile'].flatMap(profile=>[1,2,3].map(iteration=>({metricVersion:6,scenario:'startup-date',profile,iteration,identity:{dataPin:'same',sourceSha256:'source',wasmManifestSha256:'same',viewport:{width:profile==='mobile'?390:1280,height:800,dpr:1},browserVersion:'same'},initial:{presentedAtMs:100},warmInitialMs:70,measured:{},dateTransitions:[{elapsedMs:50},{elapsedMs:50},{elapsedMs:40}]})));
  assert.equal(compareMapLibrePerformance(make(),make()).ok,true);
- const changed=make();changed[0].identity.wasmManifestSha256='other';assert.throws(()=>compareMapLibrePerformance(make(),changed),/environments/);
+ const mixedWasm=make();mixedWasm[0].identity.wasmManifestSha256='other';
+ assert.throws(()=>compareMapLibrePerformance(make(),mixedWasm,{allowWasmChange:true}),/snapshots must not be mixed/);
+ const changed=make();for(const row of changed)row.identity.wasmManifestSha256='another verified WASM';
+ assert.throws(()=>compareMapLibrePerformance(make(),changed),/environments/);
+ assert.equal(compareMapLibrePerformance(make(),changed,{allowWasmChange:true}).wasmChanged,true);
  assert.throws(()=>compareMapLibrePerformance(make(),make().filter(row=>row.profile==='desktop')),/scenarios/);
  const missing=make();for(const row of missing)delete row.identity.browserVersion;
  assert.throws(()=>compareMapLibrePerformance(missing,missing),/identit/);

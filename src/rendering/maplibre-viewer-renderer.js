@@ -413,30 +413,12 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   return geometryRpc ||=createWorkerRpcClient({createWorker:()=>createVerifiedCoreWorker(deps.platform.runtimeAssetUrl('workers/map-geometry-worker.js')),
    isCurrent:({entry,message})=>entry.projectRevision===message.projectRevision});
  }
- function preparePhysicalDisplay(key,geometry){
-  const cached=physicalDisplayCache.get(key);
-  if(cached){physicalDisplayCache.delete(key);physicalDisplayCache.set(key,cached);return cached.task;}
-  if(physicalDisplayCache.size===2){
-   const oldest=physicalDisplayCache.keys().next().value;
-   physicalDisplayCache.get(oldest).controller.abort();
-   physicalDisplayCache.delete(oldest);
-  }
-  const entry={controller:new AbortController(),geometry:null,task:null};physicalDisplayCache.set(key,entry);
-  entry.task=Promise.resolve(deps.physicalResources.loadPhysicalLandDisplay?.(key)).then(prepared=>{
-    if(prepared){stats.physicalLandAssetHits++;return {result:{geometry:prepared,durationMs:0}};}
-    return geometryWorker().request('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},{projectRevision:generation,signal:entry.controller.signal});
-  })
-   .then(({result})=>{entry.geometry=result.geometry;stats.physicalLandPreparations++;stats.physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
-  return entry.task;
- }
- async function prepareRenderGeometry(items,revision,boundary,signal=geometryAbort.signal){
-  if(!items.length)return {packets:[]};
-  const sentAt=performance.timeOrigin+performance.now();
+ async function requestMapGeometry(operation,payload,revision,signal){
   const request=async()=>{
    signal.throwIfAborted();
    const worker=geometryWorker();
    stats.geometryWorkerRequests++;
-   try{return (await metrics.track('geometry.prepare',()=>worker.request('geometry.prepare',{items,boundary},{projectRevision:revision,signal}))).result;}
+   try{return (await metrics.track(operation,()=>worker.request(operation,payload,{projectRevision:revision,signal}))).result;}
    catch(cause){
     if(cause.code==='PL-MAP-GEOMETRY-INITIALIZATION'&&geometryRpc===worker){
      worker.stop('geometry-initialization-retry');geometryRpc=null;acknowledgedBoundary=null;
@@ -451,6 +433,28 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    await new Promise(resolve=>setTimeout(resolve,100));
    result=await request();
   }
+  return result;
+ }
+ function preparePhysicalDisplay(key,geometry){
+  const cached=physicalDisplayCache.get(key);
+  if(cached){physicalDisplayCache.delete(key);physicalDisplayCache.set(key,cached);return cached.task;}
+  if(physicalDisplayCache.size===2){
+   const oldest=physicalDisplayCache.keys().next().value;
+   physicalDisplayCache.get(oldest).controller.abort();
+   physicalDisplayCache.delete(oldest);
+  }
+  const entry={controller:new AbortController(),geometry:null,task:null};physicalDisplayCache.set(key,entry);
+  entry.task=Promise.resolve(deps.physicalResources.loadPhysicalLandDisplay?.(key)).then(prepared=>{
+    if(prepared){stats.physicalLandAssetHits++;return {result:{geometry:prepared,durationMs:0}};}
+    return requestMapGeometry('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},generation,entry.controller.signal).then(result=>({result}));
+  })
+   .then(({result})=>{entry.geometry=result.geometry;stats.physicalLandPreparations++;stats.physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
+  return entry.task;
+ }
+ async function prepareRenderGeometry(items,revision,boundary,signal=geometryAbort.signal){
+  if(!items.length)return {packets:[]};
+  const sentAt=performance.timeOrigin+performance.now();
+  const result=await requestMapGeometry('geometry.prepare',{items,boundary},revision,signal);
   stats.geometryWorkerTransferBytes+=result.stats?.transferBytes||0;
   const receivedAt=performance.timeOrigin+performance.now();
   if(result.boundaryMiss)return result;

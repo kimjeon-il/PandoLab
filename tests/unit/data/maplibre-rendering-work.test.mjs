@@ -22,12 +22,12 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
  const state={layerVisibility:{objects:false,genericFeatures:false,distributions:false,labels:true},
   distributionLayers:[],distributionEntries:[],territorialEntities:[],
   distributionSettings:{},countryVisualPhase:'canonical'};
- let preserved=false,placeTask=null;
- const renderer={map,loaded:true,isStyleReady:()=>true,isFramePreserved:()=>preserved,labelZoomVisibility:()=>({country:true,places:true}),getRuntimeState:()=>({webglContextLost:false}),
+ let preserved=false,placeTask=null,temporal=false,features=[],failure=null,afterBoundaryFailures=null;
+ const renderer={map,loaded:true,isStyleReady:()=>true,isFramePreserved:()=>preserved,labelZoomVisibility:()=>({country:true,places:true}),getRuntimeState:()=>({webglContextLost:false,temporalPresentationPending:temporal,projectRenderBlocked:!!failure}),
   syncHydroState(){},setSelection(){},
   renderFrame:()=>({succeeded:true,presentationReady:true}),
   canPresentVisualFrame:()=>true,commitVisualFrame:()=>true,verifyLayout(){},
-  failMapPreparation(error){throw error;}};
+  failMapPreparation(error){if(!features.length)throw error;failure=error;}};
  const labels={
   getState:()=>state,preparePlaces(){placeQueries++;return placeTask||Promise.resolve(true);},
   beginPlaceInteraction(){},disposePlaces(){},
@@ -41,16 +41,17 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
  const domain=createMapLibreRenderingDomain({
   mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
   mapPalette:()=>({defaultLand:'#ffffff'}),syncMapScene(){sceneSubmissions++;},
-  territorialResources:{getState:()=>state,displayEntities:()=>[],visibleMapObjectCandidates:()=>[],
+  territorialResources:{getState:()=>state,displayEntities:()=>features,visibleMapObjectCandidates:()=>[],
    entityRepository:{},replaceSceneDomain(){}},
   genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){overlayRuns++;}},
   distributionResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){}},
-  territorialBoundaryResources:{getState:()=>state,replaceSceneDomain(){}},
+  territorialBoundaryResources:{getState:()=>state,geometryToken:()=> 'region-v1',replaceSceneDomain(){}},
   baseResources:{getState:()=>({resourceCapabilities:{graticule:false}}),
    replaceSceneDomain(){contentRuns++;}},
   renderers:{labelLayout(){labelRuns++;return layout;}},
   prepareView(options){frames.push(options);prepared++;return {frameId:options.frameId,size:{width:800,height:500}};},
-  reportDiagnostic(error){throw error;},
+  prepareMapDisplay:async()=>{throw Error("boundary worker failed");},
+  reportDiagnostic(error){if(!afterBoundaryFailures)throw error;afterBoundaryFailures();},
  });
  const flush=async()=>{
   for(let i=0;i<12;i++){
@@ -96,6 +97,20 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(domain.getStats().visualFrameCommittedCount,publications,'Target tiles alone cannot release a preserved frame');
   completePlaces(true);await flush();
   assert.equal(domain.getStats().visualFrameCommittedCount,publications+1);
+  preserved=false;
+  state.layerVisibility.objects=true;
+  features=[{id:'region',properties:{entityKind:'regional'},geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,1],[0,0]]]}}];
+  const terminal=new Promise(resolve=>{let failures=0;afterBoundaryFailures=()=>{if(++failures===2)resolve();};});
+  domain.invalidateProject('boundary-fault');
+  await flush();await terminal;await flush();
+  const beforeZoom=domain.getStats().visualFrameCommittedCount;
+  preserved=true;
+  domain.invalidateView('maplibre-camera');await flush();
+  assert.ok(domain.getStats().visualFrameCommittedCount>beforeZoom,'A prior background failure must not lock a preserved zoom');
+  assert.equal(failure,null);
+  temporal=true;
+  domain.invalidateProject('date-with-unchanged-boundaries');await flush();
+  assert.equal(failure?.message,'boundary worker failed','The same failed boundary input must reject a later dated transition');
  }finally{
   domain.dispose();globalThis.requestAnimationFrame=previous.requestAnimationFrame;
   Object.defineProperty(globalThis,'performance',{configurable:true,value:previous.performance});

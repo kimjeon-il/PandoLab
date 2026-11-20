@@ -209,6 +209,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
         candidate.retryTimer = setTimeout(() => prepareTerritorialBoundaries(candidate), 250);
       } else {
         candidate.status = 'failed';
+        candidate.error = error;
         onMapDisplayFailed(error);
       }
     });
@@ -313,5 +314,6 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
   return Object.freeze({renderTerritorialUnits, renderGenericFeatures, renderDistributions, renderBase,
     buildDistributionRenderRows, resetTerritorialBoundaryCache, retryTerritorialBoundaries, getTerritorialBoundaryStats,
     territorialBoundariesPending: () => pendingTerritorialBoundary !== null,
+    territorialBoundaryFailure: () => pendingTerritorialBoundary?.error ?? null,
   });
 }

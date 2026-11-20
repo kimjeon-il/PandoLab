@@ -10,6 +10,7 @@ export function createMapLibreRenderingDomain(options){
  let previousLabelVisibility=null;
  let pendingPlaceViewport=null;
  const stats={invalidations:0,visualFrameCommittedCount:0};
+ const heldTemporalFrame=()=>renderer.isFramePreserved()&&renderer.getRuntimeState().temporalPresentationPending;
  // MapLibre owns per-frame camera projection and symbol placement. Keep label
  // sources intact across moves; a new source snapshot or settled view changes them.
  const invalidate=(reason='map-change',content=false,labels=true)=>{
@@ -42,7 +43,7 @@ export function createMapLibreRenderingDomain(options){
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
   territorialBoundary:options.territorialBoundaryResources,base:options.baseResources,isDisposed:()=>disposed,
   prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>invalidate('display-ready',true),
-  onMapDisplayFailed:error=>{if(renderer.isFramePreserved())renderer.failMapPreparation(error);},reportDiagnostic});
+  onMapDisplayFailed:error=>{if(heldTemporalFrame())renderer.failMapPreparation(error);},reportDiagnostic});
  function render(){
   queued=false;if(disposed||!renderer.loaded||!renderer.isStyleReady()||renderer.getRuntimeState().webglContextLost)return;
   try{
@@ -75,7 +76,11 @@ export function createMapLibreRenderingDomain(options){
    const result=renderer.renderFrame(frame);
    const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(labelsDirty||labels.pending);
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
-   const waitingForBoundaries=renderer.isFramePreserved()&&content.territorialBoundariesPending();
+   const waitingForBoundaries=heldTemporalFrame()&&content.territorialBoundariesPending();
+   const boundaryFailure=waitingForBoundaries&&content.territorialBoundaryFailure();
+   if(boundaryFailure&&!renderer.getRuntimeState().projectRenderBlocked){
+    renderer.failMapPreparation(boundaryFailure);return;
+   }
    if(result.deferred||waitingForVisibleLabels||waitingForPlaces||waitingForBoundaries||!renderer.canPresentVisualFrame(frame,result))return;
    if(!renderer.commitVisualFrame(frame))return;
    labels.publishOptionalFlags();

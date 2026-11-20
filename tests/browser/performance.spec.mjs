@@ -100,7 +100,8 @@ for(const profile of ['desktop','mobile'])test.describe(profile,()=>{
   expect(dateTransitions.every(row=>row.elapsedMs>0)).toBe(true);
  });
 });
-for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance zoom ${zoom} repeat ${iteration}`, async ({ page }, testInfo) => {
+for(const view of [1,3,5,'polar'])for(const iteration of [1,2,3])test(`globe performance zoom ${view} repeat ${iteration}`, async ({ page }, testInfo) => {
+  const polar=view==='polar',zoom=polar?3:view;
   test.skip(process.env.PANDO_PERF_CAPTURE !== '1',
     'Run explicitly with PANDO_PERF_CAPTURE=1 on both baseline and candidate.');
   test.setTimeout(240_000);
@@ -116,12 +117,12 @@ for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance
   await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__));
   const initialMapPresentedMs=await page.evaluate(()=>window.__PANDO_PERF_INITIAL_MS__);
 
-  await page.evaluate(zoom => {
+  await page.evaluate(({zoom,polar}) => {
     const host = window.__PANDOLAB_MAP_HOST__;
     host.setViewState({ projection: 'globe', view: {
-      zoom: zoom, globeRotation: [-90, -25, 0],
+      zoom, globeRotation: polar?[-20,85,0]:[-90,-25,0],
     } });
-  },zoom);
+  },{zoom,polar});
   const admitted = await page.waitForFunction(() => {
     const map = window.__PANDOLAB_MAPLIBRE__;
     const stats = window.__PANDOLAB_VIEWER__?.rendererStats();
@@ -222,7 +223,7 @@ for(const zoom of [1,3,5])for(const iteration of [1,2,3])test(`globe performance
     dateTransitions.push({month:value,elapsedMs:await page.evaluate(()=>window.__PANDO_PERF_DATE_MS__)});
   }
   const output = {
-    metricVersion:5,scenario:'interaction',profile:'desktop',label: process.env.PANDO_PERF_LABEL || 'candidate',zoom,iteration,
+    metricVersion:5,scenario:polar?'polar-interaction':'interaction',profile:'desktop',label: process.env.PANDO_PERF_LABEL || 'candidate',zoom,iteration,
     identity:await performanceIdentity(page,navigation),
     url: page.url(), viewport: { width: 1280, height: 800 },
     initial: {presentedAtMs:initialMapPresentedMs,revision: initial.revision, camera: initial.camera,
