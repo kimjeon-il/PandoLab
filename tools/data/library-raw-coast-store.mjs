@@ -28,7 +28,7 @@ function context(root,expectedAppRevision,expectedDataRevision,scopes,expectedLi
   const libraryHead=assertRawBranchTarget(library,expectedDataRevision).headRef;
   const pin=JSON.parse(readRawGitBlob(root,expectedAppRevision,pinPath));
   const archive=JSON.parse(readRawGitBlob(library,expectedDataRevision,indexPath));
-  if(pin.schemaVersion!==1||pin.repository!=='kimjeon-il/PandoLab-library'||pin.revision!==expectedDataRevision||
+  if(pin.schemaVersion!==1||!['kimjeon-il/PandoLab-Data','kimjeon-il/PandoLab-library'].includes(pin.repository)||pin.revision!==expectedDataRevision||
     archive.branch!=='work/gis-raw-modern'||!pin.mounts?.includes('assets/data')||!pin.mounts?.includes('reports'))
     fail('existing raw app pin and archive branch must match the requested data revision');
   // A caller using the immutable raw module graph may explicitly bind the

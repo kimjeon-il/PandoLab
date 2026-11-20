@@ -21,7 +21,7 @@ jobs:
             /config/library-data.json
       - uses: actions/checkout@v4
         with:
-          repository: kimjeon-il/PandoLab-library
+          repository: kimjeon-il/PandoLab-Data
           ref: 81c45d11d1265e287dd21aaf0127c1112aca1176
           path: historical-hydro
           persist-credentials: false

@@ -64,7 +64,7 @@ export async function packageSharedToolkit({root,revision,artifacts,baseDependen
     for(const collect of [collectMapImageArtifacts,collectMapPdfArtifacts,collectMapPreviewArtifacts])
       for(const row of collect({workspace:root,revision,...artifacts}))add(row.path,row.data);
   }
-  const source={repository:'kimjeon-il/Pando',revision,storageFiles};
+  const source={repository:'kimjeon-il/PandoLab',revision,storageFiles};
   if(baseDependency){
     source.compute=baseDependency.pin.source.compute||{...baseDependency.pin.source,artifactSha256:baseDependency.pin.sha256};
   }

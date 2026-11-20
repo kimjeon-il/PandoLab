@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {verifyPagesDeployment} from "../../tools/checks/verify-pages-deployment.mjs";
 // Fixed GitHub authority. No repository, URL, ref, workflow or executable from events.
-const BASE='https://api.github.com/repos/kimjeon-il/Pando/';
+const BASE='https://api.github.com/repos/kimjeon-il/PandoLab/';
 const SHA=/^(?!0{40}$)[a-f0-9]{40}$/;
 function fail(code){throw Object.assign(Error(code),{code});}
 export function createGithubPages({token=process.env.GITHUB_TOKEN,fetch=globalThis.fetch,verifyLive=undefined}={}){
@@ -65,6 +65,6 @@ export async function verifyArtifactLive({run,expected,api,token,fetch=globalThi
   evidence=JSON.parse(execFileSync(executable,args,{maxBuffer:4*1024*1024,stdio:['ignore','pipe','pipe']}));
  }finally{rmSync(dir,{recursive:true,force:true});}
  if(evidence.sourceCommit!==run.head_sha||evidence.dataCommit!==expected.dataSha)fail('ARTIFACT_IDENTITY_MISMATCH');
- const verified=await verifyPagesDeployment({baseUrl:'https://kimjeon-il.github.io/Pando/',evidence,fetchFn:(url,options)=>{const u=new URL(url);if(u.origin!=='https://kimjeon-il.github.io'||!u.pathname.startsWith('/Pando/'))fail('INVALID_LIVE_URL');return fetch(u,{...options,redirect:'error',signal:AbortSignal.timeout(30000)});}});
+ const verified=await verifyPagesDeployment({baseUrl:'https://kimjeon-il.github.io/PandoLab/',evidence,fetchFn:(url,options)=>{const u=new URL(url);if(u.origin!=='https://kimjeon-il.github.io'||!u.pathname.startsWith('/PandoLab/'))fail('INVALID_LIVE_URL');return fetch(u,{...options,redirect:'error',signal:AbortSignal.timeout(30000)});}});
  return {verified:true,...verified,artifactId:item.id};
 }

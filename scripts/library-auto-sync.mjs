@@ -15,7 +15,7 @@ import {libraryCheckout,decodeArchiveEntry} from "../tools/data/library-context.
 import {prepareLibraryData} from "../tools/data/library-runtime.mjs";
 import {storeLibraryData} from "../tools/data/library-store.mjs";
 import {RECEIPT_PATH,artifactGraph,ownsPath} from './lib/generated-artifact-graph.mjs';
-const APP='kimjeon-il/Pando',DATA='kimjeon-il/PandoLab-library';
+const APP='kimjeon-il/PandoLab',DATA='kimjeon-il/PandoLab-Data';
 const CONFIG='config/library-data.json';
 const FAMILIES=Object.freeze(['territorial','current-world','world-mesh','world-country-packet','world-bundle','shared-boundaries','builtin-world','prepared-mesh']);
 const SHA=/^(?!0{40}$)[a-f0-9]{40}$/;

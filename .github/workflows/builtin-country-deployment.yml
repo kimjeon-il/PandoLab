@@ -43,10 +43,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
-          node --input-type=module -e 'import assert from "node:assert/strict"; import {libraryConfig} from "./tools/data/library-context.mjs"; const pin=libraryConfig(); assert.equal(pin.repository,"kimjeon-il/PandoLab-library"); assert.match(process.env.DATA_REVISION,/^(?!0{40}$)[a-f0-9]{40}$/); assert.equal(pin.revision,process.env.DATA_REVISION)'
+          node --input-type=module -e 'import assert from "node:assert/strict"; import {libraryConfig} from "./tools/data/library-context.mjs"; const pin=libraryConfig(); assert.equal(pin.repository,"kimjeon-il/PandoLab-Data"); assert.match(process.env.DATA_REVISION,/^(?!0{40}$)[a-f0-9]{40}$/); assert.equal(pin.revision,process.env.DATA_REVISION)'
       - uses: actions/checkout@v4
         with:
-          repository: kimjeon-il/PandoLab-library
+          repository: kimjeon-il/PandoLab-Data
           ref: work/active
           path: .library-data/repository
           sparse-checkout: archive

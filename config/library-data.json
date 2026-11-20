@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "repository": "kimjeon-il/PandoLab-library",
+  "repository": "kimjeon-il/PandoLab-Data",
   "revision": "e156968a7833a03013e8c04c7aae220a24b7c922",
   "mounts": [
     "assets/data",

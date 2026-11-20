@@ -1,7 +1,9 @@
 import { normalizeTemporalInterval, parseTemporal } from "./temporal.js";
 
 export const REVIEW_BUNDLE_SCHEMA_VERSION = 1;
-export const REVIEW_DATA_REPOSITORY = 'kimjeon-il/PandoLab-library';
+export const REVIEW_DATA_REPOSITORY = 'kimjeon-il/PandoLab-Data';
+
+export const isReviewDataRepository = repository => repository === REVIEW_DATA_REPOSITORY || repository === 'kimjeon-il/PandoLab-library';
 
 const kinds = Object.freeze(['geometry', 'name', 'flag', 'parent', 'lifetime']);
 const checkNames = Object.freeze(['source-integrity', 'temporal', 'schema', 'geometry-topology', 'parent-graph']);
@@ -138,7 +140,7 @@ function proposal(source) {
     ['supersedesProposalId'], 'proposal');
   const proposalId = id(source.proposalId, 'proposalId');
   shape(source.dataset, ['repository', 'baseRevision', 'candidateRevision'], [], 'dataset');
-  if (source.dataset.repository !== REVIEW_DATA_REPOSITORY)
+  if (!isReviewDataRepository(source.dataset.repository))
     fail('Review dataset must use the established external library owner.');
   const baseRevision = sha(source.dataset.baseRevision, 'baseRevision');
   const candidateRevision = sha(source.dataset.candidateRevision, 'candidateRevision');

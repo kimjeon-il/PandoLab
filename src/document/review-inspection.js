@@ -1,4 +1,4 @@
-import { normalizeReviewBundle, reviewState, indexReviewHistory, REVIEW_DATA_REPOSITORY }
+import { normalizeReviewBundle, reviewState, indexReviewHistory, isReviewDataRepository }
   from "./review-change-records.js";
 
 const sha = /^[0-9a-f]{40}$/, digest = /^[0-9a-f]{64}$/;
@@ -11,7 +11,7 @@ const sorted = (a,b) => a<b?-1:a>b?1:0;
 const invalid = detail => {throw Object.assign(new TypeError(detail),{code:'PL-REVIEW-INSPECTION'});};
 
 function dataIdentity(dataset) {
-  if (!dataset || dataset.repository !== REVIEW_DATA_REPOSITORY
+  if (!dataset || !isReviewDataRepository(dataset.repository)
     || !sha.test(dataset.baseRevision || '') || !sha.test(dataset.candidateRevision || '')
     || dataset.baseRevision === dataset.candidateRevision)
     invalid('검수 자료의 원본/후보 데이터 SHA가 올바르지 않습니다.');
@@ -162,7 +162,7 @@ export function reviewEvidenceUrl(ref) {
     || !/^reports\/(?:borders|development|hydro|places|terrain|map-analysis)\/[A-Za-z0-9_./-]+\.(md|json)$/.test(ref.reportPath)
     || ref.reportPath.split('/').some(x=>x==='..'||x==='.'||!x))
     invalid('보고서 링크의 리비전 또는 경로가 유효하지 않습니다.');
-  return 'https://github.com/kimjeon-il/PandoLab-library/blob/'+ref.revision+'/'+ref.reportPath;
+  return 'https://github.com/kimjeon-il/PandoLab-Data/blob/'+ref.revision+'/'+ref.reportPath;
 }
 export function correctionRequest({inspection,sourceEntityId,change,kind,reason,createdAt}={}) {
   if(!inspection?.diff||!inspection.entities.some(x=>x.sourceEntityId===sourceEntityId))

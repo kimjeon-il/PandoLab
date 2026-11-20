@@ -2,7 +2,7 @@
 
 ## 프로젝트와 외부 자료
 
-- Pando는 Viewer·공통 제품 계산·런타임 빌드/저장 지원·계약·fixture·앱 검사를 소유한다. 외부 `kimjeon-il/PandoLab-library`는 라이브러리 객체·원본 GIS·런타임 지도·보고서와 비Viewer 작성/관리 도구 및 해당 집중 검사를 소유한다. 자료 전용 worktree는 storage-only다.
+- Pando는 Viewer·공통 제품 계산·런타임 빌드/저장 지원·계약·fixture·앱 검사를 소유한다. 외부 `kimjeon-il/PandoLab-Data`는 라이브러리 객체·원본 GIS·런타임 지도·보고서와 비Viewer 작성/관리 도구 및 해당 집중 검사를 소유한다. 자료 전용 worktree는 storage-only다.
 - 프로젝트는 역사 객체·작성 지명·작성 수계·타임라인·작성 표현의 소유 경계다. 불변 원자료 바이트·검증된 형상은 재사용할 수 있으나 프로젝트 간 객체·선택·편집·이력·세대 등 가변 상태는 공유하지 않는다. 외부 자료는 명시적인 ID·리비전·해시 참조 또는 검증된 스냅샷으로 수용한다.
 - `config/library-data.json`은 브랜치별 자료 커밋을 고정한다. `node tools/data/library-data.mjs`는 고정 캐시·마운트를 준비하며 마운트 자료를 앱 Git에 넣지 않는다. 도구 코드 핀과 자료 핀, 보고서 revision은 독립적이다. 브랜치의 자료/WASM 짝을 검토 없이 다른 브랜치 핀으로 바꾸지 않는다. 보고서 원본·판본·발행과 공개 배포는 AGENTS.md의 별도 소유권·완료 규칙을 따른다.
 

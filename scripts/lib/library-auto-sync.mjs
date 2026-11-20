@@ -28,7 +28,7 @@ export function pairedApplicationBranch(dataBranch) {
   if (dataBranch === 'work/active') return 'work/active';
   throw new TypeError('Invalid data branch');
 }
-function tuple(request){exact(request,REQUEST_KEYS,'request');check(request.dataRepository==='kimjeon-il/PandoLab-library','data repository');check(request.appRepository==='kimjeon-il/Pando','app repository');check(pairedApplicationBranch(request.dataBranch)===request.appBranch,'paired branches');check(SHA.test(request.dataSha)&&typeof request.dataSha==='string','data SHA');check(SHA.test(request.appSha)&&typeof request.appSha==='string','app SHA');check(typeof request.production==='boolean','production');return {...request};}
+function tuple(request){exact(request,REQUEST_KEYS,'request');check(request.dataRepository==='kimjeon-il/PandoLab-Data','data repository');check(request.appRepository==='kimjeon-il/PandoLab','app repository');check(pairedApplicationBranch(request.dataBranch)===request.appBranch,'paired branches');check(SHA.test(request.dataSha)&&typeof request.dataSha==='string','data SHA');check(SHA.test(request.appSha)&&typeof request.appSha==='string','app SHA');check(typeof request.production==='boolean','production');return {...request};}
 function productionAllowed(r,p){return !r.production||(p.productionEnabled&&r.dataBranch==='main'&&r.appBranch==='main');}
 export function validateSyncRequest(request,policy){validatePolicy(policy);const r=tuple(request);check(productionAllowed(r,policy),'production request');return r;}
 export function planSync(state){

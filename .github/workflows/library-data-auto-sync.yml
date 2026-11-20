@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   gate:
-    if: github.repository == 'kimjeon-il/Pando'
+    if: github.repository == 'kimjeon-il/PandoLab'
     runs-on: ubuntu-24.04
     outputs:
       allowed: ${{ steps.policy.outputs.allowed }}
@@ -91,13 +91,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: kimjeon-il/Pando
+          repository: kimjeon-il/PandoLab
           ref: ${{ needs.gate.outputs.app_branch }}
           fetch-depth: 0
           persist-credentials: true
       - uses: actions/checkout@v4
         with:
-          repository: kimjeon-il/PandoLab-library
+          repository: kimjeon-il/PandoLab-Data
           ref: ${{ needs.gate.outputs.branch }}
           path: .library-data/repository
           fetch-depth: 0

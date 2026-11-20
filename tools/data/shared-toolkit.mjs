@@ -18,7 +18,7 @@ function checkedPath(root,path){
 function contract(pin){
   if(pin?.schema!=='pando-shared-toolkit'||pin.interfaceVersion!==1)throw Error('Unsupported shared toolkit interface');
   if(!/^[a-f0-9]{64}$/.test(pin.sha256)||!Number.isSafeInteger(pin.bytes)||pin.bytes<1||
-    pin.source?.repository!=='kimjeon-il/Pando'||!/^[a-f0-9]{40}$/.test(pin.source.revision))throw Error('Invalid shared toolkit identity');
+    !['kimjeon-il/PandoLab','kimjeon-il/Pando'].includes(pin.source?.repository)||!/^[a-f0-9]{40}$/.test(pin.source.revision))throw Error('Invalid shared toolkit identity');
 }
 async function noLinks(root,path=''){
   let cursor=resolve(root);
