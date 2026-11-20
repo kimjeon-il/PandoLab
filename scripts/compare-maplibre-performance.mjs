@@ -12,8 +12,8 @@ export function compareMapLibrePerformance(baseline,candidate){
  }
  const pins=[...baseline,...candidate].map(row=>row.identity?.dataPin);
  if(pins.some(pin=>typeof pin!=='string'||!pin)||new Set(pins).size!==1)throw Error('Performance captures must share their data pin');
- const versions=[...baseline,...candidate].map(row=>row.metricVersion);
- if(versions.some(version=>version!==5)||new Set(versions).size!==1)throw Error('Performance captures must share their metric version');
+ if([...baseline,...candidate].some(row=>row.metricVersion!==(row.scenario==='startup-date'?6:5)))
+  throw Error('Performance captures must use the current scenario metric version');
  const groupKey=row=>JSON.stringify([row.scenario||'interaction',row.profile||'desktop',row.zoom??null]);
  const groups=[...new Set(baseline.map(groupKey))];
  if(!groups.length||JSON.stringify([...groups].sort())!==JSON.stringify([...new Set(candidate.map(groupKey))].sort()))throw Error('Performance scenarios must match');
@@ -21,9 +21,9 @@ export function compareMapLibrePerformance(baseline,candidate){
   const [scenario,profile,zoom]=JSON.parse(group),select=values=>values.filter(value=>groupKey(value)===group);
   const before=select(baseline),after=select(candidate);
   if(before.length!==3||after.length!==3||new Set(before.map(row=>row.iteration)).size!==3||new Set(after.map(row=>row.iteration)).size!==3)throw Error('Each zoom requires three distinct baseline and candidate runs');
-  const identities=[...before,...after].map(row=>JSON.stringify([row.identity.wasmManifestSha256,row.identity.viewport,row.identity.browserVersion]));
+  const identities=[...before,...after].map(row=>JSON.stringify([row.identity.wasmManifestSha256,row.identity.viewport,row.identity.browserVersion,row.dateTransitions.map(date=>date.month)]));
   if(new Set(identities).size!==1)throw Error('Performance environments must match');
-  const metrics={...(scenario==='startup-date'?{}:{p95:row=>row.measured.frameGapP95Ms,p99:row=>row.measured.frameGapP99Ms}),initial:row=>row.initial.presentedAtMs,
+  const metrics={...(scenario==='startup-date'?{warmInitial:row=>row.warmInitialMs}:{p95:row=>row.measured.frameGapP95Ms,p99:row=>row.measured.frameGapP99Ms}),initial:row=>row.initial.presentedAtMs,
    dateFirst:row=>row.dateTransitions[0].elapsedMs,dateOther:row=>row.dateTransitions[1].elapsedMs,dateRevisit:row=>row.dateTransitions[2].elapsedMs};
   for(const row of [...before,...after])if(scenario!=='startup-date'&&row.measured.sampleCount<500)throw Error('Insufficient active-frame samples');
   for(const [metric,read]of Object.entries(metrics)){
@@ -40,10 +40,17 @@ function readCaptures(root){
  visit(root);return output;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- let baseline=readCaptures(process.argv[2]||'test-results/performance/baseline');
- if(!process.argv[2]&&existsSync('test-results/performance/baseline-retry')){const key=row=>JSON.stringify([row.scenario||'interaction',row.profile||'desktop',row.zoom??null]);const retry=readCaptures('test-results/performance/baseline-retry').filter(row=>row.metricVersion===baseline[0]?.metricVersion),groups=new Set(retry.map(key));baseline=[...baseline.filter(row=>!groups.has(key(row))),...retry];}
- let candidate=readCaptures(process.argv[3]||'test-results/performance/candidate');
- if(!process.argv[3]&&existsSync('test-results/performance/candidate-retry')){const key=row=>JSON.stringify([row.scenario||'interaction',row.profile||'desktop',row.zoom??null]);const retry=readCaptures('test-results/performance/candidate-retry').filter(row=>row.metricVersion===candidate[0]?.metricVersion),groups=new Set(retry.map(key));candidate=[...candidate.filter(row=>!groups.has(key(row))),...retry];}
+ const readSide=(directory,label)=>{
+  const rows=readCaptures(directory||'test-results/performance/'+label);
+  const retryPath='test-results/performance/'+label+'-retry';
+  if(directory||!existsSync(retryPath))return rows;
+  const key=row=>JSON.stringify([row.scenario||'interaction',row.profile||'desktop',row.zoom??null,row.metricVersion]);
+  const current=new Set(rows.map(key));
+  const retries=readCaptures(retryPath).filter(row=>current.has(key(row)));
+  const retried=new Set(retries.map(key));
+  return [...rows.filter(row=>!retried.has(key(row))),...retries];
+ };
+ const baseline=readSide(process.argv[2],'baseline'),candidate=readSide(process.argv[3],'candidate');
  const result=compareMapLibrePerformance(baseline,candidate);
  console.log(JSON.stringify(result,null,2));if(!result.ok)process.exitCode=1;
 }

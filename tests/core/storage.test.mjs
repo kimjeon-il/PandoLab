@@ -329,13 +329,24 @@ test('remote byte verification failure cannot be reported as completed archival'
 });
 
 test('Viewer closure rejects missing payloads and private report dependencies',()=>{
- const manifest='assets/data/world/current.json',payload='assets/data/world/objects/current.bin',privateReport='reports/development/private.md';
+ const manifest='assets/data/world/current.json',places='assets/data/places/catalog.json';
+ const retiredRoles=['canonicalCountryPacket','canonicalMesh','labelAnchors','preparedCountryScene'];
+ const retired=retiredRoles.map(role=>'assets/data/world/objects/'+role+'.bin');
+ const retiredBoundary='assets/data/world/objects/old-boundary.bin',payload='assets/data/places/current.bin';
+ const privateReport='reports/development/private.md';
  const roles=['world','territorial','rivers','lakes','places','placeLifetimes','physicalLand','preparedMeshes'];
- const projectManifest={format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',documentFormat:'pandolab-project-state',resources:Object.fromEntries(roles.map(role=>[role,{catalog:manifest}]))};
- assert.throws(()=>collectRuntimeDataAssets({availablePaths:[],readManifest:()=>({})}),/project/i);
- assert.throws(()=>collectRuntimeDataAssets({projectManifest,availablePaths:[manifest],readManifest:()=>({assets:{canonicalMesh:{url:'world/objects/missing.bin'}}})}),/missing/i);
- assert.throws(()=>collectRuntimeDataAssets({projectManifest,availablePaths:[manifest,privateReport],entryPaths:[privateReport],readManifest:()=>({assets:{}})}),/invalid/i);
- const selected=collectRuntimeDataAssets({projectManifest,availablePaths:[manifest,payload,privateReport],readManifest:()=>({assets:{canonicalMesh:{url:payload}},source:{url:privateReport}})});assert.deepEqual([...selected].sort(),[manifest,payload].sort());
+ const resources=Object.fromEntries(roles.map(role=>[role,{catalog:role==='places'?places:manifest}]));
+ const projectManifest={format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',name:'Fixture map',documentFormat:'pandolab-project-state',resources};
+ const readManifest=path=>path===places?{shards:{current:{url:'current.bin'}}}:
+  {assets:Object.fromEntries(retiredRoles.map((role,index)=>[role,{url:retired[index]}])),
+   compatibility:{sharedBoundaries:{canonical:retiredBoundary}},source:{url:privateReport}};
+ assert.throws(()=>collectRuntimeDataAssets({availablePaths:[],readManifest}),/project/i);
+ assert.throws(()=>collectRuntimeDataAssets({projectManifest,availablePaths:[manifest,places],readManifest}),/missing.*current[.]bin/i);
+ assert.throws(()=>collectRuntimeDataAssets({projectManifest,availablePaths:[manifest,places,privateReport],entryPaths:[privateReport],readManifest}),/invalid/i);
+ for(const extra of [[],[...retired,retiredBoundary]]) {
+  const selected=collectRuntimeDataAssets({projectManifest,availablePaths:[manifest,places,payload,privateReport,...extra],readManifest});
+  assert.deepEqual([...selected].sort(),[manifest,places,payload].sort());
+ }
 });
 
 test('failed and blocked checks stop execution before any publication action',async t=>{

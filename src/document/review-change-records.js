@@ -288,16 +288,6 @@ export function reviewState(input) {
 }
 
 /** Append only; immutable proposal, ordered event log and prior records retained. */
-export function appendReviewEvent(input, event) {
-  const bundle = normalizeReviewBundle(input);
-  return normalizeReviewBundle({schemaVersion: bundle.schemaVersion, proposal: bundle.proposal,
-    events: [...bundle.events, event]});
-}
-
-export function serializeReviewBundle(input) {
-  return JSON.stringify(normalizeReviewBundle(input), null, 2) + '\n';
-}
-
 /** Deterministic flat browse index; no world model, duplicated geometry or mutable Map. */
 export function indexReviewHistory(values) {
   if (!Array.isArray(values) || values.length > 10000) fail('Review collection must be a bounded array.');

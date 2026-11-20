@@ -3,9 +3,12 @@ import { resolveTerritorialColor } from "../ui/color-adapter.js";
 
 // One material contract for all objects. Independent regions never claim land
 // ownership or inherit the general hierarchy's paint.
-export function createTerritorialFillResolver({ state, entityRepository, mapSubstrate = null, neutralColor = null }) {
+export function createTerritorialFillResolver({ state, entityRepository, mapSubstrate = null, neutralColor = null, resolveStoredColors = false }) {
   const cache = new Map();
-  const presentation = state.layerPresentation;
+  const original = state.layerPresentation;
+  const presentation = resolveStoredColors
+    ? {...original, styles:{...original?.styles, objects:{...original?.styles?.objects, colorVisible:true}}}
+    : original;
   const colorsEnabled = layerStyle(presentation, 'objects').colorVisible;
   const colorVisible = feature => colorsEnabled
     && layerStyle(presentation, 'objects', `territorial:entity:${feature.id}`).colorVisible;

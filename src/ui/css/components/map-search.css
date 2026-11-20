@@ -160,7 +160,7 @@
   overflow-y: auto;
 }
 
-.app-root.viewer-root .map-search-bar {
+.app-root.viewer-root:where([data-layout="mobile"], [data-layout="phone-landscape"]) .map-search-bar {
   height: var(--ui-viewer-map-bar-height);
   overflow: visible;
   opacity: 1;
@@ -169,20 +169,20 @@
   transform: none;
   transition: none;
 }
-.app-root.viewer-root .map-search-bar .surface-body-delegated {
+.app-root.viewer-root:where([data-layout="mobile"], [data-layout="phone-landscape"]) .map-search-bar .surface-body-delegated {
   flex: 0 0 auto;
   overflow: visible;
 }
-.app-root.viewer-root .map-search-bar > .surface-header,
-.app-root.viewer-root .map-search-bar:not(.surface-open) .object-search-results {
+.app-root.viewer-root:where([data-layout="mobile"], [data-layout="phone-landscape"]) .map-search-bar > .surface-header,
+.app-root.viewer-root:where([data-layout="mobile"], [data-layout="phone-landscape"]) .map-search-bar:not(.surface-open) .object-search-results {
   display: none;
 }
-.app-root.viewer-root .map-search-bar .object-search {
+.app-root.viewer-root:where([data-layout="mobile"], [data-layout="phone-landscape"]) .map-search-bar .object-search {
   min-height: calc(var(--ui-viewer-map-bar-height) - var(--ui-border-width) * 2);
   border: 0;
   background: transparent;
 }
-.app-root.viewer-root .map-search-bar .object-search-results {
+.app-root.viewer-root:where([data-layout="mobile"], [data-layout="phone-landscape"]) .map-search-bar .object-search-results {
   max-height: clamp(0px, calc(var(--workspace-visible-height, 100dvh) - var(--viewer-context-bottom)
     + var(--workspace-bottom-offset, 0px) - var(--ui-viewer-map-bar-height) - var(--ui-space-6)), 24rem);
 }

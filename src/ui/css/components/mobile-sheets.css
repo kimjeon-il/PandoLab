@@ -85,7 +85,7 @@
     align-items: stretch;
     padding: var(--ui-space-1) max(var(--ui-space-1), env(safe-area-inset-right)) calc(var(--ui-mobile-bottom-nav-padding) + env(safe-area-inset-bottom)) max(var(--ui-space-1), env(safe-area-inset-left));
     border-top: 1px solid var(--border);
-    background: var(--mobile-nav-bg);
+    background: var(--surface-elevated);
   }
 
   [data-layout="mobile"] .mobile-bottom-bar {
@@ -125,7 +125,6 @@
   display: none;
 }
 
-.ui-menu-list .mobile-file-back { display: none; }
 
 @media (max-width: 799px) {
   .viewer-root[data-layout="mobile"] .mobile-menu-toolbar {
@@ -140,7 +139,7 @@
     min-width: var(--ui-mobile-floating-surface-size);
     height: var(--ui-mobile-floating-surface-size);
     min-height: var(--ui-mobile-floating-surface-size);
-    padding: var(--ui-space-1-5);
+    padding: var(--ui-mobile-floating-padding, var(--ui-space-1-5));
     gap: 0;
     transform: none;
   }
@@ -160,8 +159,7 @@
     padding: var(--ui-menu-padding);
   }
 
-  .viewer-root[data-layout="mobile"] .mobile-global-menu,
-  .app-root.viewer-root[data-layout="mobile"] .top-actions {
+  .viewer-root[data-layout="mobile"] .mobile-global-menu {
     top: calc(
       max(var(--ui-space-2), env(safe-area-inset-top))
       + var(--ui-mobile-floating-surface-size)
@@ -176,7 +174,6 @@
 
   [data-layout="mobile"] .mobile-global-menu[hidden] { display: none; }
   [data-layout="mobile"] .mobile-global-menu .ui-menu-item { min-height: var(--ui-touch-height); }
-  [data-layout="mobile"] .ui-menu-list .mobile-file-back { display: grid; }
   [data-layout="mobile"] .mobile-command-item[aria-expanded="true"] { color: inherit; background: transparent; }
   [data-layout="mobile"] .mobile-command-item::after { display: none; }
 }
@@ -188,6 +185,7 @@
     place-items: center;
   }
 }
+
 
 @media (max-width: 799px) {
   .mobile-workspace-controls .ui-nav-item .ui-icon {
@@ -377,7 +375,7 @@
 }
 
 .app-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .mobile-workspace-controls {
-  background: var(--mobile-nav-bg);
+  background: var(--surface-elevated);
 }
 
 .app-root[data-layout="phone-landscape"] .mobile-workspace-controls {

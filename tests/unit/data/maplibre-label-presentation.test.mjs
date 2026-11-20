@@ -96,22 +96,6 @@ test('a flag finishing after label disposal cannot recreate an image',async()=>{
  labels.prepareFlags({territorialFlags:new Map([['a',{url:'flag.png'}]])});labels.dispose();resolveImage({data:{width:12,height:8}});await new Promise(resolve=>setImmediate(resolve));assert.equal(added,0);
 });
 
-test('a dated label set can publish its new image identity before optional decoding completes',async()=>{
- let finish;
- const images=new Set();
- const map={loadImage:()=>new Promise(resolve=>{finish=resolve;}),getLayer:()=>null,getSource:()=>null,
-  hasImage:id=>images.has(id),addImage:id=>images.add(id),removeImage:id=>images.delete(id)};
- const labels=createMapLibreLabelPresentation({renderer:{map},labels:{},onChange(){},onError:assert.fail});
- try{
-  const layout={territorialFlags:new Map([['dated',{url:'1922.png'}]])};
-  assert.equal(labels.prepareFlags(layout),true);
-  finish({data:{width:12,height:8}});
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(labels.prepareFlags(layout),true);
-  assert.equal(images.size,1);
- }finally{labels.dispose();}
-});
-
 test('neither unchanged nor new pending flags can hold a dated map',()=>{
  const map={loadImage:()=>new Promise(()=>{}),getLayer:()=>null,getSource:()=>null,hasImage:()=>false};
  const presentation=createMapLibreLabelPresentation({renderer:{map},labels:{},onChange(){},onError:assert.fail});
@@ -148,35 +132,70 @@ test('bundled flag cache busting does not reload the same image during a date ch
  }finally{presentation.dispose();globalThis.document=previous;globalThis.URL=OriginalURL;}
 });
 
-test('flag completions share one image installation frame without resubmitting label sources',async()=>{
+test('flag completions share one image installation frame after the dated map is admitted',async()=>{
  const previous=globalThis.requestAnimationFrame;let flush;globalThis.requestAnimationFrame=callback=>{flush=callback;return 1;};
  const finishes=[],images=new Set();let changes=0;
  const map={loadImage:()=>new Promise(resolve=>finishes.push(resolve)),getLayer:()=>null,getSource:()=>null,hasImage:id=>images.has(id),addImage:id=>images.add(id),removeImage:id=>images.delete(id)};
  let temporalPending=true;
- const presentation=createMapLibreLabelPresentation({renderer:{map,getRuntimeState:()=>({temporalPresentationPending:true,temporalViewPending:temporalPending})},labels:{},onChange:()=>changes++,onError:assert.fail});
+ const presentation=createMapLibreLabelPresentation({renderer:{map,getRuntimeState:()=>({temporalPresentationPending:temporalPending})},labels:{},onChange:assert.fail,onFlagsReady:()=>changes++,onError:assert.fail});
  try{
   presentation.prepareFlags({territorialFlags:new Map([['a',{url:'a.png'}],['b',{url:'b.png'}]])});
   for(const finish of finishes)finish({data:{width:24,height:12}});await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(images.size,0);assert.equal(typeof flush,'function');flush();assert.equal(images.size,0,'optional image uploads yield to the required dated frame');temporalPending=false;flush();assert.equal(images.size,2);assert.equal(changes,0);
+  assert.equal(images.size,0);assert.equal(typeof flush,'function');flush();
+  assert.equal(images.size,0,'optional image uploads yield to the required dated frame');
+  temporalPending=false;presentation.publishOptionalFlags();flush();
+  assert.equal(images.size,2);assert.equal(changes,1);
  }finally{presentation.dispose();globalThis.requestAnimationFrame=previous;}
 });
 
-test('label refresh preserves external fonts and never reuses a live flag image ID',async()=>{
+test('labels publish before flags and change selection without mutating tile feature state',async()=>{
  const previous=globalThis.document;globalThis.document={baseURI:'https://fixture.test/'};
- const sources=new Map(),layers=new Map(),images=new Map(),errors=[],diffs=[];let fontWrites=0,fullUploads=0,faces={External:[{url:'external.woff2'}]};
- const map={getStyle:()=>({'font-faces':faces}),setFontFaces:value=>{faces=value;fontWrites++;},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),hasImage:id=>images.has(id),addImage:(id,image)=>images.set(id,image),removeImage:id=>images.delete(id),loadImage:async()=>({data:{width:24,height:12}}),
+ const sources=new Map(),layers=new Map(),images=new Map(),errors=[],diffs=[],finishes=new Map();
+ let fontWrites=0,fullUploads=0,tilesReady=true,selected=null,faces={External:[{url:'external.woff2'}]};
+ const map={getStyle:()=>({'font-faces':faces}),setFontFaces:value=>{faces=value;fontWrites++;},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),hasImage:id=>images.has(id),addImage:(id,image)=>images.set(id,image),removeImage:id=>images.delete(id),loadImage:url=>new Promise(resolve=>finishes.set(url,resolve)),isSourceLoaded:()=>tilesReady,
   addSource:(id,value)=>sources.set(id,{...value,on(_type,listener){this.listener=listener;},off(){this.listener=null;},
    async setData(data){fullUploads++;this.data=data;},
-   async updateData(diff){diffs.push(diff);this.data.features=[...this.data.features.filter(feature=>!diff.remove.includes(feature.id)),...diff.add];}
-  }),addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),setPaintProperty(){},setFeatureState(){},removeFeatureState(){}};
- const resources={getState:()=>({layerVisibility:{labels:false}}),getTerritorialLabelRef:id=>({id,key:'territorial:entity:'+id}),automaticLabelSettings:()=>({}),labelSettings:()=>({}),countryLabelAnchors:()=>new Map(['a','b','c'].map(id=>[id,[0,0]]))};
- const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onError:error=>errors.push(error)});
+   async updateData(diff){
+    diffs.push(diff);
+    this.data.features=[...this.data.features.filter(feature=>!diff.remove.includes(feature.id)),...diff.add];
+    for(const update of diff.update){
+     const feature=this.data.features.find(f=>f.id===update.id);
+     for(const {key,value} of update.addOrUpdateProperties)feature.properties[key]=value;
+    }
+   }
+  }),addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),setPaintProperty(){assert.fail('Unchanged paint must not be reapplied');},setFeatureState:assert.fail,removeFeatureState:assert.fail};
+ const resources={getState:()=>({layerVisibility:{labels:false}}),getTerritorialLabelRef:id=>({id,key:'territorial:entity:'+id}),automaticLabelSettings:()=>({}),labelSettings:()=>({}),countryLabelAnchors:()=>new Map(['a','b','c'].map(id=>[id,[0,0]])),selectionHas:ref=>ref.id===selected};
+ let activeLayout;
+ const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onFlagsReady:()=>presentation.renderTerritorialLabels(activeLayout),onError:error=>errors.push(error)});
  const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialFlags:new Map(ids.map(id=>[id,{url:id+'.png',height:12}])),territorialLabelNames:new Map(),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),userLabels:[]});
- const show=async ids=>{const value=layout(ids);presentation.prepareFlags(value);presentation.renderTerritorialLabels(value);await new Promise(resolve=>setImmediate(resolve));presentation.renderTerritorialLabels(value);await new Promise(resolve=>setImmediate(resolve));};
- try{await show(['a','b']);const first=[...images.keys()];await show(['b']);await show(['b','c']);
-  assert.equal(fullUploads,1);assert.deepEqual(diffs.map(diff=>[diff.remove,diff.add.map(f=>f.id),diff.update]),[
-   [['territorial:entity:a'],[],[]],[[],['territorial:entity:c'],[]]]);
-  assert.equal(images.size,2);assert.ok(images.has(first[1]));assert.ok(!images.has(first[0]));assert.equal(new Set(sources.get('viewer-labels').data.features.map(f=>f.properties.icon)).size,2);assert.equal(fontWrites,1);assert.equal(faces.External[0].url,'external.woff2');sources.get('viewer-labels').listener({error:new Error('font unavailable')});assert.equal(errors.length,1);assert.equal(presentation.pending,false);await show(['b','c']);assert.equal(sources.size,0);}
+ const flush=()=>new Promise(resolve=>setImmediate(resolve));
+ const show=async (ids,flag)=>{activeLayout=layout(ids);if(flag)activeLayout.territorialFlags.set('c',{url:flag});presentation.prepareFlags(activeLayout);presentation.renderTerritorialLabels(activeLayout);await flush();};
+ const rows=()=>sources.get('viewer-labels').data.features.map(f=>f.properties);
+ try{
+  await show(['a','b']);
+  assert.deepEqual(rows().map(({primary,icon})=>[primary,icon]),[['a',''],['b','']]);
+  assert.equal(presentation.pending,false,'image decoding cannot hold the label source');
+  for(const url of ['a.png','b.png'])finishes.get(url)({data:{width:24,height:12}});
+  await flush();
+  const first=rows().map(row=>row.icon);
+  assert.equal(new Set(first).size,2);
+  assert.ok(first.every(id=>images.has(id)));
+  assert.deepEqual(layers.get('viewer-label-country').paint['text-color'].slice(0,2),['case',['get','selected']]);
+  selected='b';await show(['a','b']);assert.equal(rows()[1].selected,true);
+  assert.ok(diffs.at(-1).update[0].addOrUpdateProperties.some(p=>p.key==='selected'&&p.value===true));
+  tilesReady=false;await show(['b']);presentation.publishOptionalFlags();assert.ok(images.has(first[0]));
+  tilesReady=true;presentation.publishOptionalFlags();assert.ok(!images.has(first[0]));
+  await show(['b','c']);
+  assert.deepEqual(rows().map(row=>row.icon),[first[1],'']);
+  await show(['b','c'],'new-c.png');
+  presentation.publishOptionalFlags();
+  finishes.get('c.png')({data:{width:24,height:12}});
+  finishes.get('new-c.png')({data:{width:24,height:12}});await flush();
+  assert.equal(images.size,2);assert.ok(rows().every(row=>images.has(row.icon)));
+  assert.equal(fullUploads,1);assert.equal(fontWrites,1);assert.equal(faces.External[0].url,'external.woff2');
+  sources.get('viewer-labels').listener({error:new Error('font unavailable')});
+  assert.equal(errors.length,1);assert.equal(presentation.pending,false);await show(['b','c'],'new-c.png');assert.equal(sources.size,0);
+ }
  finally{presentation.dispose();globalThis.document=previous;}
 });
 

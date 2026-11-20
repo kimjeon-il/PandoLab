@@ -22,59 +22,6 @@
   pointer-events: none;
 }
 
-.overlay-root .top-actions {
-  z-index: 2;
-  pointer-events: auto;
-}
-
-:root[data-theme="light"] .file-menu-btn::after {
-  color: var(--file-menu-btn-color);
-}
-
-:root[data-theme="light"] .file-menu-btn.sheet-open {
-  background: var(--accent-surface-hover);
-  border-color: var(--accent-border);
-}
-
-.file-menu-btn::after {
-  content: none;
-}
-
-.file-menu-btn .ui-icon {
-  width: var(--ui-icon-size);
-  height: var(--ui-icon-size);
-  transition: transform .16s ease;
-}
-
-.file-menu-btn.sheet-open .ui-icon {
-  transform: rotate(180deg);
-}
-
-.file-menu-btn:hover {
-  background: var(--accent-surface-hover);
-}
-
-.file-menu-btn.sheet-open {
-  background: var(--accent-surface-hover);
-}
-
-.topbar-file-actions {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-self: end;
-  gap: var(--ui-space-2);
-}
-
-.top-actions:not(.mobile-open) {
-  display: none;
-  pointer-events: none;
-}
-
-.top-actions.mobile-open {
-  display: grid;
-}
-
 .app-root[data-layout="mobile"] .topbar {
   grid-template-columns: minmax(0, 1fr) auto;
 }
@@ -83,46 +30,13 @@
   display: flex;
   position: fixed;
   z-index: 85;
-  top: calc(var(--file-menu-notification-top, var(--ui-topbar-height)) + var(--ui-popover-screen-edge));
+  top: calc(var(--ui-topbar-height) + var(--ui-popover-screen-edge));
   right: var(--ui-space-2);
   left: var(--ui-space-2);
   width: auto;
   min-width: 0;
   padding: 0;
   pointer-events: none;
-}
-
-.app-root[data-layout="mobile"] .file-menu-btn {
-  min-width: var(--file-menu-btn-min-width-alternate);
-  height: var(--ui-touch-height);
-}
-
-.app-root[data-layout="mobile"] .topbar-file-actions {
-  gap: var(--ui-space-2);
-}
-
-.app-root.viewer-root[data-layout="mobile"] .top-actions {
-  top: calc(var(--ui-topbar-height) + var(--ui-space-2));
-  right: var(--ui-popover-screen-edge);
-  width: var(--top-actions-width-alternate);
-}
-
-.app-root[data-layout="mobile"] .top-actions .btn {
-  font-size: var(--ui-font-body);
-}
-
-.app-root[data-layout="mobile"] .top-actions .btn:not(.ghost) {
-  font-size: var(--ui-font-body);
-}
-
-.app-root[data-layout="mobile"] .top-actions .btn {
-  height: var(--ui-touch-height);
-  flex-basis: var(--ui-touch-height);
-}
-
-.app-root[data-layout="mobile"] .top-actions .btn:not(.ghost) {
-  height: var(--ui-touch-height);
-  flex-basis: var(--ui-touch-height);
 }
 
 @media (max-width: 799px) {
@@ -145,10 +59,6 @@
   z-index: 20;
 }
 
-body.file-menu-open .app-root .topbar {
-  z-index: 150;
-}
-
 .app-root .topbar-history {
   min-width: 0;
   display: flex;
@@ -165,16 +75,11 @@ body.file-menu-open .app-root .topbar {
   gap: var(--ui-space-1);
 }
 
-.app-root .topbar-file-actions {
-  position: relative;
-  flex: 0 0 auto;
-}
-
 .app-root .topbar .topbar-command {
   --topbar-command-background: transparent;
   min-width: 0;
-  min-height: var(--design-control-md);
-  height: var(--design-control-md);
+  min-height: var(--ui-control-height);
+  height: auto;
   padding: 0 var(--ui-space-3);
   border: 0;
   border-radius: var(--ui-radius-control);
@@ -185,24 +90,24 @@ body.file-menu-open .app-root .topbar {
   white-space: nowrap;
 }
 
-.app-root .topbar .file-menu-btn.topbar-command {
-  min-width: 0;
-  background: var(--topbar-command-background);
-  color: var(--text-soft);
-  font-weight: var(--ui-weight-medium);
+.app-root .topbar .topbar-command:hover:not(:disabled) {
+  --topbar-command-background: var(--ui-button-subtle-hover);
+  color: var(--text-strong);
 }
 
-.app-root .topbar .topbar-command:is(:hover, :active, [aria-expanded="true"]):not(:disabled) {
-  --topbar-command-background: var(--ui-button-subtle-hover);
-  border-color: transparent;
-  background: var(--ui-button-subtle-hover);
-  color: var(--text-strong);
+.app-root .topbar .topbar-command:is([aria-expanded="true"], .sheet-open):not(:disabled) {
+  --topbar-command-background: var(--ui-button-selected);
+  color: var(--accent);
+}
+
+.app-root .topbar .topbar-command:active:not(:disabled) {
+  --topbar-command-background: var(--ui-control-bg-pressed);
 }
 
 .app-root .topbar-center {
   position: fixed;
   z-index: 85;
-  top: calc(var(--file-menu-notification-top, var(--ui-shell-topbar-height)) + var(--ui-popover-screen-edge));
+  top: calc(var(--ui-shell-topbar-height) + var(--ui-popover-screen-edge));
   right: var(--ui-space-2);
   left: var(--ui-space-2);
   width: auto;
@@ -213,16 +118,6 @@ body.file-menu-open .app-root .topbar {
   flex: 1 1 auto;
   padding: 0 var(--ui-space-2);
   pointer-events: none;
-}
-
-.app-root .top-actions {
-  position: fixed;
-  z-index: 2000;
-  top: var(--ui-menu-position-top, calc(var(--ui-shell-topbar-height) + var(--ui-menu-trigger-gap)));
-  right: auto;
-  left: var(--ui-menu-position-left, var(--ui-menu-screen-edge));
-  max-height: var(--ui-menu-position-max-height, calc(100dvh - var(--ui-shell-topbar-height) - var(--ui-space-5)));
-  overflow-y: auto;
 }
 
 @media (max-width: 799px) {
@@ -261,19 +156,6 @@ body.file-menu-open .app-root .topbar {
     padding-inline: var(--ui-space-3);
     background: transparent;
   }
-}
-
-/* Canonical components / editor-shell. */
-
-.top-actions {
-  position: fixed;
-  z-index: 2000;
-  top: calc(var(--ui-topbar-height) + var(--ui-space-2));
-  right: var(--ui-map-edge);
-  width: var(--top-actions-width);
-  max-height: calc(100dvh - var(--ui-topbar-height) - var(--ui-space-5));
-  overflow-y: auto;
-  border-radius: var(--ui-radius-panel);
 }
 
 [data-layout="wide"] .workspace {

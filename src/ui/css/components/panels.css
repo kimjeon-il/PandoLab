@@ -1,12 +1,5 @@
 /* Canonical components / panels. */
 
-body.file-menu-open .mobile-backdrop {
-  position: fixed;
-  inset: var(--ui-topbar-height) 0 0;
-  opacity: 1;
-  background: var(--mobile-backdrop);
-}
-
 .ui-dialog-kicker {
   color: var(--accent-2);
   font-size: var(--ui-font-caption);
@@ -37,11 +30,6 @@ body.file-menu-open .mobile-backdrop {
   display: none;
 }
 
-body.file-menu-open .mobile-backdrop {
-  display: none;
-  pointer-events: none;
-}
-
 .map-command-toolbar,
 .mobile-menu-toolbar {
   gap: var(--ui-space-1);
@@ -55,41 +43,11 @@ body.file-menu-open .mobile-backdrop {
 .map-command-toolbar {
   gap: var(--ui-space-0-5);
   padding: var(--ui-space-0-5);
-  border-color: color-mix(in srgb, var(--toolbar-border) 55%, transparent);
-  background: color-mix(in srgb, var(--toolbar-bg) 78%, transparent);
-  box-shadow: none;
 }
 
 .map-command-toolbar .map-command-divider {
   margin-inline: var(--ui-space-1);
   background: var(--ui-control-border);
-}
-
-:is(
-  .mobile-menu-toolbar,
-  .map-command-toolbar
-) .ui-button.icon-btn:is(
-  [aria-pressed="true"],
-  [aria-expanded="true"],
-  .active,
-  .sheet-open
-) {
-  border-color: transparent;
-  background: var(--ui-button-subtle-hover);
-  color: var(--text-strong);
-}
-
-:is(
-  .mobile-menu-toolbar,
-  .map-command-toolbar
-) .ui-button.icon-btn:is(
-  [aria-pressed="true"],
-  [aria-expanded="true"],
-  .active,
-  .sheet-open
-):hover:not(:disabled) {
-  background: var(--ui-button-subtle-hover);
-  color: var(--text-strong);
 }
 
 .surface-search:not(.search-toolbar-desktop) {
@@ -106,7 +64,7 @@ body.file-menu-open .mobile-backdrop {
 }
 
 .object-search-section .object-search-result {
-  min-height: var(--design-control-md);
+  min-height: var(--ui-control-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
@@ -114,7 +72,12 @@ body.file-menu-open .mobile-backdrop {
   padding: 0;
   border-color: transparent;
   border-radius: var(--ui-radius-control);
-  background: transparent;
+  background: var(--ui-search-result-background, transparent);
+}
+
+.object-search-section .object-search-result.is-selected {
+  --ui-search-result-background: var(--ui-search-row-selected, transparent);
+  --ui-search-result-hover: var(--ui-search-row-selected-hover, var(--surface-hover));
 }
 
 .object-search-section .object-search-result-select {
@@ -141,8 +104,8 @@ body.file-menu-open .mobile-backdrop {
 
 .object-search-section .object-search-focus-action {
   align-self: center;
-  width: var(--design-control-md);
-  height: var(--design-control-md);
+  width: var(--ui-icon-control-size);
+  height: var(--ui-icon-control-size);
   margin-inline-end: var(--ui-space-0-5);
   color: var(--muted);
 }
@@ -167,20 +130,7 @@ body.file-menu-open .mobile-backdrop {
 
 .object-search-section .object-search-result:is(:hover, :focus-within) {
   border-color: transparent;
-  background: var(--surface-hover);
-}
-
-@media (max-width: 799px) {
-  .object-search-section .object-search-result {
-    min-height: var(--ui-touch-height);
-  }
-}
-
-@media (max-width: 799px) {
-  .object-search-section .object-search-focus-action {
-    width: var(--ui-icon-control-mobile-size);
-    height: var(--ui-icon-control-mobile-size);
-  }
+  background: var(--ui-search-result-hover, var(--ui-hover-fill, var(--surface-hover)));
 }
 
 /* Object details uses shared surface, tabs, panels, section and selectable-row styles.

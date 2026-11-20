@@ -6,7 +6,7 @@ export function createMapLibreInputPresentation({renderer,initialized,ports}){
  const beginMovement=()=>{ports.projectState.state.mapMoving=true;ports.renderQuality.renderQualityController.beginInteraction('maplibre-move');ports.projectState.mapWorkScheduler.setInteractionActive(true);ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch(report);};
  const finishMovement=()=>{ports.projectState.state.mapMoving=false;ports.renderQuality.renderQualityController.endInteraction('maplibre-move');ports.renderQuality.applyAdaptiveRenderQuality({refreshScene:false,reason:'maplibre-move-end'});ports.projectState.mapWorkScheduler.setInteractionActive(false);};
  function listen(type,callback){map.on(type,callback);listeners.push(()=>map.off(type,callback));}
- function bindSvg(){initialized.then(()=>{
+ function bindMapEvents(){initialized.then(()=>{
   if(disposed)return;map=renderer.map;
   const container=map.getCanvasContainer();
   const blockReplacementInput=event=>{
@@ -29,5 +29,5 @@ export function createMapLibreInputPresentation({renderer,initialized,ports}){
   });
   listen('mouseout',()=>ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch(report));
  }).catch(report);}
- return Object.freeze({bindSvg,beginMovement,finishMovement,dispose(){disposed=true;listeners.forEach(remove=>remove());ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch(report);}});
+ return Object.freeze({bindMapEvents,beginMovement,finishMovement,dispose(){disposed=true;listeners.forEach(remove=>remove());ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch(report);}});
 }

@@ -72,8 +72,8 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
         }));
       const userItems = projectResourceOverlay('hydro',dependencies.projectState.state.hydroEdits).project.map(feature => ({
         id: String(feature.id),
-        name: (0, dependencies.hydroPresentation.hydroEditorName)(feature.properties?.name, (0, dependencies.hydroPresentation.hydroFallbackName)(feature.properties?.category)),
-        color: feature.properties?.editorColor || dependencies.hydroPresentation.HYDRO_TOOL_CONFIG[feature.properties?.category || 'river'].color,
+        name: (0, dependencies.hydroPresentation.hydroDisplayName)(feature.properties?.name, (0, dependencies.hydroPresentation.hydroFallbackName)(feature.properties?.category)),
+        color: feature.properties?.editorColor || dependencies.hydroPresentation.HYDRO_CATEGORY_STYLES[feature.properties?.category || 'river'].color,
         meta: `${(0, dependencies.hydroPresentation.hydroCategoryLabel)(feature.properties?.category)} · 사용자`,
         folderName: (0, dependencies.hydroPresentation.hydroCategoryLabel)(feature.properties?.category),
         hydroCategory: (0, dependencies.hydroPresentation.hydroCategoryKey)(feature.properties?.category),

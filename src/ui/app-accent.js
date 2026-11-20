@@ -1,26 +1,6 @@
-// UI accent follows the browser-exposed platform AccentColor when available.
-// Browsers can deliberately return a generic color to prevent fingerprinting.
+// The map's default selection color follows the browser's platform accent.
+// Viewer controls use the shared light and dark CSS palette.
 const FALLBACK_ACCENTS = Object.freeze({ light: '#316fd3', dark: '#70a6ff' });
-const channels = hex => [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16));
-const mix = (hex, amount) => '#' + channels(hex).map(value => Math.round(value * (1 - amount)).toString(16).padStart(2, '0')).join('');
-const linear = channel => {
-  const value = channel / 255;
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-};
-const contrastText = hex => {
-  const [r, g, b] = channels(hex).map(linear);
-  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return (1.05 / (luminance + 0.05)) >= ((luminance + 0.05) / 0.05) ? '#ffffff' : '#000000';
-};
-
-export function accentTokens(hex) {
-  return {
-    accent: hex, 'accent-2': hex, 'accent-surface': hex,
-    'accent-surface-hover': mix(hex, 0.1), 'accent-border': mix(hex, 0.08),
-    'accent-text': contrastText(hex),
-    'focus-ring': hex + '6b',
-  };
-}
 
 export function parseSystemAccentColor(value) {
   const text = String(value || '').trim();
@@ -49,12 +29,6 @@ export function readSystemAccentColor(documentRef) {
   }
 }
 
-// Resolve UI colors only for appearance changes, never in a map draw loop.
-export function applyAppAccent(documentRef) {
-  const root = documentRef.documentElement;
-  const hex = readSystemAccentColor(documentRef)
-    || FALLBACK_ACCENTS[root.dataset.theme === 'dark' ? 'dark' : 'light'];
-  for (const [name, value] of Object.entries(accentTokens(hex)))
-    root.style.setProperty('--design-color-' + name, value);
-  return hex;
+export function resolveMapAccent(documentRef, theme) {
+  return readSystemAccentColor(documentRef) || FALLBACK_ACCENTS[theme === 'dark' ? 'dark' : 'light'];
 }

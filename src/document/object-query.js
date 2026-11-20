@@ -24,7 +24,7 @@ export function createObjectQuery(dependencies) {
     const key = String(id);
     if (group === 'objects' || group === 'objectLabels') return dependencies.selectionServices.normalizeObjectRef({domain:'territorial',type:'entity',id:key});
     if (group === 'distributions') return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'distribution', type: 'distribution', id: key });
-    if (group === 'hydro' && (0, dependencies.hydroPresentation.hydroEditById)(key)) return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'hydro', type: (0, dependencies.hydroPresentation.hydroEditById)(key)?.properties?.category || 'river', id: key });
+    if (group === 'hydro' && (0, dependencies.hydroPresentation.projectHydroById)(key)) return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'hydro', type: (0, dependencies.hydroPresentation.projectHydroById)(key)?.properties?.category || 'river', id: key });
     if (group === 'genericFeatures') return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'generic', type: 'feature', id: key });
     if (group === 'labels') return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'label', type: dependencies.labelPresentation.labelById(key)?.kind || 'label', id: key });
     return null;
@@ -50,7 +50,7 @@ export function createObjectQuery(dependencies) {
     const master=ref.domain==='hydro'?(ref.type==='lake'?'lakes':'rivers'):group;
     if(!group||state.layerVisibility[master]===false)return false;
     if(ref.domain==='label'&&isBuiltinPlaceId(ref.id)&&state.resourceCapabilities?.builtinPlaces===false)return false;
-    if(ref.domain==='hydro'&&!dependencies.hydroPresentation.hydroEditById(ref.id)) {
+    if(ref.domain==='hydro'&&!dependencies.hydroPresentation.projectHydroById(ref.id)) {
       const feature=dependencies.hydroModel.hydroFeatureById(ref.id);
       const id=String(feature?.properties?.pandolab_id||feature?.id||ref.id);
       return state.resourceCapabilities?.builtinHydro!==false&&state.itemVisibility.hydro?.[id]!==false
@@ -90,7 +90,7 @@ export function createObjectQuery(dependencies) {
     if (ref.domain === 'hydro') {
       const feature = (0, dependencies.hydroModel.hydroFeatureById)(ref.id);
       const category = (0, dependencies.hydroPresentation.hydroCategoryKey)(feature?.properties?.category || ref.type);
-      return { name: (0, dependencies.hydroPresentation.hydroEditorName)(feature?.properties?.name, (0, dependencies.hydroPresentation.hydroFallbackName)(category)), type: (0, dependencies.hydroPresentation.hydroCategoryLabel)(category), detail: '' };
+      return { name: (0, dependencies.hydroPresentation.hydroDisplayName)(feature?.properties?.name, (0, dependencies.hydroPresentation.hydroFallbackName)(category)), type: (0, dependencies.hydroPresentation.hydroCategoryLabel)(category), detail: '' };
     }
     const label = dependencies.labelPresentation.labelById(ref.id);
     const labelKind = { capital: '수도', city: '도시', town: '마을', region: '지역명', mountain: '산', water: '수역', custom: '기타' };

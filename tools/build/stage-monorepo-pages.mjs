@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {buildFrontendSnapshot} from "../../scripts/lib/frontend-build.mjs";
 import {mapProjectResourcePath,mapProjectResourcePaths} from '../../src/data/map-project-manifest.js';
 import {validateWorldBundle} from '../../src/data/world-bundle-manifest.js';
-import {createStoredAssetLoader} from '../../src/data/stored-asset-loader.js';
-import {decodeCountryMesh,MESH_ALGORITHM_REVISION} from '../../src/rendering/country-mesh-codec.js';
+import {MESH_ALGORITHM_REVISION} from '../../src/rendering/country-mesh-codec.js';
 import {prepareLibraryData} from "../data/library-runtime.mjs";
 
 const LIMIT_BYTES = 1_000_000_000;
@@ -71,6 +70,21 @@ export async function stageWebPages(rootInput, stageInput, manifestInput, { skip
   for(const file of all)if(/^(?:scripts\/|tools\/stage-monorepo-pages\.mjs$|tools\/library-(?:data|archive)\.mjs$|config\/library-data\.json$)/.test(file.path))readSourceBytes(file.path);
   const sourceCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
   const snapshot=await buildFrontendSnapshot({root,sourceCommit,readSourceBytes,projectId});
+  const library=prepareLibraryData({root,projectId});
+  return stageViewerPayload(snapshot, library, stage, manifest, {
+    sourceCommit, sourceEntries: all, skipChecks,
+    readLibraryAsset: path => readFileSync(resolve(library.materialized,path)),
+  });
+}
+
+// Package the already selected Viewer assets. The Pages entry point verifies
+// committed source and prepares the pinned library before invoking this step.
+export function stageViewerPayload(snapshot, library, stageInput, manifestInput, {
+  sourceCommit, sourceEntries = [], skipChecks = false, readLibraryAsset,
+}) {
+  const stage = resolve(stageInput), manifest = resolve(manifestInput);
+  if (within(stage, manifest) || stage === manifest) throw Error('Pages evidence must be outside stage');
+  if (existsSync(stage) || existsSync(manifest)) throw Error('Pages stage or evidence already exists');
   if([...snapshot.viewerPaths].some(path=>path.endsWith('/assets/js/workers/core-viewer-session-worker.js')))for(const name of ['pandoeditor-core.js','pandoeditor-core.wasm','pandoeditor-core.manifest.json']){const path='assets/wasm/'+name;if(!snapshot.assets.has(path))throw Error('Missing protected Web URL: '+path);snapshot.viewerPaths.add(path);}
   // Preserve main's source-matched geometry publication gate, resolving
   // manifests through the selected project rather than retired global specs.
@@ -83,28 +97,15 @@ export async function stageWebPages(rootInput, stageInput, manifestInput, { skip
     &&prepared.algorithmVersion!==MESH_ALGORITHM_REVISION)
     throw Error('Prepared polygon mesh algorithm revision mismatch: expected '
       +MESH_ALGORITHM_REVISION+', received '+prepared.algorithmVersion);
-  const library=prepareLibraryData({root,projectId}),payload=new Map(),files=[];
+  const payload=new Map(),files=[];
   for(const path of snapshot.viewerPaths){
     const generated=snapshot.assets.get(path);let bytes,sourcePath=null;
     if(generated){bytes=generated.bytes;sourcePath=generated.sourcePath;}
-    else{const spec=library.files[path];if(!path.startsWith('assets/data/')||!spec)throw Error('Missing protected Web URL: '+path);bytes=readFileSync(resolve(library.materialized,path));if(bytes.length!==spec.bytes||hash('sha256',bytes)!==spec.sha256)throw Error('Pinned library transfer mismatch: '+path);}
+    else{const spec=library.files[path];if(!path.startsWith('assets/data/')||!spec)throw Error('Missing protected Web URL: '+path);bytes=readLibraryAsset(path);if(bytes.length!==spec.bytes||hash('sha256',bytes)!==spec.sha256)throw Error('Pinned library transfer mismatch: '+path);}
     payload.set(path,bytes);files.push({path,sourcePath,bytes:bytes.length,sha256:hash('sha256',bytes),generated:!sourcePath});
   }
   for(const path of [...REQUIRED,snapshot.buildMeta.mapProjectManifest.url,...mapProjectResourcePaths(snapshot.buildMeta.mapProject)])
     if(!payload.has(path))throw Error('Missing protected Web URL: '+path);
-  const meshLoader = createStoredAssetLoader({ dataRevision: snapshot.dataRevision, cacheStorage: null });
-  for (const role of ['canonicalMesh']) {
-    const spec = world.assets[role], stored = payload.get('assets/data/' + spec.url);
-    if (!stored || spec.header[7] !== MESH_ALGORITHM_REVISION) {
-      throw Error('Pinned world ' + role + ' mesh algorithm revision mismatch or missing asset');
-    }
-    try {
-      await meshLoader.decodeStoredAsset(stored.buffer.slice(stored.byteOffset, stored.byteOffset + stored.byteLength),
-        spec, 'mesh', role, role, buffer => decodeCountryMesh(buffer));
-    } catch (cause) {
-      throw new Error('Pinned world ' + role + ' failed mesh admission', { cause });
-    }
-  }
   const total=files.reduce((n,f)=>n+f.bytes,0);
   if(total>LIMIT_BYTES){
     // A capacity failure must identify its actual published asset owners;
@@ -124,7 +125,7 @@ export async function stageWebPages(rootInput, stageInput, manifestInput, { skip
   }
   mkdirSync(stage,{recursive:true});
   for(const file of files){const output=resolve(stage,file.path);if(!within(stage,output))throw Error('Invalid Pages output');mkdirSync(dirname(output),{recursive:true});writeFileSync(output,payload.get(file.path));if(hash('sha256',readFileSync(output))!==file.sha256)throw Error('Staged copy mismatch');}
-  const evidence={schema:'pando-web-pages-staging',productMode:'viewer',projectId:snapshot.buildMeta.mapProject.projectId,sourceCommit,frontendInputSha256:snapshot.sourceSha256,metadataCheck:skipChecks?'skipped':'passed',fileCount:files.length,dataRepository:library.repository,dataCommit:library.revision,bytes:total,limitBytes:LIMIT_BYTES,excludedNativeFiles:all.filter(f=>f.path.startsWith('native/')).length,excludedSharedFiles:all.filter(f=>f.path.startsWith('shared/')).length,excludedAppFiles:all.filter(f=>f.path.startsWith('apps/')).length,files};
+  const evidence={schema:'pando-web-pages-staging',productMode:'viewer',projectId:snapshot.buildMeta.mapProject.projectId,sourceCommit,frontendInputSha256:snapshot.sourceSha256,metadataCheck:skipChecks?'skipped':'passed',fileCount:files.length,dataRepository:library.repository,dataCommit:library.revision,bytes:total,limitBytes:LIMIT_BYTES,excludedNativeFiles:sourceEntries.filter(f=>f.path.startsWith('native/')).length,excludedSharedFiles:sourceEntries.filter(f=>f.path.startsWith('shared/')).length,excludedAppFiles:sourceEntries.filter(f=>f.path.startsWith('apps/')).length,files};
   mkdirSync(dirname(manifest), { recursive: true });
   writeFileSync(manifest, JSON.stringify(evidence, null, 2) + '\n');
   return evidence;

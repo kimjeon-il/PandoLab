@@ -14,6 +14,7 @@
   --accent-2: var(--design-color-accent-2);
   --accent-surface: var(--design-color-accent-surface);
   --accent-surface-hover: var(--design-color-accent-surface-hover);
+  --ui-accent-pressed: var(--design-color-accent-surface-pressed);
   --accent-border: var(--design-color-accent-border);
   --accent-text: var(--design-color-accent-text);
   --selection-strong-bg: var(--accent-surface);
@@ -42,7 +43,6 @@
   --overlay-border: var(--design-color-overlay-border);
   --toolbar-bg: var(--design-color-toolbar-bg);
   --toolbar-border: var(--design-color-toolbar-border);
-  --mobile-nav-bg: var(--design-color-mobile-nav-bg);
   --map-stage: #ffffff;
   --map-wrap-bg: #ffffff;
   --map-ocean: #ffffff;
@@ -50,18 +50,9 @@
   --map-label: #1c2229;
   --map-label-halo: rgba(255,255,255,.94);
   --country-selection-fill: rgba(226,201,130,.14);
-  --map-selection-halo: var(--accent);
-  --map-hover-stroke: var(--map-selection-halo);
-  --map-hover-fill: transparent;
-  --map-snap: var(--map-selection-halo);
-  --user-label-dot: #e0c26f;
-  --user-label-dot-stroke: #ffffff;
-  --user-label-text: #f1e4be;
-  --user-label-halo: #161a20;
   --map-status-bg: linear-gradient(90deg, rgba(16,20,25,.9), rgba(16,20,25,.68));
   --map-status-text: #b9c1cb;
   --map-status-border: rgba(55,64,75,.7);
-  --mobile-backdrop: rgba(4,7,10,.42);
   --component-card-border: #303944;
   --component-field-border: #3a4551;
   --mode-bar-border: #46505d;
@@ -78,6 +69,7 @@
   --bootstrap-progress-bg: #11161c;
   --bootstrap-text: #b7c0ca;
   --control-shadow: var(--design-control-shadow);
+  --ui-floating-surface-filter: blur(16px);
   --inset-highlight: rgba(255,255,255,.015);
   --shadow: var(--design-shadow);
   --ui-space-0: var(--design-space-0);
@@ -196,14 +188,9 @@
   --map-label: #1c2229;
   --map-label-halo: rgba(255,255,255,.94);
   --country-selection-fill: rgba(49,94,157,.10);
-  --user-label-dot: #315e9d;
-  --user-label-dot-stroke: #ffffff;
-  --user-label-text: #1f416d;
-  --user-label-halo: rgba(255,255,255,.96);
   --map-status-bg: rgba(255,255,255,.90);
   --map-status-text: #46515c;
   --map-status-border: #c9d0d7;
-  --mobile-backdrop: rgba(50,58,66,.28);
   --component-card-border: #c9d0d7;
   --component-field-border: #b8c1ca;
   --mode-bar-border: #aeb8c2;
@@ -223,15 +210,66 @@
   color-scheme: light;
 }
 
-@media (max-width: 799px) {
-  :root {
+@media (max-width: 799px), (pointer: coarse) {
+  :root:has(> body > .viewer-root) {
     --ui-control-height: var(--design-control-mobile-height);
     --ui-icon-control-size: var(--ui-icon-control-mobile-size);
     --ui-tree-row-height: var(--design-layer-row-height-mobile);
+    --design-tab-height: var(--ui-touch-height);
   }
 }
 
-:root:has(.app-root[data-layout="phone-landscape"]) {
-  --ui-control-height: var(--design-control-mobile-height);
-  --ui-icon-control-size: var(--ui-icon-control-mobile-size);
+@media (pointer: coarse) {
+  :root:has(> body > .viewer-root) {
+    --design-topbar-height: calc(var(--ui-touch-height) + 2 * var(--ui-space-1) + var(--ui-border-width));
+  }
+}
+
+/* The body also contains the Viewer dialogs that live outside the workspace. */
+body:has(> .viewer-root) {
+  --design-color-surface-elevated: var(--design-color-panel);
+  --surface-elevated: var(--design-color-surface-elevated);
+  --surface-topbar: var(--surface-elevated);
+  --surface-input: var(--surface-elevated);
+  --overlay-panel: var(--surface-elevated);
+  --toolbar-bg: var(--surface-elevated);
+  --object-search-background: var(--surface-elevated);
+  --modal-card-bg: var(--surface-elevated);
+  --overlay-border: var(--border);
+  --toolbar-border: var(--border);
+  --modal-card-border: var(--border);
+  --control-shadow: var(--design-viewer-surface-shadow);
+  --design-toolbar-shadow: var(--control-shadow);
+  --modal-card-shadow: var(--control-shadow);
+  --ui-floating-surface-filter: none;
+  --ui-radius-sheet: var(--ui-radius-panel);
+
+  --selection-focus-on-strong: var(--focus-ring);
+  --ui-hover-fill: var(--surface-hover);
+  --ui-control-bg-hover: var(--ui-hover-fill);
+  --ui-control-bg-pressed: var(--design-color-button-subtle-pressed);
+  --ui-menu-pressed-fill: var(--ui-control-bg-pressed);
+  --ui-button-subtle-hover: var(--ui-hover-fill);
+  --ui-button-subtle-pressed: var(--ui-control-bg-pressed);
+  --ui-selected-row-marker: inset 2px 0 var(--accent);
+  --ui-search-row-selected: var(--ui-button-selected);
+  --ui-search-row-selected-hover: var(--ui-button-selected-hover);
+  --ui-menu-item-min-height: var(--ui-control-height);
+  --ui-menu-focus-color: var(--focus-ring);
+  --ui-surface-tab-active-color: var(--accent);
+  --ui-map-button-hover: var(--surface-hover);
+}
+
+body:is([data-layout="mobile"], [data-layout="phone-landscape"]):has(> .viewer-root) {
+  --ui-mobile-floating-surface-size: var(--ui-icon-control-mobile-size);
+  --ui-mobile-floating-padding: 0px;
+}
+
+@media (hover: none) {
+  body:has(> .viewer-root) {
+    --ui-hover-fill: transparent;
+    --ui-map-button-hover: var(--surface-elevated);
+    --ui-button-selected-hover: var(--ui-button-selected);
+    --accent-surface-hover: var(--accent-surface);
+  }
 }

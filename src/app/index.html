@@ -47,11 +47,10 @@
 
   </svg>
   <div id="viewer" class="app-root viewer-root" data-layout="wide" data-initial-loading="true">
+    <!-- viewer:initial-layout -->
     <header class="topbar">
       <div class="topbar-actions" role="navigation" aria-label="지도 메뉴">
-        <div class="topbar-file-actions">
-          <button id="mobileFileBtn" class="ui-button file-menu-btn topbar-command topbar-text-command" type="button" aria-label="파일 메뉴 열기" data-tooltip="파일 메뉴 열기" aria-haspopup="menu" aria-controls="fileMenu" aria-expanded="false">파일</button>
-        </div>
+        <button id="fileBtn" class="ui-button topbar-command topbar-text-command" type="button" aria-haspopup="dialog" aria-controls="projectPicker">파일</button>
         <button id="reviewPanelBtn" class="ui-button topbar-command topbar-text-command" type="button" aria-controls="reviewPanel" aria-expanded="false" hidden>점검</button>
         <button id="preferencesBtn" class="ui-button topbar-command topbar-text-command" type="button" aria-haspopup="dialog">설정</button>
       </div>
@@ -64,7 +63,6 @@
         </div>
         <!-- include:object-chooser -->
         <div id="map" class="map-stage" aria-label="지도" tabindex="0">
-          <canvas id="viewerCanvas" class="gpu-map-canvas"></canvas>
         </div>
         <div class="viewer-map-tools">
         <div class="ui-toolbar ui-floating-surface ui-floating-toolbar map-command-toolbar" aria-label="지도 명령">
@@ -198,14 +196,16 @@
       </aside>
     </div>
     <nav id="mobileGlobalMenu" class="ui-menu ui-popover ui-floating-surface ui-menu-list mobile-global-menu" role="menu" aria-label="모바일 메뉴" hidden>
-        <button id="mobileMenuFileBtn" class="ui-button ui-menu-item" type="button" role="menuitem" aria-haspopup="menu"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-folder-open"/></svg><span>파일</span><svg class="ui-icon ui-menu-chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron-right"/></svg></button>
+        <button id="mobileMenuFileBtn" class="ui-button ui-menu-item" type="button" role="menuitem" aria-haspopup="dialog" aria-controls="projectPicker"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-folder-open"/></svg><span>파일</span></button>
         <button id="mobileReviewBtn" class="ui-button ui-menu-item" type="button" role="menuitem" aria-controls="reviewPanel" aria-expanded="false" hidden><span>통합 점검</span></button>
         <button id="mobilePreferencesBtn" class="ui-button ui-menu-item" type="button" role="menuitem"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-gear"/></svg><span>설정</span></button>
       </nav>
-    <div id="fileMenu" class="top-actions ui-menu ui-menu-surface ui-menu-list" role="menu" aria-label="파일" hidden>
-      <button id="builtinMapBtn" class="ui-button btn ghost file-menu-item ui-menu-item" type="button" role="menuitem"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-library"/></svg><span>내장 지도</span></button>
-    </div>
   </div>
+  <dialog id="projectPicker" class="ui-dialog-card project-picker-dialog" aria-labelledby="projectPickerTitle">
+    <header class="ui-dialog-header"><h2 id="projectPickerTitle">프로젝트 선택</h2></header>
+    <div id="projectPickerList" class="ui-menu-list"></div>
+    <div class="ui-dialog-actions"><button id="projectPickerCloseBtn" class="ui-button btn" type="button">닫기</button></div>
+  </dialog>
   <!-- include:preferences -->
   <!-- include:tooltip -->
 </body>

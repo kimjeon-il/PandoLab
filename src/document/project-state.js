@@ -3,8 +3,6 @@ import {normalizeProjectSetup} from "./project-setup.js";
 import { normalizeTerritorialIdentities, TERRITORIAL_IDENTITY_FIELDS, TERRITORIAL_SCHEMA_VERSION, TERRITORIAL_ENTITY_KINDS } from "./territorial-units.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
 import { restoreTimelineStorage } from "./timeline-storage.js";
-import { initialTimelineMonth, resolvedTimelineViews } from "./timeline-resolver.js";
-import { assertProjectReferenceIntegrity } from "./project-invariants.js";
 import { normalizeDistributionLayers, normalizeDistributionEntries } from "./distribution-model.js";
 import { validateSourceProvenance } from "./source-provenance.js";
 import {
@@ -27,11 +25,6 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const text = value => String(value ?? '').trim();
 const PRESENTATION_GROUP_KEYS = new Set(['objects', 'distributions', 'rivers', 'lakes', 'hydro', 'genericFeatures', 'labels', 'objectLabels']);
 const GENERIC_PROPERTY_KEYS = new Set(['schemaVersion', 'name', 'notes', 'color', 'locked', 'source']);
-
-export function createProjectObjectId() {
-  if (typeof globalThis.crypto?.randomUUID !== 'function') throw new Error('이 환경에서는 안전한 프로젝트 ID를 만들 수 없습니다.');
-  return globalThis.crypto.randomUUID();
-}
 
 function isProjectObjectId(value) {
   return UUID_PATTERN.test(text(value));
@@ -105,39 +98,6 @@ function assertAllowedKeys(value, allowed, label) {
 function prepareProjectForValidation(project) {
   if (!project || typeof project !== 'object') throw schemaError('프로젝트 형식이 올바르지 않습니다.');
   requireSchemaVersion(project.schemaVersion, '프로젝트');
-  return project;
-}
-
-/** Validate and prepare one detached timeline store for both storage and activation.
- * Its immutable C++-validated records and geometry allocations need no second restoration. */
-function prepareProjectWithTimelineStorage(input, { baseEntities = null, baseDataset = null, baseDatasetFingerprint = null } = {}) {
-  assertCurrentProjectSchema(input, { baseEntities, baseDataset, baseDatasetFingerprint });
-  const project = structuredClone(input);
-  if (project.format === 'pandolab-autosave-delta') {
-    project.territorialEntities = restoreEntitiesFromDelta(project, { base: baseEntities, baseDataset, baseDatasetFingerprint });
-    delete project.entityDelta;
-    delete project.baseDatasetFingerprint;
-  }
-  project.format = 'pandolab-project-state';
-  project.territorialEntities = normalizeTerritorialIdentities(project.territorialEntities);
-  const storage = restoreTimelineStorage({ schemaVersion: 1, records: project.timelineRecords,
-    geometries: project.geometries }, timelineObjectCatalog(project));
-  assertProjectReferenceIntegrity({ ...project, storageOnly: true });
-  project.timelineRecords = storage.records;
-  project.geometries = storage.geometries.snapshot();
-  return { project, storage };
-}
-
-/** Prepare a detached candidate before the current document/session is touched. */
-export function prepareProjectForStorage(input, options = {}) {
-  return prepareProjectWithTimelineStorage(input, options).project;
-}
-
-export function prepareProjectForActivation(input, options = {}) {
-  const { project, storage } = prepareProjectWithTimelineStorage(input, options);
-  const month = initialTimelineMonth(storage.records, new Date().toISOString().slice(0, 7));
-  const views = resolvedTimelineViews(project.territorialEntities, storage.records, storage.geometries, month);
-  assertProjectReferenceIntegrity({ ...project, territorialEntities: views, timelineRecords: null });
   return project;
 }
 
@@ -319,20 +279,4 @@ const fieldsFor = scope => {
 export function pickProjectFields(state, { scope = 'project', clone = structuredClone } = {}) {
   return Object.fromEntries(fieldsFor(scope).map(field => [field.name,
     clone(field.name === 'geometries' ? state.geometries.snapshot() : state[field.name])]));
-}
-
-export function applyProjectFields(target, source, {
-  scope = 'project',
-  clone = structuredClone,
-  normalizers = {},
-} = {}) {
-  for (const field of fieldsFor(scope)) {
-    const current = target[field.name];
-    const raw = Object.prototype.hasOwnProperty.call(source || {}, field.name) && source[field.name] !== undefined
-      ? source[field.name]
-      : field.fallback(current);
-    const normalize = normalizers[field.name];
-    target[field.name] = normalize ? normalize(raw, current, source || {}) : clone(raw);
-  }
-  return target;
 }

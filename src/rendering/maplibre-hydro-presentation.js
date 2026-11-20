@@ -64,33 +64,85 @@ export function prepareMapLibreHydroFeatures(features,prepare){
  });
 }
 
-export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,load,cancel,onError,updateSource,beforePublish=async()=>{}}){
+export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,load,cancel,onError,updateSource,
+ beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true}){
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
  let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map();
+ const fragmentsById=new Map();
+ const needsAdmission=new Set();
+ let selectable=new Set(),lastFailureKey='';
+ let presentedFeatures=()=>[];
+ async function publish(version,key){
+  const current=()=>!disposed&&version===generation&&isEnabled();
+  if(await waitForSource(current)===false||!current())return;
+  const changed=[...needsAdmission].flatMap(id=>[...fragmentsById.get(id)?.values()||[]]);
+  if(changed.length&&await admitFeatures(changed,current)===false)return;
+  if(!current())return;
+  const features=presentedFeatures();
+  needsAdmission.clear();
+  selectable=new Set(features.map(feature=>String(feature.id)));
+  onFeatures(features);publishedKey=key;
+ }
  async function refresh(version){
+  const current=()=>!disposed&&version===generation&&isEnabled();
   const center=map.getCenter(),canvas=map.getCanvas();
-  let result;try{result=await load({center:[center.lng,center.lat],zoom:map.getZoom(),width:canvas.clientWidth,height:canvas.clientHeight,knownKey:presentedKey});}catch(error){if(disposed||version!==generation)return;throw error;}
-  const {key,addPacks,removePacks}=result;
-  if(disposed||version!==generation)return;
-  await beforePublish(()=>!disposed&&version===generation);
-  if(disposed||version!==generation)return;
-  if(key===presentedKey){if(publishedKey!==key){onFeatures([...activePacks.values()].flat());publishedKey=key;}return;}
-  const next=new Map(activePacks),remove=[],changedIds=new Set();for(const id of removePacks||[]){for(const feature of next.get(id)||[]){remove.push(feature.id);changedIds.add(String(feature.properties.logicalId));}next.delete(id);}
-  const add=[];for(const pack of addPacks||[]){next.set(pack.id,pack.features);add.push(...pack.features);for(const feature of pack.features)changedIds.add(String(feature.properties.logicalId));}
-  // Identity may be unchanged while a river gains or loses visible fragments.
-  // The existing data owner must receive that effective geometry as well.
-  await admitFeatures([...next.values()].flat().filter(feature=>changedIds.has(String(feature.properties.logicalId))));
-  if(disposed||version!==generation)return;
-  if(add.length||remove.length){const applied=await updateSource({add,remove},[...next.values()].flat(),()=>!disposed&&version===generation);if(!applied)return;}
+  const result=await load({center:[center.lng,center.lat],zoom:map.getZoom(),width:canvas.clientWidth,height:canvas.clientHeight,knownKey:presentedKey},current);
+  const {key,addPacks,removePacks,failedPacks=[]}=result;
+  if(!current())return;
+  const failureKey=failedPacks.map(({id,message})=>id+':'+message).sort().join('|');
+  if(failureKey&&failureKey!==lastFailureKey)onError(Object.assign(Error(failedPacks[0].message),{failedPacks,diagnostic:failedPacks[0].diagnostic}));
+  lastFailureKey=failureKey;
+  if(key===presentedKey&&!needsSourceRestore()&&publishedKey===key&&!needsAdmission.size)return;
+  await beforePublish(current);
+  if(!current())return;
+  if(key===presentedKey){
+   if(needsSourceRestore()&&!await updateSource({add:[],remove:[]},presentedFeatures,current))return;
+   if(current())await publish(version,key);
+   return;
+  }
+  const next=new Map(activePacks),remove=[],add=[],changed=new Map();
+  const fragmentsFor=feature=>{
+   const id=String(feature.properties.logicalId);
+   if(!changed.has(id))changed.set(id,new Map(fragmentsById.get(id)));
+   return changed.get(id);
+  };
+  for(const id of removePacks||[]){
+   for(const feature of next.get(id)||[]){remove.push(feature.id);fragmentsFor(feature).delete(feature.id);}
+   next.delete(id);
+  }
+  for(const pack of addPacks||[]){
+   next.set(pack.id,pack.features);
+   for(const feature of pack.features){add.push(feature);fragmentsFor(feature).set(feature.id,feature);}
+  }
+  let snapshot;
+  const allFeatures=()=>snapshot??=[...next.values()].flat();
+  if(add.length||remove.length||needsSourceRestore()){
+   for(const id of changed.keys())needsAdmission.add(id);
+   const applied=await updateSource({add,remove},allFeatures,current);
+   if(!applied)return;
+  }
   if(!disposed){
    // updateData has already changed the source, so retain its actual pack
    // baseline even when a newer view arrived while the worker was applying it.
-   activePacks=next;presentedKey=key;
-   if(version===generation){onFeatures([...next.values()].flat());publishedKey=key;}
+   for(const [id,fragments]of changed){
+    if(fragments.size)fragmentsById.set(id,fragments);else fragmentsById.delete(id);
+   }
+   activePacks=next;presentedKey=key;presentedFeatures=allFeatures;
+   if(current())await publish(version,key);
   }
  }
- const settle=()=>{const version=++generation,cancelled=cancel?Promise.resolve().then(cancel):Promise.resolve();cancelled.catch(()=>{});pending=tail.then(async()=>{await cancelled;if(!disposed&&version===generation)await refresh(version);}).catch(error=>{if(!disposed&&version===generation)throw error;});tail=pending.catch(()=>{});pending.catch(onError);return pending;};
+ const suspend=()=>{generation++;cancel?.();};
+ const settle=()=>{
+  if(disposed||!isEnabled())return Promise.resolve();
+  const version=++generation,cancelled=cancel?Promise.resolve().then(cancel):Promise.resolve();cancelled.catch(()=>{});
+  pending=tail.then(async()=>{await cancelled;if(!disposed&&version===generation&&isEnabled())await refresh(version);})
+   .catch(error=>{if(!disposed&&version===generation&&isEnabled()&&error?.name!=='AbortError')throw error;});
+  tail=pending.catch(()=>{});pending.catch(onError);return pending;
+ };
+ map.on('movestart',suspend);
  map.on('moveend',settle);
- return {refresh:settle,ready:()=>pending,dispose(){disposed=true;generation++;if(cancel)Promise.resolve().then(cancel).catch(onError);map.off('moveend',settle);activePacks.clear();}};
+ return {refresh:settle,suspend,ready:()=>pending,
+  canPick:(id,logicalId)=>isEnabled()&&!needsSourceRestore()&&selectable.has(String(id))&&!needsAdmission.has(String(logicalId)),
+  dispose(){disposed=true;suspend();map.off('movestart',suspend);map.off('moveend',settle);activePacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
 }

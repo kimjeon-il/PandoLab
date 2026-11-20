@@ -5,8 +5,8 @@ import { createCoreDocumentReadModel } from "./core-document-read-model.js";
 export function createDocumentSession({ productMode, readOnly = productMode === 'viewer', initialProject, onTransition = () => {}, createWorker } = {}) {
   const documentModel = createCoreDocumentReadModel(initialProject);
   const commandOwner = createCoreDocumentClient({ productMode, readOnly, ...(createWorker ? { createWorker } : {}),
-    onTransition(result, operation, payload) {
-      documentModel.acceptTransition(result, operation);
+    onTransition(result, operation, payload, verifiedResources) {
+      documentModel.acceptTransition(result, operation, verifiedResources);
       onTransition(result, operation, payload);
     } });
   return Object.freeze({ productMode, readOnly, documentModel, commandOwner });

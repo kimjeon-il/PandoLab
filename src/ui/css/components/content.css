@@ -40,6 +40,10 @@
   color: var(--selection-soft-fg);
 }
 
+.ui-selectable-row.is-primary-selected {
+  box-shadow: var(--ui-selected-row-marker, none);
+}
+
 .ui-choice-row {
   display: flex;
   align-items: center;

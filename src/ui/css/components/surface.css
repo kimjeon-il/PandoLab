@@ -33,10 +33,6 @@
   z-index: 200;
 }
 
-.overlay-root .mobile-backdrop {
-  z-index: 1;
-}
-
 :root[data-theme="light"] .surface-header::before {
   background: var(--surface-header-background);
 }
@@ -300,7 +296,7 @@ body.map-sheet-dragging {
 
 .surface-tabs .ui-tab:is(.active, [aria-selected="true"]) {
   background: transparent;
-  color: var(--text-strong);
+  color: var(--ui-surface-tab-active-color, var(--text-strong));
   font-weight: var(--ui-weight-bold);
 }
 

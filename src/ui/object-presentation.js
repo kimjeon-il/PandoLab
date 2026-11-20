@@ -1,4 +1,4 @@
-export function hydroEditorName(value, fallback) {
+export function hydroDisplayName(value, fallback) {
     const name = String(value || '').trim();
     if (/^미명명 수계(?:\s+\d+)?$/.test(name)) return fallback;
     return name || fallback;
@@ -135,7 +135,7 @@ export function createObjectPresentation() {
 
   return Object.freeze({
     connect,
-    hydroEditorName,
+    hydroDisplayName,
     initializeTerritorialScope,
     initializeObjectPresentationModel,
     get LAYER_GROUP_KEYS() { return LAYER_GROUP_KEYS; },

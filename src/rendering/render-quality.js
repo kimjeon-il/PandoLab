@@ -14,7 +14,7 @@ export function createRenderQuality() {
 
   function applyAdaptiveRenderQuality({ refreshScene = false, reason = 'adaptive-render-quality' } = {}) {
     currentRenderQuality = renderQualityController.profile();
-    dependencies.rendering.gpuMapRenderer.setRenderQuality(currentRenderQuality);
+    dependencies.rendering.mapRenderer.setRenderQuality(currentRenderQuality);
     if (refreshScene) dependencies.domains.renderingDomain?.invalidateQuality?.(reason);
     return currentRenderQuality;
   }
@@ -30,7 +30,7 @@ export function createRenderQuality() {
 
   function syncResolvedInteractionStyle({ redraw = false } = {}) {
     (0, dependencies.selectionServices.setSelectionInteractionStyle)(dependencies.preferences.resolvedInteractionStyle);
-    dependencies.rendering.gpuMapRenderer.setInteractionStyle?.(dependencies.preferences.resolvedInteractionStyle);
+    dependencies.rendering.mapRenderer.setInteractionStyle?.(dependencies.preferences.resolvedInteractionStyle);
     if (redraw) {
       dependencies.domains.renderingDomain?.invalidateSelectionStyle?.('selection-style');
     }
@@ -39,8 +39,8 @@ export function createRenderQuality() {
 
   function applyMapAppearanceChange({ reason = 'user-preferences', rerender = true } = {}) {
     syncResolvedInteractionStyle({ redraw: rerender });
-    dependencies.rendering.gpuMapRenderer.invalidateCountryPalette({ base: true, emphasis: true }, reason);
-    dependencies.rendering.gpuMapRenderer.invalidatePhysicalStyle(reason);
+    dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true, emphasis: true }, reason);
+    dependencies.rendering.mapRenderer.invalidatePhysicalStyle(reason);
     if (rerender) dependencies.domains.renderingDomain.invalidateBaseScene(reason);
   }
 
