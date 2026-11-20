@@ -1,6 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
+import {createMapLibreHighlight} from '../../../src/rendering/maplibre-highlight.js';
+
+test('highlight preserves the complete previous frame until native and polar work are both ready', async () => {
+ const sources=new Map(),layers=new Map(),shown=[];
+ const map={style:{},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+  addSource:(id,source)=>sources.set(id,source),addLayer:layer=>layers.set(layer.id,layer),
+  setPaintProperty:(id,key,value)=>{layers.get(id).paint[key]=value;},
+  setLayoutProperty:(id,key,value)=>{layers.get(id).layout[key]=value;},
+  isSourceLoaded:id=>!!sources.get(id)?.ready,triggerRepaint(){}};
+ let deferredNative,deferredPolar,polar=null,block=false,failedWrite=false,writes=0;
+ const owner=createMapLibreHighlight({map,
+  write:async(id,data)=>{
+   writes++;
+   if(failedWrite){failedWrite=false;throw Error('transient source failure');}
+   if(block)await new Promise(resolve=>{deferredNative=resolve;});
+   Object.assign(sources.get(id),{ready:true,data});return true;
+  },
+  preparePolar:async items=>{
+   if(block)await new Promise(resolve=>{deferredPolar=resolve;});
+   return ()=>{polar=items[0];return true;};
+  },
+  clearPolar:()=>{polar=null;},isTemporal:()=>false,onShown:value=>shown.push(value),onError:assert.fail});
+ const feature=(key,type)=>({type:'Feature',geometry:{type,coordinates:[]},properties:{objectKey:key}});
+ const submit=key=>owner.submit(key,[feature(key,'Polygon'),feature(key,'LineString')],[key],key);
+ const tick=()=>new Promise(resolve=>setImmediate(resolve));
+ const draw=()=>{owner.onRender();owner.onRender();};
+ try{
+  submit('A');await tick();draw();
+  assert.equal(polar,'A');assert.equal(shown.at(-1).key,'A');
+  block=true;submit('B');await tick();deferredNative();await tick();draw();
+  assert.equal(polar,'A');assert.equal(shown.length,1);
+  assert.equal(layers.get('interaction-fill-standby').paint['fill-layer-opacity'],0);
+  assert.equal(layers.get('interaction-line-standby').paint['line-layer-opacity'],0);
+  deferredPolar();await tick();draw();
+  assert.equal(polar,'B');assert.equal(shown.at(-1).key,'B');
+  assert.equal(layers.get('interaction-fill-standby').paint['fill-layer-opacity'],1);
+  assert.equal(layers.get('interaction-line-standby').paint['line-layer-opacity'],1);
+  assert.equal(layers.get('interaction-fill').layout.visibility,'none');
+  block=false;failedWrite=true;submit('C');await tick();draw();
+  assert.equal(shown.at(-1).key,'B');
+  await new Promise(resolve=>setTimeout(resolve,160));draw();
+  assert.equal(polar,'C');assert.equal(shown.at(-1).key,'C');
+  const beforePolarOnly=writes;
+  owner.submit('D',[feature('C','Polygon'),feature('C','LineString')],['D'],'C','C');
+  await tick();draw();
+  assert.equal(polar,'D');
+  assert.equal(shown.at(-1).sourceId,shown.at(-2).sourceId);
+  assert.equal(writes,beforePolarOnly,'A polar-only change must not retile unchanged native geometry');
+  owner.reset();
+  owner.submit('[]',[],[],'[]','[]');
+  assert.equal(owner.selectionPending(),false,'A fresh date with no confirmed selection must not wait for empty highlight tiles');
+  await tick();draw();
+  block=true;submit('E');
+  assert.equal(owner.selectionPending(),true,'An actual confirmed selection still gates the dated frame');
+ }finally{owner.dispose();}
+});
 
 test('camera frames reuse MapLibre symbols; viewport and quality work are scoped',async()=>{
  const previous={requestAnimationFrame:globalThis.requestAnimationFrame,performance:globalThis.performance,document:globalThis.document};
@@ -22,8 +78,9 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
  const state={layerVisibility:{objects:false,genericFeatures:false,distributions:false,labels:true},
   distributionLayers:[],distributionEntries:[],territorialEntities:[],
   distributionSettings:{},countryVisualPhase:'canonical'};
- let preserved=false,placeTask=null,temporal=false,features=[],failure=null,afterBoundaryFailures=null;
- const renderer={map,loaded:true,isStyleReady:()=>true,isFramePreserved:()=>preserved,labelZoomVisibility:()=>({country:true,places:true}),getRuntimeState:()=>({webglContextLost:false,temporalPresentationPending:temporal,projectRenderBlocked:!!failure}),
+ let preserved=false,placeTask=null,temporal=false,admitted=true,features=[],failure=null,afterBoundaryFailures=null;
+ let boundaryVisible=true,boundaryRequests=0,boundaryGate;
+ const renderer={map,loaded:true,isStyleReady:()=>true,isFramePreserved:()=>preserved,labelZoomVisibility:()=>({country:true,places:true}),getRuntimeState:()=>({webglContextLost:false,temporalPresentationPending:temporal,temporalSourceAdmitted:admitted,projectRenderBlocked:!!failure}),
   syncHydroState(){},setSelection(){},
   renderFrame:()=>({succeeded:true,presentationReady:true}),
   canPresentVisualFrame:()=>true,commitVisualFrame:()=>true,verifyLayout(){},
@@ -42,15 +99,20 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
   mapPalette:()=>({defaultLand:'#ffffff'}),syncMapScene(){sceneSubmissions++;},
   territorialResources:{getState:()=>state,displayEntities:()=>features,visibleMapObjectCandidates:()=>[],
-   entityRepository:{},replaceSceneDomain(){}},
+   isLayerItemVisible:()=>true,entityRepository:{},replaceSceneDomain(){}},
   genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){overlayRuns++;}},
   distributionResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){}},
-  territorialBoundaryResources:{getState:()=>state,geometryToken:()=> 'region-v1',replaceSceneDomain(){}},
+  territorialBoundaryResources:{getState:()=>state,geometryToken:()=> 'region-v1',
+   layerStyle:()=>({boundaryVisible,blendMode:'normal'}),replaceSceneDomain(){}},
   baseResources:{getState:()=>({resourceCapabilities:{graticule:false}}),
    replaceSceneDomain(){contentRuns++;}},
   renderers:{labelLayout(){labelRuns++;return layout;}},
   prepareView(options){frames.push(options);prepared++;return {frameId:options.frameId,size:{width:800,height:500}};},
-  prepareMapDisplay:async()=>{throw Error("boundary worker failed");},
+  prepareMapDisplay:async(_inputs,{signal})=>{
+   boundaryRequests++;
+   if(boundaryGate)return boundaryGate(signal);
+   throw Error('boundary worker failed');
+  },
   reportDiagnostic(error){if(!afterBoundaryFailures)throw error;afterBoundaryFailures();},
  });
  const flush=async()=>{
@@ -97,9 +159,32 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(domain.getStats().visualFrameCommittedCount,publications,'Target tiles alone cannot release a preserved frame');
   completePlaces(true);await flush();
   assert.equal(domain.getStats().visualFrameCommittedCount,publications+1);
-  preserved=false;
-  state.layerVisibility.objects=true;
   features=[{id:'region',properties:{entityKind:'regional'},geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,1],[0,0]]]}}];
+  temporal=true;
+  const beforeHidden=domain.getStats().visualFrameCommittedCount;
+  domain.invalidateProject('date-with-hidden-objects');await flush();
+  assert.equal(boundaryRequests,0,'Hidden objects must not start topology work for the dated frame');
+  assert.ok(domain.getStats().visualFrameCommittedCount>beforeHidden);
+  state.layerVisibility.objects=true;
+  boundaryVisible=false;
+  domain.invalidateProject('date-with-hidden-outlines');await flush();
+  assert.equal(boundaryRequests,0,'Disabled outlines must not start topology work for the dated frame');
+  assert.equal(failure,null);
+  let visibleRequest;
+  boundaryGate=signal=>{visibleRequest=signal;return new Promise(()=>{});};
+  boundaryVisible=true;
+  const beforeVisible=domain.getStats().visualFrameCommittedCount;
+  domain.invalidateProject('date-with-visible-outlines');await flush();
+  assert.equal(boundaryRequests,1);
+  assert.equal(domain.getStats().visualFrameCommittedCount,beforeVisible,'Dates must still wait for required outlines');
+  state.layerVisibility.objects=false;
+  domain.invalidateProject('hide-objects-during-date');await flush();
+  assert.equal(visibleRequest.aborted,true);
+  assert.ok(domain.getStats().visualFrameCommittedCount>beforeVisible);
+  boundaryGate=null;
+  state.layerVisibility.objects=true;
+  temporal=false;
+  preserved=false;
   const terminal=new Promise(resolve=>{let failures=0;afterBoundaryFailures=()=>{if(++failures===2)resolve();};});
   domain.invalidateProject('boundary-fault');
   await flush();await terminal;await flush();
@@ -109,6 +194,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.ok(domain.getStats().visualFrameCommittedCount>beforeZoom,'A prior background failure must not lock a preserved zoom');
   assert.equal(failure,null);
   temporal=true;
+  admitted=false;
+  domain.invalidateProject('date-restore-before-admission');await flush();
+  assert.equal(failure,null,'The failed date must not reject a recovery whose sources are not yet admitted');
+  admitted=true;
   domain.invalidateProject('date-with-unchanged-boundaries');await flush();
   assert.equal(failure?.message,'boundary worker failed','The same failed boundary input must reject a later dated transition');
  }finally{

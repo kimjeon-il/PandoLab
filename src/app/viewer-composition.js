@@ -404,10 +404,11 @@ export async function composeViewer({ productMode, meta }) {
       postPresentation.schedule(current);
       return true;
     }catch(error){
-      map.renderer.finishTemporalViewTransition(temporalTicket);
       if(current()){
-        if(previous)
+        if(previous){
+          const restoreTicket=map.renderer.beginTemporalViewTransition(current);
           try{
+            map.renderer.preserveTemporalFrame();
             map.renderer.retryMapPreparation();
             await owners.physicalResources.preparePhysicalContext(previous,{
               isCurrent:current,activeProject:projectDomain.activeProject()});
@@ -415,10 +416,12 @@ export async function composeViewer({ productMode, meta }) {
             // Do not report the prior map as restored merely because its C++
             // cursor was reset. Wait for that generation's real replacement
             // picture before releasing the date control's loading state.
-            const restored=await applyDocumentMonth(previous,{isCurrent:current,waitForFrame:true});
+            const restored=await applyDocumentMonth(previous,{isCurrent:current,waitForFrame:true,
+              admitPresentation:()=>map.renderer.admitTemporalViewTransition(restoreTicket)});
             if(!restored)throw new Error('Previous dated map was not restored.');
-            map.renderer.releaseTemporalFrame();
           }catch(restoreError){error.restoreError=restoreError;}
+          finally{map.renderer.finishTemporalViewTransition(restoreTicket);}
+        }
         status.dataset.ready=String(previouslyReady&&!error.restoreError);
       }
       throw error;

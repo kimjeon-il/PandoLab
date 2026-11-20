@@ -22,9 +22,12 @@ export function createMapLibreProjection(map){
   const location=map.unproject(point),coordinate=[location.lng,location.lat],projected=projectCoordinate(coordinate);
   return projected&&Math.hypot(projected[0]-point[0],projected[1]-point[1])<=0.5?coordinate:null;
  };
- const projectVisibleCoordinate=coordinate=>{
+ const projectVisibleCoordinate=(coordinate,{allowOutsideViewport=false}={})=>{
   if(map.getProjection()?.type!=='globe')return null;
-  const point=projectCoordinate(coordinate),inverse=point&&screenToGeo(point);
+  const point=projectCoordinate(coordinate);
+  if(!point)return null;
+  const location=allowOutsideViewport?map.unproject(point):null;
+  const inverse=location?[location.lng,location.lat]:screenToGeo(point);
   if(!inverse)return null;
   const a=vector(coordinate),b=vector(inverse);
   return Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2])<=0.00001?point:null;

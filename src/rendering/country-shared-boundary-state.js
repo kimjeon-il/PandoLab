@@ -1,10 +1,81 @@
 import { createPreparedBoundaryStore, attachBoundarySegmentReferences, topologyNodeKey, mergeSharedBoundaryContributions } from "../geometry/boundary-topology.js";
 import { computeCountrySharedContacts } from "../geometry/country-contact-core.js";
+import { countryBoundaryOwner, countryBoundarySeedOptions } from "./country-boundary-seed.js";
 
 // Every ordinary map style renders shared land borders, not per-object coastal outlines.
 // This is a presentation policy: canonical polygon/coast geometry is unchanged.
 export function visibleCountrySharedSegments(segments = [], isVisible = () => true) {
   return segments.filter(segment => segment.ownerIds.some(isVisible));
+}
+
+/** A seed is optional and can only accelerate the first complete snapshot. */
+export function createCountryBoundaryPreparation({loadSeed, seedWaitMs = 5_000}) {
+  let current = null, seedPromise;
+  let boundarySeedFailure = null, boundarySeeded = false, boundaryChangedCount = 0;
+
+  function readSeed() {
+    return seedPromise ||= (async () => {
+      const controller = new AbortController();
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error('Country boundary seed timed out');
+          controller.abort(error);
+          reject(error);
+        }, seedWaitMs);
+      });
+      try {
+        return await Promise.race([loadSeed(controller.signal), timeout]);
+      } catch (error) {
+        boundarySeedFailure = error?.message || String(error);
+        return null;
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+      }
+    })();
+  }
+
+  async function prepare(input, context) {
+    context.throwIfCancelled();
+    if (current?.key === input.key) return current;
+    if (input.baseKey !== null && current?.key !== input.baseKey) return null;
+    const upserts = input.upserts.map(({id, geometry}) => ({type: 'Feature', id: countryBoundaryOwner(id), geometry}));
+    if (input.baseKey === null) {
+      const seed = current ? null : await readSeed();
+      context.throwIfCancelled();
+      if (current?.key === input.key) return current;
+      const options = countryBoundarySeedOptions(upserts, seed);
+      boundarySeeded = !!options;
+      boundaryChangedCount = options?.changedIds.size ?? upserts.length;
+      let state = null, segments = options?.cachedSegments;
+      if (!options || options.changedIds.size) {
+        state = createCountrySharedBoundaryState();
+        state.replace(upserts, options);
+        segments = state.segments();
+      }
+      current = {key: input.key, state, segments, seedRows: state ? null : upserts};
+    } else {
+      const previous = current;
+      // A failed state patch must force the next delivery to rebuild its base.
+      current = null;
+      const state = previous.state ?? createCountrySharedBoundaryState();
+      const removed = input.remove.map(countryBoundaryOwner);
+      if (previous.state) {
+        boundaryChangedCount = state.patch(upserts, removed).size;
+      } else {
+        const rows = new Map(previous.seedRows.map(row => [row.id, row]));
+        const changedIds = new Set(removed);
+        for (const id of removed) rows.delete(id);
+        for (const row of upserts) { rows.set(row.id, row); changedIds.add(row.id); }
+        state.replace([...rows.values()], {cachedSegments: previous.segments, changedIds});
+        boundaryChangedCount = changedIds.size;
+      }
+      current = {key: input.key, state, segments: state.segments()};
+    }
+    return current;
+  }
+  return {prepare, stats: () => ({boundarySeedFailure, boundarySeeded, boundaryChangedCount})};
 }
 
 const sharedSegmentKey = segment => [topologyNodeKey(segment.start), topologyNodeKey(segment.end)].sort().join('|');

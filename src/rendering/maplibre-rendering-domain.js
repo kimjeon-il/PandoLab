@@ -10,7 +10,6 @@ export function createMapLibreRenderingDomain(options){
  let previousLabelVisibility=null;
  let pendingPlaceViewport=null;
  const stats={invalidations:0,visualFrameCommittedCount:0};
- const heldTemporalFrame=()=>renderer.isFramePreserved()&&renderer.getRuntimeState().temporalPresentationPending;
  // MapLibre owns per-frame camera projection and symbol placement. Keep label
  // sources intact across moves; a new source snapshot or settled view changes them.
  const invalidate=(reason='map-change',content=false,labels=true)=>{
@@ -43,7 +42,7 @@ export function createMapLibreRenderingDomain(options){
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
   territorialBoundary:options.territorialBoundaryResources,base:options.baseResources,isDisposed:()=>disposed,
   prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>invalidate('display-ready',true),
-  onMapDisplayFailed:error=>{if(heldTemporalFrame())renderer.failMapPreparation(error);},reportDiagnostic});
+  onMapDisplayFailed:()=>invalidate('display-failed',false,false),reportDiagnostic});
  function render(){
   queued=false;if(disposed||!renderer.loaded||!renderer.isStyleReady()||renderer.getRuntimeState().webglContextLost)return;
   try{
@@ -76,9 +75,10 @@ export function createMapLibreRenderingDomain(options){
    const result=renderer.renderFrame(frame);
    const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(labelsDirty||labels.pending);
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
-   const waitingForBoundaries=heldTemporalFrame()&&content.territorialBoundariesPending();
-   const boundaryFailure=waitingForBoundaries&&content.territorialBoundaryFailure();
-   if(boundaryFailure&&!renderer.getRuntimeState().projectRenderBlocked){
+   const runtime=renderer.getRuntimeState();
+   const waitingForBoundaries=renderer.isFramePreserved()&&runtime.temporalPresentationPending&&content.territorialBoundariesPending();
+   const boundaryFailure=waitingForBoundaries&&runtime.temporalSourceAdmitted&&content.territorialBoundaryFailure();
+   if(boundaryFailure&&!runtime.projectRenderBlocked){
     renderer.failMapPreparation(boundaryFailure);return;
    }
    if(result.deferred||waitingForVisibleLabels||waitingForPlaces||waitingForBoundaries||!renderer.canPresentVisualFrame(frame,result))return;
@@ -99,7 +99,7 @@ export function createMapLibreRenderingDomain(options){
    }
    // Source/render certificates never change label identities. Keep the
    // existing symbol source while waiting for the native frame to publish.
-   if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint','temporal-source-admitted','await-current-map-frame'].includes(reason))
+   if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint','temporal-source-admitted','await-current-map-frame','highlight-shown','highlight-failed'].includes(reason))
     return invalidate(reason,false,false);
    return invalidate(reason);
   },invalidateViewport:reason=>{renderer.verifyLayout();return invalidate(reason,true);},

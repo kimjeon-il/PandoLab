@@ -26,7 +26,7 @@ test('native camera bounds admit the centered city and reuse only overlapping pl
  assert.deepEqual(crossed,wrapped);
 });
 
-test('parallel place tiles share a whole-shard download even with no resident cache',async(t)=>{
+test('parallel place tiles share whole shards and request distinct ranges independently',async(t)=>{
  const encode=(sourceId,coordinates)=>new Uint8Array(encodePlaceTile([
   {source:'fixture',sourceId,name:'City '+sourceId,kind:'capital',coordinates,minZoom:1},
  ]));
@@ -36,11 +36,15 @@ test('parallel place tiles share a whole-shard download even with no resident ca
   sha256:createHash('sha256').update(tile).digest('hex')});
  const view={projection:'globe',threshold:4,width:1280,height:752,bounds:[-3,1,3,3]};
  for(const transport of ['full fetch','HTTP 200','HTTP 206'])await t.test(transport,async t=>{
-  let requests=0;
+  let requests=0,bodiesRead=0,bodiesCancelled=0,releaseFirstRange;
   const fetchBytes=transport==='full fetch'?async()=>{requests++;return bytes;}:null;
   if(!fetchBytes)t.mock.method(globalThis,'fetch',async(_url,{headers})=>{
-   requests++;
-   if(transport==='HTTP 200')return new Response(bytes);
+   const request=++requests;
+   if(transport==='HTTP 200')return new Response(new ReadableStream({
+    pull(controller){bodiesRead++;controller.enqueue(bytes);controller.close();},
+    cancel(){bodiesCancelled++;},
+   },{highWaterMark:0}));
+   if(request===1)await new Promise(resolve=>{releaseFirstRange=resolve;});
    const [,start,end]=/^bytes=(\d+)-(\d+)$/.exec(headers.Range);
    return new Response(bytes.subarray(Number(start),Number(end)+1),{status:206,
     headers:{'Content-Range':`bytes ${start}-${end}/${bytes.length}`}});
@@ -48,8 +52,19 @@ test('parallel place tiles share a whole-shard download even with no resident ca
   const store=createPlaceWorkerStore({manifest:{version:1,revision:'fixture',search:{},
    stages:[{id:0,minZoom:1,columns:36,rows:18}],shards:{local:{url:'local.bin',bytes:bytes.length}},
    tiles:{'0/17-8':row(0,left),'0/18-8':row(left.length,right)}},fetchBytes,cacheBytes:0});
-  const {records}=await store.queryViewport(view);
+  const viewport=store.queryViewport(view);
+  let requestsBeforeFirstHeaders;
+  if(transport==='HTTP 206'){
+   await new Promise(resolve=>setImmediate(resolve));
+   requestsBeforeFirstHeaders=requests;
+   releaseFirstRange();
+  }
+  const {records}=await viewport;
   assert.deepEqual(records.map(record=>record.sourceId).sort(),['left','right']);
-  assert.equal(requests,transport==='HTTP 206'?2:1);
+  if(transport==='HTTP 206')assert.equal(requestsBeforeFirstHeaders,2);
+  else if(transport==='HTTP 200'){
+   assert.equal(bodiesRead,1);
+   assert.equal(bodiesCancelled,requests-1);
+  }else assert.equal(requests,1);
  });
 });

@@ -675,6 +675,8 @@ test('dated map keeps its complete frame through delayed, superseded and failed 
  await expect.poll(()=>page.locator('#timelineDateError').textContent(),{timeout:60000}).not.toBe('');
  expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe('1912-12');
  expect(await page.locator('#timelineDateButtonText').innerText()).toContain('1912');
+ await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
+ expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.dragPan.isEnabled())).toBe(true);
  mode='pass';await page.locator('#timelineGoBtn').click();
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60000}).toBe('1922-12');
  await ready(page,'retry after failure');
@@ -1187,13 +1189,64 @@ for(const viewport of [{width:1280,height:800},{width:390,height:844}])test('nat
  expect((await read()).counts.slice(1)).toEqual([0,0]);
 });
 
+test('a delayed highlight keeps the previous outline and fill until both new features draw',async({page})=>{
+ await open(page);
+ await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[5,48.5],zoom:4}));
+ await ready(page,'highlight camera');
+ const point=coord=>page.evaluate(coord=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,p=map.project(coord),bounds=map.getCanvas().getBoundingClientRect();
+  return {x:p.x+bounds.x,y:p.y+bounds.y};
+ },coord);
+ const shown=()=>page.evaluate(async()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,highlight=window.__PANDOLAB_VIEWER__.rendererStats().highlight;
+  const slot=highlight?.sourceId;
+  if(!slot)return [];
+  return (await map.getSource(slot).getData()).features.map(feature=>[feature.properties.objectKey,feature.geometry.type]);
+ });
+ const france='territorial:entity:FRA',germany='territorial:entity:DEU';
+ const visiblePair=id=>[[id,'MultiPolygon'],[id,'MultiLineString']];
+ const paris=await point([2.35,48.86]);
+ await page.mouse.move(paris.x,paris.y);
+ await expect.poll(shown).toEqual(visiblePair(france));
+ await page.evaluate(target=>{
+  const map=window.__PANDOLAB_MAPLIBRE__;
+  const proto=Object.getPrototypeOf(map.getSource('interaction'));
+  const original=proto.setData;
+  proto.setData=async function(data,...args){
+   if(this.id.startsWith('interaction')&&data.features?.some(feature=>feature.properties.objectKey===target)){
+    proto.setData=original;
+    await new Promise(resolve=>{window.releaseHighlightFixture=resolve;});
+   }
+   return original.call(this,data,...args);
+  };
+ },germany);
+ const berlin=await point([10.2,51.12]);
+ await page.mouse.move(berlin.x,berlin.y);
+ await page.waitForFunction(()=>typeof window.releaseHighlightFixture==='function');
+ expect(await shown()).toEqual(visiblePair(france));
+ await page.evaluate(()=>window.releaseHighlightFixture());
+ await expect.poll(shown).toEqual(visiblePair(germany));
+});
+
 test('selection outlines omit the antimeridian polygon closure',async({page})=>{
  await open(page);await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[179,66],zoom:4}));await ready(page,'dateline camera');
  const point=await page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,r=m.getCanvas().getBoundingClientRect(),p=m.project([175,66]);return {x:p.x+r.x,y:p.y+r.y};});await page.mouse.click(point.x,point.y);
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe('territorial:entity:RUS');
  await ready(page,'dateline selection');
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getStyle().layers.some(l=>l.id.includes('vector-line-10000')))).toBe(true);
- const result=await page.evaluate(async()=>{const m=window.__PANDOLAB_MAPLIBRE__,layer=m.getStyle().layers.find(l=>l.id.includes('vector-line-10000'));const d=await m.getSource(layer.source).getData();let edges=0,closures=0;for(const f of d.features)for(const line of f.geometry.coordinates)for(let i=1;i<line.length;i++){edges++;const a=line[i-1],b=line[i];if(Math.abs(Math.abs(a[0])-180)<1e-6&&Math.abs(Math.abs(b[0])-180)<1e-6&&Math.abs(a[1]-b[1])>1e-6)closures++;}return {edges,closures};});expect(result.edges).toBeGreaterThan(100);expect(result.closures).toBe(0);
+ const result=()=>page.evaluate(async()=>{
+  const m=window.__PANDOLAB_MAPLIBRE__,id=window.__PANDOLAB_VIEWER__.rendererStats().highlight?.sourceId;
+  const d=id&&await m.getSource(id)?.getData();let edges=0,closures=0;
+  for(const f of d?.features||[]){
+   if(f.properties.objectKey!=='territorial:entity:RUS'||f.geometry.type!=='MultiLineString')continue;
+   for(const line of f.geometry.coordinates)for(let i=1;i<line.length;i++){
+    edges++;const a=line[i-1],b=line[i];
+    if(Math.abs(Math.abs(a[0])-180)<1e-6&&Math.abs(Math.abs(b[0])-180)<1e-6&&Math.abs(a[1]-b[1])>1e-6)closures++;
+   }
+  }
+  return {edges,closures};
+ });
+ await expect.poll(async()=> (await result()).edges).toBeGreaterThan(100);
+ expect((await result()).closures).toBe(0);
 });
 
 test('first Antarctic hover colors both sides of the polar handoff in one frame',async({page})=>{
@@ -1201,10 +1254,13 @@ test('first Antarctic hover colors both sides of the polar handoff in one frame'
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,-85],zoom:3}));await ready(page,'polar hover camera');
  const point=await page.evaluate(async()=>{
   const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas(),gl=canvas.getContext('webgl2');
-  const source=map.getSource('interaction'),setData=source.setData.bind(source);
-  source.setData=async data=>{
-   if(data.features?.length)await new Promise(resolve=>setTimeout(resolve,350));
-   return setData(data);
+  const proto=Object.getPrototypeOf(map.getSource('interaction')),setData=proto.setData;
+  proto.setData=async function(data,...args){
+   if(this.id.startsWith('interaction')&&data.features?.some(feature=>feature.properties.objectKey==='territorial:entity:ATA')){
+    proto.setData=setData;
+    await new Promise(resolve=>setTimeout(resolve,350));
+   }
+   return setData.call(this,data,...args);
   };
   const samples=[-84.9,-85.1].map(lat=>map.project([21,lat]));
   await new Promise(resolve=>{
@@ -1241,9 +1297,9 @@ test('selected Antarctic coastline has no Mercator-edge connection',async({page}
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[-157.5,-85.051129],zoom:5}));await ready(page,'coastline at the Mercator edge');
  const point=await page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,r=m.getCanvas().getBoundingClientRect(),q=m.project([-160,-85.3]);return {x:q.x+r.x,y:q.y+r.y};});await page.mouse.click(point.x,point.y);
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe('territorial:entity:ATA');await ready(page,'selected coastline at the Mercator edge');
- const strokes=await page.evaluate(()=>new Promise(resolve=>{const m=window.__PANDOLAB_MAPLIBRE__;m.once('render',()=>{const c=m.getCanvas(),gl=c.getContext('webgl2'),pixels=new Uint8Array(c.width*c.height*4);gl.readPixels(0,0,c.width,c.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);resolve([[-157,-85.051129],[-158.67317,-85.1325]].map(coordinate=>{const p=m.project(coordinate),x=Math.round(p.x*m.getPixelRatio()),y=c.height-1-Math.round(p.y*m.getPixelRatio());let blue=0;for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const i=((y+dy)*c.width+x+dx)*4;if(pixels[i]<80&&pixels[i+1]>70&&pixels[i+1]<190&&pixels[i+2]>200)blue++;}return blue;}));});m.triggerRepaint();}));
- expect(strokes[0],'the Mercator edge must not draw a blue connection across actual sea').toBe(0);
- expect(strokes[1],'the real polar coastline must retain its selection outline').toBeGreaterThan(0);
+ const sample=()=>page.evaluate(()=>new Promise(resolve=>{const m=window.__PANDOLAB_MAPLIBRE__;m.once('render',()=>{const c=m.getCanvas(),gl=c.getContext('webgl2'),pixels=new Uint8Array(c.width*c.height*4);gl.readPixels(0,0,c.width,c.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);resolve([[-157,-85.051129],[-158.67317,-85.1325]].map(coordinate=>{const p=m.project(coordinate),x=Math.round(p.x*m.getPixelRatio()),y=c.height-1-Math.round(p.y*m.getPixelRatio());let blue=0;for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const i=((y+dy)*c.width+x+dx)*4;if(pixels[i]<80&&pixels[i+1]>70&&pixels[i+1]<190&&pixels[i+2]>200)blue++;}return blue;}));});m.triggerRepaint();}));
+ await expect.poll(async()=>(await sample())[1],{timeout:15000,message:'the real polar coastline must retain its selection outline'}).toBeGreaterThan(0);
+ expect((await sample())[0],'the Mercator edge must not draw a blue connection across actual sea').toBe(0);
 });
 
 test('direct polar caps preserve land, selection and context recovery',async({page})=>{

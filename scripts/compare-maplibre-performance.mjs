@@ -13,7 +13,7 @@ export function compareMapLibrePerformance(baseline,candidate,{allowWasmChange=f
  }
  const pins=[...baseline,...candidate].map(row=>row.identity?.dataPin);
  if(pins.some(pin=>typeof pin!=='string'||!pin)||new Set(pins).size!==1)throw Error('Performance captures must share their data pin');
- if([...baseline,...candidate].some(row=>row.metricVersion!==(row.scenario==='startup-date'?6:5)))
+ if([...baseline,...candidate].some(row=>row.metricVersion!==(row.scenario==='startup-date'?7:5)))
   throw Error('Performance captures must use the current scenario metric version');
  const groupKey=row=>JSON.stringify([row.scenario||'interaction',row.profile||'desktop',row.zoom??null]);
  const groups=[...new Set(baseline.map(groupKey))];
@@ -26,8 +26,14 @@ export function compareMapLibrePerformance(baseline,candidate,{allowWasmChange=f
   if(new Set(identities).size!==1)throw Error('Performance environments must match');
   const metrics={...(scenario==='startup-date'?{warmInitial:row=>row.warmInitialMs}:{p95:row=>row.measured.frameGapP95Ms,p99:row=>row.measured.frameGapP99Ms}),initial:row=>row.initial.presentedAtMs,
    dateFirst:row=>row.dateTransitions[0].elapsedMs,dateOther:row=>row.dateTransitions[1].elapsedMs,dateRevisit:row=>row.dateTransitions[2].elapsedMs};
-  for(const row of [...before,...after])if(scenario!=='startup-date'&&row.measured.sampleCount<500)throw Error('Insufficient active-frame samples');
-  if(scenario!=='startup-date'&&[...before,...after].every(row=>row.measured.nativeSampleCount>=500)){
+  if(scenario!=='startup-date'){
+   for(const {measured,iteration,label} of [...before,...after]){
+    const context=`${label||'capture'}, ${scenario}, ${profile}, zoom ${zoom}, repeat ${iteration}`;
+    if(!Number.isInteger(measured?.sampleCount)||measured.sampleCount<500)
+     throw Error(`Insufficient active-frame samples (${measured?.sampleCount ?? 'missing'}; ${context})`);
+    if(!Number.isInteger(measured?.nativeSampleCount)||measured.nativeSampleCount<500)
+     throw Error(`Insufficient native render samples (${measured?.nativeSampleCount ?? 'missing'}; ${context})`);
+   }
    metrics.nativeP95=row=>row.measured.nativeFrameGapP95Ms;
    metrics.nativeP99=row=>row.measured.nativeFrameGapP99Ms;
   }

@@ -18,9 +18,52 @@ test('cancelling a view rejects its request and informs the worker',async()=>{
  const request=loader.view({knownKey:''});loader.cancel();await assert.rejects(request,{name:'AbortError'});
  assert.ok(sent.some(message=>message.type==='cancel-view'));loader.dispose();
 });
+
+test('complete tile windows reuse decoded packs and emit live progress for misses',async()=>{
+ const sent=[], progress=[];let worker;
+ class FakeWorker {
+  constructor(){worker=this;}
+  postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));}
+  terminate(){}
+ }
+ const loader=await createHydroBrowserLoader({manifest:{stages:[{id:0,columns:4,rows:2}]},createWorker:()=>new FakeWorker(),
+  tilesForView:view=>view.tiles,baseUrl:'http://example/',packLimit:1});
+ const tile=x=>({stage:0,x,y:0});
+ const deliver=(revision,type,payload)=>worker.onmessage({data:{type,revision,...payload}});
+ const options={onProgress:value=>progress.push(value)};
+ try{
+  const first=loader.view({center:[100,30],knownKey:'',tiles:[tile(0),tile(3)]},options);
+  const sentFirst=sent.at(-1);
+  assert.deepEqual(sentFirst.tiles,[tile(3),tile(0)]);
+  const features=[{id:'1:1'}];
+  deliver(sentFirst.revision,'pack',{packId:1,features});
+  assert.deepEqual(progress,[{packs:[{id:1,features}]}]);
+  deliver(sentFirst.revision,'view-ready',{packIds:[1],stats:{rangeRequests:1,queueMs:.1,fetchMs:5,parseMs:1}});
+  assert.deepEqual((await first).packs,[{id:1,features}]);
+  const cacheHit=await loader.view({center:[-130,30],knownKey:'',tiles:[tile(3),tile(0)]},options);
+  assert.deepEqual(cacheHit.addPacks,[{id:1,features}]);
+  assert.deepEqual(cacheHit.packIds,[1]);
+  assert.equal(sent.filter(message=>message.type==='view').length,1);
+  assert.equal(progress.length,1);
+  assert.deepEqual(loader.stats(),{cached:1,viewRequests:1,windowHits:1,rangeRequests:1,queueMs:.1,fetchMs:5,parseMs:1});
+
+  const second=loader.view({knownKey:'1',tiles:[tile(2)]});
+  const secondRevision=sent.at(-1).revision;
+  deliver(secondRevision,'pack',{packId:2,features:[]});
+  deliver(secondRevision,'view-ready',{packIds:[2]});
+  await second;
+  const revisited=loader.view({knownKey:'2',tiles:[tile(0),tile(3)]},options);
+  assert.equal(sent.filter(message=>message.type==='view').length,3);
+  const revisitRevision=sent.at(-1).revision;
+  deliver(revisitRevision,'pack',{packId:1,features});
+  deliver(revisitRevision,'view-ready',{packIds:[1]});
+  assert.deepEqual((await revisited).removePacks,[2]);
+ }finally{loader.dispose();}
+});
 test('inactive cached packs are released when the cache limit is exceeded',async()=>{
  const sent=[];let next=0;class FakeWorker {postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view'){const id=++next;queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:id,features:[]}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[id]}});});}}terminate(){}}
- const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),tilesForView:()=>[],baseUrl:'http://example/',packLimit:1});
+ const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),
+  tilesForView:({knownKey})=>[{stage:0,x:Number(knownKey),y:0}],baseUrl:'http://example/',packLimit:1});
  await loader.view({knownKey:''});await loader.view({knownKey:'1'});
  assert.deepEqual(sent.find(message=>message.type==='release').packIds,[1]);assert.equal(loader.stats().cached,1);loader.dispose();
 });

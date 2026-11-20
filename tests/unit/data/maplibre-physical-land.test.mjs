@@ -59,6 +59,53 @@ test('external archive routing permits only the explicitly published display ass
  await assert.rejects(fetchData('https://fixture.test/assets/data/display-land/unpublished.json.gz'),/Missing pinned/);
 });
 
+test('geometry Worker initialization recovery resubmits concurrent live requests', async () => {
+ const {createMapGeometryRequester}=await import('../../../src/rendering/maplibre-viewer-renderer.js');
+ const {createWorkerRpcClient}=await import('../../../src/runtime/worker-rpc.js');
+ const requests=[];
+ let rpc=null, workers=0;
+ const createWorker=()=>{
+  const index=workers++;
+  return {postMessage(message){
+   if(message.type!=='request')return;
+   requests.push([index,message.operation]);
+   if(index===0&&message.operation==='geometry.prepare')return;
+   queueMicrotask(()=>this.onmessage?.({data:{...message,type:'result',ok:index>0,
+    ...(index===0?{error:{code:'PL-MAP-GEOMETRY-INITIALIZATION',message:'Core unavailable'}}:{result:message.operation}),
+   }}));
+  }};
+ };
+ const prepare=createMapGeometryRequester({
+  getWorker:()=>rpc ||= createWorkerRpcClient({createWorker}),
+  restartWorker:worker=>{if(worker===rpc){rpc=null;worker.stop();}},
+  waitBeforeRetry:()=>Promise.resolve(),
+ });
+ const signal=new AbortController().signal;
+ assert.deepEqual(await Promise.all([
+  prepare('geometry.physical-land',{},0,signal), prepare('geometry.prepare',{},0,signal),
+ ]),['geometry.physical-land','geometry.prepare']);
+ assert.deepEqual(requests,[[0,'geometry.physical-land'],[0,'geometry.prepare'],[1,'geometry.physical-land'],[1,'geometry.prepare']]);
+ rpc.stop();
+});
+
+test('prepared country topology reuses an existing snapshot and deltas while a seed is unavailable',async()=>{
+ const {createCountryBoundaryPreparation}=await import('../../../src/rendering/country-shared-boundary-state.js');
+ let attempts=0;
+ const preparation=createCountryBoundaryPreparation({
+  loadSeed:signal=>{attempts++;return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));},
+  seedWaitMs:1,
+ });
+ const feature=(id,x)=>({id,geometry:{type:'Polygon',coordinates:square(x,0)}});
+ const context={throwIfCancelled(){}};
+ const result=await preparation.prepare({key:'A',baseKey:null,upserts:[feature('left',0),feature('right',1)]},context);
+ assert.ok(result.segments.length>0);
+ assert.strictEqual((await preparation.prepare({key:'A',baseKey:'A'},context)).segments,result.segments);
+ const updated=await preparation.prepare({key:'B',baseKey:'A',upserts:[feature('right',3)],remove:[]},context);
+ assert.deepEqual(updated.segments,[]);
+ assert.equal(attempts,1);
+ assert.match(preparation.stats().boundarySeedFailure,/timed out/);
+});
+
 
 test('polar geometry retries a failed manifest and transfers only detached fill arrays',async()=>{
  const {createPreparedPolygonMeshStore}=await import('../../../src/rendering/prepared-polygon-mesh.js');
@@ -83,4 +130,38 @@ test('polar geometry retries a failed manifest and transfers only detached fill 
  assert.deepEqual(again.indices,packet.indices);
  assert.equal(manifests,2);
  assert.equal(builds,1);
+});
+
+test('geometry Worker transfers compact cap rows and complete full-extent highlight rows',async t=>{
+ const names=['self','location','importScripts','PANDOLAB_BUILD_META','PandoLabWorkerRpc','PandoLabPolygonMeshCore'];
+ const previous=Object.fromEntries(names.map(name=>[name,Object.getOwnPropertyDescriptor(globalThis,name)]));
+ t.after(()=>{for(const name of names){if(previous[name])Object.defineProperty(globalThis,name,previous[name]);else delete globalThis[name];}});
+ const catalog='assets/data/fixture/catalog.json';
+ const roles=['world','territorial','rivers','lakes','places','placeLifetimes','physicalLand','preparedMeshes'];
+ globalThis.PANDOLAB_BUILD_META={assetRevision:'fixture',dataRevision:'fixture',resourceProfile:'test-fixture',
+  mapProject:{format:'pandolab-map-project-manifest',schemaVersion:1,projectId:'fixture',name:'Fixture map',documentFormat:'pandolab-project-state',
+   resources:Object.fromEntries(roles.map(role=>[role,{catalog}]))},
+  projectCatalogs:{preparedMeshes:{catalog,bytes:2,sha256:'a'.repeat(64),current:false}}};
+ globalThis.importScripts=()=>{};
+ const positions=new Float32Array([0,0,1,0,0,1,0,-86,1,-86,0,-87,0,85,1,85,0,86]);
+ const indices=new Uint32Array([0,1,2,3,4,5,6,7,8]);
+ let prepare;
+ globalThis.self=globalThis;
+ globalThis.location=new URL('https://fixture.test/geometry.js?v=fixture&dataRevision=fixture');
+ globalThis.PandoLabWorkerRpc={install({handlers}){prepare=handlers['geometry.prepare'];},transferResult:(result,buffers)=>structuredClone(result,{transfer:buffers})};
+ globalThis.PandoLabPolygonMeshCore={setSharedCore(){},MESH_ALGORITHM_REVISION:6,buildPolygonGeometryPacket:()=>({
+   algorithmVersion:6,maxEdgeDegrees:.4,positions,indices,featureIds:new Uint32Array(9),boundaryIndices:new Uint32Array(),
+   ringCoordinates:new Float64Array(),ringOffsets:new Uint32Array(),polygonOffsets:new Uint32Array(),
+  })};
+ await import('../../../src/rendering/workers/map-geometry-worker.js');
+ const geometry={type:'Polygon',coordinates:square(0,-88)},context={throwIfCancelled(){}};
+ const cap=await prepare({items:[{kind:'fill',cacheKey:'cap',geometry,polarCapOnly:true}]},context);
+ assert.deepEqual([...cap.packets[0].packet.positions],[...positions.slice(6)]);
+ assert.deepEqual([...cap.packets[0].packet.indices],[0,1,2,3,4,5]);
+ assert.deepEqual(cap.packets[0].packet.ranges.map(({offset,count})=>[offset,count]),[[0,3],[3,3]]);
+ assert.equal(cap.stats.transferBytes,72);
+ const full=await prepare({items:[{kind:'fill',cacheKey:'full',geometry,polarCapOnly:false}]},context);
+ assert.deepEqual(full.packets[0].packet.positions,positions);
+ assert.deepEqual(full.packets[0].packet.indices,indices);
+ assert.equal(full.stats.transferBytes,108);
 });

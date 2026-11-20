@@ -8,6 +8,8 @@ export function createPointerTargets() {
   let pendingHoverPick;
   let lastHoverPickPoint;
   let lastHoverPickViewRevision;
+  let lastPickingRevision;
+  let lastMapHover;
   let hoverPickSequence = 0;
   let pendingHoverRequests = 0;
   function connect(ports) {
@@ -26,12 +28,17 @@ export function createPointerTargets() {
       const isCurrent = () => sequence === hoverPickSequence && generation === dependencies.domains.projectDomain.getGeneration()
         && (clear || (viewRevision === dependencies.mapLayout.viewRevision && !dependencies.projectState.state.mapMoving
           && !dependencies.projectState.state.projectReplacing));
-      const accepted = await dependencies.domains.selectionDomain.setHover(nextRef, { ...(clear ? {} : { source: 'map' }), isCurrent });
+      const before = dependencies.domains.selectionDomain.snapshot();
+      const key = nextRef?.key || null;
+      if (!clear && pendingHoverRequests === 1 && (before.hover?.key || null) === key
+        && (key === null || lastMapHover?.key === key && lastMapHover.revision === before.hoverRevision)) return true;
+      const accepted = await dependencies.rendering.mapRenderer.measureWork('highlight.core-hover', () =>
+        dependencies.domains.selectionDomain.setHover(nextRef, { ...(clear ? {} : { source: 'map' }), isCurrent }));
       if (!accepted || !Object.hasOwn(accepted,'hover')) throw new TypeError('An accepted Core hover snapshot is required.');
       if (sequence !== hoverPickSequence || generation !== dependencies.domains.projectDomain.getGeneration()
         || (!clear && (viewRevision !== dependencies.mapLayout.viewRevision || dependencies.projectState.state.mapMoving))) return false;
-      const key = nextRef?.key || null;
       if ((accepted.hover?.key || null) !== key || (dependencies.domains.selectionDomain.snapshot().hover?.key || null) !== key) return false;
+      if (!clear) lastMapHover = {key,revision:accepted.hoverRevision};
       return true;
     } catch (error) {
       if (!obsoleteHoverError(error)) dependencies.feedback.reportOperationError(error,'지도 hover를 갱신하지 못했습니다.','PL-MAP-HOVER-001',4200);
@@ -41,11 +48,13 @@ export function createPointerTargets() {
 
   async function cancelCountryHoverPick({ clear = false } = {}) {
     const sequence = ++hoverPickSequence;
-    if (hoverPickFrame) clearTimeout(hoverPickFrame);
+    if (hoverPickFrame) cancelAnimationFrame(hoverPickFrame);
     hoverPickFrame = 0;
     pendingHoverPick = null;
     lastHoverPickPoint = null;
     lastHoverPickViewRevision = -1;
+    lastPickingRevision = null;
+    lastMapHover = null;
     try {
       // A pending enter can still acknowledge after cancellation. Queue its
       // clear even when no hover has been accepted yet.
@@ -60,10 +69,13 @@ export function createPointerTargets() {
 
   function queueCountryHoverPick(screenPoint, coord) {
     if (!screenPoint || !coord || dependencies.projectState.state.mapMoving) return;
-    if (lastHoverPickPoint && Math.hypot(screenPoint[0] - lastHoverPickPoint[0], screenPoint[1] - lastHoverPickPoint[1]) < 3) return;
+    const renderer = dependencies.rendering.mapRenderer;
+    if (lastHoverPickPoint && lastHoverPickViewRevision === dependencies.mapLayout.viewRevision
+      && lastPickingRevision === renderer.getPickingRevision()
+      && Math.hypot(screenPoint[0] - lastHoverPickPoint[0], screenPoint[1] - lastHoverPickPoint[1]) < 3) return;
     pendingHoverPick = { screenPoint: [...screenPoint], coord: [...coord], sequence: ++hoverPickSequence };
     if (hoverPickFrame) return;
-    hoverPickFrame = setTimeout(async () => {
+    hoverPickFrame = requestAnimationFrame(async () => {
       hoverPickFrame = 0;
       const pending = pendingHoverPick;
       pendingHoverPick = null;
@@ -71,9 +83,10 @@ export function createPointerTargets() {
         if (!pending || dependencies.projectState.state.mapMoving) return false;
         lastHoverPickPoint = pending.screenPoint;
         lastHoverPickViewRevision = dependencies.mapLayout.viewRevision;
+        lastPickingRevision = renderer.getPickingRevision();
         const generation = dependencies.domains.projectDomain.getGeneration();
-        const refs = await dependencies.objectPicking.selectableObjectsAt(pending.screenPoint, pending.coord,
-          { includeLabels: false, includeHydro: false });
+        const refs = await renderer.measureWork('highlight.pick', () => dependencies.objectPicking.selectableObjectsAt(
+          pending.screenPoint, pending.coord, { includeLabels: false, includeHydro: false }));
         if (pending.sequence !== hoverPickSequence || dependencies.projectState.state.projectReplacing
           || generation !== dependencies.domains.projectDomain.getGeneration()
           || dependencies.projectState.state.mapMoving
@@ -83,7 +96,7 @@ export function createPointerTargets() {
         if (!obsoleteHoverError(error)) dependencies.feedback.reportOperationError(error,'지도 hover 대상을 찾지 못했습니다.','PL-MAP-HOVER-001',4200);
         return false;
       }
-    }, 50);
+    });
   }
 
 
@@ -124,6 +137,7 @@ export function createPointerTargets() {
 
   function initializeHoverPickFrame() {
     hoverPickSequence += 1;
+    if (hoverPickFrame) cancelAnimationFrame(hoverPickFrame);
     (hoverPickFrame = 0);
 
     (pendingHoverPick = null);
@@ -131,6 +145,8 @@ export function createPointerTargets() {
     (lastHoverPickPoint = null);
 
     (lastHoverPickViewRevision = -1);
+    lastPickingRevision = null;
+    lastMapHover = null;
   }
 
   return Object.freeze({

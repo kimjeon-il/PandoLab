@@ -42,6 +42,7 @@ export function createMapPresentationSession({
   function waitForMapPresentation(generation) {
     if (isDisposed() || Number(generation) !== getGeneration())
       return Promise.reject(abortError('Project map presentation was superseded.'));
+    if (temporalPending() && temporalTicket.error) return Promise.reject(temporalTicket.error);
     if (!temporalPending() && committedGeneration === getGeneration() && getReadiness().mapReady)
       return Promise.resolve(true);
     return new Promise((resolve, reject) => {

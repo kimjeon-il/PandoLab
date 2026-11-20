@@ -59,28 +59,53 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    await settle();
    if(renderer.map.getCanvas().style.visibility==='hidden')throw new Error('The first full map never became visible');
    const originalGetStyle=renderer.map.getStyle;
-   let approvalSerializations=0;
+   const originalGetOrder=renderer.map.getLayersOrder;
+   let approvalSerializations=0,approvalOrderReads=0;
    renderer.map.getStyle=function(...args){
     if(new Error().stack.includes('requiredSourcesReady'))approvalSerializations++;
     return originalGetStyle.apply(this,args);
    };
+   renderer.map.getLayersOrder=function(...args){
+    if(new Error().stack.includes('mapSourceLayers'))approvalOrderReads++;
+    return originalGetOrder.apply(this,args);
+   };
    await settle();
+   const warmedOrderReads=approvalOrderReads;
+   for(let n=0;n<5;n++)renderer.renderFrame(frame());
    renderer.map.getStyle=originalGetStyle;
+   renderer.map.getLayersOrder=originalGetOrder;
    if(approvalSerializations)throw new Error('Frame approval serialized the entire style '+approvalSerializations+' times');
+   if(approvalOrderReads!==warmedOrderReads)throw new Error('Stable frame approval walked the layer order again');
 
    const refFor=feature=>({domain:'territorial',type:'entity',id:feature.id,key:'territorial:entity:'+encodeURIComponent(feature.id)});
    const beforeRef=refFor(before),afterRef=refFor(after);
    const interactionSnapshot=(items,hover=null)=>({selection:{items,primaryKey:items[0]?.key},hover});
-   renderer.setSelection(interactionSnapshot([]));await settle();
-   const interaction=renderer.map.getSource('interaction'),writeInteraction=interaction.setData.bind(interaction);
+   const shownHighlight=async(key=null)=>{
+    for(let time=0;time<100;time++){
+     const status=renderer.getStats().highlight;
+     if(status?.sourceId&&!status.pending){
+      const source=renderer.map.getSource(status.sourceId);
+      if(source){
+       const {features}=await source.getData();
+       if(key===null&&!features.length||features.some(f=>f.properties.objectKey===key))return features;
+      }
+     }
+     await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    throw new Error('Expected highlight was not displayed: '+key);
+   };
+   renderer.setSelection(interactionSnapshot([]));await settle();await shownHighlight();
+   const prototype=Object.getPrototypeOf(renderer.map.getSource('interaction')),writeInteraction=prototype.setData;
    const writes=[];
    let beginWrite,releaseWrite;
    const began=new Promise(resolve=>beginWrite=resolve);
-   interaction.setData=data=>{
+   prototype.setData=function(data,...args){
+    const write=()=>writeInteraction.call(this,data,...args);
+    if(!this.id.startsWith('interaction'))return write();
     writes.push(data);
-    if(writes.length!==1)return writeInteraction(data);
+    if(writes.length!==1)return write();
     beginWrite();
-    return new Promise(resolve=>releaseWrite=()=>resolve(writeInteraction(data)));
+    return new Promise(resolve=>releaseWrite=()=>resolve(write()));
    };
    renderer.setSelection(interactionSnapshot([beforeRef]));
    await began;
@@ -88,9 +113,9 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    renderer.setSelection(interactionSnapshot([afterRef],beforeRef));
    renderer.setSelection(interactionSnapshot([afterRef]));
    releaseWrite();
-   await settle();
-   interaction.setData=writeInteraction;
-   if(writes.length!==2||writes[1].features.length!==1||writes[1].features[0].geometry!==after.geometry)
+   await settle();await shownHighlight(afterRef.key);
+   prototype.setData=writeInteraction;
+   if(writes.length!==2||writes[1].features.length!==2||writes[1].features[0].geometry!==after.geometry)
     throw new Error('The interaction queue applied a superseded hover or lost the final selection');
    const originalMoveLayer=renderer.map.moveLayer;
    let orderMoves=0;
@@ -260,7 +285,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    if(!await delayedStyle)throw new Error('A pending external style survived a temporal transition');
    renderer.finishTemporalViewTransition(concurrentTicket);renderer.releaseTemporalFrame();renderer.map.setStyle=rawSetStyle;
    await renderer.setTerritorialFeatures([before]);await settle();
-   if(!(await renderer.map.getSource('interaction').getData()).features.length)throw new Error('Selection queued during style loading was lost');
+   if(!(await shownHighlight(beforeRef.key)).length)throw new Error('Selection queued during style loading was lost');
    const beforeSource=renderer.map.getSource(renderer.map.getLayer('territories').source);
    const removeBasemap=await renderer.previewExternalBasemap(external);const externalInstalled=!!renderer.map.getLayer('test-basemap')&&renderer.map.getSource(renderer.map.getLayer('territories').source)===beforeSource;
    await settle();const externalPick=renderer.queryObjectRefs(renderer.projection.projectCoordinate([-4,0])).some(ref=>ref.id==='old');
@@ -362,6 +387,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const optionalFailureIsolated=!renderer.getRuntimeState().projectRenderBlocked;
    errors.length=0;
    const ticket=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();
+   const inactiveCountry=renderer.getStats().datedSources.territories;
    const removeLate=renderer.registerFeature('late',map=>{map.addSource('late',{type:'geojson',data:{type:'FeatureCollection',features:[]}});map.addLayer({id:'late',type:'circle',source:'late'});return ()=>{map.removeLayer('late');map.removeSource('late');};});
    const lateSuspended=renderer.map.getLayoutProperty('late','visibility')==='none';
    const overlay=globalThis.document.querySelector('#map > div:last-child'),snapshot=overlay.querySelector('canvas');
@@ -391,14 +417,38 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const nextPixels=snapshot.getContext('2d').getImageData(0,0,snapshot.width,snapshot.height).data;
    const frozenBeforeAdmission=overlay.isConnected&&noLegacySvg&&oldPixels.some((value,index)=>index%4===3&&value>0)&&oldPixels.every((value,index)=>value===nextPixels[index]);
    await settle();await waiting;const releasedAfterAdmission=!overlay.isConnected;const lateRestored=renderer.map.getLayoutProperty('late','visibility')!=='none';removeLate();
+   if(!renderer.map.style.tileManagers[inactiveCountry]?.used)
+    throw new Error('A just-displayed dated slot must remain tiled for an immediate revisit');
+   renderer.map.fire('movestart');renderer.map.fire('move');renderer.map.fire('moveend');
+   await settle();
+   if(!renderer.map.style.tileManagers[inactiveCountry]?.used)
+    throw new Error('A stationary resize event must not retire the warm dated slot');
+   renderer.map.panBy([1,0],{animate:false});await settle();
+   const inactiveLayers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
+   if(!inactiveLayers.length||inactiveLayers.some(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')!=='none')||
+    renderer.map.style.tileManagers[inactiveCountry]?.used)
+    throw new Error('The inactive dated slot is still used for native tiling');
    await new Promise(resolve=>setTimeout(resolve,100));const optionalStillLoading=!renderer.map.areTilesLoaded();renderer.map.removeLayer('optional-fixture');renderer.map.removeSource('optional-fixture');
    const first=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();const retained=globalThis.document.querySelector('#map > div:last-child');
    const second=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();
    const supersededKept=renderer.finishTemporalViewTransition(first)===false&&retained.isConnected;
    const failed=renderer.waitForTemporalPresentation().then(()=>false,()=>true);
-   renderer.failMapPreparation(new Error('delayed source failed'));
+   const sourceFailure=new Error('delayed source failed');
+   renderer.failMapPreparation(sourceFailure);
    const failureKept=await failed&&retained.isConnected;
-   renderer.finishTemporalViewTransition(second);renderer.retryMapPreparation();errors.pop();renderer.releaseTemporalFrame();
+   const lateFailure=await renderer.waitForMapPresentation(renderer.getProjectGeneration()).then(()=>null,error=>error);
+   if(lateFailure!==sourceFailure)throw new Error('An already failed date was allowed to start a presentation wait');
+   const recovery=renderer.beginTemporalViewTransition();renderer.retryMapPreparation();errors.pop();
+   if(renderer.finishTemporalViewTransition(second)||!retained.isConnected)
+    throw new Error('The superseded date could release the recovery frame');
+   const recovered=renderer.waitForMapPresentation(renderer.getProjectGeneration());
+   await renderer.prepareTemporalCountrySource([after]);
+   await renderer.setTerritorialFeatures([after]);
+   if(!renderer.renderFrame(frame()).deferred||!retained.isConnected)
+    throw new Error('Recovery exposed a frame before the restored date was admitted');
+   renderer.admitTemporalViewTransition(recovery);
+   await settle();await recovered;
+   if(retained.isConnected)throw new Error('The certified recovery frame did not release the snapshot');
    const superseded=renderer.setTerritorialFeatures([before,after]);await new Promise(resolve=>setTimeout(resolve,0));const latest=renderer.setTerritorialFeatures([after]);await Promise.all([superseded,latest]);await settle();
    renderer.map.jumpTo({center:[-60,0],zoom:0});await settle();renderer.fitGeometry({type:'FeatureCollection',features:[after]});await settle();const focused=renderer.map.getCenter();
    let point=renderer.projection.projectCoordinate([22,0]);const picked=renderer.queryObjectRefs(point).map(ref=>ref.id);
@@ -451,7 +501,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    await renderer.setTerritorialFeatures([child,after,other]);await settle();const rebound=(await territories.getData()).features.find(f=>f.id.includes('child')).properties.color;
    child.properties.parentId=after.id;await renderer.setTerritorialFeatures([child,after]);await settle();const returned=(await territories.getData()).features.find(f=>f.id.includes('child')).properties.color;
    const propertyOnly=updates[0].update.every(row=>!row.newGeometry);
-   visible=false;renderer.setSelection({selection:{items:[{domain:'territorial',type:'entity',id:after.id,key:'territorial:entity:'+encodeURIComponent(after.id)}],primaryKey:'territorial:entity:'+encodeURIComponent(after.id)},hover:null});await settle();const hiddenHighlight=(await renderer.map.getSource('interaction').getData()).features.length;
+   visible=false;renderer.setSelection({selection:{items:[{domain:'territorial',type:'entity',id:after.id,key:'territorial:entity:'+encodeURIComponent(after.id)}],primaryKey:'territorial:entity:'+encodeURIComponent(after.id)},hover:null});await settle();const hiddenHighlight=(await shownHighlight()).length;
    const boundaryRefresh=renderer.setTerritorialFeatures([after,adjacent]);
    renderer.setSceneDomains(new Map([['top-overlay',{polygons:[{key:'top-overlay',geometryRevision:'top-overlay-v1',geometry:{type:'Polygon',coordinates:[[[24,-2],[28,-2],[28,2],[24,2],[24,-2]]]},order:5000,style:{color:'#1234ff',fillAlpha:1},blendMode:'normal'}],strokes:[]}]]));
    await boundaryRefresh;await settle();point=renderer.projection.projectCoordinate([26,0]);const topPixel=await sample();
@@ -469,6 +519,34 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    for(let i=0;i<20;i++){const candidate=frame(),result=renderer.renderFrame(candidate);if(result.succeeded){renderer.commitVisualFrame(candidate);optionalStrokeIndependent=true;break;}await new Promise(resolve=>setTimeout(resolve,20));}
    if(!optionalStrokeIndependent)throw Error('Optional hydro stroke preparation blocked the required frame');
    releaseOptional();await settle();renderer.setSceneDomains(new Map());await settle();
+   visible=true;
+   const polarLine={type:'LineString',coordinates:[[0,84],[0,88],[5,88]]};
+   renderer.map.jumpTo({center:[0,87],zoom:3});
+   renderer.setSceneDomains(new Map([['polar-test',{polygons:[],strokes:[{key:'polar-case',
+    objectKey:'generic:feature:polar-case',geometryRevision:'polar-line-v1',
+    geometry:polarLine,order:300,style:{color:'#ff0044',width:4,alpha:1}}]}]]));
+   await settle();
+   point=renderer.projection.projectCoordinate([0,86.5]);
+   const polarPixel=await sample();
+   if(polarPixel[0]<245||polarPixel[1]>15||!renderer.queryObjectRefs(point).some(ref=>ref.key==='generic:feature:polar-case'))
+    throw new Error('A line crossing the Mercator edge did not remain visible and pickable in the cap: '+JSON.stringify({
+     polarPixel,coordinate:renderer.projection.screenToGeo(point),vertices:polarLine.coordinates.map(renderer.projection.projectVisibleCoordinate),hits:renderer.queryObjectRefs(point),
+    }));
+   renderer.setSceneDomains(new Map());
+   renderer.map.jumpTo({center:[26,0],zoom:1});
+   await settle();
+   const pointRef={domain:'generic',type:'feature',id:'highlight-point',key:'generic:feature:highlight-point'};
+   const pointGeometry={type:'Point',coordinates:[24,2]};
+   state.genericFeatures=[{id:pointRef.id,geometry:pointGeometry}];
+   renderer.setSelection(interactionSnapshot([afterRef,pointRef]));
+   await shownHighlight(pointRef.key);
+   const pointLayer=renderer.map.getStyle().layers.find(layer=>layer.type==='circle'&&layer.source===renderer.getStats().highlight.sourceId);
+   const pointHit=renderer.map.queryRenderedFeatures(renderer.projection.projectCoordinate(pointGeometry.coordinates),{layers:[pointLayer.id]});
+   if(renderer.map.getPaintProperty(pointLayer.id,'circle-opacity')!==1
+    ||!pointHit.some(feature=>feature.properties.objectKey===pointRef.key))
+    throw new Error('A selected point did not share the admitted polygon and outline frame');
+   renderer.setSelection(interactionSnapshot([]));
+   await shownHighlight();
    renderer.map.panBy([1,0],{animate:false});let unpublished;
    for(let attempt=0;attempt<300;attempt++){const candidate=frame(),result=renderer.renderFrame(candidate);if(result.succeeded){unpublished=candidate;break;}await new Promise(resolve=>setTimeout(resolve,20));}
    if(!unpublished||renderer.getRuntimeState().mapReady)throw new Error('Prepared geometry was reported as a published frame');

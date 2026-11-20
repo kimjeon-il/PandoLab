@@ -56,10 +56,16 @@ test('water updates only added and removed packs',async()=>{
  const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:async()=>++n===1?{key:'1',addPacks:[{id:1,features:[feature('a')]}],removePacks:[]}:{key:'2',addPacks:[{id:2,features:[feature('b')]}],removePacks:[1]},onError:error=>{throw error;}});
  await water.refresh();await water.refresh();assert.deepEqual(diffs[0].add.map(f=>f.id),['a']);assert.deepEqual(diffs[1].remove,['a']);assert.deepEqual(diffs[1].add.map(f=>f.id),['b']);water.dispose();
 });
-test('a newer viewport cancels its in-flight predecessor',async()=>{
+test('a newer viewport retargets the loader without cancelling its shared downloads',async()=>{
  let rejectLoad,cancellations=0,loads=0;const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>({updateData:async()=>{}}),on(){},off(){}};
- const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},load:()=>++loads===1?new Promise((resolve,reject)=>{rejectLoad=reject;}):Promise.resolve({key:'new',addPacks:[],removePacks:[]}),cancel:()=>{cancellations++;if(rejectLoad){rejectLoad(new Error('cancelled'));rejectLoad=null;}},onError:error=>{throw error;}});
- const first=water.refresh();while(!rejectLoad)await new Promise(resolve=>setTimeout(resolve,0));const second=water.refresh();await Promise.all([first,second]);assert.equal(loads,2);assert.ok(cancellations>=2);water.dispose();
+ const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:()=>{},
+  load:()=>{
+   if(++loads===1)return new Promise((_resolve,reject)=>{rejectLoad=reject;});
+   rejectLoad(new DOMException('superseded','AbortError'));
+   return Promise.resolve({key:'new',addPacks:[],removePacks:[]});
+  },cancel:()=>{cancellations++;},onError:error=>{throw error;}});
+ const first=water.refresh();while(!rejectLoad)await new Promise(resolve=>setTimeout(resolve,0));const second=water.refresh();
+ await Promise.all([first,second]);assert.equal(loads,2);assert.equal(cancellations,0);water.dispose();
 });
 
 test('a superseded source update is not published as the current selection catalog',async()=>{
@@ -68,12 +74,44 @@ test('a superseded source update is not published as the current selection catal
  const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),getSource:()=>source,on(){},off(){}};
  const feature=id=>({id,properties:{logicalId:id,category:'lake'}});
  const water=createMapLibreHydroPresentation({map,updateSource:async(diff)=>{await map.getSource('hydro').updateData(diff);return true;},admitFeatures:async()=>{},onFeatures:features=>published.push(features.map(f=>f.id)),
-  load:async({knownKey})=>{known.push(knownKey);return knownKey==='1'?{key:'2',addPacks:[{id:2,features:[feature('b')]}],removePacks:[1]}:{key:'1',addPacks:[{id:1,features:[feature('a')]}],removePacks:[]};},onError:error=>{throw error;}});
+  load:async({knownKey})=>{const id=known.push(knownKey);return {key:String(id),packIds:[id],packs:[{id,features:[feature(id===1?'a':'b')]}]};},onError:error=>{throw error;}});
  const first=water.refresh();while(!release)await new Promise(resolve=>setTimeout(resolve,0));
  const second=water.refresh();release();await Promise.all([first,second]);
- assert.deepEqual(known,[null,'1']);
+ assert.deepEqual(known,[null,null]);
  assert.deepEqual(diffs[1].remove,['a']);
  assert.deepEqual(published,[['b']]);water.dispose();
+});
+
+test('a progressive viewport batches motion-time packs and retains old coverage until final delivery',async()=>{
+ const layouts=new Map(),shown=[],writes=[];let generation=0,notify,last,moving=false;
+ const map={getCenter:()=>({lng:generation,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),
+  isMoving:()=>moving,on:(type,fn)=>layouts.set(type,fn),off(){}};
+ const pack=id=>({id,features:[{id:String(id),properties:{logicalId:String(id)}}]});
+ const water=createMapLibreHydroPresentation({map,viewportTiles:()=>[{stage:'base',x:generation,y:0}],
+  updateSource:async diff=>{writes.push(diff);return true;},admitFeatures:async()=>true,
+  onFeatures:features=>shown.push(features.map(feature=>feature.id)),onError:assert.fail,
+  load:async(_view,_current,{onProgress})=>{
+   if(!generation)return {key:'1',packIds:[1],packs:[pack(1)]};
+   notify=onProgress;return new Promise(resolve=>{last=resolve;});
+  }});
+ try{
+  await water.refresh();generation=1;moving=true;
+  const pending=water.refresh();
+  await new Promise(resolve=>setImmediate(resolve));
+  notify({packs:[pack(2)]});
+  notify({packs:[pack(3)]});
+  await new Promise(resolve=>setTimeout(resolve,40));
+  assert.deepEqual(shown,[['1']],'Download progress must not re-tile the active drag');
+  moving=false;layouts.get('moveend')();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(shown,[['1'],['1','2','3']]);
+  assert.equal(water.canPick('2','2'),true);
+  assert.deepEqual(writes.at(-1).add.map(feature=>feature.id),['2','3']);
+  assert.deepEqual(writes.at(-1).remove,[]);
+  last({key:'2,3',packIds:[2,3],packs:[pack(2),pack(3)]});await pending;
+  assert.deepEqual(writes.at(-1).remove,['1']);
+  assert.deepEqual(shown.at(-1),['2','3']);
+ }finally{water.dispose();}
 });
 
 test('the latest view publishes a completed pack set even when it uses the same packs',async()=>{

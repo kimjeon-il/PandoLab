@@ -10,8 +10,7 @@ const stateResponses = new Set(['core.document-state']);
 export function createCoreDocumentClient({
   productMode = 'viewer',
   readOnly = productMode === 'viewer',
-  createWorker = () => createVerifiedCoreWorker(workerAssetUrl(new URL(readOnly
-    ? '../workers/core-viewer-session-worker.js' : '../workers/core-session-worker.js', import.meta.url)), { type: 'module' }),
+  createWorker = () => createVerifiedCoreWorker(workerAssetUrl(new URL('../workers/core-viewer-session-worker.js', import.meta.url)), { type: 'module' }),
   onTransition = () => {},
 } = {}) {
   const policy = createProductModePolicy(productMode,{readOnly});

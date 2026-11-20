@@ -2,12 +2,31 @@ export function installPerformanceProbe(){
  performance.setResourceTimingBufferSize(5000);
  const workers={},longTasks={count:0,totalMs:0,maxMs:0};
  const post=Worker.prototype.postMessage,observed=new WeakSet();
+ const geometry={requests:0,packetBytes:0};
+ window.__PANDO_PERF_GEOMETRY__=()=>({...geometry});
  Worker.prototype.postMessage=function(message,...rest){
   if(!observed.has(this)){
    observed.add(this);this.__pandoPerfRequests=new Map();
-   this.addEventListener('message',event=>{const m=event.data,start=this.__pandoPerfRequests.get(m?.requestId);if(m?.type!=='result'||!start)return;this.__pandoPerfRequests.delete(m.requestId);const elapsed=performance.now()-start.at,row=workers[start.operation]||={count:0,totalMs:0,maxMs:0};row.count++;row.totalMs+=elapsed;row.maxMs=Math.max(row.maxMs,elapsed);});
+   this.addEventListener('message',event=>{
+    const result=event.data,start=this.__pandoPerfRequests.get(result?.requestId);
+    if(result?.type!=='result'||!start)return;
+    this.__pandoPerfRequests.delete(result.requestId);
+    const elapsed=performance.now()-start.at,row=workers[start.operation]||={count:0,totalMs:0,maxMs:0};
+    row.count++;row.totalMs+=elapsed;row.maxMs=Math.max(row.maxMs,elapsed);
+    if(start.operation==='geometry.prepare'){
+     // Both runtime versions transfer these unique packet backing buffers.
+     const buffers=new Set();
+     for(const {packet} of result.result?.packets||[]){
+      for(const value of Object.values(packet||{}))if(ArrayBuffer.isView(value))buffers.add(value.buffer);
+     }
+     for(const buffer of buffers)geometry.packetBytes+=buffer.byteLength;
+    }
+   });
   }
-  if(message?.type==='request'&&message.operation)this.__pandoPerfRequests.set(message.requestId,{at:performance.now(),operation:message.operation});
+  if(message?.type==='request'&&message.operation){
+   this.__pandoPerfRequests.set(message.requestId,{at:performance.now(),operation:message.operation});
+   if(message.operation.startsWith('geometry.'))geometry.requests++;
+  }
   return post.call(this,message,...rest);
  };
  try{new window.PerformanceObserver(list=>{for(const task of list.getEntries()){longTasks.count++;longTasks.totalMs+=task.duration;longTasks.maxMs=Math.max(longTasks.maxMs,task.duration);}}).observe({type:'longtask',buffered:true});}catch{/* Unsupported measurements stay empty. */}

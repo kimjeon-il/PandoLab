@@ -65,10 +65,11 @@ export function prepareMapLibreHydroFeatures(features,prepare){
 }
 
 export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,load,cancel,onError,updateSource,
- beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true}){
+ beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true,viewportTiles}){
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
  let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map();
+ let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null;
  const fragmentsById=new Map();
  const needsAdmission=new Set();
  let selectable=new Set(),lastFailureKey='';
@@ -84,15 +85,16 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   selectable=new Set(features.map(feature=>String(feature.id)));
   onFeatures(features);publishedKey=key;
  }
- async function refresh(version){
+ async function applyView(version,result,{partial=false}={}){
   const current=()=>!disposed&&version===generation&&isEnabled();
-  const center=map.getCenter(),canvas=map.getCanvas();
-  const result=await load({center:[center.lng,center.lat],zoom:map.getZoom(),width:canvas.clientWidth,height:canvas.clientHeight,knownKey:presentedKey},current);
-  const {key,addPacks,removePacks,failedPacks=[]}=result;
   if(!current())return;
-  const failureKey=failedPacks.map(({id,message})=>id+':'+message).sort().join('|');
-  if(failureKey&&failureKey!==lastFailureKey)onError(Object.assign(Error(failedPacks[0].message),{failedPacks,diagnostic:failedPacks[0].diagnostic}));
-  lastFailureKey=failureKey;
+  const key=partial?[...new Set([...activePacks.keys(),...result.packs.map(pack=>pack.id)])].sort((a,b)=>a-b).join(','):result.key;
+  const {failedPacks=[]}=result;
+  if(!partial){
+   const failureKey=failedPacks.map(({id,message})=>id+':'+message).sort().join('|');
+   if(failureKey&&failureKey!==lastFailureKey)onError(Object.assign(Error(failedPacks[0].message),{failedPacks,diagnostic:failedPacks[0].diagnostic}));
+   lastFailureKey=failureKey;
+  }
   if(key===presentedKey&&!needsSourceRestore()&&publishedKey===key&&!needsAdmission.size)return;
   await beforePublish(current);
   if(!current())return;
@@ -101,6 +103,9 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
    if(current())await publish(version,key);
    return;
   }
+  const addPacks=result.packs?.filter(pack=>!activePacks.has(pack.id))??result.addPacks;
+  const wanted=result.packIds&&new Set(result.packIds);
+  const removePacks=partial?[]:wanted?[...activePacks.keys()].filter(id=>!wanted.has(id)):result.removePacks;
   const next=new Map(activePacks),remove=[],add=[],changed=new Map();
   const fragmentsFor=feature=>{
    const id=String(feature.properties.logicalId);
@@ -132,17 +137,66 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
    if(current())await publish(version,key);
   }
  }
- const suspend=()=>{generation++;cancel?.();};
- const settle=()=>{
+ const suspend=()=>{generation++;currentWindow=null;windowFailed=false;flushProgress=null;clearTimeout(movementTimer);movementTimer=null;cancel?.();};
+ function settle(force=false,retry=false){
   if(disposed||!isEnabled())return Promise.resolve();
-  const version=++generation,cancelled=cancel?Promise.resolve().then(cancel):Promise.resolve();cancelled.catch(()=>{});
-  pending=tail.then(async()=>{await cancelled;if(!disposed&&version===generation&&isEnabled())await refresh(version);})
-   .catch(error=>{if(!disposed&&version===generation&&isEnabled()&&error?.name!=='AbortError')throw error;});
-  tail=pending.catch(()=>{});pending.catch(onError);return pending;
+  const center=map.getCenter(),canvas=map.getCanvas();
+  const view={center:[center.lng,center.lat],zoom:map.getZoom(),width:canvas.clientWidth,height:canvas.clientHeight,knownKey:presentedKey};
+  if(viewportTiles){
+   view.tiles=viewportTiles(view);
+   const key=view.tiles.map(({stage,x,y})=>stage+'/'+x+'-'+y).sort().join(',');
+   if(!force&&key===currentWindow&&!(retry&&windowFailed))return pending;
+   currentWindow=key;
+  }
+  windowFailed=false;
+  const version=++generation;
+  const current=()=>!disposed&&version===generation&&isEnabled();
+  let progress=[],progressTimer=null;
+  const enqueue=(result,options)=>{
+   const task=tail.then(()=>applyView(version,result,options));
+   tail=task.catch(()=>{});
+   return task;
+  };
+  const progressReady=()=>{
+   clearTimeout(progressTimer);progressTimer=null;
+   if(!current()||map.isMoving?.())return;
+   const packs=progress;progress=[];
+   if(!packs.length)return;
+   enqueue({packs},{partial:true}).catch(error=>{if(current()&&error?.name!=='AbortError')onError(error);});
+  };
+  flushProgress=progressReady;
+  const onProgress=({packs})=>{
+   if(!current())return;
+   progress.push(...packs);
+   if(!progressTimer&&!map.isMoving?.())progressTimer=setTimeout(progressReady,16);
+  };
+  pending=Promise.resolve().then(()=>current()?load(view,current,{onProgress}):null)
+   .then(result=>{
+    clearTimeout(progressTimer);progressTimer=null;progress=[];
+    if(flushProgress===progressReady)flushProgress=null;
+    if(result&&current()){windowFailed=!!result.failedPacks?.length;return enqueue(result);}
+   })
+   .catch(error=>{
+    clearTimeout(progressTimer);
+    if(flushProgress===progressReady)flushProgress=null;
+    if(current()&&error?.name!=='AbortError'){windowFailed=true;throw error;}
+   });
+  pending.catch(onError);
+  return pending;
+ }
+ const moving=()=>{
+  if(movementTimer||!isEnabled())return;
+  movementTimer=setTimeout(()=>{movementTimer=null;settle();},100);
  };
- map.on('movestart',suspend);
- map.on('moveend',settle);
- return {refresh:settle,suspend,ready:()=>pending,
+ const moveEnded=()=>{
+  clearTimeout(movementTimer);movementTimer=null;
+  const settled=settle(false,true);
+  flushProgress?.();
+  return settled;
+ };
+ map.on('move',moving);
+ map.on('moveend',moveEnded);
+ return {refresh:()=>settle(true),suspend,ready:()=>pending,
   canPick:(id,logicalId)=>isEnabled()&&!needsSourceRestore()&&selectable.has(String(id))&&!needsAdmission.has(String(logicalId)),
-  dispose(){disposed=true;suspend();map.off('movestart',suspend);map.off('moveend',settle);activePacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
+  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
 }

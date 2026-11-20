@@ -8,17 +8,18 @@ let manifest = null;
 let baseUrl = '';
 let dataRevision = '';
 let latestRevision = 0;
-let busy = false;
-let pendingView = null;
 const tilePacks = new Map();
 const packSpecs = new Map();
 const shardSpecs = new Map();
 const postedPacks = new Set();
+const activeRanges = new Set();
 let shardStore;
 let rangeSupportPromise = null;
 const featureMetadata = new Map();
 let wholeHydroBundle = null;
 let foregroundController = null;
+let packParseMs = 0, parsedPacks = 0, fetchAttempts = 0;
+const now = () => globalThis.performance?.now() ?? Date.now();
 
 function resolveUrl(path) {
   const url = new URL(path, baseUrl);
@@ -59,6 +60,7 @@ async function fetchWithRetry(input, init = {}, {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
     try {
+      fetchAttempts++;
       const response = await fetch(input, { ...init, signal });
       if (!response.ok && retryableStatus(response.status)) {
         const error = new Error(`HTTP ${response.status}`);
@@ -282,7 +284,7 @@ function readWidthProfile(bytes, geometry) {
   });
 }
 
-function readPack(bytes, packId) {
+function decodePack(bytes, packId) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== 0x46485741 || view.getUint16(4, true) !== 4) throw new Error('수계 feature pack 버전이 올바르지 않습니다.');
   const count = view.getUint32(8, true);
@@ -327,11 +329,23 @@ function readPack(bytes, packId) {
   return features;
 }
 
+function readPack(bytes, packId) {
+  const started = now();
+  try {
+    const features = decodePack(bytes, packId);
+    parsedPacks++;
+    return features;
+  } finally {
+    packParseMs += now() - started;
+  }
+}
+
 async function loadPack(packId, signal) {
   return readPack(await fetchPackBytes(packId, signal), packId);
 }
 
 function coalescePackRanges(packIds) {
+  const priority = new Map(packIds.map((id,index)=>[id,index]));
   const byShard = new Map();
   for (const packId of packIds) {
     const spec = packSpecs.get(Number(packId));
@@ -346,25 +360,46 @@ function coalescePackRanges(packIds) {
     for (const row of rows) {
       const rowEnd = row.offset + row.length;
       if (!group || row.offset - group.end > 32 * 1024 || rowEnd - group.start > 1024 * 1024) {
-        group = { shard, start: row.offset, end: rowEnd, rows: [row] };
+        group = { shard, start: row.offset, end: rowEnd, rows: [row], priority: priority.get(row.id) };
         groups.push(group);
       } else {
         group.end = Math.max(group.end, rowEnd);
         group.rows.push(row);
+        group.priority = Math.min(group.priority, priority.get(row.id));
       }
     }
   }
-  return groups.sort((left, right) => left.shard - right.shard || left.start - right.start);
+  return groups.sort((left, right) => left.priority - right.priority);
+}
+
+function rangesForView(packIds) {
+  const remaining = new Set(packIds), reused = [];
+  for (const {shard,start,end,coverage,signal} of activeRanges) {
+    if (signal.aborted) continue;
+    const rows = coverage.filter(row => remaining.delete(row.id));
+    if (rows.length) reused.push({shard,start,end,coverage,rows});
+  }
+  // The predecessor is about to be cancelled. Subscribe to its existing
+  // transfers before scheduling additional ranges for uncovered packs.
+  return reused.concat(coalescePackRanges([...remaining]));
 }
 
 async function loadPackRangeGroup(group, signal = null) {
   const shard = shardSpecs.get(Number(group.shard));
   if (!shard) throw new Error('Unknown hydro shard ' + group.shard);
-  const rows = await shardStore.read(shard, group.rows, group.start, group.end, signal);
-  return rows.map(([id, bytes]) => {
-    try { return { id, features: readPack(bytes, id) }; }
-    catch(error){ return {id,error}; }
-  });
+  // A later viewport can still request a pack covered by the original
+  // byte interval even when an intermediate viewport only decodes a subset.
+  const active = {shard:group.shard,start:group.start,end:group.end,coverage:group.coverage||group.rows,signal};
+  activeRanges.add(active);
+  try {
+    const rows = await shardStore.read(shard, group.rows, group.start, group.end, signal);
+    return rows.map(([id, bytes]) => {
+      try { return { id, features: readPack(bytes, id) }; }
+      catch(error){ return {id,error}; }
+    });
+  } finally {
+    activeRanges.delete(active);
+  }
 }
 
 function postPack(packId, decodedFeatures, revision) {
@@ -387,7 +422,7 @@ function postPack(packId, decodedFeatures, revision) {
 async function processView(message) {
   const controller = new AbortController();foregroundController=controller;
   latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-  const packIds = [...new Set((message.tiles || []).flatMap(spec => tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`) || []))].sort((a, b) => a - b);
+  const packIds = [...new Set((message.tiles || []).flatMap(spec => tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`) || []))];
   const needed = packIds.filter(packId => !postedPacks.has(packId));
   const failedPacks=[];
   const isCurrent=()=>message.revision>=latestRevision&&!controller.signal.aborted;
@@ -395,29 +430,40 @@ async function processView(message) {
   const supportsRange = await rangeSupportPromise;
   const concurrency = 4;
   try {
+    if (!isCurrent()) return;
+    const reusable = packIds.filter(id => postedPacks.has(id));
+    if (needed.length && reusable.length) postMessage({type:'view-progress',revision:message.revision,packIds:reusable});
     if (supportsRange) {
-      const groups = coalescePackRanges(needed);
-      let groupCursor = 0;
+      const groups = rangesForView(needed);
+      const activeShards = new Map();
       await Promise.all(Array.from({ length: Math.min(concurrency, groups.length) }, async () => {
-        while (groupCursor < groups.length) {
-          if (message.revision < latestRevision) return;
-          const group = groups[groupCursor++];
+        while (isCurrent()) {
+          const next = groups.findIndex(group => (activeShards.get(group.shard) || 0) < 2);
+          if (next === -1) return;
+          const [group] = groups.splice(next, 1);
+          activeShards.set(group.shard, (activeShards.get(group.shard) || 0) + 1);
           let rows;
-          try{rows=await loadPackRangeGroup(group,controller.signal);}
-          catch(error){
+          try{
+            try{rows=await loadPackRangeGroup(group,controller.signal);}
+            catch(error){
+              if(!isCurrent())return;
+              if(error.corrupt&&group.rows.length>1){
+                rows=[];
+                for(const spec of group.rows){
+                  if(!isCurrent())return;
+                  try{rows.push({id:spec.id,features:await loadPack(spec.id,controller.signal)});}
+                  catch(cause){rows.push({id:spec.id,error:cause});}
+                }
+              }else rows=group.rows.map(spec=>({id:spec.id,error}));
+            }
             if(!isCurrent())return;
-            if(error.corrupt&&group.rows.length>1){
-              rows=[];
-              for(const spec of group.rows){
-                if(!isCurrent())return;
-                try{rows.push({id:spec.id,features:await loadPack(spec.id,controller.signal)});}
-                catch(cause){rows.push({id:spec.id,error:cause});}
-              }
-            }else rows=group.rows.map(spec=>({id:spec.id,error}));
-          }
-          if(!isCurrent())return;
-          for(const {id,features,error} of rows){
-            if(error)recordFailure(id,error);else postPack(id,features,message.revision);
+            for(const {id,features,error} of rows){
+              if(error)recordFailure(id,error);else postPack(id,features,message.revision);
+            }
+          } finally {
+            const count = activeShards.get(group.shard) - 1;
+            if (count) activeShards.set(group.shard, count);
+            else activeShards.delete(group.shard);
           }
         }
       }));
@@ -447,41 +493,30 @@ async function processView(message) {
   } finally {
     if(foregroundController===controller)foregroundController=null;
   }
-  if (message.revision < latestRevision) return;
+  if (!isCurrent()) return;
+  const workerStats = shardStore.stats?.();
   postMessage({ type: 'view-ready', revision: message.revision,
-    packIds:packIds.filter(id=>postedPacks.has(id)),failedPacks });
+    packIds:packIds.filter(id=>postedPacks.has(id)),failedPacks,
+    stats:{...workerStats,parseMs:packParseMs+(workerStats?.gunzipMs||0),parsedPacks,fetchAttempts} });
 }
 
-async function drain(message) {
-  if (busy) {
-    pendingView = message;
-    latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-    foregroundController?.abort();
-    return;
-  }
-  busy = true;
-  let current = message;
-  try {
-    while (current) {
-      pendingView = null;
-      try {
-        await processView(current);
-      } catch (error) {
-        if (current.revision >= latestRevision) {
-          postMessage({
-            type: 'view-error',
-            message: error?.message || String(error),
-            diagnostic: error?.diagnostic || { stage: 'pack-processing' },
-            revision: Number(current.revision || 0),
-            retryable: error?.name !== 'AbortError' && error?.retryable !== false,
-          });
-        }
-      }
-      current = pendingView;
-    }
-  } finally {
-    busy = false;
-  }
+function startView(message) {
+  if (message.revision < latestRevision) return;
+  const previous = foregroundController;
+  const task = processView(message).catch(error => {
+    if (message.revision < latestRevision) return;
+    postMessage({
+      type: 'view-error',
+      message: error?.message || String(error),
+      diagnostic: error?.diagnostic || { stage: 'pack-processing' },
+      revision: Number(message.revision || 0),
+      retryable: error?.name !== 'AbortError' && error?.retryable !== false,
+    });
+  });
+  // Let the new request subscribe to matching in-flight bytes in the same
+  // turn. Its revision already prevents the predecessor from publishing.
+  if (previous) queueMicrotask(() => previous.abort());
+  return task;
 }
 
 onmessage = async event => {
@@ -502,6 +537,7 @@ onmessage = async event => {
           throw new Error('통합 수계 형식 또는 버전이 올바르지 않습니다.');
       }
       wholeHydroBundle = null;
+      packParseMs = parsedPacks = fetchAttempts = 0;
       baseUrl = message.baseUrl;
       dataRevision = message.dataRevision || manifest.version || '';
       tilePacks.clear();
@@ -509,6 +545,7 @@ onmessage = async event => {
       shardSpecs.clear();
       featureMetadata.clear();
       postedPacks.clear();
+      activeRanges.clear();
       shardStore = self.createHydroShardStore({
         fetchResponse: fetchWithRetry,
         openCache: openHydroCache,
@@ -532,10 +569,9 @@ onmessage = async event => {
     }
     return;
   }
-  if (message.type === 'view') drain(message);
+  if (message.type === 'view') startView(message);
   else if (message.type === 'cancel-view') {
     latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-    pendingView = null;
     foregroundController?.abort();
   }
   else if (message.type === 'release') {

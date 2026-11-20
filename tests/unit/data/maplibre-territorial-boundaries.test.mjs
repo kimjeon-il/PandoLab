@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createMapDisplayClient} from '../../../src/ui/map-display-client.js';
 import {createMapDisplayPreparation} from '../../../src/rendering/map-display-preparation.js';
 import {createMapContentPresentation} from '../../../src/ui/map-content-presentation.js';
+import {buildTerritorialInternalBoundarySegments} from '../../../src/geometry/boundary-topology.js';
 
 function polygon(id, entityKind, west, south, east, north, geometryKey = id) {
   return {id, type: 'Feature', geometryKey, properties: {entityKind, parentId: ''},
@@ -72,6 +73,47 @@ test('territorial boundaries send geometry deltas and recover their Worker snaps
 
   await client.prepare([west, east]);
   assert.deepEqual(payloads.at(-1).removedIds, ['adjacent', 'region']);
+});
+
+test('a regional patch rebuilds only intersecting topology and leaves cancelled patches uncommitted', async () => {
+  const preparation = createMapDisplayPreparation();
+  const west = polygon('west', 'general', 0, 0, 5, 5);
+  const east = polygon('east', 'general', 5, 0, 10, 5);
+  const first = polygon('first', 'regional', 3, 1, 6, 3);
+  const shared = polygon('shared', 'regional', 3, 3, 6, 4);
+  const distant = polygon('distant', 'regional', 30, 15, 31, 16);
+  const seamWest = polygon('seam-west', 'general', 176, 5, 180, 10);
+  const seamEast = polygon('seam-east', 'general', -180, 5, -176, 10);
+  const seam = polygon('seam', 'regional', 179, 6, -179, 8);
+  const seamNeighbor = polygon('seam-neighbor', 'regional', -179, 6, -178, 8);
+  const rows = [west, east, seamWest, seamEast, first, distant, seam, shared, seamNeighbor];
+  const reference = input => buildTerritorialInternalBoundarySegments(
+    input.filter(row => row.properties.entityKind === 'general'), input.filter(row => row.properties.entityKind === 'regional'),
+  );
+  const entityIds = rows.map(row => row.id);
+  const initial = await preparation.prepare({baseVersion: null, version: 1, entityIds, upserts: rows, removedIds: []});
+  const far = initial.segments.filter(row => row.unitOwners[0].id === 'distant');
+  assert.ok(far.length > 0);
+  assert.ok(initial.segments.some(row => row.unitOwners.length === 2));
+  assert.ok(initial.segments.some(row => row.unitOwners.map(owner => owner.id).join(',') === 'seam,seam-neighbor'));
+  assert.deepEqual(initial.segments, reference(rows));
+
+  const changed = polygon('first', 'regional', 4, 1, 7, 3, 'first:2');
+  const request = {baseVersion: 1, version: 2, entityIds, upserts: [changed], removedIds: []};
+  let checkpoints = 0;
+  await assert.rejects(preparation.prepare(request, async () => {
+    if (++checkpoints === 3) throw new DOMException('Cancelled', 'AbortError');
+  }), {name: 'AbortError'});
+  const updated = await preparation.prepare(request);
+  const distantAfter = updated.segments.filter(row => row.unitOwners[0].id === 'distant');
+  distantAfter.forEach((row, index) => assert.strictEqual(row, far[index]));
+  const fresh = await createMapDisplayPreparation().prepare({...request, baseVersion: null,
+    upserts: rows.map(row => row.id === changed.id ? changed : row)});
+  assert.deepEqual(updated.segments, fresh.segments);
+  assert.deepEqual(updated.segments, reference(rows.map(row => row.id === changed.id ? changed : row)));
+
+  const noChange = await preparation.prepare({...request, baseVersion: 2, version: 3, upserts: []});
+  assert.strictEqual(noChange.segments, updated.segments);
 });
 
 test('territorial presentation cancels superseded input and publishes after retry', async t => {

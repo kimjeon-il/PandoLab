@@ -36,6 +36,7 @@
         "tests/unit/data/maplibre-physical-land-build.test.mjs",
         "tests/unit/data/maplibre-style-controller.test.mjs",
         "tests/unit/data/maplibre-vector-group.test.mjs",
+        "tests/unit/data/maplibre-vector-tile-fixture.test.mjs",
         "tests/unit/data/maplibre-scene-owner.test.mjs",
         "tests/unit/data/maplibre-label-presentation.test.mjs",
         "tests/unit/data/maplibre-rendering-work.test.mjs",

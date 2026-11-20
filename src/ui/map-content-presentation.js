@@ -218,10 +218,15 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
   const renderTerritorialInternalBoundaries = (displayed, visibleFeatures) => {
     const t = territorialBoundary;
     if (!prepareMapDisplay) return;
-    if (!displayed.some(feature => feature.properties.entityKind === 'regional' && polygonal(feature))) {
+    const state = territorial.getState();
+    const ownerStyles = new Map(visibleFeatures.filter(polygonal).map(feature => {
+      const id = String(feature.id);
+      const {boundaryVisible, blendMode} = t.layerStyle(state.layerPresentation, 'objects', `territorial:entity:${id}`);
+      return [id, {boundaryVisible, blendMode}];
+    }));
+    if (![...ownerStyles.values()].some(style => style.boundaryVisible)) {
       cancelTerritorialBoundaries();
-      if (territorialBoundaryCache.inputSignature) {
-        territorialBoundaryCache = { ...territorialBoundaryCache, inputSignature: '', segments: [] };
+      if (territorialBoundaryBatchCache.signature) {
         territorialBoundaryBatchCache = { signature: '', groups: [] };
         t.replaceSceneDomain('territorial-boundaries', { strokes: [] });
       }
@@ -248,12 +253,6 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
       }
     }
 
-    const state = territorial.getState();
-    const ownerStyles = new Map(visibleFeatures.map(feature => {
-      const id = String(feature.id);
-      const {boundaryVisible, blendMode} = t.layerStyle(state.layerPresentation, 'objects', `territorial:entity:${id}`);
-      return [id, {boundaryVisible, blendMode}];
-    }));
     const signature = JSON.stringify([territorialBoundaryCache.rebuildCount, [...ownerStyles].sort()]);
     if (territorialBoundaryBatchCache.signature !== signature) {
       const groups = new Map();

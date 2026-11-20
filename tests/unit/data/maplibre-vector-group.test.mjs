@@ -1,4 +1,4 @@
-import {createPolarLayer,clipMercatorLines,polarTriangleIndices,polarCapsVisible} from '../../../src/rendering/maplibre-polar-layer.js';
+import {createPolarLayer,clipMercatorLines,polarLinePacket,compactPolarPacket,polarCapsVisible} from '../../../src/rendering/maplibre-polar-layer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreVectorGroup,geographicStrokeChains} from '../../../src/rendering/maplibre-vector-group.js';
@@ -9,10 +9,22 @@ test('native strokes stop inside the Mercator edge without joining across a pola
  assert.equal(geometry.coordinates[0][1][1],86,'canonical input is preserved');
 });
 
+test('polar line packets meet native line endpoints at the same latitude cut',()=>{
+ const coordinates=[[[0,84],[2,86]],[[10,-84],[14,-88]],[[20,85],[22,85]]];
+ const native=clipMercatorLines({type:'MultiLineString',coordinates});
+ const polar=polarLinePacket(coordinates);
+ assert.deepEqual(native.coordinates.map(line=>line.at(-1)),[[1,85],[11,-85],[22,85]]);
+ assert.deepEqual([Array.from(polar.values.slice(0,4)),Array.from(polar.values.slice(20,24))].sort((a,b)=>a[0]-b[0]),
+  [[1,85,2,86],[11,-85,14,-88]]);
+ assert.equal(polar.indices.length,12,'native owns a line lying on the exact cutoff');
+});
+
 test('polar filtering keeps triangles that may reach the cap and conservatively handles unknown projections',()=>{
  const packet={positions:new Float32Array([0,60,1,60,0,61,0,84.8,1,84.9,0,84.85]),indices:new Uint32Array([0,1,2,3,4,5]),maxEdgeDegrees:.499};
- assert.deepEqual([...polarTriangleIndices(packet)],[3,4,5]);
- assert.equal(polarTriangleIndices({...packet,maxEdgeDegrees:undefined}),packet.indices);
+ const compact=compactPolarPacket(packet);
+ assert.deepEqual(compact.indices,new Uint32Array([0,1,2]));
+ assert.deepEqual(compact.positions,packet.positions.slice(6));
+ assert.equal(compactPolarPacket({...packet,maxEdgeDegrees:undefined}).indices,packet.indices);
  const mainMatrix=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
  assert.equal(polarCapsVisible({projectionTransition:1,mainMatrix,clippingPlane:[0,0,1,-.5]}),false);
  assert.equal(polarCapsVisible({projectionTransition:1,mainMatrix,clippingPlane:[0,1,0,-.99]}),true);
@@ -35,6 +47,28 @@ test('native vector style changes reuse geometry and dispose only owned resource
  assert.equal(removals,0,'changing paint must not remove a live layer');
  await group.update([{...row,geometryRevision:'shape-2'}]);assert.equal(uploads,1);
  group.dispose();group.dispose();assert.equal(sources.size,0);assert.deepEqual([...layers.keys()],['other']);
+});
+
+test('vector group reports concrete layer order only when its structure changes',async()=>{
+ const sources=new Map(),layers=new Map(),changes=[];
+ const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+  addSource(id){sources.set(id,{setData:async()=>{}});},removeSource:id=>sources.delete(id),
+  addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),
+  setPaintProperty(){},setLayoutProperty(){},setFilter(){}};
+ const geometry={type:'LineString',coordinates:[[0,0],[1,1]]};
+ const rows=[{key:'a',kind:'line',geometryRevision:'shape-1',geometry,style:{color:'#ffaa00',casing:{color:'#fff',width:1}}},
+  {key:'b',kind:'line',geometryRevision:'shape-1',geometry,style:{color:'#003311'}}];
+ const group=createMapLibreVectorGroup(map,{id:'owned',onChange:change=>changes.push(change.structureChanged)});
+ try{
+  await group.update(rows);
+  const originalOrder=group.getLayerIds();
+  assert.deepEqual(originalOrder,['owned-0-casing','owned-0','owned']);
+  await group.update([{...rows[0],geometryRevision:'shape-2'},rows[1]]);
+  assert.equal(group.getLayerIds(),originalOrder);
+  await group.update([{...rows[0],style:{color:'#111100'}},rows[1]]);
+  assert.deepEqual(group.getLayerIds(),['owned-0','owned']);
+  assert.deepEqual(changes,[true,false,true]);
+ }finally{group.dispose();}
 });
 
 test('an obsolete applied upload cannot make a return to the prior geometry look unchanged',async()=>{
@@ -91,5 +125,35 @@ test('polar drawing uses MapLibre custom-layer state restoration without synchro
   owner.setLoadingSurface(null);render();
   assert.deepEqual(colors,[ocean,land,border,grid]);
   assert.deepEqual(errors,[]);assert.equal(lastVao,null);
+ }finally{owner.dispose();}
+});
+
+test('a staged polar highlight uploads before commit and cannot survive context replacement',async()=>{
+ let layer,uploads=0;const colors=[],errors=[];
+ const gl=new Proxy({createVertexArray:()=>({}),getShaderParameter:()=>true,getProgramParameter:()=>true,
+  getUniformLocation:(_program,name)=>name,
+  uniform4fv:(name,value)=>{if(name==='u_color')colors.push(value);},bufferData(){uploads++;}},
+  {get:(target,key)=>key in target?target[key]:key===String(key).toUpperCase()?key:()=>({})});
+ const map={getCanvas:()=>({clientWidth:800,clientHeight:600}),getLayer:()=>layer,
+  addLayer(value){layer=value;layer.onAdd(map,gl);},removeLayer(){layer.onRemove();layer=null;}};
+ const owner=createPolarLayer({map,prepare:assert.fail,onChange(){},onError:error=>errors.push(error)});
+ const packet=()=>({positions:new Float32Array([0,-90,1,-86,-1,-86]),indices:new Uint32Array([0,1,2])});
+ const ocean=[1,1,1,1],land=[.9,.9,.9,1],highlight=[1,0,0,.5];
+ const render=()=>layer.render(gl,{shaderData:{variantName:'fixture',vertexShaderPrelude:'',define:''},defaultProjectionData:{mainMatrix:new Float32Array(16),fallbackMatrix:new Float32Array(16),clippingPlane:[0,0,0,1],tileMercatorCoords:[0,0,1,1],projectionTransition:0}});
+ try{
+  owner.ensure();owner.update('static',[{packet:packet(),color:land}],ocean);
+  await new Promise(resolve=>setImmediate(resolve));render();assert.deepEqual(colors.splice(0),[ocean,land]);
+  const baseUploads=uploads;
+  const fill={packet:packet(),color:highlight};
+  const stale=await owner.prepareHighlights([fill]);
+  assert.equal(uploads,baseUploads+2);
+  render();assert.deepEqual(colors.splice(0),[ocean,land]);
+  owner.resetContext();assert.equal(stale(),false);
+  const commit=await owner.prepareHighlights([fill]);assert.equal(commit(),true);
+  render();assert.deepEqual(colors.splice(0),[ocean,land,highlight]);
+  const committedUploads=uploads;
+  owner.clearHighlights();render();assert.deepEqual(colors.splice(0),[ocean,land]);
+  assert.equal(uploads,committedUploads,'clearing a highlight must preserve the static buffers');
+  assert.deepEqual(errors,[]);
  }finally{owner.dispose();}
 });

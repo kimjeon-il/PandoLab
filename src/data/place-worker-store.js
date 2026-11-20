@@ -92,63 +92,65 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
     while (used + bytes > budget && cache.size) { const oldest=cache.keys().next().value; used-=cache.get(oldest).bytes; cache.delete(oldest); metrics.evictions++; }
     cache.set(key,{value,bytes}); used+=bytes; return value;
   }
-  async function fetchTileBytes(row, context) {
-    context.throwIfCancelled();
+  function startWholeShard(row, context, readBytes) {
     const spec = manifest.shards[row.shard];
-    let full;
-    metrics.networkCount++;
-    if (fetchBytes) {
-      full = await fetchBytes(spec, { signal: context.signal });
-      if (full.byteLength !== spec.bytes || full.byteLength > PLACE_LIMITS.shardBytes)
-        throw new RangeError('Invalid place shard length/budget');
-    } else {
-      const url = new URL(spec.url, baseUrl);
-      url.searchParams.set('v', manifest.revision);
-      const wholeShard = row.offset === 0 && row.length === spec.bytes;
-      const range = `${row.offset}-${row.offset + row.length - 1}`;
-      const headers = wholeShard ? {} : { Range: `bytes=${range}` };
-      const response = await fetch(url, { headers, signal: context.signal });
-      if (!response.ok) throw new Error('Place HTTP ' + response.status + ': ' + row.shard);
-      const payload = await readPlaceResponse(response, spec.bytes);
-      if (response.status === 206) {
-        const expected = `bytes ${range}/${spec.bytes}`;
-        const actual = response.headers.get('Content-Range');
-        if (actual !== expected || payload.length !== row.length)
-          throw new RangeError('Invalid place range response: expected ' + expected + ' (' + row.length +
-            ' bytes), received ' + actual + ' (' + payload.length + ' bytes)');
-        return { bytes: payload };
-      }
-      if (response.status !== 200 || payload.length !== spec.bytes)
-        throw new RangeError('Invalid place shard response');
-      full = payload;
+    const task = (async () => {
+      const full = await readBytes();
+      if (full.byteLength !== spec.bytes) throw new RangeError('Invalid place shard response');
+      if (spec.sha256 && await sha256Hex(full) !== spec.sha256) throw new Error('Invalid place shard hash');
+      context.throwIfCancelled();
+      return { full: put('shard:' + row.shard, full, full.byteLength) };
+    })().finally(() => inflightShards.delete(row.shard));
+    inflightShards.set(row.shard, task);
+    return task;
+  }
+  async function awaitWholeShard(row, context, pending) {
+    try {
+      const result = await pending;
+      context.throwIfCancelled();
+      return result;
+    } catch (error) {
+      context.throwIfCancelled();
+      if (error.cancelled || error.name === 'AbortError') return loadTileBytes(row, context);
+      throw error;
     }
-    if (spec.sha256 && await sha256Hex(full) !== spec.sha256) throw new Error('Invalid place shard hash');
-    context.throwIfCancelled();
-    return { full: put('shard:' + row.shard, full, full.byteLength) };
   }
   async function loadTileBytes(row, context) {
-    const hit = get('shard:' + row.shard);
+    context.throwIfCancelled();
+    const key = 'shard:' + row.shard, spec = manifest.shards[row.shard];
+    const hit = get(key);
     if (hit) return { full: hit };
     const pending = inflightShards.get(row.shard);
-    if (pending) {
-      // The first request may receive the entire shard even if it asked for a range.
-      // Share that verified response even when it exceeds the resident cache budget.
-      try {
-        const result = await pending;
-        context.throwIfCancelled();
-        if (result.full) return result;
-      } catch (error) {
-        context.throwIfCancelled();
-        if (error.cancelled || error.name === "AbortError") return loadTileBytes(row, context);
-        if (fetchBytes) throw error;
-      }
-      // A partial response only serves the tile whose range was requested.
-      return fetchTileBytes(row, context);
+    if (pending) return awaitWholeShard(row, context, pending);
+
+    metrics.networkCount++;
+    if (fetchBytes) return startWholeShard(row, context, () => fetchBytes(spec, { signal: context.signal }));
+
+    const url = new URL(spec.url, baseUrl);
+    url.searchParams.set('v', manifest.revision);
+    const wholeShard = row.offset === 0 && row.length === spec.bytes;
+    const range = `${row.offset}-${row.offset + row.length - 1}`;
+    const headers = wholeShard ? {} : { Range: `bytes=${range}` };
+    const response = await fetch(url, { headers, signal: context.signal });
+    if (!response.ok) throw new Error('Place HTTP ' + response.status + ': ' + row.shard);
+    if (response.status === 206) {
+      const payload = await readPlaceResponse(response, spec.bytes);
+      const expected = `bytes ${range}/${spec.bytes}`;
+      const actual = response.headers.get('Content-Range');
+      if (actual !== expected || payload.length !== row.length)
+        throw new RangeError('Invalid place range response: expected ' + expected + ' (' + row.length +
+          ' bytes), received ' + actual + ' (' + payload.length + ' bytes)');
+      return { bytes: payload };
     }
-    const task = fetchTileBytes(row, context);
-    inflightShards.set(row.shard, task);
-    try { return await task; }
-    finally { inflightShards.delete(row.shard); }
+    if (response.status !== 200) throw new RangeError('Invalid place shard response');
+
+    // Publish a shared body only after headers confirm this response covers the entire shard.
+    const received = get(key), active = inflightShards.get(row.shard);
+    if (received || active) {
+      response.body?.cancel().catch(() => {});
+      return received ? { full: received } : awaitWholeShard(row, context, active);
+    }
+    return startWholeShard(row, context, () => readPlaceResponse(response, spec.bytes));
   }
   async function loadTile(row, context) {
     context.throwIfCancelled();

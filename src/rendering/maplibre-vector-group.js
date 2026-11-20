@@ -14,9 +14,10 @@ export function geographicStrokeChains(values){
  return {type:'MultiLineString',coordinates:lines};
 }
 export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource}){
- let version=0,disposed=false,pending=false,rows=[],dataKey='',tail=Promise.resolve(),sourceOwner=null;
- const layers=new Set(),definitions=new Map();
- function clear(){for(const layer of [...layers].reverse())if(map.getLayer(layer))map.removeLayer(layer);layers.clear();definitions.clear();}
+ let version=0,disposed=false,pending=false,dataKey='',tail=Promise.resolve(),sourceOwner=null;
+ const noLayers=Object.freeze([]),definitions=new Map();
+ let layerIds=noLayers;
+ function clear(){for(const layer of [...layerIds].reverse())if(map.getLayer(layer))map.removeLayer(layer);layerIds=noLayers;definitions.clear();}
  function update(next){const request=++version;pending=true;const task=tail.catch(()=>{}).then(()=>apply(next,request));tail=task;return task;}
  async function apply(next,request){
   if(disposed||request!==version)return;
@@ -28,7 +29,6 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
    features.push({type:'Feature',id:row.key,geometry,properties:{key:row.key,objectKey:row.objectKey||''}});
   }
   if(disposed||request!==version)return;
-  rows=next;
   if(!sharedSource){
    if(map.getSource(id)!==sourceOwner)dataKey='';
    if(!map.getSource(id)){map.addSource(id,{type:'geojson',data:{type:'FeatureCollection',features}});sourceOwner=map.getSource(id);dataKey=nextKey;}
@@ -36,9 +36,9 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
   }
   if(disposed||request!==version)return;
   const desired=new Map();
-  rows.forEach((row,index)=>{
+  next.forEach((row,index)=>{
    const style=row.style||{},kind=row.kind==='line'?'line':row.kind==='point'?'circle':'fill';
-   const layerId=index===rows.length-1?id:id+'-'+index;
+   const layerId=index===next.length-1?id:id+'-'+index;
    const filter=['==',['get',sharedSource?'objectKey':'key'],row.key],blend=row.blendMode||'normal';
    const layout=kind==='line'?{'line-cap':style.cap==='butt'?'butt':'round','line-join':style.join||'round'}:{};
    const paint=kind==='fill'?{'fill-color':style.color,'fill-opacity':style.fillAlpha??1,'fill-layer-blend':blend,'fill-antialias':true}:kind==='circle'?{'circle-color':style.color,'circle-opacity':style.alpha??1,'circle-radius':5}:{'line-color':style.color,'line-opacity':style.alpha??1,'line-width':style.width??1,'line-layer-blend':blend};
@@ -47,21 +47,24 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
    if(kind==='line'&&style.casing?.width>0)add(layerId+'-casing',{...paint,'line-color':style.casing.color,'line-opacity':style.casing.alpha??1,'line-width':(style.width||1)+2*style.casing.width});
    add(layerId,paint);
   });
-  for(const key of layers)if(!desired.has(key)){if(map.getLayer(key))map.removeLayer(key);definitions.delete(key);layers.delete(key);}
+  const nextLayerIds=[...desired.keys()];
+  const orderChanged=nextLayerIds.length!==layerIds.length||nextLayerIds.some((key,index)=>key!==layerIds[index]);
+  let structureChanged=orderChanged;
+  for(const key of layerIds)if(!desired.has(key)){if(map.getLayer(key))map.removeLayer(key);definitions.delete(key);}
   for(const [key,spec]of desired){
    const previous=definitions.get(key);
    if(map.getLayer(key)&&(!previous||previous.type!==spec.type||previous.source!==spec.source))map.removeLayer(key);
-   if(!map.getLayer(key))map.addLayer(spec,before&&map.getLayer(before)?before:undefined);
+   if(!map.getLayer(key)){map.addLayer(spec,before&&map.getLayer(before)?before:undefined);structureChanged=true;}
    else {
     for(const [section,setter]of [['paint','setPaintProperty'],['layout','setLayoutProperty']])for(const property of new Set([...Object.keys(previous[section]),...Object.keys(spec[section])]))
      if(JSON.stringify(previous[section][property])!==JSON.stringify(spec[section][property]))map[setter](key,property,spec[section][property]??null);
     if(JSON.stringify(previous.filter)!==JSON.stringify(spec.filter))map.setFilter(key,spec.filter);
    }
-   definitions.set(key,spec);layers.add(key);
+   definitions.set(key,spec);
   }
-  layers.clear();for(const key of desired.keys())layers.add(key);
-  pending=false;onChange();
+  if(orderChanged)layerIds=Object.freeze(nextLayerIds);
+  pending=false;onChange({structureChanged});
  }
- return {update,move(before){for(const layer of layers)if(map.getLayer(layer))map.moveLayer(layer,before);},get pending(){return pending;},
+ return {update,getLayerIds:()=>layerIds,get pending(){return pending;},
   dispose(){disposed=true;version++;clear();if(!sharedSource&&map.getSource(id))map.removeSource(id);}};
 }
