@@ -1,7 +1,7 @@
 {
   "schema": "pandoeditor-core-wasm",
   "abiVersion": 1,
-  "sourceSha256": "80e8dc797d766f3d80086b8b72aabe25929b2e3011561d958d3390134e0ed4d3",
+  "sourceSha256": "4e9447fb67f166c579f9c9ef2b78f0169e62aa50c2d8d4e2349cb7538583b083",
   "compiler": {
     "name": "emscripten",
     "version": "6.0.3"
@@ -249,7 +249,7 @@
     },
     {
       "path": "src/geometry/native/bindings/boundary-bindings.cpp",
-      "sha256": "2da0bfadccb7862b8a63a4971a554c7ce780bc5397a9d24708a2568ce4006fc5"
+      "sha256": "2896ef26e1f16c766cb6f28e803924b6c90d609d6c60e819f45960ada81f5738"
     },
     {
       "path": "src/geometry/native/bindings/cut-bindings.cpp",
@@ -281,7 +281,7 @@
     },
     {
       "path": "src/geometry/native/include/pandoeditor/boundarypacket.h",
-      "sha256": "cadd33450f2938aefc67e3b7b85a88c96c3633d6d93f6cf34de6b11ff4d1845e"
+      "sha256": "b396b59c9d74d845e0c99c21e6afbc65176342102003a454e4549a1016519457"
     },
     {
       "path": "src/geometry/native/include/pandoeditor/boundaryrefinement.h",
@@ -361,7 +361,7 @@
     },
     {
       "path": "src/geometry/native/src/boundarypacket.cpp",
-      "sha256": "4cbc408e8c6e183c62273bc5f34f34a097ffba9dc9b37611b065006d4704af5d"
+      "sha256": "094f23f4744ed6cd8e4947aa29ae01f43dfa44117f7f997c4a25dc2f75e5cae4"
     },
     {
       "path": "src/geometry/native/src/boundaryrefinement.cpp",
@@ -429,15 +429,15 @@
     },
     {
       "path": "src/rendering/native/bindings/mesh-bindings.cpp",
-      "sha256": "7f22844de0d10d2afa47d98f61313b9d87bcd533913ff5175eb4aad27859a06e"
+      "sha256": "32ae303f54829247d3fe3a3ac1197c10f2bb127f14a482e36c1d26d9f3930865"
     },
     {
       "path": "src/rendering/native/include/pandoeditor/polygonmesh.h",
-      "sha256": "d2b3997b7af04e0629b8009abf309f9d75063f936288be6c3b9444f4b72c9551"
+      "sha256": "b45b0edbc1f55ac277119bd0c7c61e4321ed500e373ffa7add6e34048244e830"
     },
     {
       "path": "src/rendering/native/src/polygonmesh.cpp",
-      "sha256": "d4820fd636d431263484dd996a3a06b5dfa8d494b9720ebc3e8c724a065b41ec"
+      "sha256": "d6fc65e97654e94bb689321bae3dadc5318e0a5e5a7f69899707cc6214e298d1"
     },
     {
       "path": "src/runtime/native/include/pandoeditor/version.h",
@@ -463,11 +463,11 @@
   "assets": {
     "js": {
       "file": "pandoeditor-core.js",
-      "sha256": "4e4de327bb1e984cb64f3f3e87ad3d191e546d061fc85940987168e8df75a315"
+      "sha256": "a1d29eb175c4d9800632377dc539440528e3b28cc4fb29e232ed8c26445d9a33"
     },
     "wasm": {
       "file": "pandoeditor-core.wasm",
-      "sha256": "f2989258fc68851cb35fc774e97a7dc5f17e8765b0323a5f01e7434245a5163d"
+      "sha256": "b00f42a9e9b456d8605a502252366b0c85299a878ad667cd480b332ee7c444d9"
     }
   }
 }
