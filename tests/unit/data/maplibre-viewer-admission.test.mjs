@@ -99,6 +99,10 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    await settle();
    renderer.map.moveLayer=originalMoveLayer;
    if(orderMoves)throw new Error('An unchanged interaction moved '+orderMoves+' layers');
+   renderer.syncHydroState();
+   const visibilityScans=renderer.getStats().hydroVisibilityScans;
+   renderer.syncHydroState();renderer.syncHydroState();
+   if(renderer.getStats().hydroVisibilityScans!==visibilityScans)throw new Error('An unchanged frame rescanned all visible hydrology');
    renderer.setSelection(interactionSnapshot([]));await settle();
 
    renderer.map.jumpTo({center:[0,0],zoom:1});
