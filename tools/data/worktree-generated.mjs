@@ -13,7 +13,6 @@ const dependencyPattern=/^node_modules\/\.pnpm(?:\/|$)/;
 const evidencePattern=/^build-native\/(?:reference-analysis(?:\/|$)|reference-release(?:\/|$)|ui-main-sync-20261021(?:\/|$)|(?:editable-library-|polygon-quality-|resource-update-)[^/]+\.(?:log|png|md|txt)$|macro-source-preview\.png$|library-merge-paths\.txt$)/;
 const compilerPatterns={
  'archived-duplicate':/^(?:private-evidence\/(?:workspace-consolidation|worktree-storage)\/|\.working\/map-toolkit-separation\/release-candidate\/|reports\/\.edits\/[^/]+\/)/,
- 'retired-product-output':/^private-evidence\/worktree-storage\/(?:workspace-layout-20261025\/ui\/old-editor\/apps\/web-shell\/src-tauri\/gen\/android\/app\/src\/main\/jniLibs\/(?:arm64-v8a|x86_64)\/libpandolab_web_shell_lib\.so$|20261025\/(?:inventory|final-inventory)\.json$|generated-cleanup-20261025\/gis\/\.superpowers\/sdd\/ddr-vg25-followup\/browser-results(?:-fixed)?\/historical-library-East-Ge-3759e-history-and-original-source\/trace\.zip$)/,
  'ci-toolchain':/^(?:emsdk-6\.0\.3|llvm-mingw-20261020|micromamba\/root\/pkgs)(?:\/|$)/,
  'ci-transfer-cache':/^(?:pandolab-cargo-[a-f0-9]{32}(?:\/|$)|gh-artifact\.\d+\.zip$)/,
  'ci-build-input':/^build-native\/reference-analysis\/libtorch(?:\.zip$|\/(?:include(?:\/|$)|lib\/[^/]+\.(?:lib|a|pdb|exp)$))/i,

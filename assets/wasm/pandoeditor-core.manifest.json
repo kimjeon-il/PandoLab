@@ -1,7 +1,7 @@
 {
   "schema": "pandoeditor-core-wasm",
   "abiVersion": 1,
-  "sourceSha256": "387be577e01b420011cf6e53d4fa22ba1a5f5813e74def0043e3064bdc55ce28",
+  "sourceSha256": "80e8dc797d766f3d80086b8b72aabe25929b2e3011561d958d3390134e0ed4d3",
   "compiler": {
     "name": "emscripten",
     "version": "6.0.3"
@@ -257,7 +257,7 @@
     },
     {
       "path": "src/geometry/native/bindings/polygon-bindings.cpp",
-      "sha256": "886e4ecf16e61c2c1d3f0dcb204f8a2d1ede30987247467a3b17e6dd3ea83f55"
+      "sha256": "87786f9032f84a6875c597a1ceae1a4867134ea310f3f08f860f50b2196e9aee"
     },
     {
       "path": "src/geometry/native/bindings/reference-bindings.cpp",
@@ -322,10 +322,6 @@
     {
       "path": "src/geometry/native/include/pandoeditor/planargraph.h",
       "sha256": "c3aac495a68c9fc9927f3596616229eab016074820d2220adcb38caa481c733d"
-    },
-    {
-      "path": "src/geometry/native/include/pandoeditor/polygon-selection.h",
-      "sha256": "7dbc1a493dd22344512334d234206f015dd9f0b59aed80e8d62739c6b0bdee57"
     },
     {
       "path": "src/geometry/native/include/pandoeditor/polygonclipping.h",
@@ -396,10 +392,6 @@
       "sha256": "e8a23100ce6be57b2bb30bb19277f64cae6fa879161f943ee345f5fd41568a71"
     },
     {
-      "path": "src/geometry/native/src/polygon-selection.cpp",
-      "sha256": "80d238dd9a6ff371316fcd22520b193752e45bdfae0aa813ba68c9cfa999037a"
-    },
-    {
       "path": "src/geometry/native/src/polygonclipping.cpp",
       "sha256": "7a1464a0f7aa6d7b0b28b42102987095e035b53c920065d3305c6ac5585aeb25"
     },
@@ -461,7 +453,7 @@
     },
     {
       "path": "tools/build/native/core/CMakeLists.txt",
-      "sha256": "862d7520177e1d65e3327a1ebcae4568a60c7ec7df5489800efa36739fffbfdd"
+      "sha256": "acdf5a63a54f21feeafd0442e1ffc264f7dcd340f79972151c4d0a362ccd65ae"
     },
     {
       "path": "tools/build/native/wasm/CMakeLists.txt",
@@ -471,11 +463,11 @@
   "assets": {
     "js": {
       "file": "pandoeditor-core.js",
-      "sha256": "aca558bbe18f4520121965e8fef92ba8a9d329c4ff29b3856dd0e1e8e64cf8cc"
+      "sha256": "4e4de327bb1e984cb64f3f3e87ad3d191e546d061fc85940987168e8df75a315"
     },
     "wasm": {
       "file": "pandoeditor-core.wasm",
-      "sha256": "2f0acf1843e62853d513349cf559f8a167b59b8dde3754d5a8a8486b5229a046"
+      "sha256": "f2989258fc68851cb35fc774e97a7dc5f17e8765b0323a5f01e7434245a5163d"
     }
   }
 }

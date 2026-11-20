@@ -108,7 +108,7 @@
       ],
       "inputs": [
         "assets/data/world/build-input.json",
-        "src/rendering/workers/gpu-mesh-core.js",
+        "src/rendering/workers/polygon-mesh-core.js",
         "projects/default-world/generation-inputs.json",
         "projects/default-world/manifest.json"
       ],
@@ -240,7 +240,7 @@
         "wasm"
       ],
       "inputs": [
-        "src/rendering/workers/gpu-mesh-core.js",
+        "src/rendering/workers/polygon-mesh-core.js",
         "projects/default-world/generation-inputs.json",
         "projects/default-world/manifest.json",
         "src/rendering/workers/polygon-raster-contract.js",

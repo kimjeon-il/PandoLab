@@ -5,7 +5,7 @@ buildMetaUrl.searchParams.set('v', new URL(self.location.href).searchParams.get(
 importScripts(buildMetaUrl.href);
 const assetRevision = globalThis.PANDOLAB_BUILD_META?.assetRevision || '';
 const rasterContractUrl = new URL('./polygon-raster-contract.js', self.location.href);
-const meshCoreUrl = new URL('./gpu-mesh-core.js', self.location.href);
+const meshCoreUrl = new URL('./polygon-mesh-core.js', self.location.href);
 const rpcHostUrl = new URL('./worker-rpc-host.js', self.location.href);
 if (assetRevision) {
   rasterContractUrl.searchParams.set('v', assetRevision);
@@ -16,7 +16,7 @@ importScripts('./geographic-boundary-core.js', rasterContractUrl.href, meshCoreU
 
 const meshCoreReady = import("../../document/temporal.js")
   .then(({ sharedCalculationCore }) => {
-    self.PandoLabGpuMeshCore.setSharedCore(sharedCalculationCore);
+    self.PandoLabPolygonMeshCore.setSharedCore(sharedCalculationCore);
     return sharedCalculationCore;
   });
 meshCoreReady.catch(() => {}); // Each mesh operation awaits this prerequisite.
@@ -40,7 +40,7 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady.then(() 
   import(`../../data/prepared-mesh-publication.js?v=${encodeURIComponent(assetRevision)}`),
 ])).then(async ([{ createPreparedPolygonMeshStore }, { createStoredAssetLoader },
   { runtimeDataAssetUrl, workerBuildMeta },{mapProjectCatalogSpec},{publishedPreparedMeshManifest}]) => {
-  const engine = self.PandoLabGpuMeshCore;
+  const engine = self.PandoLabPolygonMeshCore;
   const meta = workerBuildMeta(self.location.href, globalThis.PANDOLAB_BUILD_META);
   const spec=mapProjectCatalogSpec(meta,'preparedMeshes');
   const catalogDirectory=spec.url.slice(0,spec.url.lastIndexOf('/')+1);
@@ -82,7 +82,7 @@ let physicalDisplay=null;
 async function prepareCountryBoundary(input,context){
   const [{createCountrySharedBoundaryState,visibleCountrySharedSegments},
     {countryBoundaryOwner,countryBoundarySeedOptions},seed]=await Promise.all([
-    import('../country-shared-boundary-packet.js'),import('../country-boundary-seed.js'),boundarySeed(),meshCoreReady,
+    import('../country-shared-boundary-state.js'),import('../country-boundary-seed.js'),boundarySeed(),meshCoreReady,
   ]);
   context.throwIfCancelled();
   if(countryBoundary?.key!==input.key){
@@ -146,10 +146,6 @@ self.PandoLabWorkerRpc.install({
       const requiresPolygons = payload.items.some(item => item.kind !== 'stroke');
       const store = requiresPolygons ? await preparedPolygonStore() : null;
       const packets = new Array(payload.items.length), packetTimings=[];
-      const total = payload.items.length + 1;
-      const progress = (completed, phase) => context.emitEvent('geometry.prepare-progress',
-        { requestId: context.requestId, completed, total, phase }, { projectRevision: context.projectRevision });
-      progress(1, 'initialized');
       // Two independent immutable asset reads may overlap without growing
       // the mobile decode/triangulation working set beyond two packets.
       for(let index=0;index<payload.items.length;index+=2){
@@ -179,7 +175,6 @@ self.PandoLabWorkerRpc.install({
         context.throwIfCancelled();
         for(let j=0;j<rows.length;j++){
           packets[index+j]=rows[j].prepared;packetTimings.push(rows[j].timing);
-          progress(index+j+2,batch[j].kind==='stroke'?'stroke':'polygon');
         }
       }
       const buffers = [...new Set(packets.flatMap(({ packet }) => Object.values(packet||{})

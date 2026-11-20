@@ -30,7 +30,3 @@ export function prepareCountryStroke(mesh, countryIds) {
   const geometry = buildGpuStrokeInstances(startsEnds, null, ownerRanges);
   return { ...geometry, startsEnds, inputOwnerRanges: ownerRanges, preparationMs: performance.now() - started };
 }
-
-export function countryStrokeTransferables(prepared) {
-  return [prepared.startsEnds.buffer, prepared.instances.buffer, prepared.nodes.buffer];
-}

@@ -70,7 +70,6 @@ add_library(pandoeditor_core STATIC
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/geometry/native/src/boundaryrefinement.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/geometry/native/src/boundarysplit.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/geometry/native/src/countrycontact.cpp"
-    "${PANDOEDITOR_REPOSITORY_ROOT}/src/geometry/native/src/polygon-selection.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/commands.cpp"
   "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/webcommands.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/webterritorial-source-codec.cpp"

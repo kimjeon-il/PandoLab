@@ -480,6 +480,6 @@
     buildGpuMeshFeatures,
     buildPolygonGeometryPacket,
   };
-  scope.PandoLabGpuMeshCore = api;
+  scope.PandoLabPolygonMeshCore = api;
   if (typeof module === 'object' && module?.exports) module.exports = api;
 })(typeof self !== 'undefined' ? self : globalThis);

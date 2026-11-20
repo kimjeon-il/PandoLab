@@ -61,7 +61,7 @@ export function createMapContentPresentation({countries={},territorial={},generi
       const unitStyle = resolveFill(feature);
       const objectKey = t.normalizeObjectRef?.({ domain: 'territorial', type: 'entity', id: feature.id })?.key
         || `territorial:entity:${feature.id}`;
-      const geometryRevision = t.selectionGeometryRevision?.(objectKey, 'gpu-scene', feature);
+      const geometryRevision = t.selectionGeometryRevision?.(objectKey, 'territorial-overlay', feature);
       polygons.push({ key: `${objectKey}:fill`, objectKey, geometryRevision, geometry: feature.geometry,
         role: 'regional-overlay',
         order: t.sceneOrder?.(group, 'fill', objectKey), blendMode: unitStyle.blendMode,
@@ -94,7 +94,7 @@ export function createMapContentPresentation({countries={},territorial={},generi
     const strokes = [];
     for (const feature of data) {
       const objectKey = selectedRef(feature)?.key || `generic:feature:${feature.id}`;
-      const geometryRevision = g.selectionGeometryRevision?.(objectKey, 'gpu-scene', feature);
+      const geometryRevision = g.selectionGeometryRevision?.(objectKey, 'generic-feature', feature);
       if (['Polygon', 'MultiPolygon'].includes(feature.geometry?.type)) {
         polygons.push({ key: `${objectKey}:fill`, objectKey, geometryRevision, geometry: feature.geometry,
           order: g.sceneOrder?.('genericFeatures', 'fill'), blendMode: style.blendMode,
@@ -194,7 +194,7 @@ export function createMapContentPresentation({countries={},territorial={},generi
       const renderStyle = styleFor(row);
       const objectKey = d.normalizeObjectRef?.({ domain: 'distribution', type: 'distribution', id: row.layer.id })?.key || `distribution:distribution:${row.layer.id}`;
       const feature = d.featureFromGeometry?.(row.geometry);
-      const geometryRevision = d.selectionGeometryRevision?.(`distribution-entry:${row.id}`, 'gpu-scene', feature);
+      const geometryRevision = d.selectionGeometryRevision?.(`distribution-entry:${row.id}`, 'distribution', feature);
       const fillAlpha = distributionValueAlpha(row.entry.value, row.range);
       if (isArea(row)) {
         polygons.push({ key: `distribution-entry:${row.id}:fill`, objectKey, geometryRevision, geometry: row.geometry, order: d.sceneOrder?.(group, 'fill'), blendMode: renderStyle.blendMode, style: { color: color(row), fillAlpha, blendMode: renderStyle.blendMode } });

@@ -157,7 +157,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
   const {readBuiltinGeometryPackInputs}=await import('./builtin-geometry-packs.mjs');
   const recipe=['scripts/lib/country-boundary-seed.mjs','src/geometry/boundary-topology.js','src/geometry/country-contact-core.js','src/geometry/country-contact-row-pruning.js','src/geometry/geographic-boundary.js','src/geometry/boundary-spatial-index.js','src/rendering/workers/label-anchor-worker.js','assets/js-vendor/d3.min.js'];
   const {sharedCalculationCore}=await import('../../src/document/temporal.js');
-  const algorithmSha256=hash(JSON.stringify([recipe.map(path=>[path,hash(readSourceBytes(path))]),workerAssets['assets/js/workers/gpu-mesh-worker.js'].url,hash(read('assets/wasm/pandoeditor-core.manifest.json')),sharedCalculationCore.polygonMeshAlgorithmRevision]));
+  const algorithmSha256=hash(JSON.stringify([recipe.map(path=>[path,hash(readSourceBytes(path))]),workerAssets['assets/js/workers/map-geometry-worker.js'].url,hash(read('assets/wasm/pandoeditor-core.manifest.json')),sharedCalculationCore.polygonMeshAlgorithmRevision]));
   const prepared=buildCountryBoundarySeed({index:metadata[resource('territorial')],month:startupGeometryPacks.month,catalogSha256:projectCatalogs.territorial.sha256,algorithmSha256,
    computeLabelAnchor:createCountryLabelAnchorComputer({d3Source:readSourceBytes('assets/js-vendor/d3.min.js'),workerSource:readSourceBytes('src/rendering/workers/label-anchor-worker.js')}),
    readGeometryAssets:files=>readBuiltinGeometryPackInputs(resource('territorial'),files,readPinnedData,readPinnedDataBatch)});

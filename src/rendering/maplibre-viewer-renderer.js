@@ -60,7 +60,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let countrySequence=0,countryTail=Promise.resolve(),countrySourceId='territories',countrySourceSerial=0,countrySourceNeedsSwap=false;
  let physicalLandSourceId='physical-land',physicalWaterSourceId='physical-water';
  const activeCountryTasks=new Set();
- let sceneMultiply=[],multiplyRpc=null;
+ let sceneMultiply=[],geometryRpc=null;
  let acknowledgedBoundary=null,boundaryRequest=0;
  const multiplyLayers=new Map(),strokeDomains=new Map(),strokeSignatures=new Map();
  let sceneOrder=[],lastSceneOrder='',interactionRevision=0,interactionPending=null,interactionApplied=null;
@@ -226,7 +226,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    }));
    stats.boundaryRequests++;
    stats.boundaryGeometryRows+=boundary.upserts.length;
-   return prepareMultiply(items,revision,boundary);
+   return prepareRenderGeometry(items,revision,boundary);
   };
   let result=await request(previous);
   if(result.boundaryMiss){
@@ -248,7 +248,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  }
  function syncPolar(){
   if(!styleReady())return;
-  polarLayer ||=createPolarLayer({map,prepare:async geometry=>(await prepareMultiply([{kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry}],generation)).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:failMapPreparation});
+  polarLayer ||=createPolarLayer({map,prepare:async geometry=>(await prepareRenderGeometry([{kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry}],generation)).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:failMapPreparation});
   polarLayer.ensure();
   const style=currentMapStyle(),items=[],keys=[];
   const add=(geometry,color,alpha=1,multiply=false,fullExtent=false,loadingRole)=>{if(!color||!(alpha>0))return;const shape=fullExtent?geometry:polarGeometry(geometry);if(!shape)return;items.push({geometry:shape,color:rgba(color,alpha),multiply,fullExtent,loadingRole});keys.push([geometryKey(geometry),color,alpha,multiply,fullExtent,loadingRole]);};
@@ -395,7 +395,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){retainedSources.set(id,{kind,source,key});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===generation)failMapPreparation(cause);else invalidate('physical-source-retry');});
  }
  function geometryWorker(){
-  return multiplyRpc ||=createWorkerRpcClient({createWorker:()=>new Worker(deps.platform.runtimeAssetUrl('workers/gpu-mesh-worker.js')),
+  return geometryRpc ||=createWorkerRpcClient({createWorker:()=>new Worker(deps.platform.runtimeAssetUrl('workers/map-geometry-worker.js')),
    isCurrent:({entry,message})=>entry.projectRevision===message.projectRevision});
  }
  function preparePhysicalDisplay(key,geometry){
@@ -414,7 +414,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    .then(({result})=>{entry.geometry=result.geometry;stats.physicalLandPreparations++;stats.physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
   return entry.task;
  }
- async function prepareMultiply(items,revision,boundary){
+ async function prepareRenderGeometry(items,revision,boundary){
   const points=items.filter(item=>item.kind==='point').map(item=>({cacheKey:item.cacheKey,packet:{points:item.geometry.type==='Point'?[item.geometry.coordinates]:item.geometry.coordinates}}));
   const polygons=items.filter(item=>item.kind!=='point');if(!polygons.length)return {packets:points};
   const sentAt=performance.timeOrigin+performance.now();
@@ -1107,6 +1107,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   setInteractionStyle,
   getRenderPixelRatio:()=>quality?.dprCap||window.devicePixelRatio||1,
   verifyLayout(){if(map){map.resize();syncBaseLayer();applyCameraFit();}},failMapPreparation,retryMapPreparation,
-  dispose(){disposed=true;polarLayer?.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();zoomFramePending=false;releaseTemporalFrame();presentation.dispose();hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();multiplyRpc?.stop('maplibre-dispose');for(const entry of multiplyLayers.values())entry.layer.dispose();multiplyLayers.clear();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
+  dispose(){disposed=true;polarLayer?.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();zoomFramePending=false;releaseTemporalFrame();presentation.dispose();hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();geometryRpc?.stop('maplibre-dispose');for(const entry of multiplyLayers.values())entry.layer.dispose();multiplyLayers.clear();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
  });
 }
