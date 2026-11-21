@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreLabelPresentation} from '../../../src/rendering/maplibre-label-presentation.js';
-import {selectPlaceLabelCandidates} from '../../../src/rendering/label-layout.js';
+import {selectPlaceLabelCandidates,territorialLabelSize} from '../../../src/rendering/label-layout.js';
 import {createCountryIndex} from '../../../src/map/country-index.js';
 import {countryGeometrySignature} from '../../../src/rendering/country-shared-boundary-cache.js';
 import {createGeometryVersionStore} from '../../../src/geometry/geometry-version-store.js';
+
+test('territorial symbols scale with the visible component near the anchor',()=>{
+ const bounds=[[0,0,40,250],[150,20,300,180]];
+ const frame={size:{width:400,height:400},projectVisibleCoordinate:point=>point};
+ assert.deepEqual(territorialLabelSize(bounds,[20,80],frame),{name:13.9,flag:12.9});
+ assert.deepEqual(territorialLabelSize(bounds,[200,80],frame),{name:19,flag:18});
+ const narrow={...frame,size:{width:22,height:400}};
+ assert.deepEqual(territorialLabelSize(bounds,[20,80],narrow),{name:13,flag:12});
+});
 
 test('matching baked anchors avoid browser geometry work but changed shapes still use the worker',async()=>{
  const previous={document:globalThis.document,Worker:globalThis.Worker};globalThis.document={hidden:false};let requests=0,generation=1;
@@ -212,7 +221,7 @@ test('labels publish before flags and change selection without mutating tile fea
  const resources={getState:()=>({layerVisibility:{labels:false}}),getTerritorialLabelRef:id=>({id,key:'territorial:entity:'+id}),automaticLabelSettings:()=>({}),labelSettings:()=>({}),countryLabelAnchors:()=>new Map(['a','b','c'].map(id=>[id,[0,0]])),selectionHas:ref=>ref.id===selected};
  let activeLayout;
  const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onFlagsReady:()=>presentation.renderTerritorialLabels(activeLayout),onError:error=>errors.push(error)});
- const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialFlags:new Map(ids.map(id=>[id,{url:id+'.png',height:12}])),territorialLabelNames:new Map(),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),userLabels:[]});
+ const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialFlags:new Map(ids.map(id=>[id,{url:id+'.png'}])),territorialLabelNames:new Map(),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),territorialLabelSizes:new Map(ids.map(id=>[id,{name:19,flag:18}])),userLabels:[]});
  const flush=()=>new Promise(resolve=>setImmediate(resolve));
  const show=async (ids,flag)=>{activeLayout=layout(ids);if(flag)activeLayout.territorialFlags.set('c',{url:flag});presentation.prepareFlags(activeLayout);presentation.renderTerritorialLabels(activeLayout);await flush();};
  const rows=()=>sources.get('viewer-labels').data.features.map(f=>f.properties);
@@ -225,9 +234,25 @@ test('labels publish before flags and change selection without mutating tile fea
   const first=rows().map(row=>row.icon);
   assert.equal(new Set(first).size,2);
   assert.ok(first.every(id=>images.has(id)));
+  assert.deepEqual(rows().map(({size,iconScale})=>[size,iconScale]),[[19,1.5],[19,1.5]]);
+  const countryLayout=layers.get('viewer-label-country').layout;
+  assert.equal(countryLayout['text-justify'],'center');
+  assert.equal(countryLayout['icon-optional'],false);
+  assert.equal(countryLayout['text-optional'],false);
+  assert.match(faces[countryLayout['text-font'][0]][0].url,/Pretendard-ExtraBold\.woff2$/);
+  assert.deepEqual(layers.get('viewer-label-text').layout['text-variable-anchor'],['left','right','top','bottom']);
   assert.deepEqual(layers.get('viewer-label-country').paint['text-color'].slice(0,2),['case',['get','selected']]);
+  const writes=diffs.length;
+  presentation.renderTerritorialLabels(activeLayout);await flush();
+  assert.equal(diffs.length,writes,'unchanged sizes and coordinates must reuse the label tiles');
+  activeLayout.territorialLabelNames.set('a',false);
+  activeLayout.territorialFlags.delete('b');
+  presentation.renderTerritorialLabels(activeLayout);await flush();
+  assert.deepEqual(rows().map(({primary,icon})=>[primary,icon]),[['',first[0]],['b','']]);
+  assert.equal(countryLayout['text-anchor'].at(-1),'center');
+  assert.equal(countryLayout['icon-anchor'].at(-1),'center');
   selected='b';await show(['a','b']);assert.equal(rows()[1].selected,true);
-  assert.ok(diffs.at(-1).update[0].addOrUpdateProperties.some(p=>p.key==='selected'&&p.value===true));
+  assert.ok(diffs.at(-1).update.find(row=>row.id==='territorial:entity:b').addOrUpdateProperties.some(p=>p.key==='selected'&&p.value===true));
   tilesReady=false;await show(['b']);presentation.publishOptionalFlags();assert.ok(images.has(first[0]));
   tilesReady=true;presentation.publishOptionalFlags();assert.ok(!images.has(first[0]));
   await show(['b','c']);

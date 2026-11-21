@@ -55,6 +55,7 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
  let flagRequests=0;
  let observedSource=null,observedError=null,sourceRows=null;
  const font='Pando Pretendard';
+ const territorialFont='Pando Pretendard ExtraBold';
  function sourceFailed(error){
   if(disposed)return;const map=renderer.map;pending=false;failedKey=signature;signature='';paintKey='';sequence++;
   for(const id of MAPLIBRE_LABEL_LAYERS)if(map.getLayer(id))map.removeLayer(id);
@@ -110,9 +111,10 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    const selected=labels.selectionHas?.(ref),image=images.get(imageKey(flag?.url)),priority=(domain==='territorial'?layout.territorialLabelPriorities:layout.userLabelPriorities)?.get(String(item.id))??(domain==='territorial'?100:item.priority||40);
    const capital=domain==='label'&&placeDate!==null&&item.capitalPeriods?.some(({fromDate,untilDateExclusive})=>
     fromDate<=placeDate&&(untilDateExclusive===null||placeDate<untilDateExclusive));
+   const size=domain==='territorial'?layout.territorialLabelSizes.get(String(item.id)):null;
    features.push({type:'Feature',id:ref.key,geometry:{type:'Point',coordinates:coordinate},properties:{objectKey:ref.key,
     text:rows.map(row=>row.text).join('\n'),primary:rows[0]?.text||'',secondary:rows.slice(1).map(row=>row.text).join('\n'),kind:domain,rank:selected?-1e12:-priority,
-    selected:!!selected,capital:!!capital,icon:image?.ready&&map.hasImage(image.id)?image.id:'',iconScale:(flag?.height||12)/12,size:domain==='territorial'?13:12,
+    selected:!!selected,capital:!!capital,icon:image?.ready&&map.hasImage(image.id)?image.id:'',iconScale:size?size.flag/12:1,size:size?size.name:12,
     ...(domain==='label'?{viewerMinZoom:layout.userLabelMinZooms.get(String(item.id))}:{})}});
   };
   for(const item of layout.territorialLabels||[]){const settings=labels.automaticLabelSettings('country',labels.labelSettings(state,'territorial',labels.getTerritorialLabelRef(item.id).id));
@@ -123,8 +125,11 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
   unusedFlagKeys=[...images.keys()].filter(key=>!activeFlags.has(key));
   const next=JSON.stringify({features,palette});if(next===failedKey||(next===signature&&MAPLIBRE_LABEL_LAYERS.every(id=>map.getLayer(id))&&map.getSource(sourceId)===observedSource))return;
   signature=next;pending=true;const version=++sequence;
-  const faces=map.getStyle()['font-faces']||{},url=new URL('assets/fonts/pretendard-v1.3.9/PretendardVariable.woff2',document.baseURI).href;
-  if(faces[font]?.[0]?.url!==url)map.setFontFaces({...faces,[font]:[{url}]});
+  const faces=map.getStyle()['font-faces']||{};
+  const fontUrl=new URL('assets/fonts/pretendard-v1.3.9/PretendardVariable.woff2',document.baseURI).href;
+  const territorialFontUrl=new URL('assets/fonts/pretendard-v1.3.9/Pretendard-ExtraBold.woff2',document.baseURI).href;
+  if(faces[font]?.[0]?.url!==fontUrl||faces[territorialFont]?.[0]?.url!==territorialFontUrl)
+   map.setFontFaces({...faces,[font]:[{url:fontUrl}],[territorialFont]:[{url:territorialFontUrl}]});
   if(!map.getSource(sourceId))map.addSource(sourceId,{type:'geojson',promoteId:'objectKey',data:{type:'FeatureCollection',features:[]}});
   if(map.getSource(sourceId)!==observedSource){observedSource?.off?.('error',observedError);sourceRows=null;paintKey='';observedSource=map.getSource(sourceId);const source=observedSource;observedError=event=>{if(map.getSource(sourceId)===source)sourceFailed(event);};source.on?.('error',observedError);}
   const placeFilter=['==',['get','kind'],'label'];
@@ -141,13 +146,23 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
   applyPaint({id:'viewer-label-capital-ring',...marker,filter:['all',placeFilter,['==',['get','capital'],true]]},{
    'circle-stroke-width':1,'circle-color':'rgba(0,0,0,0)','circle-stroke-color':pointColor,'circle-radius':4,
   });
-  const textLayout={'text-field':['format',['get','primary'],{'font-scale':1},['case',['==',['get','secondary'],''],'',['concat','\n',['get','secondary']]],{'font-scale':.82}],'text-font':[font],'text-size':['get','size'],'text-variable-anchor':['left','right','top','bottom'],'text-radial-offset':.85,'text-letter-spacing':.015,'text-line-height':1.25,'text-justify':'auto','symbol-sort-key':['get','rank'],'text-max-width':12};
+  const textLayout={'text-field':['format',['get','primary'],{'font-scale':1},['case',['==',['get','secondary'],''],'',['concat','\n',['get','secondary']]],{'font-scale':.82}],'text-size':['get','size'],'text-letter-spacing':.015,'text-line-height':1.25,'symbol-sort-key':['get','rank'],'text-max-width':12};
+  const paired=['all',['!=',['get','primary'],''],['!=',['get','icon'],'']];
+  const countryLayout={
+   'text-font':[territorialFont],'text-justify':'center',
+   'text-anchor':['case',paired,'top','center'],
+   'text-offset':['case',paired,['literal',[0,.15]],['literal',[0,0]]],
+   'icon-image':['get','icon'],'icon-size':['get','iconScale'],
+   'icon-anchor':['case',paired,'bottom','center'],
+   'icon-optional':false,'text-optional':false,
+  };
+  const cityLayout={'text-font':[font],'text-variable-anchor':['left','right','top','bottom'],'text-radial-offset':.85,'text-justify':'auto'};
   // Selection is part of the label row, so tile reloads never replay a separate feature state.
   for(const id of labelTextLayers){
    const country=id==='viewer-label-country';
    applyPaint({id,type:'symbol',source:sourceId,minzoom:MAPLIBRE_LABEL_MIN_ZOOM[country?'country':'places'],
     filter:country?['==',['get','kind'],'territorial']:placeFilter,
-    layout:{...textLayout,visibility:'none',...(country?{'icon-image':['get','icon'],'icon-size':['get','iconScale'],'icon-optional':true}:{})}},
+    layout:{...textLayout,...(country?countryLayout:cityLayout),visibility:'none'}},
     {'text-halo-width':1,'text-halo-blur':.35,'text-color':['case',['get','selected'],palette.selection,palette.text],'text-halo-color':palette.halo});
   }
   paintKey=nextPaintKey;

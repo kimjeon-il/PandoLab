@@ -460,6 +460,51 @@ for(const mobile of [false,true])test(`ordinary camera gestures never preserve t
  }finally{await context.close();}
 });
 
+for(const mobile of [false,true])test(`territorial symbols use the nearby European shape for scale (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
+ const viewport=mobile?{width:390,height:844}:{width:1440,height:900};
+ const context=await browser.newContext({baseURL,viewport,isMobile:mobile,hasTouch:mobile});
+ try{
+  const page=await context.newPage();
+  const font=page.waitForResponse(response=>response.url().endsWith('/Pretendard-ExtraBold.woff2')&&response.ok());
+  await open(page);
+  const camera=zoom=>page.evaluate(zoom=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[8,49],zoom}),zoom);
+  const labels=()=>page.evaluate(async()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource('viewer-labels');
+   const rows=(await source.getData()).features.map(({properties})=>properties);
+   return Object.fromEntries(['LUX','LIE','NLD','FRA','DEU'].map(id=>{
+    const row=rows.find(row=>row.objectKey==='territorial:entity:'+id);
+    return [id,row&&{name:row.primary,size:row.size,flag:row.iconScale*12,ready:!!row.icon&&map.hasImage(row.icon)}];
+   }));
+  });
+  await camera(4.05);
+  await font;
+  await expect.poll(async()=>Object.entries(await labels()).filter(([,row])=>!row?.name||!row.ready),
+   {timeout:45_000}).toEqual([]);
+  const rows=await labels();
+  console.log('[territorial-label-sizes]',JSON.stringify({profile:mobile?'touch':'desktop',rows}));
+  expect(rows.LUX).toMatchObject({size:13,flag:12});
+  expect(rows.LIE).toMatchObject({size:13,flag:12});
+  expect(rows.NLD.size).toBeGreaterThan(13);
+  expect(rows.NLD.size).toBeLessThan(19);
+  expect(rows.FRA).toMatchObject({size:19,flag:18});
+  expect(rows.DEU).toMatchObject({size:19,flag:18});
+  await expect.poll(()=>page.evaluate(async()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,id='territorial:entity:DEU';
+   const feature=(await map.getSource('viewer-labels').getData()).features.find(row=>row.id===id);
+   const {x,y}=map.project(feature.geometry.coordinates);
+   const layers=['viewer-label-country','viewer-label-text'];
+   const above=map.queryRenderedFeatures([[x-3,y-12],[x+3,y-7]],{layers});
+   const below=map.queryRenderedFeatures([[x-3,y+7],[x+3,y+12]],{layers});
+   return [above,below].map(hits=>({
+    country:hits.some(hit=>hit.properties.objectKey===id),
+    city:hits.some(hit=>hit.layer.id==='viewer-label-text'),
+   }));
+  })).toEqual([{country:true,city:false},{country:true,city:false}]);
+  await camera(5);
+  await expect.poll(async()=>(await labels()).NLD.size).toBeGreaterThan(rows.NLD.size);
+ }finally{await context.close();}
+});
+
 for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} names and flags stay attached during globe movement`,async({page})=>{
  await open(page);
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.on('error',event=>{
@@ -536,6 +581,7 @@ test('single white base and object-color toggle preserve boundaries, labels and 
   return {features:features.length,hasBorders:!!map.getLayer('borders'),
    hasLabels:!!map.getLayer('viewer-label-text'),
    hasCountryColors:features.some(feature=>feature.properties.color&&feature.properties.color!=='#f1f1f1'),
+   countryColorOpacities:[...new Set(features.filter(feature=>feature.properties.displayRole==='country-fill'&&feature.properties.color).map(feature=>feature.properties.displayAlpha))],
    hasChild:features.some(feature=>feature.properties.objectKey==='territorial:entity:d34b00a1-9b13-8000-8000-00000047524c'),
    document:JSON.stringify(window.__PANDOLAB_VIEWER__.documentSnapshot())};
  });
@@ -543,6 +589,7 @@ test('single white base and object-color toggle preserve boundaries, labels and 
  expect(initial.hasBorders).toBe(true);
  expect(initial.hasLabels).toBe(true);
  expect(initial.hasCountryColors).toBe(true);
+ expect(initial.countryColorOpacities).toEqual([0.85]);
  expect(initial.hasChild).toBe(true);
  await page.locator('#preferencesBtn').click();
  const toggle=page.locator('#preferencesObjectColorsInput');

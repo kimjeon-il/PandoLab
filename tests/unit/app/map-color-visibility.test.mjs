@@ -44,6 +44,7 @@ test('color visibility changes presentation only, preserving territorial colors,
  const repository={get:id=>id==='A'?entity:null,parent:()=>null};
  const resolved=()=>createTerritorialFillResolver({state,entityRepository:repository,neutralColor:'#f1f1f1'})(entity);
  assert.equal(resolved().color,projectColor);
+ assert.equal(resolved().fillAlpha,0.85);
  assert.equal(await settings.updateLayerPresentationStyle('objects',{colorVisible:false}),true);
  assert.deepEqual({color:resolved().color,alpha:resolved().fillAlpha,blend:resolved().blendMode},
   {color:'#f1f1f1',alpha:1,blend:'normal'});

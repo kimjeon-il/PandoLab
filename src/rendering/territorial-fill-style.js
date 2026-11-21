@@ -34,7 +34,7 @@ export function createTerritorialFillResolver({ state, entityRepository, mapSubs
     // Neutral opaque geometry remains pickable without modifying stored colors.
     const neutral = !colorsEnabled ? neutralColor : null;
     const result = Object.freeze({ color: neutral || color || substrate?.color || '', blendMode: neutral ? 'normal' : blendMode,
-      fillAlpha: neutral ? 1 : color ? 1 : substrate?.fillAlpha || 0,
+      fillAlpha: neutral ? 1 : color ? 0.85 : substrate?.fillAlpha || 0,
       depth: inherited ? inherited.depth + 1 : 0,
       ownerId: independent ? '' : inherited?.ownerId || id, parentId: String(properties.parentId || '') });
     visiting.delete(id);
