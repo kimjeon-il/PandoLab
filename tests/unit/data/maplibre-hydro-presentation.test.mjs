@@ -1,8 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,riverWidthAtZoom} from '../../../src/rendering/maplibre-hydro-presentation.js';
+import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,riverWidthAtZoom,joinHydroLineParts} from '../../../src/rendering/maplibre-hydro-presentation.js';
 import {resolveMapLibreMapStyle} from '../../../src/rendering/maplibre-map-style.js';
 import {hydroDisplayStages,hydroLakeDisplayMinZoom} from '../../../src/map/map-display-zoom.js';
+
+test('hydro display joins consecutive exact endpoints within one feature',()=>{
+ const geometry={type:'MultiLineString',coordinates:[
+  [[0,0],[1,1]],[[1,1],[2,2]],[[2,2],[3,3]],[[3.000001,3],[4,4]],
+ ]};
+ const original=structuredClone(geometry);
+ assert.deepEqual(joinHydroLineParts(geometry),{type:'MultiLineString',coordinates:[
+  [[0,0],[1,1],[2,2],[3,3]],[[3.000001,3],[4,4]],
+ ]});
+ assert.deepEqual(geometry,original);
+ const independent={type:'LineString',coordinates:[[4,4],[5,5]]};
+ assert.equal(joinHydroLineParts(independent),independent);
+});
 
 test('visible rivers taper from 1.5px to 1px without changing their zoom thresholds',()=>{
  const {paint}=resolveMapLibreMapStyle({palette:{strokes:{river:{width:1}}}});

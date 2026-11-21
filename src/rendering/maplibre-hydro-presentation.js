@@ -7,6 +7,25 @@ const hydroLayers=[['lakes','lake','fill'],['rivers','river','line']].flatMap(([
 const hydroLayerById=new Map(hydroLayers.map(layer=>[layer.id,layer]));
 export const mapLibreHydroLayer=id=>hydroLayerById.get(id);
 
+// Preserve a feature's ordered path before GeoJSON tiling simplifies each part.
+export function joinHydroLineParts(geometry) {
+ if(geometry.type!=='MultiLineString'||geometry.coordinates.length<2)return geometry;
+ const lines=[];
+ let joined=null;
+ for(const part of geometry.coordinates){
+  const previous=lines.at(-1);
+  const end=previous?.at(-1),start=part[0];
+  if(end&&start&&end[0]===start[0]&&end[1]===start[1]){
+   if(previous!==joined){
+    joined=previous.slice();
+    lines[lines.length-1]=joined;
+   }
+   for(let index=1;index<part.length;index++)joined.push(part[index]);
+  } else lines.push(part);
+ }
+ return lines.length===geometry.coordinates.length?geometry:{...geometry,coordinates:lines};
+}
+
 const riverWidthTaperStart=3,riverWidthTaperEnd=4;
 export function riverWidthAtZoom(zoom,width=1){
  const lowZoomWidth=Math.max(1.5,width);

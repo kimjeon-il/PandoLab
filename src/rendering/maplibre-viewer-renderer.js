@@ -10,7 +10,7 @@ import {createMapLibreStyleController} from './maplibre-style-controller.js';
 import {MAPLIBRE_LABEL_LAYERS,MAPLIBRE_LABEL_MIN_ZOOM} from './maplibre-label-presentation.js';
 import {createExternalBasemap} from './maplibre-external-style.js';
 import {createHydroBrowserLoader} from '../data/maplibre-hydro-loader.js';
-import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from './maplibre-hydro-presentation.js';
+import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,joinHydroLineParts} from './maplibre-hydro-presentation.js';
 import {HYDRO_DISPLAY_ZOOMS,hydroDisplayStages,isWithinDisplayZoom} from '../map/map-display-zoom.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
 import {createTerritorialFillResolver} from './territorial-fill-style.js';
@@ -1039,7 +1039,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    if(transportZoom===undefined)throw new RangeError('Unknown hydro stage '+stage);
    const viewerMinZoom=category==='lake'?(lakeDisplayMinZoom.get(String(feature.properties.__logicalFid))??transportZoom):transportZoom;
    if(viewerMinZoom<transportZoom)throw new RangeError('Lake display zoom precedes its source stage');
-   const geometry=category==='river'?clipMercatorLines(feature.geometry):feature.geometry;
+   const geometry=category==='river'?clipMercatorLines(joinHydroLineParts(feature.geometry)):feature.geometry;
    if(!geometry.coordinates.length)return [];
    return [{...feature,geometry,properties:{...feature.properties,viewerMinZoom}}];
   });
