@@ -4,7 +4,7 @@ import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
 import {retainViewportItems} from '../runtime/resource-dependency-policy.js';
 
 /** Ordinary geographic labels use MapLibre symbols, shaping and collision placement. */
-const labelTextLayers=['viewer-label-text','viewer-label-country'];
+const labelTextLayers=['viewer-label-country','viewer-label-text'];
 const flagStandbyLimit=32;
 export const MAPLIBRE_LABEL_LAYERS=Object.freeze(['viewer-label-dot','viewer-label-capital-ring',...labelTextLayers]);
 export const MAPLIBRE_LABEL_MIN_ZOOM=Object.freeze({country:3,places:PLACE_DISPLAY_ZOOM_FLOOR});

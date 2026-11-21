@@ -49,7 +49,8 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const frame=()=>({frameId:++frameId,projectGeneration:renderer.getProjectGeneration(),viewRevision:1,projectionRevision:0});
    const settle=async()=>{for(let i=0;i<300;i++){if(errors.length)throw new Error(errors.join('\n'));const current=frame(),result=renderer.renderFrame(current);if(result.succeeded&&renderer.canPresentVisualFrame(current,result)){renderer.commitVisualFrame(current);return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('Fixture map did not present');};
    renderer.setInitialMapLoading(true);
-   if(renderer.map.getMinZoom()!==-2||renderer.map.getMaxZoom()!==22)throw new Error('Expected native MapLibre zoom range');
+   if(!(renderer.map.getMinZoom()>-2)||renderer.map.getMaxZoom()!==22)
+    throw new Error('Expected the fitted world zoom floor and native MapLibre zoom ceiling');
    renderer.map.jumpTo({center:[-4,0],zoom:renderer.map.getMaxZoom()});
    if(renderer.map.getCanvas().style.visibility!=='hidden'||globalThis.document.querySelector('[data-map-preserved-frame]'))
     throw new Error('A jump before first publication exposed an unprepared canvas');
@@ -397,9 +398,15 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
     if(!riverHit)await new Promise(resolve=>setTimeout(resolve,20));
    }
    if(!riverHit)throw new Error('River source did not become selectable: '+JSON.stringify({visibility:renderer.map.getLayoutProperty('rivers','visibility'),filter:renderer.map.getFilter('rivers'),loaded:renderer.map.isSourceLoaded('hydro')}));
+   const mapHost=document.getElementById('map');
+   mapHost.style.height='400px';
+   renderer.verifyLayout();
    renderer.map.jumpTo({zoom:1.99});await settle();
+   if(renderer.map.getZoom()>=2)throw new Error('River visibility fixture did not reach zoom below two');
    if(renderer.queryObjectRefs(renderer.projection.projectCoordinate([0,0])).some(ref=>ref.id==='river-fixture'))
     throw new Error('A river below the native minimum remained selectable');
+   mapHost.style.height='600px';
+   renderer.verifyLayout();
    for(const threshold of [3,4,5]){
     for(const offset of [-.01,0,.01]){
      renderer.map.jumpTo({zoom:threshold+offset});
@@ -570,8 +577,8 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const optionalStroke={key:'optional-hydro',role:'hydro-detail',geometryRevision:'one',geometry:{type:'LineString',coordinates:[[24,0],[26,0]]},order:200,style:{color:'#1234ff',width:1,alpha:1}};
    const optionalScene=()=>new Map([['water-detail',{polygons:[],strokes:[optionalStroke]}]]);
    renderer.setSceneDomains(optionalScene());await settle();
-   const optionalSource=renderer.map.getSource('vector-line-200-hydro-detail'),writeOptional=optionalSource.setData.bind(optionalSource);let releaseOptional;
-   optionalSource.setData=data=>new Promise(resolve=>{releaseOptional=()=>resolve(writeOptional(data));});
+   const optionalSource=renderer.map.getSource('vector-line-200-hydro-detail'),writeOptional=optionalSource.updateData.bind(optionalSource);let releaseOptional;
+   optionalSource.updateData=(...args)=>new Promise(resolve=>{releaseOptional=()=>resolve(writeOptional(...args));});
    optionalStroke.geometryRevision='two';renderer.setSceneDomains(optionalScene());
    for(let i=0;i<100&&!releaseOptional;i++)await new Promise(resolve=>setTimeout(resolve,5));
    if(!releaseOptional)throw Error('Optional stroke did not request its changed geometry');
@@ -664,11 +671,14 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
   assert.ok(result.unified[0].properties.paintOrder<result.unified[1].properties.paintOrder,'parent must paint before child regardless of input order');
   assert.equal(result.hierarchyHits[0],'child:영역%');
   assert.deepEqual(result.neutralPixel,[170,170,170,255]);assert.equal(result.neutralUpdates,0);assert.equal(result.propertyOnly,true);assert.equal(result.panUpdates,0);
-  assert.ok([238,85,68].every((value,i)=>Math.abs(result.normalChild[i]-value)<=3),'normal child must cover multiply parent: '+result.normalChild);
-  assert.ok([95,57,18].every((value,i)=>Math.abs(result.multiplyChild[i]-value)<=3),'multiply child must follow normal parent: '+result.multiplyChild);
+  const landColor=[170,170,170],parentColor=[102,170,68],childColor=[238,85,68];
+  const fill=(back,front,multiply=false)=>back.map((value,i)=>value*.15+(multiply?value*front[i]/255:front[i])*.85);
+  const normalParent=fill(landColor,parentColor),multiplyParent=fill(landColor,parentColor,true);
+  assert.ok(fill(multiplyParent,childColor).every((value,i)=>Math.abs(result.normalChild[i]-value)<=3),'normal child must cover multiply parent at 85%: '+result.normalChild);
+  assert.ok(fill(normalParent,childColor,true).every((value,i)=>Math.abs(result.multiplyChild[i]-value)<=3),'multiply child must follow normal parent at 85%: '+result.multiplyChild);
   assert.equal(result.rebound,'#9944cc');assert.equal(result.returned,'#66aa44');
   assert.ok(result.partlyVisibleBorder[0]>150&&result.partlyVisibleBorder[2]>130,'a shared border must remain when either owner shows it: '+result.partlyVisibleBorder);
-  assert.ok([102,170,68].every((value,i)=>Math.abs(result.hiddenBorder[i]-value)<=3),'a shared border must disappear when both owners hide it: '+result.hiddenBorder);
+  assert.ok(normalParent.every((value,i)=>Math.abs(result.hiddenBorder[i]-value)<=3),'a shared border must disappear when both owners hide it: '+result.hiddenBorder);
   assert.deepEqual(result.whitePalette,{ocean:'#ffffff',land:'#f1f1f1'},'white map has a single loading palette');
   assert.deepEqual(result.loadingColors,['#112233','#779966']);
   assert.deepEqual(result.skeletonPixel,[170,170,170,255]);assert.equal(result.skeletonGeometry.type,'MultiPolygon');assert.equal(result.skeletonRemoved,true);
@@ -686,8 +696,8 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
   assert.deepEqual(result.picked,['current:상태%2']);assert.deepEqual(result.sourceIds,['territorial:entity:current%3A%EC%83%81%ED%83%9C%252']);assert.deepEqual(result.errors,[]);
   assert.ok(result.borderPixel[0]>110&&result.borderPixel[1]>140&&result.borderPixel[2]>90,'native antialiased country boundary is missing: '+result.borderPixel);
   assert.deepEqual(result.multiplyHits,['current:상태%2']);
-  for(const [index,expected]of [68,113,45].entries())assert.ok(Math.abs(result.multiplied[index]-expected)<=3,JSON.stringify(result.multiplied));
-  for(const [index,expected]of [27,75,12].entries())assert.ok(Math.abs(result.stroke[index]-expected)<=3,JSON.stringify(result));
+  for(const [index,expected]of multiplyParent.entries())assert.ok(Math.abs(result.multiplied[index]-expected)<=3,JSON.stringify(result.multiplied));
+  for(const [index,expected]of multiplyParent.map((value,i)=>value*parentColor[i]/255).entries())assert.ok(Math.abs(result.stroke[index]-expected)<=3,JSON.stringify(result.stroke));
   assert.deepEqual(result.restored,result.stroke);
   assert.deepEqual(result.highZoom,result.stroke);
   assert.ok(result.pixelPixels.every(Number.isFinite),'MapLibre owns stroke edge coverage in both quality modes');

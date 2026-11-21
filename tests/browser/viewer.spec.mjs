@@ -554,6 +554,49 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
  }finally{await context.close();}
 });
 
+test('a place name is drawn above a country name where both labels overlap',async({page})=>{
+ await page.setViewportSize({width:1084,height:642});
+ await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({
+  version:2,labels:{place:{showNativeNames:true}},
+ })));
+ await open(page);
+ await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[18,50.7],zoom:4});});
+ await expect.poll(()=>page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,country='viewer-label-country',place='viewer-label-text';
+  if(!map.getLayer(place)||!map.getLayer(country))return [];
+  const order=map.getLayersOrder();
+  return [order.indexOf(place)>order.indexOf(country),
+   map.queryRenderedFeatures({layers:[country]}).some(row=>row.properties.objectKey==='territorial:entity:POL'),
+   map.queryRenderedFeatures({layers:[place]}).some(row=>row.properties.primary==='브로츠와프'&&row.properties.secondary==='Wrocław')];
+ }),{timeout:30_000}).toEqual([true,true,true]);
+});
+
+test('country glyphs keep Jordan and Israel visible at the same anchors through a zoom round trip',async({page})=>{
+ await page.setViewportSize({width:1084,height:642});
+ await open(page);
+ for(const zoom of [4.75,5.15,5.55,5.15]){
+  await page.evaluate(zoom=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[35.9,32],zoom});},zoom);
+  await expect.poll(()=>page.evaluate(()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,layer='viewer-label-country',source='viewer-labels';
+   const manager=map.style.tileManagers[source],symbols={};
+   if(!manager||!map.isSourceLoaded(source))return symbols;
+   for(const key of manager.getRenderableIds(true)){
+    const tile=manager.getTileByID(key),bucket=tile?.getBucket(map.getLayer(layer));
+    const index=Object.values(tile?.latestFeatureIndex?.loadVTLayers()??{})[0];
+    if(!bucket||!index)continue;
+    for(let i=0;i<bucket.symbolInstances.length;i++){
+     const symbol=bucket.symbolInstances.get(i);
+     const id=index.feature(symbol.featureIndex).properties.objectKey?.split(':').at(-1);
+     if(id!=='JOR'&&id!=='ISR')continue;
+     const placement=map.style.placement?.placements[symbol.crossTileID];
+     if(placement?.text&&placement.icon)symbols[id]=true;
+    }
+   }
+   return symbols;
+  }),{timeout:30_000}).toEqual({JOR:true,ISR:true});
+ }
+});
+
 for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} names and flags stay attached during globe movement`,async({page})=>{
  await open(page);
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.on('error',event=>{
