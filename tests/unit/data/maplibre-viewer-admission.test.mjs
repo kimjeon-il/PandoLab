@@ -324,7 +324,9 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const externalFailureRecovered=!renderer.map.getLayer('test-basemap')&&!renderer.getRuntimeState().projectRenderBlocked&&errors.includes('external source failed');errors.length=0;
    renderer.map.jumpTo({center:[0,0],zoom:2});await settle();
    const river=(id,stage,lat)=>({type:'Feature',id,properties:{featureId:id,logicalId:id,category:'river',stage},geometry:{type:'LineString',coordinates:[[-5,lat],[5,lat]]}});
-   const features=[river('river-fixture',0,0),river('detail-3',1,1),river('detail-4',2,2),river('detail-5',3,3)];
+   const lake={type:'Feature',id:'lake-fixture',properties:{featureId:'lake-fixture',logicalId:'lake-fixture',__logicalFid:42,category:'lake',stage:1},
+    geometry:{type:'Polygon',coordinates:[[[1,-2],[2,-2],[2,-1],[1,-1],[1,-2]]]}};
+   const features=[river('river-fixture',0,0),river('detail-3',1,1),river('detail-4',2,2),river('detail-5',3,3),river('polar-river',1,86),lake];
    const BrowserWorker=globalThis.Worker;
    globalThis.Worker=class {
     constructor(url,options){if(!new URL(url).pathname.endsWith('/hydro-tile-worker.js'))return new BrowserWorker(url,options);}
@@ -340,7 +342,8 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    };
    hydroEnabled=true;
    try{
-    await renderer.setHydroManifest({stages:[6,6.7,7,7.5].map((minZoom,id)=>({id,minZoom,columns:1,rows:1}))},globalThis.location.href);
+    await renderer.setHydroManifest({stages:[6,6.7,7,7.5].map((minZoom,id)=>({id,minZoom,columns:1,rows:1})),
+     lakeDisplayMinZoom:{42:4}},globalThis.location.href);
    }finally{globalThis.Worker=BrowserWorker;}
    for(let attempt=0;attempt<500&&!renderer.map.isSourceLoaded('hydro');attempt++)await new Promise(resolve=>setTimeout(resolve,10));
    await settle();let riverHit=false;
@@ -354,13 +357,13 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    if(renderer.queryObjectRefs(renderer.projection.projectCoordinate([0,0])).some(ref=>ref.id==='river-fixture'))
     throw new Error('A river below the native minimum remained selectable');
    for(const threshold of [3,4,5]){
-    for(const offset of [-.01,0]){
+    for(const offset of [-.01,0,.01]){
      renderer.map.jumpTo({zoom:threshold+offset});
      await settle();
      await new Promise(resolve=>{renderer.map.once('idle',resolve);renderer.map.triggerRepaint();});
      const point=renderer.projection.projectCoordinate([.5,threshold-2]);
      const visible=renderer.queryObjectRefs(point).some(ref=>ref.id==='detail-'+threshold);
-     if(visible!==(offset===0))throw new Error('River picking did not follow camera zoom '+renderer.map.getZoom());
+     if(visible!==(offset>=0))throw new Error('River picking did not follow camera zoom '+renderer.map.getZoom());
      const painted=await new Promise(resolve=>{
       renderer.map.once('render',()=>{
        const canvas=renderer.map.getCanvas(),gl=canvas.getContext('webgl2'),ratio=renderer.map.getPixelRatio(),pixels=new Uint8Array(36);
@@ -369,9 +372,21 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
       });
       renderer.map.triggerRepaint();
      });
-     if(painted!==(offset===0))throw new Error('River pixels did not follow camera zoom '+renderer.map.getZoom());
+     if(painted!==(offset>=0))throw new Error('River pixels did not follow camera zoom '+renderer.map.getZoom());
+     if(threshold===3||threshold===4){
+      const lakePoint=renderer.projection.projectCoordinate([1.5,-1.5]);
+      if(renderer.queryObjectRefs(lakePoint).some(ref=>ref.id==='lake-fixture')!==(threshold===4&&offset>=0))
+       throw new Error('Lake picking did not follow its display zoom '+renderer.map.getZoom());
+     }
     }
    }
+   for(const zoom of [2.99,3,3.01]){
+    renderer.map.jumpTo({center:[0,85],zoom});await settle();
+    const point=renderer.projection.projectCoordinate([0,86]);
+    if(renderer.queryObjectRefs(point).some(ref=>ref.id==='polar-river')!==(zoom>=3))
+     throw new Error('Polar river picking did not follow its display zoom '+zoom);
+   }
+   renderer.map.jumpTo({center:[0,0],zoom:5});await settle();
    hydroEnabled=false;renderer.invalidateHydroVisibility();
    await renderer.map.getSource('hydro').setData({type:'FeatureCollection',features:[]});await settle();
    renderer.setInitialMapLoading(true);await settle();

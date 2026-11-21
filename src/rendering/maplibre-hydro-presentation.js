@@ -1,23 +1,17 @@
-const VIEWER_ZOOM_BY_SOURCE_STAGE=new Map([[6,2],[6.7,3],[7,4],[7.5,5]]);
-const NATIVE_HYDRO_ZOOMS=[...VIEWER_ZOOM_BY_SOURCE_STAGE.values()];
+import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
+
 const layerFilter=(category,zoom,hiddenIds)=>['all',['==',['get','category'],category],['==',['get','viewerMinZoom'],zoom],
  ...(hiddenIds.length?[['!',['in',['get','logicalId'],['literal',hiddenIds]]]]:[])];
 const hydroLayers=[['lakes','lake','fill'],['rivers','river','line']].flatMap(([baseId,category,type])=>
- NATIVE_HYDRO_ZOOMS.map((zoom,index)=>({id:index===0?baseId:baseId+'-'+zoom,baseId,category,type,zoom})));
+ HYDRO_DISPLAY_ZOOMS.map((zoom,index)=>({id:index===0?baseId:baseId+'-'+zoom,baseId,category,type,zoom})));
+const hydroLayerById=new Map(hydroLayers.map(layer=>[layer.id,layer]));
+export const mapLibreHydroLayer=id=>hydroLayerById.get(id);
 
 // Globe coverage can use more than one tile zoom at the same time.
 // Paint expressions use the camera zoom regardless of the source tile level.
-export const mapLibreHydroOpacity=(zoom=NATIVE_HYDRO_ZOOMS[0],opacity=1)=>['step',['zoom'],0,zoom,opacity];
+export const mapLibreHydroOpacity=(zoom=HYDRO_DISPLAY_ZOOMS[0],opacity=1)=>['step',['zoom'],0,zoom,opacity];
 export function mapLibreHydroPaint(paint,type,zoom,opacity=1){
  return {...paint,[type+'-opacity']:mapLibreHydroOpacity(zoom,opacity)};
-}
-
-export function mapLibreHydroStages(stages){
- return stages.map(stage=>{
-  const minZoom=VIEWER_ZOOM_BY_SOURCE_STAGE.get(stage.minZoom);
-  if(minZoom===undefined)throw new RangeError('Unsupported hydro source stage '+stage.minZoom);
-  return {...stage,minZoom};
- });
 }
 
 export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){

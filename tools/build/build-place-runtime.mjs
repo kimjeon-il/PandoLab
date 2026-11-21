@@ -1,7 +1,7 @@
 /**
  * Reproducible publisher for all reviewed place batches.
  * The review JSONs remain the only source of historical name decisions.
- * Outputs: a portable catalog, one PLAC v3 shard, and a hashed search/viewport manifest.
+ * Outputs: a portable catalog, one PLAC v4 shard, and a hashed search/viewport manifest.
  */
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";
@@ -45,7 +45,7 @@ export function projectReviewedPlace(record, reviewFile, batchStatus) {
       throw new Error('Historical name period has no selected names: ' + title(record));
     return converted;
   });
-  // PLAC v3 serializes names, not temporalEligibility. Shift the first name
+  // PLAC serializes names, not temporalEligibility. Shift the first name
   // coverage boundary forward for a source-verified modern city foundation;
   // otherwise the historic map falsely displays a city before it existed.
   // The original staged name-era decision remains unchanged in the review JSON.
@@ -75,7 +75,8 @@ export function projectReviewedPlace(record, reviewFile, batchStatus) {
     name: record.defaultDisplayNameKo, nameEn: record.defaultDisplayNameEn || '',
     nameNative: record.defaultDisplayNameNative || '',
     nameNativeExtras: (record.defaultNativeNames || []).slice(1).map(name => name.text),
-    nameTimeline: timeline, coordinates: [record.longitude, record.latitude],
+    nameTimeline: timeline, capitalPeriods: record.capitalPeriods ?? [],
+    coordinates: [record.longitude, record.latitude],
     countryCode: record.sourceCountryCode || '', featureCode: record.featureCode || '',
     population: 0, kind, priority: kind === 'town' ? 40 : 70,
     minZoom: kind === 'town' ? 2.5 : 1.25,
@@ -97,10 +98,10 @@ export function validateRuntimeApproval(record, batchNumber) {
     || record.candidatePolicyException?.autoPromoted === false)
     throw new Error('Unresolved city identity/candidate review cannot enter runtime: ' + record.geonameId);
   if (record.temporalEligibility?.activeIntervals?.length)
-    throw new Error('Multi-episode urban eligibility not supported by PLAC v3: ' + record.geonameId);
+    throw new Error('Multi-episode urban eligibility not supported by the place tile: ' + record.geonameId);
   if (batchNumber <= 15) {
     // First 15 batches were individually researched before A/B/C triage was introduced.
-    // Historical Pest has a verified 1873 end date but the current PLAC v3 codec does
+    // Historical Pest has a verified 1873 end date but the place tile does
     // not serialize activeIntervals; it must stay out until interval gating is wired.
     if (record.geonameId === 3046446)
       throw new Error('Former Pest city requires urban active-interval rendering');
@@ -130,7 +131,7 @@ export function deriveReleaseCatalog(directory = reportPath('reports/places', { 
   if (approvals.hardExclusionIds?.some(id => approved.has(id)))
     throw new Error('Approved ID conflicts with explicit hard exclusion');
   const result = { schema: 'pando-builtin-place-release-v1',
-    dataContract: 'PLAC-v3',
+    dataContract: 'PLAC-v4',
     generatedFrom: 'reports/places/tier1-major-cities-batch*.json',
     approval: { file: 'reports/places/runtime-release-approvals-v1.json',
       sha256: hash('sha256', approvalBytes), approvedIds: approvedIds.length },
@@ -211,7 +212,7 @@ export function generatePlaceRelease() {
   const records = catalog.records.map(normalizePlace);
   const bytes = Buffer.from(encodePlaceTile(records));
   const decoded = decodePlaceTile(bytes);
-  if (JSON.stringify(decoded) !== JSON.stringify(records)) throw new Error('PLAC v3 round-trip failed');
+  if (JSON.stringify(decoded) !== JSON.stringify(records)) throw new Error('Place tile round-trip failed');
   const sum = hash('sha256', bytes);
   const shard = 'places-v1';
   const row = { shard, offset: 0, length: bytes.length, sha256: sum };

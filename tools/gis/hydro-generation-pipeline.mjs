@@ -46,5 +46,6 @@ export async function generateHydroFromSources({sources,countries,references,lak
   sourceReceipt.naturalEarthLakes.selected=lakeFeatures.features.length;sourceReceipt.osmWaterways.matchedSystems=osmMatches;
   sourceReceipt.independentHydronymReplacements.replacedSystems=applied.size;
   const manifest=buildHydroGenerationManifest({layout:pack.layout,stats:pack.stats,sourceRows,source:sourceReceipt,namedSystems,unnamedSystems,osmMatches});
+  manifest.lakeDisplayMinZoom=Object.fromEntries(lakeFeatures.features.map(feature=>[feature.metadata.logicalFid,feature.displayMinZoom]));
   return {pack,manifest};
 }

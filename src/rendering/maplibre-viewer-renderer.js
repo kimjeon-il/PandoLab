@@ -10,7 +10,8 @@ import {createMapLibreStyleController} from './maplibre-style-controller.js';
 import {MAPLIBRE_LABEL_LAYERS,MAPLIBRE_LABEL_MIN_ZOOM} from './maplibre-label-presentation.js';
 import {createExternalBasemap} from './maplibre-external-style.js';
 import {createHydroBrowserLoader} from '../data/maplibre-hydro-loader.js';
-import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStages,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from './maplibre-hydro-presentation.js';
+import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from './maplibre-hydro-presentation.js';
+import {HYDRO_DISPLAY_ZOOMS,hydroDisplayStages,isWithinDisplayZoom} from '../map/map-display-zoom.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
 import {createTerritorialFillResolver} from './territorial-fill-style.js';
 import {createHydroTileWindow,hydroTileSpecsForWindow} from '../data/hydro-tile-window.js';
@@ -62,7 +63,7 @@ export function createMapGeometryRequester({getWorker,restartWorker,isDisposed=(
   }
  };
 }
-const layerVisibleAtZoom=(layer,zoom)=>layer.visible&&zoom>=layer.minzoom&&zoom<layer.maxzoom;
+const layerVisibleAtZoom=(layer,zoom)=>layer.visible&&isWithinDisplayZoom(zoom,layer.minzoom,layer.maxzoom);
 
 /** MapLibre owns map pixels and picking. Core and the physical owner retain all data. */
 export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPreparationStatus,initialCamera,readInitialSafeInsets}={}) {
@@ -326,12 +327,13 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  function syncPolarLines(){
   if(!polarLayer)return;
   const palette=deps.preferences.mapPalette();
-  const zoom=Math.floor(map.getZoom()),ocean=palette.ocean||'#ffffff',riverWidth=palette.strokes?.river?.width??0.8;
-  const inputs=[sceneKey,hydroFeatures,hydroStateKey,hydroEditsKey,hydroMinZoomByStage,zoom,ocean,riverWidth];
+  const zoom=map.getZoom(),ocean=palette.ocean||'#ffffff',riverWidth=palette.strokes?.river?.width??0.8;
+  const visibleStages=[...hydroMinZoomByStage].filter(([,minZoom])=>isWithinDisplayZoom(zoom,minZoom));
+  const inputs=[sceneKey,hydroFeatures,hydroStateKey,hydroEditsKey,hydroMinZoomByStage,visibleStages.length,ocean,riverWidth];
   if(inputs.every((value,index)=>value===polarLineInputs[index]))return;
   polarLineInputs=inputs;
   const rows=[];
-  const add=(geometry,style,ref,packFeatureId=null)=>{
+  const add=(geometry,style,ref,packFeatureId=null,displayMinZoom=-Infinity)=>{
    if(!['LineString','MultiLineString'].includes(geometry?.type)||!style.color||!(style.alpha>0)||!(style.width>0))return;
    if(!overlayLinePackets.has(geometry)){
     const bounds=pickBounds(geometry);
@@ -339,7 +341,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     overlayLinePackets.set(geometry,bounds[1]<=-POLAR_LATITUDE||bounds[3]>=POLAR_LATITUDE?polarLinePacket(lines):null);
    }
    const packet=overlayLinePackets.get(geometry);
-   if(packet?.indices.length)rows.push({packet,geometry,ref,packFeatureId,color:rgba(style.color,style.alpha),width:style.width});
+   if(packet?.indices.length)rows.push({packet,geometry,ref,packFeatureId,displayMinZoom,color:rgba(style.color,style.alpha),width:style.width});
   };
   for(const row of sceneVectors){
    if(row.role==='graticule')continue;
@@ -348,11 +350,12 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   }
   if(state.layerVisibility.rivers!==false){
    const paint={color:ocean,alpha:1,width:riverWidth};
+   const visibleStageZooms=new Map(visibleStages);
    for(const feature of hydroFeatures){
     const {category,stage,logicalId,featureId,layerId}=feature.properties;
-    if(category!=='river'||!(zoom>=hydroMinZoomByStage.get(stage)))continue;
+    if(category!=='river'||!visibleStageZooms.has(stage))continue;
     if(!deps.physicalServices.isHydroFeatureVisible({...feature,id:logicalId,properties:{...feature.properties,pandolab_id:logicalId,layer_id:layerId}}))continue;
-    add(feature.geometry,paint,normalizeObjectRef({domain:'hydro',type:'river',id:String(logicalId)}),featureId??feature.id);
+    add(feature.geometry,paint,normalizeObjectRef({domain:'hydro',type:'river',id:String(logicalId)}),featureId??feature.id,visibleStageZooms.get(stage));
    }
    for(const feature of state.hydroEdits||emptyHydroEdits){
     if(feature.properties.category!=='river'||!deps.physicalServices.isHydroFeatureVisible(feature))continue;
@@ -814,7 +817,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  function labelZoomVisibility(){
   if(!loaded)return {country:false,places:false};
   const zoom=map.getZoom();
-  return {country:zoom>=MAPLIBRE_LABEL_MIN_ZOOM.country,places:zoom>=MAPLIBRE_LABEL_MIN_ZOOM.places};
+  return {country:isWithinDisplayZoom(zoom,MAPLIBRE_LABEL_MIN_ZOOM.country),places:isWithinDisplayZoom(zoom,MAPLIBRE_LABEL_MIN_ZOOM.places)};
  }
  let applyingCamera=false;
  function syncCameraFromState(view=state.view){
@@ -1008,17 +1011,22 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  async function setHydroManifest(manifest,url){
   if(!hydroDetailEnabled())return false;
   if(hydroManifest===manifest&&hydroPresentation){await hydroPresentation.refresh();return hydroDetailEnabled();}
-  const stages=mapLibreHydroStages(manifest.stages);
+  const stages=hydroDisplayStages(manifest.stages);
   hydroPresentation?.dispose();hydroPresentation=null;hydroLoader?.dispose();hydroLoader=null;cancelHydroStartup();
   hydroManifest=manifest;hydroAppliedSource=null;
   await initialize();
   if(hydroManifest!==manifest||!hydroDetailEnabled())return false;
   const minZoomByStage=new Map(stages.map(stage=>[stage.id,stage.minZoom]));
   hydroMinZoomByStage=minZoomByStage;
+  const lakeDisplayMinZoom=new Map(Object.entries(manifest.lakeDisplayMinZoom??{}));
+  for(const [id,zoom] of lakeDisplayMinZoom)
+   if(!/^\d+$/.test(id)||!HYDRO_DISPLAY_ZOOMS.includes(zoom))throw new RangeError('Invalid lake display zoom '+id);
   const displayFeatures=features=>features.flatMap(feature=>{
    const {stage,category}=feature.properties;
-   const viewerMinZoom=minZoomByStage.get(stage);
-   if(viewerMinZoom===undefined)throw new RangeError('Unknown hydro stage '+stage);
+   const transportZoom=minZoomByStage.get(stage);
+   if(transportZoom===undefined)throw new RangeError('Unknown hydro stage '+stage);
+   const viewerMinZoom=category==='lake'?(lakeDisplayMinZoom.get(String(feature.properties.__logicalFid))??transportZoom):transportZoom;
+   if(viewerMinZoom<transportZoom)throw new RangeError('Lake display zoom precedes its source stage');
    const geometry=category==='river'?clipMercatorLines(feature.geometry):feature.geometry;
    if(!geometry.coordinates.length)return [];
    return [{...feature,geometry,properties:{...feature.properties,viewerMinZoom}}];
@@ -1258,6 +1266,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(!loaded||temporalOverlay||initialZoomHidden)return [];
   const coordinate=projection.screenToGeo(point);
   if(!coordinate)return [];
+  const zoom=map.getZoom();
   if(Math.abs(coordinate[1])>=POLAR_LATITUDE){
    const refs=[];
    for(const feature of territorialPolarCandidates(coordinate)){
@@ -1271,19 +1280,20 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
      refs.push(normalizeObjectRef({domain:'hydro',type:feature.properties.category,id:String(feature.id)}));
    }
    for(const row of polarVisibleLines){
-    if(!row.ref||!deps.objectRefVisible(row.ref)||row.ref.domain==='hydro'&&(!includeHydro
+    if(!row.ref||!isWithinDisplayZoom(zoom,row.displayMinZoom)||!deps.objectRefVisible(row.ref)||row.ref.domain==='hydro'&&(!includeHydro
      ||row.packFeatureId!==null&&!hydroPresentation?.canPick(row.packFeatureId,row.ref.id)))continue;
     if(projectedLineDistance(row.geometry,point,vertex=>projection.projectVisibleCoordinate(vertex,{allowOutsideViewport:true}))<=Math.max(4,row.width/2))
      refs.push(row.ref);
    }
    return refs;
   }
-  const refs=new Map(),zoom=map.getZoom();
+  const refs=new Map();
   const layers=pickingLayers(zoom,includeHydro,includeLabels);
   if(!layers.length)return [];
   for(const feature of map.queryRenderedFeatures(point,{layers})){
    const p=feature.properties||{};if(p.displayRole==='country-border')continue;
-   if(feature.source==='hydro'&&(!(zoom>=p.viewerMinZoom)||!hydroPresentation?.canPick(p.featureId,p.logicalId)))continue;
+   if(feature.source==='hydro'&&(!isWithinDisplayZoom(zoom,p.viewerMinZoom)||!hydroPresentation?.canPick(p.featureId,p.logicalId)))continue;
+   if(feature.source==='viewer-labels'&&p.kind==='label'&&!isWithinDisplayZoom(zoom,p.viewerMinZoom))continue;
    let ref;
    if(p.objectKey)ref=objectKeyRef(p.objectKey);
    else if(p.logicalId&&p.category)ref=normalizeObjectRef({domain:'hydro',type:p.category,id:String(p.logicalId)});

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStages,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from '../../../src/rendering/maplibre-hydro-presentation.js';
+import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from '../../../src/rendering/maplibre-hydro-presentation.js';
+import {hydroDisplayStages,hydroLakeDisplayMinZoom} from '../../../src/map/map-display-zoom.js';
 
 test('optional water publication yields before aggregation and rejects a disposed result',async()=>{
  let release,entered=false,admitted=0,updated=0;
@@ -14,13 +15,15 @@ test('optional water publication yields before aggregation and rejects a dispose
 });
 
 test('hydro presentation groups selectable fragments and applies visibility thresholds',()=>{
- const stages=mapLibreHydroStages([6,6.7,7,7.5].map((minZoom,id)=>({id,minZoom})));
+ const stages=hydroDisplayStages([6,6.7,7,7.5].map((minZoom,id)=>({id,minZoom})));
  const fragment=(id,coordinates,stage=0)=>({type:'Feature',id:id+coordinates[0][0],geometry:{type:'LineString',coordinates},properties:{logicalId:id,category:'river',layerId:'rivers',stage}});
  const features=[fragment('a',[[0,0],[1,0]]),fragment('a',[[1,0],[2,0]]),fragment('b',[[2,0],[3,0]],3)];
  const prepared=prepareMapLibreHydroFeatures(features,feature=>feature);
  assert.deepEqual(prepared.map(feature=>[feature.id,feature.geometry.coordinates.length]),[['a',2],['b',1]]);
  assert.deepEqual(hiddenMapLibreHydroIds(features,feature=>feature.id==='b'),['a']);
  assert.deepEqual(stages.map(stage=>stage.minZoom),[2,3,4,5]);
+ for(const [type,attribute] of [['line','line-opacity'],['fill','fill-opacity']])
+  assert.deepEqual(mapLibreHydroStyle().layers.filter(layer=>layer.type===type).map(layer=>layer.paint[attribute][3]),stages.map(stage=>stage.minZoom));
 });
 
 test('hydro presentation applies layer filters and visibility to the existing source',()=>{
@@ -32,6 +35,15 @@ test('hydro presentation applies layer filters and visibility to the existing so
  assert.equal(calls.length,16,'Unchanged filters and visibility must not reload native tiles');
  assert.deepEqual(filters.get('rivers').at(-1),['!',['in',['get','logicalId'],['literal',['old-river']]]]);
  assert.equal(visibility.get('rivers'),'none');
+});
+
+test('lake display zoom weighs both surface area and effective width',()=>{
+ assert.equal(hydroLakeDisplayMinZoom(82078,53),2,'a broad large lake opens at the first stage');
+ assert.equal(hydroLakeDisplayMinZoom(19427,26),2,'a Great Lake remains visible at the first stage');
+ assert.equal(hydroLakeDisplayMinZoom(19427,8),4,'equal area does not put a long narrow lake at the same zoom');
+ assert.equal(hydroLakeDisplayMinZoom(485,10),4,'a medium lake waits despite sufficient width');
+ assert.equal(hydroLakeDisplayMinZoom(1247,5),5,'a narrow lake waits for the finest existing stage');
+ assert.equal(hydroLakeDisplayMinZoom(20,2),5,'small lakes retain their finest-stage display');
 });
 
 test('a superseded water request cannot replace the latest view',async()=>{

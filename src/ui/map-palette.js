@@ -13,7 +13,7 @@ export function resolveMapPalette({state}={}){
   borderAlpha:country.boundaryVisible?1:0,borderWidth:country.boundaryWidth,
   riverWidth:rivers.boundaryWidth,lakeBoundaryVisible:lakes.boundaryVisible,lakeBoundaryWidth:lakes.boundaryWidth,
   loadingSurface:Object.freeze({ocean:'#ffffff',land:'#f1f1f1'}),
-  labels:Object.freeze({text:'#1c2229',halo:'rgba(255,255,255,.94)',point:'#315e9d',selection:'#315e9d',marker:'filled'}),
+  labels:Object.freeze({text:'#1c2229',halo:'rgba(255,255,255,.94)',point:'#373b42',selection:'#315e9d'}),
  };
  const strokes=Object.fromEntries(['country','country-internal','river','hydro-boundary']
   .map(role=>[role,resolveMapStrokeStyle({theme:base},role)]));

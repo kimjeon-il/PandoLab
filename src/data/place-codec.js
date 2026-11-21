@@ -3,6 +3,11 @@ const { headerBytes: HEADER, recordBytes: STRIDE, magic: MAGIC, version: VERSION
   stringFields: STRING_FIELDS, stringOffsetBase: STRING_OFFSET_BASE,
   stringOffsetStride: STRING_OFFSET_STRIDE, maxStringBytes: MAX_STRING_BYTES } = PLACE_TILE_FORMAT;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
+const jsonFields = Object.freeze({
+  nameNativeExtrasText: 'nameNativeExtras', nameTimelineText: 'nameTimeline', capitalPeriodsText: 'capitalPeriods',
+});
+const fieldValue = (record, field) => Object.hasOwn(jsonFields, field)
+  ? JSON.stringify(record[jsonFields[field]]) : record[field];
 
 export function encodePlaceTile(records) {
   if (!Array.isArray(records) || records.length > PLACE_LIMITS.tileRecords) throw new RangeError('Place tile record budget exceeded');
@@ -10,8 +15,7 @@ export function encodePlaceTile(records) {
   const strings = new Map(); let poolBytes = 0;
   for (const record of normalized) {
     for (const field of STRING_FIELDS) {
-      const value = field === 'nameTimelineText' ? JSON.stringify(record.nameTimeline)
-        : field === 'nameNativeExtrasText' ? JSON.stringify(record.nameNativeExtras) : record[field];
+      const value = fieldValue(record, field);
       if (!strings.has(value)) { const bytes = encoder.encode(value); if (bytes.length > MAX_STRING_BYTES) throw new RangeError('Place string byte budget exceeded'); strings.set(value, { offset: poolBytes, bytes }); poolBytes += 4 + bytes.length; }
     }
   }
@@ -28,8 +32,7 @@ export function encodePlaceTile(records) {
     view.setFloat64(base + 16, record.population, true); view.setFloat32(base + 24, record.priority, true); view.setFloat32(base + 28, record.minZoom, true);
     view.setUint8(base + 32, PLACE_KINDS.indexOf(record.kind));
     STRING_FIELDS.forEach((field, j) => {
-      const value = field === 'nameTimelineText' ? JSON.stringify(record.nameTimeline)
-        : field === 'nameNativeExtrasText' ? JSON.stringify(record.nameNativeExtras) : record[field];
+      const value = fieldValue(record, field);
       view.setUint32(base + STRING_OFFSET_BASE + j * STRING_OFFSET_STRIDE, strings.get(value).offset, true);
     });
   });
@@ -56,9 +59,8 @@ export function decodePlaceTile(input) {
     if (!raw.kind) throw new TypeError('Invalid place kind');
     STRING_FIELDS.forEach((field, j) => { const offset = view.getUint32(base + STRING_OFFSET_BASE + j * STRING_OFFSET_STRIDE, true); if (!pool.has(offset)) throw new RangeError('Invalid place string offset'); raw[field] = pool.get(offset); });
     try {
-      raw.nameNativeExtras = JSON.parse(raw.nameNativeExtrasText);
-      raw.nameTimeline = JSON.parse(raw.nameTimelineText);
-    } catch { throw new TypeError('Invalid place name metadata payload'); }
+      for (const [field, property] of Object.entries(jsonFields)) raw[property] = JSON.parse(raw[field]);
+    } catch { throw new TypeError('Invalid place metadata payload'); }
     return normalizePlace(raw);
   });
 }

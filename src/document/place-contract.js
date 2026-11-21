@@ -9,12 +9,12 @@ export const PLACE_NAME_TRANSITION_LIMIT = 16;
 /** Canonical platform-neutral PLAC binary format; frozen bytes are tested separately. */
 export const PLACE_TILE_FORMAT = Object.freeze({
   magic: 0x43414c50,
-  version: 3,
+  version: 4,
   headerBytes: 32,
-  recordBytes: 72,
+  recordBytes: 76,
   stringOffsetBase: 36,
   stringOffsetStride: 4,
-  stringFields: Object.freeze(['sourceId', 'name', 'countryCode', 'source', 'featureCode', 'nameEn', 'nameNative', 'nameNativeExtrasText', 'nameTimelineText']),
+  stringFields: Object.freeze(['sourceId', 'name', 'countryCode', 'source', 'featureCode', 'nameEn', 'nameNative', 'nameNativeExtrasText', 'nameTimelineText', 'capitalPeriodsText']),
   maxStringBytes: 16 * 1024,
 });
 export function normalizePlaceLanguages(value) {
@@ -32,6 +32,7 @@ export const isBuiltinPlaceId = id => /^builtin:place:[a-z0-9-]+:.+$/u.test(Stri
 export const normalizePlaceQuery = value => String(value || '').normalize('NFKC').trim().toLocaleLowerCase('ko').replace(/\s+/gu, ' ');
 const EMPTY_TIMELINE = Object.freeze([]);
 const EMPTY_NATIVE_EXTRAS = Object.freeze([]);
+const EMPTY_CAPITAL_PERIODS = Object.freeze([]);
 
 function text(value, name, maximum, required = false) {
   const result = String(value ?? '').trim();
@@ -39,6 +40,25 @@ function text(value, name, maximum, required = false) {
   return result;
 }
 
+
+function isExactPlaceDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const parsed = new Date(value + 'T00:00:00Z');
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function normalizeCapitalPeriods(value) {
+  if (value === undefined || (Array.isArray(value) && value.length === 0)) return EMPTY_CAPITAL_PERIODS;
+  if (!Array.isArray(value) || value.length > 32) throw new TypeError('Invalid place capital periods');
+  return Object.freeze(value.map(period => {
+    const {countryId, fromDate, untilDateExclusive = null, source} = period ?? {};
+    if (typeof countryId !== 'string' || typeof source !== 'string' || !isExactPlaceDate(fromDate) || fromDate.startsWith('0000') ||
+        (untilDateExclusive !== null && (!isExactPlaceDate(untilDateExclusive) || untilDateExclusive <= fromDate)))
+      throw new TypeError('Invalid place capital period');
+    return Object.freeze({countryId:text(countryId, 'capital country ID', 128, true), fromDate, untilDateExclusive,
+      source:text(source, 'capital source', 512, true)});
+  }));
+}
 
 function nativeNameKey(value) {
   return value.normalize('NFKC').toLocaleLowerCase();
@@ -69,9 +89,7 @@ function normalizeNameTimeline(value) {
     const fromDate = entry.fromDate;
     const fromYear = entry.fromYear;
     if (hasDate) {
-      if (typeof fromDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(fromDate)) throw new TypeError('Invalid exact place name date');
-      const parsed = new Date(fromDate + 'T00:00:00Z');
-      if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== fromDate) throw new TypeError('Invalid exact place name date');
+      if (!isExactPlaceDate(fromDate)) throw new TypeError('Invalid exact place name date');
     } else if (!Number.isInteger(fromYear) || fromYear < 1 || fromYear > 9999) {
       throw new TypeError('Invalid year-only place name transition');
     }
@@ -107,6 +125,7 @@ export function normalizePlace(raw) {
     nameEn: text(raw.nameEn, 'nameEn', 256),
     nameNative, nameNativeExtras,
     nameTimeline: normalizeNameTimeline(raw.nameTimeline),
+    capitalPeriods: normalizeCapitalPeriods(raw.capitalPeriods),
     kind, coordinates: Object.freeze(coordinates),
     countryCode: text(raw.countryCode, 'countryCode', 8), population,
     priority: Math.fround(priority), minZoom: Math.fround(minZoom),

@@ -1131,6 +1131,44 @@ test('base rivers actually draw visible pixels after source admission',async({pa
  })).toBe(0);
 });
 
+test('lake pixels follow area and width thresholds on the published water source',async({page})=>{
+ await page.setViewportSize({width:1280,height:800});
+ await open(page);
+ const jump=async(center,zoom)=>{
+  await page.evaluate(({center,zoom})=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom}),{center,zoom});
+  await ready(page,'lake camera '+zoom);
+ };
+ const superior={id:'lakes_base:1159112991',point:[-87.7,47.7],minZoom:2};
+ const tahoe={id:'lakes_base:1159106907',point:[-120.02,39.09],minZoom:4};
+ const champlain={id:'lakes_base:1159106953',point:[-73.34,44.49],minZoom:5};
+ const sample=points=>page.evaluate(async points=>{
+   const map=window.__PANDOLAB_MAPLIBRE__;
+   const features=map.querySourceFeatures('hydro',{filter:['in',['get','logicalId'],['literal',points.map(row=>row.id)]]});
+   const color=Number.parseInt(map.getPaintProperty('lakes','fill-color').slice(1),16),expected=[color>>16&255,color>>8&255,color&255];
+   const ratio=map.getPixelRatio(),canvas=map.getCanvas();
+   return new Promise(resolve=>{
+    map.once('render',()=>{
+     const gl=canvas.getContext('webgl2'),pixels=new Uint8Array(5*5*4);
+     resolve(points.map(({id,point})=>{
+      const feature=features.find(row=>row.properties.logicalId===id);
+      const {x,y}=map.project(point);
+      gl.readPixels(Math.floor(x*ratio)-2,canvas.height-3-Math.floor(y*ratio),5,5,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+      const painted=Array.from({length:25},(_,index)=>index*4)
+       .some(offset=>expected.every((channel,index)=>Math.abs(channel-pixels[offset+index])<=5));
+      return {painted,minZoom:feature?.properties.viewerMinZoom,stage:feature?.properties.stage};
+     }));
+    });
+    map.triggerRepaint();
+   });
+ },points);
+ const overview=[superior,tahoe,champlain];
+ await jump([-100,44],2);
+ await expect.poll(()=>sample(overview),{timeout:20000})
+  .toEqual(overview.map(({minZoom})=>({painted:minZoom===2,minZoom,stage:0})));
+ await jump(tahoe.point,4);
+ await expect.poll(()=>sample([tahoe]),{timeout:20000}).toEqual([{painted:true,minZoom:4,stage:0}]);
+});
+
 test('native world fit contains the globe at desktop, narrow and high-resolution sizes',async({page})=>{
  await open(page);
  for(const viewport of [{width:1280,height:800},{width:390,height:844},{width:3840,height:2160}]){
@@ -1187,6 +1225,39 @@ for(const viewport of [{width:1280,height:800},{width:390,height:844}])test('nat
  await page.setViewportSize({width:viewport.width-20,height:viewport.height-20});await ready(page,'native resize');
  expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getZoom())).toBeCloseTo(3,6);
  expect((await read()).counts.slice(1)).toEqual([0,0]);
+});
+
+test('the city marker gains and loses its capital ring at the recorded dates',async({page})=>{
+ await page.addInitScript(()=>{
+  const handler=Object.getOwnPropertyDescriptor(Worker.prototype,'onmessage');
+  Object.defineProperty(Worker.prototype,'onmessage',{...handler,set(callback){
+   handler.set.call(this,typeof callback==='function'?function(event){
+    if(event.data?.operation==='place.viewport'){
+     const city=event.data.result?.records?.find(row=>row.sourceId==='2988507');
+     if(city)city.capitalPeriods=[{countryId:'historical-country:fixture',
+      fromDate:'2026-10-31',untilDateExclusive:'2026-11-30',source:'Browser test fixture'}];
+    }
+    return callback.call(this,event);
+   }:callback);
+  }});
+ });
+ await open(page);
+ await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[2.35,48.85],zoom:5.5}));
+ const read=()=>page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,dot='viewer-label-dot',ring='viewer-label-capital-ring';
+  const find=layer=>map.queryRenderedFeatures({layers:[layer]}).find(row=>String(row.id).includes('2988507'));
+  const city=find(dot);
+  return city?{id:city.id,coordinates:city.geometry.coordinates,rank:city.properties.rank,ring:!!find(ring),
+   minZoom:map.getLayer(dot).minzoom,ringMinZoom:map.getLayer(ring).minzoom,
+   dotRadius:map.getPaintProperty(dot,'circle-radius'),ringRadius:map.getPaintProperty(ring,'circle-radius')}:null;
+ });
+ await month(page,'2026-09');
+ await expect.poll(read).toMatchObject({ring:false,minZoom:3.5,ringMinZoom:3.5,dotRadius:2.5,ringRadius:4});
+ const ordinary=await read();
+ await month(page,'2026-10');
+ await expect.poll(read).toEqual({...ordinary,ring:true});
+ await month(page,'2026-11');
+ await expect.poll(read).toEqual(ordinary);
 });
 
 test('a delayed highlight keeps the previous outline and fill until both new features draw',async({page})=>{

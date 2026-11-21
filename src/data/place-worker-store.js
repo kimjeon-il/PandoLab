@@ -2,7 +2,8 @@ import { createHydroTileWindow, hydroTileSpecsForWindow } from "./hydro-tile-win
 import { decodePlaceTile } from "./place-codec.js";
 import { comparePlaces, normalizePlace, normalizePlaceQuery, selectedPlaceNames, PLACE_LIMITS } from "../document/place-contract.js";
 import { resolvePlaceLabelRows, placeLabelRowsAtMonth } from "../ui/place-name-display.js";
-import { automaticLabelSettings,coordinateInGeographicBounds } from "../rendering/label-layout.js";
+import { coordinateInGeographicBounds } from "../rendering/label-layout.js";
+import {isWithinDisplayZoom,placeDisplayMinZoom} from "../map/map-display-zoom.js";
 const noCancellation = Object.freeze({ throwIfCancelled() {} });
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
@@ -181,7 +182,7 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
         return rank ? normalizePlace({ ...record, population:rank.population,
           priority:rank.priority, minZoom:rank.minZoom }) : record;
       });
-      const decodedBytes=records.reduce((total,record) => total+512+Object.values(record).reduce((sum,value)=>sum+(typeof value === 'string' ? value.length*2 : 0),0)+record.nameNativeExtras.reduce((sum,name)=>sum+name.length*2,0)+JSON.stringify(record.nameTimeline).length*2,0);
+      const decodedBytes=records.reduce((total,record) => total+512+Object.values(record).reduce((sum,value)=>sum+(typeof value === 'string' ? value.length*2 : 0),0)+record.nameNativeExtras.reduce((sum,name)=>sum+name.length*2,0)+JSON.stringify(record.nameTimeline).length*2+JSON.stringify(record.capitalPeriods).length*2,0);
       context.throwIfCancelled(); return put(`tile:${key}`,records,decodedBytes);
     })();
     inflight.set(key,task);
@@ -202,19 +203,15 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
   }
   async function queryViewport(view, context=noCancellation) {
     metrics.queryCount++; context.throwIfCancelled();
-    const stages=manifest.stages.filter(stage => stage.minZoom <= Number(view.threshold || 0)).sort((a,b) => b.minZoom-a.minZoom);
+    const zoom=Number(view.threshold || 0);
+    const stages=manifest.stages.filter(stage => isWithinDisplayZoom(zoom,stage.minZoom)).sort((a,b) => b.minZoom-a.minZoom);
     let tileWindow=null, specs=[];
     for (const stage of stages) { tileWindow=createHydroTileWindow({ ...view, manifest: { stages: [stage] } }); specs=hydroTileSpecsForWindow(tileWindow); if (specs.length <= PLACE_LIMITS.queryTiles) break; }
     if (specs.length > PLACE_LIMITS.queryTiles) throw new RangeError('Place viewport tile budget exceeded');
     const rows=specs.map(spec => manifest.tiles[`${spec.stage}/${spec.x}-${spec.y}`]).filter(Boolean);
     const inViewport=viewportPredicate(view);
-    const {records}=await loadRows(rows,context,record => {
-      const ranked=record.source==='geonames' && record.kind==='city' &&
-        manifest.displayRanking?.entries?.[record.sourceId] !== undefined;
-      const minimumZoom=ranked ? record.minZoom
-        : Math.max(record.minZoom,automaticLabelSettings(record.kind).minZoom);
-      return minimumZoom <= Number(view.threshold || 0) && inViewport(record);
-    },PLACE_LIMITS.candidates);
+    const {records}=await loadRows(rows,context,record =>
+      isWithinDisplayZoom(zoom,placeDisplayMinZoom(record.minZoom))&&inViewport(record),PLACE_LIMITS.candidates);
     metrics.lastTileCount=rows.length; metrics.lastCandidateCount=records.length;
     return { signature: `${manifest.revision}:${tileWindow?.signature || 'empty'}`, records, tileCount: rows.length, cacheBytes: used, peakWorkingRecords:metrics.peakWorkingRecords };
   }

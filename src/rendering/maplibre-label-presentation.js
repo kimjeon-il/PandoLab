@@ -1,6 +1,10 @@
+import {temporalMonthEnd} from '../document/temporal.js';
+import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
+
 /** Ordinary geographic labels use MapLibre symbols, shaping and collision placement. */
-export const MAPLIBRE_LABEL_LAYERS=Object.freeze(['viewer-label-dot','viewer-label-text','viewer-label-country']);
-export const MAPLIBRE_LABEL_MIN_ZOOM=Object.freeze({country:3,places:3.5});
+const labelTextLayers=['viewer-label-text','viewer-label-country'];
+export const MAPLIBRE_LABEL_LAYERS=Object.freeze(['viewer-label-dot','viewer-label-capital-ring',...labelTextLayers]);
+export const MAPLIBRE_LABEL_MIN_ZOOM=Object.freeze({country:3,places:PLACE_DISPLAY_ZOOM_FLOOR});
 
 export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlagsReady=onChange,onError,onSourceError=onError}){
  const sourceId='viewer-labels';let signature='',failedKey='',pending=false,disposed=false,sequence=0,tail=Promise.resolve(),nextImageId=0;
@@ -96,15 +100,20 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
  function sync(layout){
   const map=renderer.map,state=labels.getState(),features=[];
   for(const entry of images.values())if(entry.ready&&!map.hasImage(entry.id))map.addImage(entry.id,entry.image,{pixelRatio:Math.max(.01,entry.image.height/12)});
-  const palette=labels.mapPalette?.().labels||{text:'#343840',halo:'#ffffff',point:'#c23934',selection:'#9d3a16',marker:'filled'};
+  const palette=labels.mapPalette?.().labels||{text:'#343840',halo:'#ffffff',point:'#373b42',selection:'#315e9d'};
+  const hasCapitalPeriods=layout.userLabels?.some(item=>item.capitalPeriods?.length);
+  const placeDate=hasCapitalPeriods&&state.timelineCursor?temporalMonthEnd(state.timelineCursor).canonical:null;
   const add=(item,domain,coordinate,rows,flag)=>{
    if(!coordinate)return;
    const ref=domain==='territorial'?labels.getTerritorialLabelRef(item.id):labels.normalizeObjectRef({domain:'label',type:item.kind||'label',id:item.id});
    if(!ref)return;
    const selected=labels.selectionHas?.(ref),image=images.get(imageKey(flag?.url)),priority=(domain==='territorial'?layout.territorialLabelPriorities:layout.userLabelPriorities)?.get(String(item.id))??(domain==='territorial'?100:item.priority||40);
+   const capital=domain==='label'&&placeDate!==null&&item.capitalPeriods?.some(({fromDate,untilDateExclusive})=>
+    fromDate<=placeDate&&(untilDateExclusive===null||placeDate<untilDateExclusive));
    features.push({type:'Feature',id:ref.key,geometry:{type:'Point',coordinates:coordinate},properties:{objectKey:ref.key,
     text:rows.map(row=>row.text).join('\n'),primary:rows[0]?.text||'',secondary:rows.slice(1).map(row=>row.text).join('\n'),kind:domain,rank:selected?-1e12:-priority,
-    selected:!!selected,icon:image?.ready&&map.hasImage(image.id)?image.id:'',iconScale:(flag?.height||12)/12,size:domain==='territorial'?13:12}});
+    selected:!!selected,capital:!!capital,icon:image?.ready&&map.hasImage(image.id)?image.id:'',iconScale:(flag?.height||12)/12,size:domain==='territorial'?13:12,
+    ...(domain==='label'?{viewerMinZoom:layout.userLabelMinZooms.get(String(item.id))}:{})}});
   };
   for(const item of layout.territorialLabels||[]){const settings=labels.automaticLabelSettings('country',labels.labelSettings(state,'territorial',labels.getTerritorialLabelRef(item.id).id));
    add(item,'territorial',settings.pinned&&settings.manualPosition?settings.manualPosition:labels.countryLabelAnchors().get(String(item.id)),layout.territorialLabelNames.get(String(item.id))===false?[]:layout.territorialLabelRows.get(String(item.id))||[],layout.territorialFlags.get(String(item.id)));}
@@ -124,15 +133,17 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    if(!map.getLayer(layer.id))map.addLayer({...layer,paint});
    else if(nextPaintKey!==paintKey)for(const [name,value]of Object.entries(paint))map.setPaintProperty(layer.id,name,value);
   };
-  applyPaint({id:'viewer-label-dot',type:'circle',source:sourceId,minzoom:MAPLIBRE_LABEL_MIN_ZOOM.places,filter:placeFilter,layout:{visibility:'none'}},{
-   'circle-stroke-width':1,
-   'circle-color':palette.marker==='outline'?'rgba(0,0,0,0)':palette.point,
-   'circle-stroke-color':palette.marker==='outline'?palette.point:palette.halo,
-   'circle-radius':['case',['get','selected'],5,palette.marker==='compact'?2.6:palette.marker==='outline'?4.5:4],
+  const marker={type:'circle',source:sourceId,minzoom:MAPLIBRE_LABEL_MIN_ZOOM.places,layout:{visibility:'none'}};
+  const pointColor=['case',['get','selected'],palette.selection,palette.point];
+  applyPaint({id:'viewer-label-dot',...marker,filter:placeFilter},{
+   'circle-stroke-width':.5,'circle-color':pointColor,'circle-stroke-color':palette.halo,'circle-radius':2.5,
+  });
+  applyPaint({id:'viewer-label-capital-ring',...marker,filter:['all',placeFilter,['==',['get','capital'],true]]},{
+   'circle-stroke-width':1,'circle-color':'rgba(0,0,0,0)','circle-stroke-color':pointColor,'circle-radius':4,
   });
   const textLayout={'text-field':['format',['get','primary'],{'font-scale':1},['case',['==',['get','secondary'],''],'',['concat','\n',['get','secondary']]],{'font-scale':.82}],'text-font':[font],'text-size':['get','size'],'text-variable-anchor':['left','right','top','bottom'],'text-radial-offset':.85,'text-letter-spacing':.015,'text-line-height':1.25,'text-justify':'auto','symbol-sort-key':['get','rank'],'text-max-width':12};
   // Selection is part of the label row, so tile reloads never replay a separate feature state.
-  for(const id of MAPLIBRE_LABEL_LAYERS.slice(1)){
+  for(const id of labelTextLayers){
    const country=id==='viewer-label-country';
    applyPaint({id,type:'symbol',source:sourceId,minzoom:MAPLIBRE_LABEL_MIN_ZOOM[country?'country':'places'],
     filter:country?['==',['get','kind'],'territorial']:placeFilter,

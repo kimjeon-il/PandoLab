@@ -5,6 +5,29 @@ import {encodePlaceTile} from '../../../src/data/place-codec.js';
 import {createPlaceWorkerStore} from '../../../src/data/place-worker-store.js';
 import {createHydroTileWindow,hydroTileSpecsForWindow} from '../../../src/data/hydro-tile-window.js';
 
+test('city tiles carry capital periods through viewport reads without changing rank or zoom',async()=>{
+ const capitalPeriods=[{countryId:'historical-country:fixture',fromDate:'1922-02-28',untilDateExclusive:'1922-04-01',source:'Fixture record'}];
+ const cities=[
+  {source:'fixture',sourceId:'ordinary',name:'Ordinary',kind:'city',coordinates:[0,0],priority:70,minZoom:1.25},
+  {source:'fixture',sourceId:'capital',name:'Capital',kind:'city',coordinates:[1,1],priority:70,minZoom:1.25,capitalPeriods},
+ ];
+ const bytes=new Uint8Array(encodePlaceTile(cities));
+ const row={shard:'cities',offset:0,length:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+ const store=createPlaceWorkerStore({manifest:{version:1,revision:'fixture',search:{},
+  stages:[{id:0,minZoom:0,columns:1,rows:1}],tiles:{'0/0-0':row},
+  shards:{cities:{url:'cities.bin',bytes:bytes.length}}},fetchBytes:async()=>bytes});
+ const {records}=await store.queryViewport({projection:'globe',threshold:4,bounds:[-5,-5,5,5]});
+ assert.deepEqual(records.map(({sourceId,capitalPeriods,priority,minZoom})=>({sourceId,capitalPeriods,priority,minZoom})),[
+  {sourceId:'capital',capitalPeriods,priority:70,minZoom:1.25},
+  {sourceId:'ordinary',capitalPeriods:[],priority:70,minZoom:1.25},
+ ]);
+ for(const threshold of [3.499999,3.5,3.500001]){
+  const {records:visible}=await store.queryViewport({projection:'globe',threshold,bounds:[-5,-5,5,5]});
+  assert.equal(visible.length,threshold<3.5?0:2);
+ }
+ assert.throws(()=>encodePlaceTile([{...cities[1],capitalPeriods:[{...capitalPeriods[0],fromDate:'1922-02-29'}]}]),/capital/i);
+});
+
 test('native camera bounds admit the centered city and reuse only overlapping place tiles',async()=>{
  const bytes=new Uint8Array(encodePlaceTile([
   {source:'fixture',sourceId:'center',name:'Centered city',kind:'capital',coordinates:[3.4,6.45],minZoom:1},

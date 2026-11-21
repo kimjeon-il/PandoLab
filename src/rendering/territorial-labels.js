@@ -1,5 +1,6 @@
 import { isMapVisualFrame } from "./map-visual-frame.js";
 import { coordinateInGeographicBounds,selectPlaceLabelCandidates } from "./label-layout.js";
+import {isWithinDisplayZoom,placeDisplayMinZoom} from "../map/map-display-zoom.js";
 
 import { createPlaceRuntime } from "../data/place-runtime.js";
 import {createVerifiedCoreWorker} from "../runtime/core-wasm-loader.js";
@@ -183,9 +184,9 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       // Validated places carry their continuous population/spatial rank from the
       // pinned viewport manifest. Never replace it with a feature-code priority.
       const builtinDisplay = isBuiltinPlaceId(label.id) ? label : null;
-      const minZoom = builtinDisplay ? Number(builtinDisplay.minZoom)
-        : Math.max(settings.minZoom, Number(label.minZoom || 0));
-      if (zoom < Number(minZoom ?? -Infinity) || zoom > Number(settings.maxZoom ?? Infinity)) continue;
+      const minZoom = placeDisplayMinZoom(builtinDisplay ? Number(builtinDisplay.minZoom)
+        : Math.max(settings.minZoom, Number(label.minZoom || 0)));
+      if (!isWithinDisplayZoom(zoom,minZoom,settings.maxZoom)) continue;
       const coordinate = settings.pinned && settings.manualPosition ? settings.manualPosition : label.coordinates;
       const viewportVisible=coordinateInGeographicBounds(coordinate,frameContext.viewState.geographicBounds);
       if(!Array.isArray(coordinate)||!Number.isFinite(coordinate[0])||!Number.isFinite(coordinate[1])||Math.abs(coordinate[1])>90)continue;
@@ -227,6 +228,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       userLabelRows: new Map(placedUserLabels.map(item => [String(item.source.id), item.rows])),
       territorialLabelPriorities:new Map(placedTerritorialLabels.map(item=>[String(item.source.id),item.priority])),
       userLabelPriorities:new Map(placedUserLabels.map(item=>[String(item.source.id),item.priority])),
+      userLabelMinZooms:new Map(placedUserLabels.map(item=>[String(item.source.id),item.minZoom])),
       candidateCount: candidates.length,
     };
   }

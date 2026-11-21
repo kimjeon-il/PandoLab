@@ -52,7 +52,7 @@ Viewer의 도시 점·지명 레이어는 MapLibre 줌 3.5부터 열리며, 개�
 
 ## 실행 계약과 검증
 
-[지명 계약](../../src/document/place-contract.js)이 `builtin:place:<source>:<sourceId>` ID와 현행 PLAC v3 필드를, [코덱](../../src/data/place-codec.js)이 바이너리 처리를 소유한다. 과거 PLAC·독립 앱 계약을 복제해 병렬 구현하지 않는다.
+[지명 계약](../../src/document/place-contract.js)이 `builtin:place:<source>:<sourceId>` ID와 현행 PLAC v4 필드를, [코덱](../../src/data/place-codec.js)이 바이너리 처리를 소유한다. 도시의 `capitalPeriods`에는 국가 ID, 시작일, 배타적 종료일과 출처를 기록한다. 확인된 월말 수도에 고리를 표시하며 도시 순위·배율에는 수도 표시를 반영하지 않는다. 과거 PLAC·독립 앱 계약을 복제해 병렬 구현하지 않는다.
 
 [Worker 저장소](../../src/data/place-worker-store.js)와 [런타임](../../src/data/place-runtime.js)의 조회·검색·불변 결과를 프로젝트 편집 상태나 DOM에 전체 적재하지 않는다. 새 요청이 이전 결과를 대체하는 취소 경계와 타일·검색 행 해시 검증을 유지한다. 승인된 타일·검색·매니페스트는 같은 승인 범위에서 생성한다.
 

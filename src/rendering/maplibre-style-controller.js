@@ -1,5 +1,5 @@
 import {MAPLIBRE_LABEL_LAYERS} from './maplibre-label-presentation.js';
-import {mapLibreHydroPaint} from './maplibre-hydro-presentation.js';
+import {mapLibreHydroLayer,mapLibreHydroPaint} from './maplibre-hydro-presentation.js';
 
 /** Apply MapLibre paint/layout changes without resetting style, sources or camera. */
 export function createMapLibreStyleController(map){
@@ -40,8 +40,8 @@ export function createMapLibreStyleController(map){
     changed=paint(layer.id,style.paint[name])||changed;
    if(style.territorialFillPaint&&/^territories-(fill|multiply)-/.test(layer.id)&&layer.type==='fill')
     changed=paint(layer.id,style.territorialFillPaint)||changed;
-   const hydro=layer.source==='hydro'&&/^(lakes|rivers)-(\d+)$/.exec(layer.id);
-   if(hydro)changed=paint(layer.id,mapLibreHydroPaint(style.paint[hydro[1]],layer.type,Number(hydro[2])))||changed;
+   const hydro=layer.source==='hydro'&&mapLibreHydroLayer(layer.id);
+   if(hydro&&layer.id!==hydro.baseId)changed=paint(layer.id,mapLibreHydroPaint(style.paint[hydro.baseId],layer.type,hydro.zoom))||changed;
   }
   if(updateVisibility)for(const [id,properties] of Object.entries(style.layout))
    changed=visibility(id,properties)||changed;

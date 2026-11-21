@@ -2,6 +2,8 @@ import {scoreHydroFeaturePolicies} from './hydro-connectivity-native.mjs';
 import {hydroGeometryBounds} from './hydro-encoding-native.mjs';
 import {normalizeHydronym} from './hydronym-normalize.mjs';
 import {pythonRound} from './hydro-numeric.mjs';
+import {measureHydroLakeDisplayZoom} from './hydro-lake-display.mjs';
+import {HYDRO_DISPLAY_ZOOMS} from '../../src/map/map-display-zoom.js';
 
 export async function buildHydroLakeFeatures({lakes,aliases,fidStart=0,logicalFidStart=0}={},options={}){
   options.signal?.throwIfAborted();if(!Array.isArray(lakes)||!aliases||typeof aliases!=='object'||Array.isArray(aliases)||
@@ -15,7 +17,9 @@ export async function buildHydroLakeFeatures({lakes,aliases,fidStart=0,logicalFi
   let fid=fidStart,logicalFid=logicalFidStart;const features=input.map((item,index)=>{const {row,properties}=item,
     sourceId=String(properties.source_id||row.id||item.index),awId=String(properties.pandolab_id||row.id||`lakes_base:${sourceId}`),
     name=normalizeHydronym(String(properties.name_ko||properties.name_en||properties.name||''),'lake',aliases),geometry=structuredClone(row.geometry);
-    return {metadata:{fid:fid++,logicalFid:logicalFid++,awId,layerId:'lakes_natural_earth',category:'lake',stage:policies[index].minZoomStage,
+    const displayMinZoom=measureHydroLakeDisplayZoom(geometry);
+    const stage=Math.min(policies[index].minZoomStage,HYDRO_DISPLAY_ZOOMS.indexOf(displayMinZoom));
+    return {displayMinZoom,metadata:{fid:fid++,logicalFid:logicalFid++,awId,layerId:'lakes_natural_earth',category:'lake',stage,
       name,sourceId,source:'Natural Earth 5.0.0 1:10m',width:1,bounds:hydroGeometryBounds(geometry).map(value=>pythonRound(value*1000000,0)),
       fragmentIndex:0,fragmentCount:1,flags:0},geometry,widths:null};});
   return {features,nextFid:fid,nextLogicalFid:logicalFid};
