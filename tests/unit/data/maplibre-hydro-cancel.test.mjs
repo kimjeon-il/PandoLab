@@ -72,6 +72,53 @@ test('an HTTP 200 fallback shares one verified body across shards despite a canc
  }finally{finish?.();await settled;}
 });
 
+test('later hydro ranges subscribe to an active whole body before issuing another request',async()=>{
+ const context=vm.createContext({AbortController,AbortSignal,DOMException,Response,Uint8Array});context.self=context;
+ vm.runInContext(await readFile(new URL('../../../src/rendering/workers/hydro-shard-store.js',import.meta.url),'utf8'),context);
+ const bytes=new Uint8Array([1,2,3,4,5,6]);
+ const started=[];
+ const finishes=[];
+ let verified=0;
+ const store=context.createHydroShardStore({openCache:async()=>null,resolveUrl:x=>x,gunzip:x=>x,digest:async()=>'ok',
+  fetchResponse:async(_url,{signal,headers})=>{
+   started.push({signal,range:headers.Range});
+   return {ok:true,status:200,headers:new Response().headers,body:{async cancel(){}},
+    arrayBuffer:()=>new Promise((resolve,reject)=>{
+     finishes.push(()=>resolve(bytes.buffer));
+     signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+    }),
+   };
+  },
+  onWholeBundle:async raw=>{assert.deepEqual(raw,bytes);verified++;},
+ });
+ const read=(id,containerOffset,offset,signal)=>store.read({id,url:'hydro.bin',offset:containerOffset,
+  fileBytes:6,bytes:id===1?4:2,sha256:'ok'},[{id,offset,length:2}],offset,offset+2,signal);
+ const initial=new AbortController(),next=new AbortController();
+ const first=read(1,0,0,initial.signal);
+ let nextSameShard,nextOtherShard;
+ try{
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(started.map(({range})=>range),['bytes=0-1']);
+  nextSameShard=read(1,0,2,next.signal);
+  nextOtherShard=read(2,4,0,next.signal);
+  const cancelled=assert.rejects(first,{name:'AbortError'});
+  queueMicrotask(()=>initial.abort());
+  await cancelled;
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(started.map(({range})=>range),['bytes=0-1']);
+  assert.equal(started[0].signal.aborted,false);
+  finishes[0]();
+  assert.deepEqual([...(await nextSameShard)[0][1]],[3,4]);
+  assert.deepEqual([...(await nextOtherShard)[0][1]],[5,6]);
+  assert.equal(verified,1);
+ }finally{
+  initial.abort();
+  next.abort();
+  finishes.forEach(finish=>finish());
+  await Promise.allSettled([first,nextSameShard,nextOtherShard]);
+ }
+});
+
 test('concurrent bad ranges share one verified shard recovery',async()=>{
  const context=vm.createContext({AbortController,AbortSignal,DOMException,Response,Uint8Array});context.self=context;
  vm.runInContext(await readFile(new URL('../../../src/rendering/workers/hydro-shard-store.js',import.meta.url),'utf8'),context);

@@ -2,6 +2,7 @@ import { isMapVisualFrame } from "./map-visual-frame.js";
 import { coordinateInGeographicBounds,selectPlaceLabelCandidates } from "./label-layout.js";
 
 import { createPlaceRuntime } from "../data/place-runtime.js";
+import {createVerifiedCoreWorker} from "../runtime/core-wasm-loader.js";
 import {projectResourceOverlay} from "../document/project-resource-overlay.js";
 import { isBuiltinPlaceId } from "../document/place-contract.js";
 import { mapPlaceLabelRowsAtMonth } from "../data/place-name-policy.js";
@@ -243,7 +244,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       admitReferences:refs=>dependencies.domains.projectDomain.admitSelectionCatalog('placeBuiltin',refs),
       manifestUrl: dependencies.platform.runtimeAssetUrl(placeManifestRef).href,
       urbanLifetimesUrl: dependencies.platform.runtimeAssetUrl(placeLifetimeRef).href,
-      createWorker: () => new Worker(dependencies.platform.runtimeAssetUrl('workers/place-worker.js'), { type: 'module', name: 'pandolab-places' }),
+      createWorker: () => createVerifiedCoreWorker(dependencies.platform.runtimeAssetUrl('workers/place-worker.js'), { type: 'module', name: 'pandolab-places' }),
       getProtectedIds: () => {
         const selection = dependencies.domains.selectionDomain.snapshot().selection;
         const refs = selection.items.filter(ref => ref.domain === 'label');

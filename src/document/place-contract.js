@@ -1,4 +1,3 @@
-import { sharedCalculationCore } from "./temporal.js";
 import { PLACE_LIMITS } from "./place-limits.js";
 export { PLACE_LIMITS } from "./place-limits.js";
 

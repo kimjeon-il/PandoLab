@@ -1,6 +1,5 @@
 import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
-import { geometryRevisionKey } from "../geometry/geometry-versions.js";
-import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
+import {admittedGeometryKey,geometryReferenceFor} from '../geometry/geometry-version-store.js';
 import {countryBoundaryOwner,matchesCountryGeometrySignature} from '../rendering/country-boundary-seed.js';
 /** CountryIndex: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
@@ -23,7 +22,6 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
   let labelFallbackQueue;
   let anchorPublicationScheduled = false;
   const countryLabelAnchorDependencies = new Map();
-  const anchorContentKeys = new WeakMap();
   const anchorsByGeometry = new Map();
   function connect(ports) {
     if (dependencies) throw new Error('country-index already connected');
@@ -217,7 +215,7 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
         id,
         version: countryLabelAnchorVersions.get(id) || 0,
         geometry: feature.geometry,
-        content: anchorContentKeys.get(feature.geometry),
+        content: geometryReferenceFor(feature.geometry) ? admittedGeometryKey(feature.geometry) : null,
       });
       if (items.length >= 4 || performance.now() - batchStartedAt >= 4) break;
     }
@@ -255,8 +253,7 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
       if (requested && !requested.has(id) && !requested.has(String(sources.labelRefs.get(id)?.id))) continue;
       const previous = countryLabelAnchorDependencies.get(id) || null;
       const ref=geometryReferenceFor(feature.geometry);
-      let content=ref?anchorContentKeys.get(feature.geometry):geometryRevisionKey(feature.geometry);
-      if(ref&&!content){content=JSON.stringify([ref.id,ref.version]);anchorContentKeys.set(feature.geometry,content);}
+      const content=admittedGeometryKey(feature.geometry);
       const next = { source: sourceKey, content,
         preparation: resourceKey(['anchor-v1']), context: null, presentation: 'anchor' };
       const change = resourceUpdate(previous, next);

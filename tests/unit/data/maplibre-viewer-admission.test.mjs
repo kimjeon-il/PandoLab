@@ -520,18 +520,31 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    if(!optionalStrokeIndependent)throw Error('Optional hydro stroke preparation blocked the required frame');
    releaseOptional();await settle();renderer.setSceneDomains(new Map());await settle();
    visible=true;
-   const polarLine={type:'LineString',coordinates:[[0,84],[0,88],[5,88]]};
+   const polarLine={type:'LineString',coordinates:[[5,84],[5,88],[10,88]]};
    renderer.map.jumpTo({center:[0,87],zoom:3});
    renderer.setSceneDomains(new Map([['polar-test',{polygons:[],strokes:[{key:'polar-case',
     objectKey:'generic:feature:polar-case',geometryRevision:'polar-line-v1',
     geometry:polarLine,order:300,style:{color:'#ff0044',width:4,alpha:1}}]}]]));
    await settle();
-   point=renderer.projection.projectCoordinate([0,86.5]);
+   point=renderer.projection.projectCoordinate([5,86.5]);
    const polarPixel=await sample();
    if(polarPixel[0]<245||polarPixel[1]>15||!renderer.queryObjectRefs(point).some(ref=>ref.key==='generic:feature:polar-case'))
     throw new Error('A line crossing the Mercator edge did not remain visible and pickable in the cap: '+JSON.stringify({
      polarPixel,coordinate:renderer.projection.screenToGeo(point),vertices:polarLine.coordinates.map(renderer.projection.projectVisibleCoordinate),hits:renderer.queryObjectRefs(point),
     }));
+   const drawOrder=[];
+   const glPrototype=globalThis.WebGL2RenderingContext.prototype;
+   const uniform4fv=glPrototype.uniform4fv;
+   glPrototype.uniform4fv=function(location,value,...rest){
+    if(value?.length===4){
+     if(value[0]===1&&value[1]===0&&Math.abs(value[2]-68/255)<1e-6&&value[3]===1)drawOrder.push('overlay');
+     if(Math.abs(value[0]-119/255)<1e-6&&value[0]===value[1]&&value[0]===value[2]&&Math.abs(value[3]-.15)<1e-6)drawOrder.push('grid');
+    }
+    return uniform4fv.call(this,location,value,...rest);
+   };
+   try{await new Promise(resolve=>{renderer.map.once('render',resolve);renderer.map.triggerRepaint();});}
+   finally{glPrototype.uniform4fv=uniform4fv;}
+   if(drawOrder.join()!=='overlay,grid')throw new Error('Unexpected polar stroke order: '+drawOrder);
    renderer.setSceneDomains(new Map());
    renderer.map.jumpTo({center:[26,0],zoom:1});
    await settle();

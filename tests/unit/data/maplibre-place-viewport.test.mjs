@@ -68,3 +68,40 @@ test('parallel place tiles share whole shards and request distinct ranges indepe
   }else assert.equal(requests,1);
  });
 });
+
+test('slow place Worker startup leaves a fresh query budget for the latest viewport', async t => {
+ const {createPlaceRuntime}=await import('../../../src/data/place-runtime.js');
+ t.mock.timers.enable({apis:['setTimeout']});
+ const requests=[],errors=[];
+ const worker={postMessage(message){requests.push(message);},terminate(){}};
+ const runtime=createPlaceRuntime({manifestUrl:'https://fixture.test/places.json',
+  urbanLifetimes:{schema:'pando-place-urban-lifetimes-v1',schemaVersion:1,sourceReviewRevision:'a'.repeat(40),entries:[]},
+  createWorker:()=>worker,admitReferences:async()=>{},onError:error=>errors.push(error)});
+ const drain=()=>new Promise(resolve=>setImmediate(resolve));
+ const reply=(request,result)=>worker.onmessage({data:{...request,type:'result',ok:true,result}});
+ try {
+  const first=runtime.prepare({bounds:[0,0,1,1]});
+  await drain();
+  assert.deepEqual(requests.map(message=>message.operation),['place.prepare']);
+  t.mock.timers.tick(16_000);
+  await drain();
+  assert.deepEqual(errors,[]);
+  runtime.resetProject();
+  const latestView={bounds:[2,2,3,3]};
+  const latest=runtime.prepare(latestView);
+  await drain();
+  assert.equal(requests.length,1,'a newer project can still use the immutable startup result');
+  reply(requests[0],null);
+  await drain();
+  assert.deepEqual(requests.map(message=>message.operation),['place.prepare','place.viewport']);
+  assert.deepEqual(requests[1].payload.view,latestView);
+  t.mock.timers.tick(14_000);
+  reply(requests[1],{records:[],signature:'latest'});
+  assert.equal(await first,false);
+  assert.equal(await latest,true);
+  assert.equal(runtime.snapshot().signature,'latest');
+  assert.deepEqual(errors,[]);
+ } finally {
+  runtime.dispose();
+ }
+});

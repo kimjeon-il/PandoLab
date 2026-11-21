@@ -16,7 +16,7 @@ const layerId = (slot, id) => slot ? id + '-standby' : id;
 const sourceId = slot => slot ? 'interaction-standby' : 'interaction';
 const empty = () => collection([]);
 
-export function createMapLibreHighlight({map, write, preparePolar, clearPolar, isTemporal, onShown, onError, onStructure=()=>{}}) {
+export function createMapLibreHighlight({map, write, preparePolar, clearPolar, onShown, onError, onRestoreSelection, onStructure=()=>{}}) {
   let active = null;
   let pending = null;
   let disposed = false;
@@ -82,8 +82,13 @@ export function createMapLibreHighlight({map, write, preparePolar, clearPolar, i
     }
     pending = null;
     if (request.slot !== active) setUsed(request.slot,false);
-    if (isTemporal() && request.selectionKey !== drawn?.selectionKey) reset();
+    const selectionChanged = request.selectionKey !== (applied?.selectionKey ?? '[]');
+    const staleHover = applied && applied.key !== applied.selectionKey;
+    if (selectionChanged || staleHover) reset();
     onError(error);
+    if (staleHover && !selectionChanged && request.selectionKey !== '[]') {
+      onRestoreSelection(request.selectionKey);
+    }
   }
 
   function stage(request) {

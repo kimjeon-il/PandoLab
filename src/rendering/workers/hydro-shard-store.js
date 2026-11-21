@@ -123,6 +123,9 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
   }
   async function readResponse(spec, start, end, signal, {recovery = false} = {}) {
     signal.throwIfAborted();
+    // The server may have started a whole body while this job waited for a lane.
+    const full = existing(fullReads, fullKey(spec));
+    if (full) return {status: 200, contentRange: null, ok: true, raw: await subscribe(full, signal)};
     const controller = new AbortController();
     const started = now();
     if (recovery) stats.recoveryRequests++;
@@ -244,6 +247,14 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
       finally { stats.gunzipMs += now() - started; }
     });
   }
+  async function verifiedFullRange(spec, raw, signal, diagnostic) {
+    const contained = inContainer(spec);
+    const bytes = contained ? containerBytes(spec, raw, diagnostic) : raw;
+    if (contained) await validate(spec, bytes, diagnostic);
+    signal.throwIfAborted();
+    await save(spec, bytes);
+    return {bytes, base: 0, source: 'network-full', diagnostic};
+  }
   async function loadRange(spec, start, end, signal) {
     signal.throwIfAborted();
     const hit = await cached(spec);
@@ -273,11 +284,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
         return {bytes: raw, base: start, source: 'network-range', diagnostic};
       }
       if (status !== 200) throw invalid('수계 응답 상태가 올바르지 않습니다.', diagnostic);
-      const bytes = contained ? containerBytes(spec, raw, diagnostic) : raw;
-      if (contained) await validate(spec, bytes, diagnostic);
-      signal.throwIfAborted();
-      await save(spec, bytes);
-      return {bytes, base: 0, source: 'network-full', diagnostic};
+      return verifiedFullRange(spec, raw, signal, diagnostic);
     });
   }
   return {
@@ -285,8 +292,14 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     async read(spec, rows, start, end, viewSignal = null) {
       const signal = deadline(viewSignal), key = cacheKey(spec);
       try {
-        const result = await share(rangeReads, JSON.stringify([key,start,end]), signal,
-          sharedSignal => loadRange(spec, start, end, sharedSignal));
+        // Subscribe before any cache await so a new viewport can keep a whole
+        // body alive when the previous viewport is cancelled in the same turn.
+        const full = existing(fullReads, fullKey(spec));
+        const result = full && !memory.has(spec.id)
+          ? await verifiedFullRange(spec, await subscribe(full, signal), signal,
+            {shardId: spec.id, source: 'network-full', status: 200})
+          : await share(rangeReads, JSON.stringify([key,start,end]), signal,
+            sharedSignal => loadRange(spec, start, end, sharedSignal));
         signal.throwIfAborted();
         return decode(spec, rows, result.bytes, result.base, result.source, result.diagnostic);
       } catch (error) {

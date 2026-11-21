@@ -278,8 +278,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(before?layers[index+1]!==before:index!==layers.length-1)map.moveLayer(polarLayer.id,before);
  }
  function ensurePolar(){
-  polarLayer ||=createPolarLayer({map,prepare:async (geometry,{fullExtent}={})=>(await prepareRenderGeometry([
-   {kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry,polarCapOnly:!fullExtent},
+  polarLayer ||=createPolarLayer({map,prepare:async geometry=>(await prepareRenderGeometry([
+   {kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry,polarCapOnly:true},
   ],generation)).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:cause=>{if(cause.name==='AbortError'){polarInputs=[];invalidate('polar-cancelled');}else failMapPreparation(cause);}});
   polarLayer.ensure();
   return polarLayer;
@@ -288,7 +288,13 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(!styleReady())return;
   ensurePolar();
   const style=currentMapStyle(),items=[],keys=[];
-  const add=(geometry,color,alpha=1,multiply=false,fullExtent=false,loadingRole)=>{if(!color||!(alpha>0))return;const shape=fullExtent?geometry:polarGeometry(geometry);if(!shape)return;items.push({geometry:shape,color:rgba(color,alpha),multiply,fullExtent,loadingRole});keys.push([geometryKey(geometry),color,alpha,multiply,fullExtent,loadingRole]);};
+  const add=(geometry,color,alpha=1,multiply=false,loadingRole)=>{
+   if(!color||!(alpha>0))return;
+   const shape=polarGeometry(geometry);
+   if(!shape)return;
+   items.push({geometry:shape,color:rgba(color,alpha),multiply,loadingRole});
+   keys.push([geometryKey(geometry),color,alpha,multiply,loadingRole]);
+  };
   const context=deps.physicalResources.physicalLand;
   if(!context||!deps.physicalResources.physicalContextState.ready)return;
   const colored=colorsEnabled(),land=style.paint['physical-land-fill']['fill-color'];
@@ -296,7 +302,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    land,style.paint.ocean['background-color'],state.backgroundSettings?.graticule,state.resourceCapabilities?.graticule];
   if(inputs.length===polarInputs.length&&inputs.every((value,index)=>value===polarInputs[index]))return;
   polarInputs=inputs;
-  add(context.geometry,style.paint['physical-land-fill']['fill-color'],1,false,false,'land');
+  add(context.geometry,style.paint['physical-land-fill']['fill-color'],1,false,'land');
   for(const f of countryRows.values())add(f.geometry,colored?f.properties.color:land,colored?f.properties.displayAlpha:1,colored&&f.properties.blendMode==='multiply');
   if(context.water)add(context.water,style.paint.ocean['background-color']);
   if(countryKey)for(const {key,paths,feature:{properties}} of countryBoundaryGeometry.values()){
@@ -305,7 +311,10 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    items.push({packet:paths.polar,color:rgba(borderColor,borderAlpha),width:borderWidth});
    keys.push([key,borderColor,borderAlpha,borderWidth]);
   }
-  if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5});keys.push('grid');}
+  if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){
+   items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5,loadingRole:'grid'});
+   keys.push('grid');
+  }
   polarLayer.update(JSON.stringify([generation,keys,style.paint.ocean]),items,rgba(style.paint.ocean['background-color']));
   positionPolarLayer();
  }
@@ -1143,15 +1152,19 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  }
  function setSelection(snapshot){
   selectionSnapshot=snapshot;
+  submitSelection(snapshot);
+ }
+ function submitSelection(snapshot,selectionOnly=false){
   if(!styleReady()){pendingSelection=true;return;}
   pendingSelection=false;
   const polarOwner=ensurePolar();
-  highlight ||=createMapLibreHighlight({map,write:setData,isTemporal:presentation.temporalPending,onStructure:orderSceneLayers,
+  highlight ||=createMapLibreHighlight({map,write:setData,onStructure:orderSceneLayers,
    preparePolar:items=>polarOwner.prepareHighlights(items),clearPolar:()=>polarOwner.clearHighlights(),
+   onRestoreSelection:()=>submitSelection(selectionSnapshot,true),
    onShown:result=>{metrics.record('highlight.prepare-to-render',result.shownAt-result.startedAt);invalidate('highlight-shown');},
    onError:cause=>{if(cause?.name!=='AbortError')deps.feedback.reportOperationError(cause,'지도 강조 표시를 준비하지 못했습니다.','PL-MAPLIBRE-HIGHLIGHT-001');invalidate('highlight-failed');}});
   const selected=snapshot.selection?.items||snapshot.selection?.refs||[];
-  const hoverRef=temporalFrameHeld&&presentation.temporalPending()?null:snapshot.hover;
+  const hoverRef=selectionOnly||temporalFrameHeld&&presentation.temporalPending()?null:snapshot.hover;
   const primary=snapshot.selection?.primaryKey,hover=hoverRef?.key;
   const refs=[...selected];
   if(hoverRef&&!selected.some(ref=>ref.key===hover))refs.push(hoverRef);

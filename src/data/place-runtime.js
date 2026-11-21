@@ -47,9 +47,38 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
     publication=operation.catch(()=>{});
     return operation;
   }
-  const client=rpc || createWorkerRpcClient({ createWorker, defaultTimeoutMs: 15_000 });
+  // Worker startup includes module loading, Core instantiation and the pinned
+  // manifest. Share that work across view changes and time actual queries separately.
+  let workerReady=null;
+  const createClient=()=>createWorkerRpcClient({createWorker,defaultTimeoutMs:15_000,
+    onCrash:()=>{workerReady=null;}});
+  let client=rpc||createClient();
+  function prepareWorker(){
+    if(rpc)return null;
+    if(!workerReady){
+      const startingClient=client;
+      workerReady=startingClient.request('place.prepare',{manifestUrl},{timeoutMs:60_000}).catch(error=>{
+        if(!closed&&client===startingClient){
+          workerReady=null;
+          // A module-load failure can be cached by this Worker for its lifetime.
+          startingClient.stop();
+          client=createClient();
+        }
+        throw error;
+      });
+    }
+    return workerReady;
+  }
   const scheduler=createLatestWorkerJobScheduler({
-    execute: entry => client.request(entry.jobKey === 'viewport' ? 'place.viewport' : 'place.search', { ...entry.payload, manifestUrl }, { signal: entry.metadata.controller.signal }).then(message => message.result),
+    async execute(entry){
+      const signal=entry.metadata.controller.signal;
+      signal.throwIfAborted();
+      await prepareWorker();
+      signal.throwIfAborted();
+      const response=await client.request(entry.jobKey==='viewport'?'place.viewport':'place.search',
+        {...entry.payload,manifestUrl},{signal});
+      return response.result;
+    },
     cancelRunning: entry => entry.metadata.controller.abort(),
     isCurrent: entry => !closed && (entry.jobKey !== 'viewport' || entry.targetRevision === revision),
   });

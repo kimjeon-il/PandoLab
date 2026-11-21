@@ -20,6 +20,51 @@ test('matching baked anchors avoid browser geometry work but changed shapes stil
  }finally{index.resetCountryLabelAnchorRuntime();globalThis.document=previous.document;globalThis.Worker=previous.Worker;}
 });
 
+test('computed anchors follow verified geometry content across documents',async()=>{
+ const previous={document:globalThis.document,Worker:globalThis.Worker};
+ globalThis.document={hidden:false};
+ const requests=[];
+ let worker,generation=1;
+ globalThis.Worker=class{
+  constructor(){worker=this;}
+  postMessage(request){requests.push(request);}
+  terminate(){}
+ };
+ const ref={id:'geometry:A',version:1};
+ const geometry=longitude=>createGeometryVersionStore([{...ref,geojson:{
+  type:'Polygon',coordinates:[[[longitude,0],[longitude+1,0],[longitude,1],[longitude,0]]],
+ }}]).get(ref);
+ const feature={id:'A',geometry:geometry(0)};
+ const index=createCountryIndex();
+ index.connect({
+  projectState:{state:{countryVisualPhase:'canonical'},mapWorkScheduler:{cancel(){},scheduleIdle(){}}},
+  countries:{builtinTerritorialScene:()=>({labelById:new Map([['A',feature]])}),territorialLabelFeatureById:()=>feature},
+  objectDisplay:{invalidateObjectPresentation(){}},
+  platform:{runtimeAssetUrl:()=>''},
+  domains:{projectDomain:{getGeneration:()=>generation},renderingDomain:{invalidateLabels(){}}},
+ });
+ index.initializeCountryLandRevision();index.initializeCountryLabelAnchorWorker();index.initializeLabelFallbackQueue();
+ const schedule=async()=>{index.scheduleCountryLabelAnchors(null,0);await new Promise(resolve=>setTimeout(resolve,10));};
+ const receive=(request,anchor)=>worker.onmessage({data:{type:'anchors',requestId:request.requestId,
+  results:[{id:'A',version:request.items[0].version,anchor}]}});
+ try{
+  await schedule();
+  receive(requests[0],[.2,.2]);
+  assert.deepEqual(index.countryLabelAnchors.get('A'),[.2,.2]);
+  index.resetCountryLabelAnchorRuntime();generation++;
+  feature.geometry=geometry(0);
+  await schedule();
+  assert.equal(requests.length,1,'identical content can reuse the computed anchor across documents');
+  assert.deepEqual(index.countryLabelAnchors.get('A'),[.2,.2]);
+  index.resetCountryLabelAnchorRuntime();generation++;
+  feature.geometry=geometry(30);
+  await schedule();
+  assert.equal(requests.length,2,'same ID and version with different content needs a new anchor');
+  receive(requests[1],[30.2,.2]);
+  assert.deepEqual(index.countryLabelAnchors.get('A'),[30.2,.2]);
+ }finally{index.resetCountryLabelAnchorRuntime();globalThis.document=previous.document;globalThis.Worker=previous.Worker;}
+});
+
 test('anchor cloning yields to dated frames and retries after an obsolete document response',async()=>{
  const previous={document:globalThis.document,Worker:globalThis.Worker};globalThis.document={hidden:false};
  const requests=[],scheduled=[];let worker,generation=1,temporalPending=true,publications=0;

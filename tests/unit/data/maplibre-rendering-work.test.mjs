@@ -4,17 +4,17 @@ import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-ren
 import {createMapLibreHighlight} from '../../../src/rendering/maplibre-highlight.js';
 
 test('highlight preserves the complete previous frame until native and polar work are both ready', async () => {
- const sources=new Map(),layers=new Map(),shown=[];
+ const sources=new Map(),layers=new Map(),shown=[],errors=[],restored=[];
  const map={style:{},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
   addSource:(id,source)=>sources.set(id,source),addLayer:layer=>layers.set(layer.id,layer),
   setPaintProperty:(id,key,value)=>{layers.get(id).paint[key]=value;},
   setLayoutProperty:(id,key,value)=>{layers.get(id).layout[key]=value;},
   isSourceLoaded:id=>!!sources.get(id)?.ready,triggerRepaint(){}};
- let deferredNative,deferredPolar,polar=null,block=false,failedWrite=false,writes=0;
+ let deferredNative,deferredPolar,polar=null,block=false,failedWrites=0,writes=0;
  const owner=createMapLibreHighlight({map,
   write:async(id,data)=>{
    writes++;
-   if(failedWrite){failedWrite=false;throw Error('transient source failure');}
+   if(failedWrites>0){failedWrites--;throw Error('source write failure');}
    if(block)await new Promise(resolve=>{deferredNative=resolve;});
    Object.assign(sources.get(id),{ready:true,data});return true;
   },
@@ -22,7 +22,8 @@ test('highlight preserves the complete previous frame until native and polar wor
    if(block)await new Promise(resolve=>{deferredPolar=resolve;});
    return ()=>{polar=items[0];return true;};
   },
-  clearPolar:()=>{polar=null;},isTemporal:()=>false,onShown:value=>shown.push(value),onError:assert.fail});
+  clearPolar:()=>{polar=null;},onShown:value=>shown.push(value),onError:error=>errors.push(error.message),
+  onRestoreSelection:key=>{restored.push(key);submit(key);}});
  const feature=(key,type)=>({type:'Feature',geometry:{type,coordinates:[]},properties:{objectKey:key}});
  const submit=key=>owner.submit(key,[feature(key,'Polygon'),feature(key,'LineString')],[key],key);
  const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -39,7 +40,7 @@ test('highlight preserves the complete previous frame until native and polar wor
   assert.equal(layers.get('interaction-fill-standby').paint['fill-layer-opacity'],1);
   assert.equal(layers.get('interaction-line-standby').paint['line-layer-opacity'],1);
   assert.equal(layers.get('interaction-fill').layout.visibility,'none');
-  block=false;failedWrite=true;submit('C');await tick();draw();
+  block=false;failedWrites=1;submit('C');await tick();draw();
   assert.equal(shown.at(-1).key,'B');
   await new Promise(resolve=>setTimeout(resolve,160));draw();
   assert.equal(polar,'C');assert.equal(shown.at(-1).key,'C');
@@ -49,6 +50,36 @@ test('highlight preserves the complete previous frame until native and polar wor
   assert.equal(polar,'D');
   assert.equal(shown.at(-1).sourceId,shown.at(-2).sourceId);
   assert.equal(writes,beforePolarOnly,'A polar-only change must not retile unchanged native geometry');
+  assert.deepEqual(errors,[],'A recovered attempt must not report a terminal failure');
+  failedWrites=2;submit('F');await tick();draw();
+  assert.equal(polar,'D','Keep the old complete frame while the new selection can still recover');
+  await new Promise(resolve=>setTimeout(resolve,160));draw();
+  assert.deepEqual(errors,['source write failure']);
+  assert.equal(owner.stats().pending,false);
+  assert.equal(owner.stats().sourceId,null);
+  assert.equal(polar,null,'Do not leave an obsolete selection highlighted after both attempts failed');
+  assert.ok([...layers.values()].every(layer=>layer.layout.visibility==='none'));
+  submit('F');await tick();draw();
+  assert.equal(shown.at(-1).key,'F','The same selection can be submitted again after failure');
+  assert.equal(polar,'F');
+  const submitHover=(key,selectionKey='[]')=>owner.submit(key,[feature(key,'Polygon'),feature(key,'LineString')],[key],selectionKey);
+  const failBoth=async submitRequest=>{
+   failedWrites=2;submitRequest();await new Promise(resolve=>setTimeout(resolve,160));draw();
+  };
+  submitHover('F+hover-A','F');await tick();draw();
+  await failBoth(()=>submitHover('F+hover-B','F'));
+  assert.deepEqual(restored,['F'],'Recover the confirmed selection without the stale hover');
+  assert.equal(polar,'F');
+  assert.equal(shown.at(-1).key,'F');
+  const selectionSource=owner.stats().sourceId;
+  await failBoth(()=>submitHover('F+hover-B','F'));
+  assert.equal(owner.stats().sourceId,selectionSource,'A failed hover must keep an already clean selection');
+  assert.deepEqual(restored,['F']);
+  submitHover('hover-A');await tick();draw();
+  await failBoth(()=>submitHover('hover-B'));
+  assert.equal(owner.stats().sourceId,null,'Clear a superseded hover when there is no confirmed selection');
+  assert.equal(polar,null);
+  assert.deepEqual(restored,['F']);
   owner.reset();
   owner.submit('[]',[],[],'[]','[]');
   assert.equal(owner.selectionPending(),false,'A fresh date with no confirmed selection must not wait for empty highlight tiles');

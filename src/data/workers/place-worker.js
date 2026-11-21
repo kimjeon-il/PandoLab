@@ -25,11 +25,14 @@ async function getStore(url,context) {
   if (!loading || manifestUrl !== url) {
     manifestUrl=url;
     loading=(async () => {
-      const {runtimeFetch,externalRuntimeData}=await loadMetadata();
-      const { createPlaceWorkerStore, readPlaceResponse }=await import(storeModuleUrl.href);
       const requestUrl=new URL(url);
       requestUrl.searchParams.set('v',revision);
-      const response=await runtimeFetch(requestUrl, {signal:context.signal});
+      const metadata=loadMetadata();
+      const [{createPlaceWorkerStore,readPlaceResponse},{runtimeFetch,externalRuntimeData},response]=await Promise.all([
+        import(storeModuleUrl.href),
+        metadata,
+        metadata.then(({runtimeFetch})=>runtimeFetch(requestUrl,{signal:context.signal})),
+      ]);
       if (!response.ok) throw new Error(`Place manifest HTTP ${response.status}`);
       const bytes=await readPlaceResponse(response,8*1024*1024);
       const fetchBytes=externalRuntimeData ? async (spec,{signal}={}) => {
@@ -49,6 +52,10 @@ async function getStore(url,context) {
   }
 }
 self.PandoLabWorkerRpc.install({ handlers: {
+  'place.prepare': async (payload,context) => {
+    await getStore(payload.manifestUrl,context);
+    return null;
+  },
   'place.viewport': async (payload,context) => (await getStore(payload.manifestUrl,context)).queryViewport(payload.view,context),
   'place.search': async (payload,context) => (await getStore(payload.manifestUrl,context)).search(payload.query,context,payload.presentation),
 } });

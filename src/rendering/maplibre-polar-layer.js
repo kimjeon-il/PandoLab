@@ -38,15 +38,14 @@ export function polarGeometry(geometry){
  const selected=polygons.filter(poly=>poly.some(ring=>ring.some(point=>Math.abs(point[1])>=POLAR_LATITUDE)));
  const result=selected.length?{type:'MultiPolygon',coordinates:selected}:null;polarShapes.set(geometry,result);return result;
 }
-export function polarLinePacket(lines,{fullExtent=false}={}){
+export function polarLinePacket(lines){
  const values=[],indices=[],ranges=[];
- const bands=fullExtent?[[-90,90,BOTH_CAPS]]:latitudeBands;
- for(const [south,north,cap] of bands){
+ for(const [south,north,cap] of latitudeBands){
   const offset=indices.length;
   for(const line of lines)for(let i=1;i<line.length;i++){
    const a=line[i-1],b=line[i];
-   if(!fullExtent&&(cap===SOUTH_CAP?Math.min(a[1],b[1])>=north:Math.max(a[1],b[1])<=south))continue;
-   const section=fullExtent?[a,b]:cutLatitude(a,b,south,north);
+   if(cap===SOUTH_CAP?Math.min(a[1],b[1])>=north:Math.max(a[1],b[1])<=south)continue;
+   const section=cutLatitude(a,b,south,north);
    if(!section)continue;
    const [first,last]=section,n=values.length/5;
    const [x,y]=first,[nextX,nextY]=last;
@@ -100,9 +99,9 @@ function visiblePolarCaps(data){
 }
 export const polarCapsVisible=data=>visiblePolarCaps(data)!==0;
 export function createPolarLayer({map,prepare,onChange,onError}){
- const id='pando-polar-caps',capCache=new WeakMap(),fullCache=new WeakMap();
+ const id='pando-polar-caps',capCache=new WeakMap();
  let key='',pending=false,sequence=0,disposed=false,gl,program,vao,bindings;
- const emptyBatch={rows:[],packets:new Set(),fullExtent:false};
+ const emptyBatch={rows:[],packets:new Set()};
  let staticBatch=emptyBatch,gridBatch=emptyBatch,overlayBatch=emptyBatch,highlightBatch=emptyBatch,stagedHighlights=emptyBatch,highlightSequence=0,contextGeneration=0;
  let loadingSurface=null;
  let culledFrames=0,drawCalls=0,submittedTriangles=0,uploadedBytes=0;
@@ -127,12 +126,12 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    void main(){v_sphere=sphere(a_geo.xy);gl_Position=project(a_geo.xy);if(a_side!=0.){vec4 other=project(a_geo.zw);vec2 d=(other.xy/other.w-gl_Position.xy/gl_Position.w)*u_viewport;float n=length(d);if(n>0.)gl_Position.xy+=vec2(-d.y,d.x)/n*a_side*u_width/u_viewport*gl_Position.w;}}
   `);
   const fs=shader(gl.FRAGMENT_SHADER,`#version 300 es
-   precision highp float;in vec3 v_sphere;uniform vec4 u_color;uniform vec4 u_clip;uniform bool u_cap_only;out vec4 fragColor;
-   void main(){vec3 p=normalize(v_sphere);if((u_cap_only&&abs(p.y)<${Math.sin(POLAR_LATITUDE*Math.PI/180)})||dot(p,u_clip.xyz)+u_clip.w<0.)discard;fragColor=vec4(u_color.rgb*u_color.a,u_color.a);}
+   precision highp float;in vec3 v_sphere;uniform vec4 u_color;uniform vec4 u_clip;out vec4 fragColor;
+   void main(){vec3 p=normalize(v_sphere);if(abs(p.y)<${Math.sin(POLAR_LATITUDE*Math.PI/180)}||dot(p,u_clip.xyz)+u_clip.w<0.)discard;fragColor=vec4(u_color.rgb*u_color.a,u_color.a);}
   `);
   program=gl.createProgram();gl.attachShader(program,vs);gl.attachShader(program,fs);gl.linkProgram(program);gl.deleteShader(vs);gl.deleteShader(fs);
   if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
-  bindings=Object.fromEntries(['u_projection_matrix','u_projection_fallback_matrix','u_projection_clipping_plane','u_projection_tile_mercator_coords','u_projection_transition','u_clip','u_viewport','u_width','u_color','u_cap_only'].map(name=>[name,gl.getUniformLocation(program,name)]));
+  bindings=Object.fromEntries(['u_projection_matrix','u_projection_fallback_matrix','u_projection_clipping_plane','u_projection_tile_mercator_coords','u_projection_transition','u_clip','u_viewport','u_width','u_color'].map(name=>[name,gl.getUniformLocation(program,name)]));
   bindings.position=gl.getAttribLocation(program,'a_geo');bindings.side=gl.getAttribLocation(program,'a_side');
  }
  function upload(packet){
@@ -170,15 +169,14 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   for(const b of buffers.values()){gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);}
   buffers.clear();if(program)gl.deleteProgram(program);if(vao)gl.deleteVertexArray(vao);program=null;vao=null;variant='';
  }
- function presentBatch(batch,capVisibility){
+ function presentBatch(batch,caps){
   for(const row of batch.rows){
-   const caps=row.fullExtent?BOTH_CAPS:capVisibility;
-   if(!caps||row.packet.ranges&&!row.packet.ranges.some(range=>range.cap&caps))continue;
+   if(row.packet.ranges&&!row.packet.ranges.some(range=>range.cap&caps))continue;
    const color=loadingSurface?loadingSurface[row.loadingRole]:row.color;
    if(!color||!row.packet.indices.length)continue;
    const b=upload(row.packet);gl.bindBuffer(gl.ARRAY_BUFFER,b.vertex);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b.index);
    const pos=bindings.position,side=bindings.side;gl.enableVertexAttribArray(pos);gl.vertexAttribPointer(pos,4,gl.FLOAT,false,20,0);gl.enableVertexAttribArray(side);gl.vertexAttribPointer(side,1,gl.FLOAT,false,20,16);
-   gl.uniform1i(bindings.u_cap_only,row.fullExtent?0:1);gl.uniform1f(bindings.u_width,row.width||1);gl.uniform4fv(bindings.u_color,color);
+   gl.uniform1f(bindings.u_width,row.width||1);gl.uniform4fv(bindings.u_color,color);
    gl.blendFunc(row.multiply?gl.DST_COLOR:gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
    for(const {cap,offset,count} of b.ranges)if(cap&caps){
     gl.drawElements(gl.TRIANGLES,count,gl.UNSIGNED_INT,offset*Uint32Array.BYTES_PER_ELEMENT);
@@ -190,7 +188,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   render(context,options){
    if(disposed||failed||(!staticBatch.rows.length&&!highlightBatch.rows.length))return;
    const capsVisible=visiblePolarCaps(options.defaultProjectionData);
-   if(!capsVisible){culledFrames++;if(loadingSurface||(!staticBatch.fullExtent&&!highlightBatch.fullExtent))return;}
+   if(!capsVisible){culledFrames++;return;}
    // MapLibre's CustomLayerInterface restores its state after render returns
    // (drawCustom: context.setDirty + painter.setBaseState). Keep our own VAO
    // isolated; querying/restoring the preceding native draw stalls the GPU.
@@ -209,18 +207,16 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    }
   }};
  const background=capMesh();
- async function mesh(geometry,fullExtent){
-  // Only cap packets are trimmed by the Worker. Full-extent highlights keep the whole mesh.
-  const cache=fullExtent?fullCache:capCache;
-  if(!cache.has(geometry)){
+ async function mesh(geometry){
+  if(!capCache.has(geometry)){
    preparations++;
-   cache.set(geometry,prepare(geometry,{fullExtent:fullExtent===true})
-    .catch(error=>{cache.delete(geometry);throw error;}));
+   capCache.set(geometry,prepare(geometry)
+    .catch(error=>{capCache.delete(geometry);throw error;}));
   }
-  return cache.get(geometry);
+  return capCache.get(geometry);
  }
- const batchFor=rows=>({rows,packets:new Set(rows.map(row=>row.packet)),fullExtent:rows.some(row=>row.fullExtent)});
- const prepareRows=items=>Promise.all(items.map(async item=>({...item,packet:item.packet||await mesh(item.geometry,item.fullExtent)})));
+ const batchFor=rows=>({rows,packets:new Set(rows.map(row=>row.packet))});
+ const prepareRows=items=>Promise.all(items.map(async item=>({...item,packet:item.packet||await mesh(item.geometry)})));
  const obsoleteHighlight=()=>new DOMException('Polar highlights were superseded','AbortError');
  async function prepareHighlights(items){
   const request=++highlightSequence,generation=contextGeneration;
