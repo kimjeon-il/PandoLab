@@ -1,7 +1,6 @@
 /** Optional verified native-name metadata; historical entries are date-scoped.
  * Do not infer a native endonym from the translated territorial display name.
  */
-export const TERRITORIAL_NATIVE_MIN_ZOOM = 8;
 const normalized = value => String(value || '').trim().normalize('NFKC').toLocaleLowerCase();
 const fromEntry = entry => typeof entry === 'string' ? { text: entry } : entry && typeof entry === 'object' ? {
   text: entry.text || entry.name || '',
@@ -14,10 +13,10 @@ const isActive = (entry, month) => {
   return (!entry.from || date >= String(entry.from).slice(0, 7))
     && (!entry.to || date <= String(entry.to).slice(0, 7));
 };
-export function territorialNativeLabelRows(feature, month, { zoom = 0, enabled = false } = {}) {
-  const primary = String(feature?.properties?.name || '').trim();
+export function territorialNativeLabelRows(feature, month, { enabled = false, primaryName = feature?.properties?.name } = {}) {
+  const primary = String(primaryName || '').trim();
   const rows = primary ? [{ language: 'ko', text: primary }] : [];
-  if (!primary || !enabled || zoom < TERRITORIAL_NATIVE_MIN_ZOOM) return rows;
+  if (!primary || !enabled) return rows;
   const metadata = feature?.properties?.metadata || {};
   const names = Array.isArray(metadata.nativeNames) ? metadata.nativeNames
     : metadata.nativeName != null ? [metadata.nativeName] : [];

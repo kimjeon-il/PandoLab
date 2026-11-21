@@ -27,7 +27,11 @@ export function createPreferencePresentation({document,window,productMode,onChan
     window.__PANDOLAB_THEME__=theme;window.__PANDOLAB_INTERACTION_STYLE__=interactionStyle;
   }
   function apply(next,{persist=true,rerender=true,reason='user-preferences'}={}){
-    current=persist?saveUserPreferences(next):next;render();onChange({reason,rerender,interactionStyle});return current;
+    const previousCountryNames=current.appearance.showFormalCountryNames;
+    current=persist?saveUserPreferences(next):next;
+    render();
+    onChange({reason,rerender,interactionStyle,countryNamesChanged:previousCountryNames!==current.appearance.showFormalCountryNames});
+    return current;
   }
   function applySystemTheme(matchesDark){systemTheme=matchesDark?'dark':'light';apply(current,{persist:false,reason:'system-theme'});}
   const onSystemTheme=event=>applySystemTheme(event.matches);

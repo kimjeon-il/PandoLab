@@ -65,7 +65,11 @@ export async function composeViewer({ productMode, meta }) {
     readRenderer:()=>map?.renderer,
   });
   const initialPresentation=createViewerInitialPresentation({onPresented:mapSkeleton.onFirstMapPresented});
-  const preferencePresentation=createPreferencePresentation({document,window,productMode,onChange:change=>{if(map)map.refreshAppearance(change);}});
+  const preferencePresentation=createPreferencePresentation({document,window,productMode,onChange:change=>{
+    if(!map)return;
+    map.refreshAppearance(change);
+    if(change.countryNamesChanged)syncStatus({refreshHover:true});
+  }});
   const diagnostics=createDiagnosticLog({limit:250});
   const tooltipController=createTooltipController({document,window,tooltip:get('uiTooltip'),clamp:(value,min,max)=>Math.max(min,Math.min(max,value))});
   tooltipController.bind();
@@ -122,6 +126,9 @@ export async function composeViewer({ productMode, meta }) {
       await map.renderer.waitForTemporalPresentation();}});
   disposables.push(projectDomain);
   let selectionUiController;
+  function presentMapHover({hover}) {
+    tooltipController.setMapHover(hover?map.objectQuery.objectDisplayInfo(hover):null);
+  }
   const selectionDomain=createSelectionDomain({commandOwner:documentSession.commandOwner,projectDomain,
     refAdapter:{fromCore:coreSelectionRefToWeb,toCore:ref=>webSelectionRefToCore(ref,{isStoredHydro:id=>documentSession.documentModel.get({domain:'hydro',id})!==null})},
     onSelectionChanged:snapshot=>{
@@ -129,7 +136,7 @@ export async function composeViewer({ productMode, meta }) {
       objectDetailsPanel?.syncSelection(snapshot);
       inspectorController?.syncMapSelection(snapshot);
     },
-    onHoverChanged:snapshot=>tooltipController.setMapHover(snapshot.hover?map.objectQuery.objectDisplayInfo(snapshot.hover):null),
+    onHoverChanged:presentMapHover,
     requestRender:reason=>map.refreshSelection(reason)});
   disposables.push(selectionDomain);
   const selectionStatus=get('viewerSelectionStatus');
@@ -229,10 +236,12 @@ export async function composeViewer({ productMode, meta }) {
   // The canonical white map is revealed when its country/land frame is ready.
   Promise.resolve(map.loadPhysicalResources({includeHydro:false})).then(
     mapSkeleton.reconsider,mapSkeleton.reconsider);
-  syncStatus=()=>{
+  syncStatus=({refreshHover=false}={})=>{
     if(map&&!projectDomain.isOpening()){
       selectionUiController.syncNow(null,{force:true});
-      objectDetailsPanel.syncSelection(selectionDomain.snapshot());
+      const snapshot=selectionDomain.snapshot();
+      objectDetailsPanel.syncSelection(snapshot);
+      if(refreshHover)presentMapHover(snapshot);
     }
   };
   // Scene updates own catalog revisions. Search rendering only filters
@@ -377,7 +386,8 @@ export async function composeViewer({ productMode, meta }) {
     const current=()=>isCurrent()
       &&scope===projectDomain.activeProjectScope()&&!projectDomain.isOpening();
     const previouslyReady=presentedMonth?.scope===scope||status.dataset.ready==='true';
-    const temporalTicket=map.renderer.beginTemporalViewTransition(current);
+    let committed=false;
+    const temporalTicket=map.renderer.beginTemporalViewTransition(current,()=>{committed=commit();});
     status.dataset.loadingKind='temporal';status.dataset.ready='false';
     presentViewerLoadStatus(status,'다음 시점 준비 중…');
     try{
@@ -399,7 +409,7 @@ export async function composeViewer({ productMode, meta }) {
       map.renderer.preserveTemporalFrame();
       if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,geometryPreparation,
         admitPresentation:()=>map.renderer.admitTemporalViewTransition(temporalTicket)}))return false;
-      if(!current()||!commit())return false;
+      if(!current()||!committed)return false;
       status.dataset.ready='true';presentViewerLoadStatus(status,'지도 준비 완료.');
       postPresentation.schedule(current);
       return true;
@@ -485,7 +495,7 @@ export async function composeViewer({ productMode, meta }) {
   preferencesDialog=createPreferencesDialog({document,window,productMode,
     returnFocus:()=>get(surfaces.isMobile()?'mobileMenuBtn':'preferencesBtn'),
     getPreferences:()=>preferencePresentation.current,getMapState:()=>map.displayState(),mapSettings:display,
-    applyPreferences:value=>preferencePresentation.apply(value,{persist:true}),
+    applyPreferences:(value,options)=>preferencePresentation.apply(value,options),
     onError:report});
   disposables.push(preferencesDialog);
   const onProjectPreferences = () => preferencesDialog.sync();

@@ -46,7 +46,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    renderer.registerFeature('remaining',()=>()=>{featureDisposals++;});
    let featureInstalls=0;const removeCustom=renderer.registerFeature('custom-fixture',map=>{featureInstalls++;map.addLayer({id:'custom-fixture',type:'custom',render(){}});return ()=>{if(map.getLayer('custom-fixture'))map.removeLayer('custom-fixture');};});
    let frameId=0;
-   const frame=()=>({frameId:++frameId,projectGeneration:1,viewRevision:1,projectionRevision:0});
+   const frame=()=>({frameId:++frameId,projectGeneration:renderer.getProjectGeneration(),viewRevision:1,projectionRevision:0});
    const settle=async()=>{for(let i=0;i<300;i++){if(errors.length)throw new Error(errors.join('\n'));const current=frame(),result=renderer.renderFrame(current);if(result.succeeded&&renderer.canPresentVisualFrame(current,result)){renderer.commitVisualFrame(current);return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('Fixture map did not present');};
    renderer.setInitialMapLoading(true);
    if(renderer.map.getMinZoom()!==-2||renderer.map.getMaxZoom()!==22)throw new Error('Expected native MapLibre zoom range');
@@ -54,10 +54,54 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    if(renderer.map.getCanvas().style.visibility!=='hidden'||globalThis.document.querySelector('[data-map-preserved-frame]'))
     throw new Error('A jump before first publication exposed an unprepared canvas');
    await settle();
-   if(renderer.map.getCanvas().style.visibility!=='hidden')throw new Error('The loading surface retired before the full map drew');
+   if(!document.querySelector('[data-map-preserved-frame]')||renderer.map.getLayer('initial-map-land'))
+    throw new Error('The certified map must remain covered until the Viewer publishes it');
    renderer.setInitialMapLoading(false);
+   if(renderer.map.getCanvas().style.visibility==='hidden'||renderer.map.getLayer('initial-map-land')||document.querySelector('[data-map-preserved-frame]'))
+    throw new Error('The first approved frame still shows the loading surface');
+   const mapForPan=renderer.map;
+   const samplePan=()=>new Promise(resolve=>{
+    mapForPan.once('render',()=>{
+     const canvas=mapForPan.getCanvas(),ratio=mapForPan.getPixelRatio(),gl=canvas.getContext('webgl2');
+     const colors=[[-7.8,0],[-8.2,0]].map(coordinate=>{
+      const {x,y}=mapForPan.project(coordinate),pixel=new Uint8Array(4);
+      gl.readPixels(Math.round(x*ratio),canvas.height-1-Math.round(y*ratio),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+      return [...pixel].join(',');
+     });
+     resolve(colors.join('|'));
+    });
+    mapForPan.triggerRepaint();
+   });
+   for(const [kind,baseZoom] of [['territories',4],['land',5]]){
+    mapForPan.jumpTo({center:[-8,0],zoom:baseZoom});await settle();
+    const source=mapForPan.getSource(renderer.getStats().datedSources[kind]);
+    const loadTile=source.loadTile,copies=renderer.getStats().preservedFrameCopies;
+    let release,requested;
+    const started=new Promise(resolve=>{requested=resolve;});
+    const gate=new Promise(resolve=>{release=resolve;});
+    source.loadTile=async function(tile){requested();await gate;return loadTile.call(this,tile);};
+    const before=await samplePan();
+    try{
+     const originalEvent=new WheelEvent('wheel');
+     mapForPan.jumpTo({center:[-7.8,0],zoom:baseZoom+1},{originalEvent});
+     await started;
+     if(await samplePan()!==before)throw Error('First moving frame lost visible country or land with delayed '+kind+' tiles');
+     mapForPan.jumpTo({center:[-8.2,0]},{originalEvent});
+     if(await samplePan()!==before)throw Error('Visible country or land disappeared with delayed '+kind+' tiles');
+     if(document.querySelector('[data-map-preserved-frame]')||renderer.getStats().preservedFrameCopies!==copies||Math.abs(mapForPan.getCenter().lng+8.2)>1e-6)
+      throw Error('A delayed '+kind+' tile held the ordinary camera frame');
+    }finally{source.loadTile=loadTile;release();}
+    await settle();
+   }
+   const beforeJump=renderer.getStats().preservedFrameCopies;
+   renderer.syncCameraFromState({globeRotation:[-100,0,0],zoom:6});
+   const jumpCover=document.querySelector('[data-map-preserved-frame]');
+   renderer.syncCameraFromState({globeRotation:[100,0,0],zoom:6});
+   if(!jumpCover?.isConnected||renderer.getStats().preservedFrameCopies!==beforeJump+1)
+    throw Error('Successive distant commands must share one preserved frame');
+   mapForPan.jumpTo({center:[-80,0]},{originalEvent:new WheelEvent('wheel')});
+   if(jumpCover.isConnected)throw Error('Direct navigation did not release the distant command cover');
    await settle();
-   if(renderer.map.getCanvas().style.visibility==='hidden')throw new Error('The first full map never became visible');
    const originalGetStyle=renderer.map.getStyle;
    const originalGetOrder=renderer.map.getLayersOrder;
    let approvalSerializations=0,approvalOrderReads=0;
@@ -389,9 +433,10 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    renderer.map.jumpTo({center:[0,0],zoom:5});await settle();
    hydroEnabled=false;renderer.invalidateHydroVisibility();
    await renderer.map.getSource('hydro').setData({type:'FeatureCollection',features:[]});await settle();
-   renderer.setInitialMapLoading(true);await settle();
+   renderer.setInitialMapLoading(true);
+   await new Promise(resolve=>renderer.map.once('idle',resolve));
    const skeletonPixel=await new Promise(resolve=>{renderer.map.once('render',()=>{const point=renderer.projection.projectCoordinate([-4,0]),canvas=renderer.map.getCanvas(),gl=canvas.getContext('webgl2'),pixel=new Uint8Array(4);gl.readPixels(Math.round(point[0]),canvas.height-Math.round(point[1]),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);resolve([...pixel]);});renderer.map.triggerRepaint();});
-   loadingPalette={ocean:'#112233',land:'#779966'};renderer.setInitialMapLoading(true);await settle();const loadingColors=[renderer.map.getPaintProperty('initial-map-ocean','background-color'),renderer.map.getPaintProperty('initial-map-land','fill-color')];
+   loadingPalette={ocean:'#112233',land:'#779966'};renderer.setInitialMapLoading(true);const loadingColors=[renderer.map.getPaintProperty('initial-map-ocean','background-color'),renderer.map.getPaintProperty('initial-map-land','fill-color')];
    const {resolveMapPalette}=await import('/src/ui/map-palette.js');const whitePalette=resolveMapPalette({state}).loadingSurface;
    const skeletonGeometry=(await renderer.map.getSource(renderer.map.getLayer('initial-map-land').source).getData()).features[0].geometry;
    renderer.setInitialMapLoading(false);await settle();const skeletonRemoved=!renderer.map.getLayer('initial-map-land')&&!renderer.map.getSource('initial-map-land');
@@ -592,6 +637,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
     const native=activeTerritories(),rows=await countryFills(native);
     if(rows[0].geometry.coordinates[0][0][0]!==60)throw Error('A project-local geometry reference reused other coordinates');
     visible=true;renderer.map.jumpTo({center:[64,0],zoom:2});
+    await settle();
     for(let i=0;i<100&&!renderer.queryObjectRefs(renderer.projection.projectCoordinate([64,0])).some(ref=>ref.id==='shared-reference');i++)
      await new Promise(resolve=>setTimeout(resolve,10));
     if(!renderer.queryObjectRefs(renderer.projection.projectCoordinate([64,0])).some(ref=>ref.id==='shared-reference'))

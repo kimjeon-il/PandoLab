@@ -1,3 +1,5 @@
+import {riverWidthAtZoom} from './maplibre-hydro-presentation.js';
+
 // Hand over before Mercator's 85.051129-degree tile edge: a line ending on
 // that edge can still acquire a stretched polar segment during tile clipping.
 export const POLAR_LATITUDE = 85;
@@ -169,14 +171,15 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   for(const b of buffers.values()){gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);}
   buffers.clear();if(program)gl.deleteProgram(program);if(vao)gl.deleteVertexArray(vao);program=null;vao=null;variant='';
  }
- function presentBatch(batch,caps){
+ function presentBatch(batch,caps,zoom){
   for(const row of batch.rows){
    if(row.packet.ranges&&!row.packet.ranges.some(range=>range.cap&caps))continue;
    const color=loadingSurface?loadingSurface[row.loadingRole]:row.color;
    if(!color||!row.packet.indices.length)continue;
    const b=upload(row.packet);gl.bindBuffer(gl.ARRAY_BUFFER,b.vertex);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b.index);
    const pos=bindings.position,side=bindings.side;gl.enableVertexAttribArray(pos);gl.vertexAttribPointer(pos,4,gl.FLOAT,false,20,0);gl.enableVertexAttribArray(side);gl.vertexAttribPointer(side,1,gl.FLOAT,false,20,16);
-   gl.uniform1f(bindings.u_width,row.width||1);gl.uniform4fv(bindings.u_color,color);
+   const width=row.ref?.domain==='hydro'&&row.ref.type==='river'?riverWidthAtZoom(zoom,row.width):row.width||1;
+   gl.uniform1f(bindings.u_width,width);gl.uniform4fv(bindings.u_color,color);
    gl.blendFunc(row.multiply?gl.DST_COLOR:gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
    for(const {cap,offset,count} of b.ranges)if(cap&caps){
     gl.drawElements(gl.TRIANGLES,count,gl.UNSIGNED_INT,offset*Uint32Array.BYTES_PER_ELEMENT);
@@ -199,7 +202,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
     gl.uniform4fv(uniform('u_projection_clipping_plane'),data.clippingPlane);gl.uniform4fv(uniform('u_projection_tile_mercator_coords'),data.tileMercatorCoords);gl.uniform1f(uniform('u_projection_transition'),data.projectionTransition);gl.uniform4fv(uniform('u_clip'),data.clippingPlane);
     gl.uniform2f(uniform('u_viewport'),map.getCanvas().clientWidth,map.getCanvas().clientHeight);gl.uniform1f(uniform('u_width'),1);
     presentBatch(staticBatch,capsVisible);
-    if(!loadingSurface)presentBatch(overlayBatch,capsVisible);
+    if(!loadingSurface)presentBatch(overlayBatch,capsVisible,map.getZoom());
     presentBatch(gridBatch,capsVisible);
     if(!loadingSurface)presentBatch(highlightBatch,capsVisible);
    }catch(error){failed=true;onError(error);}finally{

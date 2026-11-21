@@ -26,16 +26,10 @@ export function resolvePlaceLabelRows(place, languages = DEFAULT_PLACE_LANGUAGES
   return rows;
 }
 
-/** Map-only presentation: Korean is mandatory; a verified native primary may supplement it at 8x.
- * English and additional co-official names remain in the source/search/detail data.
- * Secondary rows are optional: collision layout may omit them without removing Korean.
- */
-export const PLACE_NATIVE_LABEL_MIN_ZOOM = 8;
-
-export function mapPlaceLabelRowsAtMonth(place, month, { zoom = 0, showNativeNames = false } = {}) {
+/** Rows of a single map symbol, starting with the mandatory Korean name. */
+export function mapPlaceLabelRowsAtMonth(place, month, { showNativeNames = false } = {}) {
   const rows = placeLabelRowsAtMonth(place, month, { ko: true });
-  if (!rows.length || !showNativeNames || zoom < PLACE_NATIVE_LABEL_MIN_ZOOM)
-    return { rows, secondaryRows: [] };
+  if (!rows.length || !showNativeNames) return rows;
 
   // Query native-only so that a native name identical to Korean never causes
   // the second co-official name to take the primary native's place.
@@ -43,5 +37,6 @@ export function mapPlaceLabelRowsAtMonth(place, month, { zoom = 0, showNativeNam
   const normalized = text => String(text || '').replace(/^\(현\)/u, '')
     .normalize('NFKC').toLocaleLowerCase();
   const duplicate = rows.some(row => normalized(row.text) === normalized(primaryNative?.text));
-  return { rows, secondaryRows: primaryNative && !duplicate ? [primaryNative] : [] };
+  if (primaryNative && !duplicate) rows.push(primaryNative);
+  return rows;
 }

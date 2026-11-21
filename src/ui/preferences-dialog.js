@@ -69,6 +69,7 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     get('preferencesObjectColorsInput').checked = view.layerPresentation?.styles?.objects?.colorVisible !== false;
     get('preferencesNativeNamesInput').checked = preferences.labels.place.showNativeNames;
     get('preferencesSmoothLinesInput').checked = preferences.appearance.smoothLines;
+    get('preferencesFormalCountryNamesInput').checked = preferences.appearance.showFormalCountryNames;
     get('preferencesGraticuleInput').checked = view.backgroundSettings?.graticule !== false;
     for (const [id,group] of [['preferencesRiversInput','rivers'],['preferencesLakesInput','lakes'],
       ['genericFeaturesVisible','genericFeatures'],['distributionsVisible','distributions']])
@@ -92,9 +93,9 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     const value = input.type === 'checkbox' ? input.checked : input.value;
     return schedule(() => action(value));
   };
-  function applyAppearance(patch) {
+  function applyAppearance(patch, options) {
     const current = getPreferences();
-    applyPreferences({...current,appearance:{...current.appearance,...patch}});
+    applyPreferences({...current,appearance:{...current.appearance,...patch}}, options);
     sync();
   }
   function close() {
@@ -117,6 +118,8 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
   for (const button of modal.querySelectorAll('[data-preference-theme]'))
     listen(button,'click',()=>applyAppearance({theme:button.dataset.preferenceTheme}));
   listen(get('preferencesSmoothLinesInput'),'change',event=>applyAppearance({smoothLines:event.currentTarget.checked}));
+  listen(get('preferencesFormalCountryNamesInput'),'change',event=>
+    applyAppearance({showFormalCountryNames:event.currentTarget.checked},{reason:'formal-country-name-display'}));
   listen(get('preferencesObjectColorsInput'),'change',event =>
     queueInput(event.currentTarget,value=>mapSettings.updateLayerPresentationStyle('objects',{colorVisible:value})));
   listen(get('preferencesNativeNamesInput'),'change',event=>

@@ -6,7 +6,8 @@ const types={ocean:'background','physical-land-fill':'fill',territories:'fill',
  'territories-fill-1':'fill',borders:'line','physical-water':'fill',lakes:'fill',rivers:'line'};
 function fixture(){
  const layers=new Map(Object.entries(types).map(([id,type])=>[id,{id,type,paint:{},layout:{}}])),calls=[];
- return {layers,calls,getLayer:id=>layers.get(id),getStyle:()=>({layers:[...layers.values()]}),
+ return {layers,calls,painter:{},triggerRepaint(){},
+  getLayer:id=>layers.get(id),getStyle:()=>({layers:[...layers.values()]}),
   getPaintProperty:(id,key)=>layers.get(id)?.paint?.[key],
   getLayoutProperty:(id,key)=>layers.get(id)?.layout?.[key],
   setPaintProperty(id,key,value){layers.get(id).paint[key]=value;calls.push(['paint',id,key]);},
@@ -39,6 +40,24 @@ test('single white-map styles expose only canonical active paint and layout',()=
  assert.equal(style.paint['physical-water']['fill-opacity'],1);
  assert.equal(style.layout.rivers.visibility,'none');
  assert.deepEqual(style.paint.territories,style.territorialFillPaint);
+});
+test('hard edges target current and retained borders and every river stage',()=>{
+ const map=fixture(),controller=createMapLibreStyleController(map);
+ const layer=(id,source)=>({id,source});
+ const strokes=[
+  layer('borders','territories'),layer('borders--territories-retained','territories-retained'),
+  ...['rivers','rivers-3','rivers-4','rivers-5'].map(id=>layer(id,'hydro')),
+ ];
+ const off=resolveMapLibreMapStyle({antiAlias:false}),on=resolveMapLibreMapStyle();
+ controller.apply(off);
+ const hard=map.painter.pandoHardLineEdges;
+ assert.equal(typeof hard,'function');
+ assert.ok(strokes.every(hard));
+ assert.equal(hard(layer('selection-outline','selection')),false);
+ assert.equal(hard(layer('lakes','hydro')),false);
+ assert.equal(controller.apply(off),false);
+ controller.apply(on);
+ assert.equal(map.painter.pandoHardLineEdges,undefined);
 });
 test('country paint updates are idempotent and never change sources or geometry',()=>{
  const map=fixture(),controller=createMapLibreStyleController(map);

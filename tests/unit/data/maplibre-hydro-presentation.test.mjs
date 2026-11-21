@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures} from '../../../src/rendering/maplibre-hydro-presentation.js';
+import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,riverWidthAtZoom} from '../../../src/rendering/maplibre-hydro-presentation.js';
+import {resolveMapLibreMapStyle} from '../../../src/rendering/maplibre-map-style.js';
 import {hydroDisplayStages,hydroLakeDisplayMinZoom} from '../../../src/map/map-display-zoom.js';
+
+test('visible rivers taper from 1.5px to 1px without changing their zoom thresholds',()=>{
+ const {paint}=resolveMapLibreMapStyle({palette:{strokes:{river:{width:1}}}});
+ const rivers=mapLibreHydroStyle({stylePaint:paint}).layers.filter(layer=>layer.type==='line');
+ for(const [index,layer] of rivers.entries()){
+  assert.deepEqual(layer.paint['line-width'],['interpolate',['linear'],['zoom'],3,1.5,4,1]);
+  assert.deepEqual(layer.paint['line-opacity'],['step',['zoom'],0,index+2,1]);
+ }
+ assert.deepEqual([2,3,3.5,4,5].map(zoom=>riverWidthAtZoom(zoom,1)),[1.5,1.5,1.25,1,1]);
+});
 
 test('optional water publication yields before aggregation and rejects a disposed result',async()=>{
  let release,entered=false,admitted=0,updated=0;

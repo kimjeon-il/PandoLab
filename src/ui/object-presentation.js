@@ -44,12 +44,21 @@ export function createObjectPresentation() {
     return (0, dependencies.colorModel.readDomainColor)(dependencies.colorModel.COLOR_DOMAINS.TERRITORIAL, { feature }).explicit;
   }
 
-  function territorialEntityName(feature) {
+  function territorialEntityNames(feature) {
     const entity = dependencies.territorialModel.entityRepository.get(feature?.id) || feature;
     const properties = entity?.properties || {};
-    // Default names come from canonical assets; edited names are literal.
-    if (properties.name) return properties.name;
-    return '이름 없는 객체';
+    const names = properties.metadata?.nameDetails?.ko;
+    return { common: names?.common?.trim() || properties.name || '', formal: names?.formal?.trim() || '' };
+  }
+
+  function territorialEntityName(feature, { fallback = '이름 없는 객체' } = {}) {
+    const { common, formal } = territorialEntityNames(feature);
+    return (dependencies.preferences.userPreferences.appearance.showFormalCountryNames && formal) || common || fallback;
+  }
+
+  function territorialEntitySearchText(feature) {
+    const { common, formal } = territorialEntityNames(feature);
+    return [common, formal === common ? '' : formal].filter(Boolean).join(' ');
   }
 
   function territorialEntityColor(feature) {
@@ -61,11 +70,6 @@ export function createObjectPresentation() {
         countryColor: country => (0, dependencies.colorModel.defaultCountryColor)(country), fallback }),
       fallback,
     }).value;
-  }
-
-  function territorialRootName(feature) {
-    const country = dependencies.territorialModel.entityRepository.root(feature?.id);
-    return country?.properties.entityKind === 'general' ? territorialEntityName(country) : '';
   }
 
   function distributionColor(layer) {
@@ -159,7 +163,7 @@ export function createObjectPresentation() {
     get territorialStyleColor() { return territorialStyleColor; },
 
     get territorialEntityColor() { return territorialEntityColor; },
-    get territorialRootName() { return territorialRootName; },
+    get territorialEntitySearchText() { return territorialEntitySearchText; },
     get territorialEntityName() { return territorialEntityName; },
   });
 }

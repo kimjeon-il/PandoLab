@@ -20,7 +20,7 @@ import {admittedGeometryKey as geometryKey,geometryReferenceFor} from '../geomet
 import {classifyTerritorialPropertyOnly} from '../document/territorial-entity-store.js';
 import {distributionEntriesForLayer,DISTRIBUTION_MODES} from '../document/distribution-model.js';
 import {createMapLibreVectorGroup} from './maplibre-vector-group.js';
-import {createMapLibreHighlight} from './maplibre-highlight.js';
+import {createMapLibreHighlight,partitionHighlightLines} from './maplibre-highlight.js';
 import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
 import {createMapObjectSpatialIndex} from '../map/map-object-spatial-index.js';
 import {createWorkerRpcClient} from '../runtime/worker-rpc.js';
@@ -118,7 +118,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  async function previewExternalBasemap(style){
   if(disposed||!loaded||presentation.temporalPending()||temporalOverlay)throw new Error('The map is not available for a basemap change.');
   for(const layer of style?.layers||[])if(map.getLayer(layer.id))throw new Error('Basemap layer collision: '+layer.id);
-  externalBasemap ||=createExternalBasemap(map,{getRevision:()=>JSON.stringify([generation,contextRevision,sourceRevision,presentation.temporalPending(),!!temporalOverlay]),onChange:()=>{syncVectorGroups();dirty();invalidate('external-basemap-change');},onRemoveStart:()=>{if(!temporalOverlay)preserveTemporalFrame();},onRemoveEnd:()=>{if(!presentation.temporalPending())releaseTemporalFrame();},onCancelled:()=>{if(externalAttribution){map.removeControl(externalAttribution);externalAttribution=null;}},onFailure:(cause,{removed})=>{
+  externalBasemap ||=createExternalBasemap(map,{getRevision:()=>JSON.stringify([generation,contextRevision,sourceRevision,presentation.temporalPending(),temporalFrameHeld]),onChange:()=>{syncVectorGroups();dirty();invalidate('external-basemap-change');},onRemoveStart:preserveTemporalFrame,onRemoveEnd:()=>{if(!presentation.temporalPending())releaseTemporalFrame();},onCancelled:()=>{if(externalAttribution){map.removeControl(externalAttribution);externalAttribution=null;}},onFailure:(cause,{removed})=>{
    if(removed&&externalAttribution){map.removeControl(externalAttribution);externalAttribution=null;}
    deps.feedback.reportOperationError(cause,'외부 배경 지도를 불러오지 못했습니다.','PL-BASEMAP-001');
   }});
@@ -144,9 +144,9 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   }
  }
  const countryFillGroups=new Map(),countryPaintState=new WeakMap();
- let initialMapLoading=false;
+ let initialMapLoading=false,initialFrameStaging=null;
  let temporalOverlay=null,temporalInteractions=[],temporalOptionalLayers=[];
- let temporalFrameHeld=false,zoomFramePending=false,initialZoomHidden=false,lastPresentedZoom=null,lastCameraZoom=null;
+ let temporalFrameHeld=false,projectFrameHeld=false,zoomFramePending=false,initialZoomHidden=false,lastPresentedZoom=null,lastCameraZoom=null;
  function suspendOptionalLayers(){
   for(const layer of map.getStyle()?.layers||[]){
    if(!layer.source||requiredSource(layer.source)||highlight?.owns(layer.source)||retainedSources.has(layer.source)||layer.source==='hydro'||layer.layout?.visibility==='none'||temporalOptionalLayers.some(item=>item.id===layer.id))continue;
@@ -164,11 +164,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   Object.assign(snapshot.style,{position:'absolute',inset:'0',width:'100%',height:'100%'});
   const context=snapshot.getContext('2d');
   if(!context)throw new Error('Cannot preserve the displayed map frame.');
-  context.drawImage(source,0,0);overlay.append(snapshot);
+  context.drawImage(source,0,0);stats.preservedFrameCopies++;overlay.append(snapshot);
   stage.append(overlay);temporalOverlay=overlay;
  }
  function discardUnusedPreservedFrame(){
-  if(temporalFrameHeld||zoomFramePending)return;
+  if(!disposed&&(temporalFrameHeld||projectFrameHeld||zoomFramePending||initialFrameStaging))return;
   temporalOverlay?.remove();temporalOverlay=null;
  }
  function preserveTemporalFrame(){
@@ -327,7 +327,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  function syncPolarLines(){
   if(!polarLayer)return;
   const palette=deps.preferences.mapPalette();
-  const zoom=map.getZoom(),ocean=palette.ocean||'#ffffff',riverWidth=palette.strokes?.river?.width??0.8;
+  const zoom=map.getZoom(),ocean=palette.ocean||'#ffffff',riverWidth=palette.strokes?.river?.width??1;
   const visibleStages=[...hydroMinZoomByStage].filter(([,minZoom])=>isWithinDisplayZoom(zoom,minZoom));
   const inputs=[sceneKey,hydroFeatures,hydroStateKey,hydroEditsKey,hydroMinZoomByStage,visibleStages.length,ocean,riverWidth];
   if(inputs.every((value,index)=>value===polarLineInputs[index]))return;
@@ -365,7 +365,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   polarVisibleLines=rows;
   polarLayer.setOverlayLines(rows);
  }
- const stats={renderedFrames:0,sourceUpdates:0,sourceWrites:0,hydroVisibilityScans:0,geometryWorkerRequests:0,geometryWorkerTransferBytes:0,retainedSourceHits:0,boundaryRequests:0,boundaryGeometryRows:0,boundaryCacheMisses:0,approvalAttempts:0,renderer:'maplibre',firstCanonicalFrameMs:null,physicalLandPreparations:0,physicalLandPreparationMs:0,physicalLandAssetHits:0,strokePreparedPackets:0};
+ const stats={renderedFrames:0,preservedFrameCopies:0,sourceUpdates:0,sourceWrites:0,hydroVisibilityScans:0,geometryWorkerRequests:0,geometryWorkerTransferBytes:0,retainedSourceHits:0,boundaryRequests:0,boundaryGeometryRows:0,boundaryCacheMisses:0,approvalAttempts:0,renderer:'maplibre',firstCanonicalFrameMs:null,physicalLandPreparations:0,physicalLandPreparationMs:0,physicalLandAssetHits:0,strokePreparedPackets:0};
  const invalidate=reason=>deps.domains.renderingDomain?.invalidateView(reason);
  const cameraKey=()=>map?JSON.stringify([map.getCenter().lng,map.getCenter().lat,map.getZoom(),map.getBearing(),map.getPitch(),map.getRoll(),map.getCanvas().width,map.getCanvas().height]):'';
  const activeSource=kind=>kind==='territories'?countrySourceId:kind==='physical-land'?physicalLandSourceId:physicalWaterSourceId;
@@ -718,7 +718,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    });
    map.on('webglcontextlost',()=>{contextRevision++;pendingSourceOperations.clear();physicalPending.clear();physicalLandKey='';physicalWaterKey='';contextLost=true;ready=false;preparedReady=false;certifiedRevision=-1;notify('loading','지도 복구 중');});
    map.on('webglcontextrestored',()=>{
-    const restore=()=>{if(disposed)return;syncVectorGroups();polarLayer?.resetContext();highlight?.reset();pendingSelection=!!selectionSnapshot;contextLost=false;certifiedRevision=-1;dirty();flushStyleChanges();invalidate('map-context-restored');};
+    const restore=()=>{if(disposed)return;styleController.apply(currentMapStyle(),{updateVisibility:!temporalOverlay});syncVectorGroups();polarLayer?.resetContext();highlight?.reset();pendingSelection=!!selectionSnapshot;contextLost=false;certifiedRevision=-1;dirty();flushStyleChanges();invalidate('map-context-restored');};
     if(loadedStyle===map.style)restore();else map.once('style.load',restore);
    });
    map.on('error',event=>{if(event.error?.name==='AbortError')return;
@@ -734,7 +734,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     requestedCertificate=null;
     if(loaded&&!contextLost)highlight?.onRender();
 
-    const requiredReady=loaded&&!contextLost&&!polarLayer?.pending&&!pendingSources()&&requiredSourcesReady();
+    const requiredReady=loaded&&!error&&!contextLost&&!polarLayer?.pending&&!pendingSources()&&requiredSourcesReady();
     const sampled=requiredReady&&!document.hidden&&map.isMoving()?performance.now():null;
     if(sampled!==null&&previousActiveRender!==null&&deps.renderQuality?.renderQualityController.recordFrame(0,{frameIntervalMs:sampled-previousActiveRender}))
      deps.renderQuality.queueAdaptiveRenderQualityRefresh('maplibre-frame-cadence');
@@ -749,6 +749,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    if(disposed)return false;
    const initialView=state.view;
    loaded=true;
+   styleController.apply(currentMapStyle(),{updateVisibility:false});
    if(initialCamera){
     map.resize();
     if(startupView)syncCameraFromState(startupView);
@@ -758,25 +759,28 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     map.triggerRepaint();
    }
    lastCameraZoom=map.getZoom();
-   map.on('move',()=>{
+   map.on('move',event=>{
+    if(event.originalEvent&&zoomFramePending&&!initialMapLoading&&!initialFrameStaging){
+     zoomFramePending=false;discardUnusedPreservedFrame();
+    }
     // MapLibre also emits move events for canvas resize and panel layout.
     // A stationary camera must keep a just-used date warm.
     if(datedRetirementCamera&&datedCameraPosition().some((value,index)=>
      Math.abs(value-datedRetirementCamera[index])>1e-6))retireDatedSources();
     const zoom=map.getZoom(),jump=Math.abs(zoom-lastCameraZoom)>=2-ZOOM_EPSILON;
     lastCameraZoom=zoom;
-    if(jump&&!zoomFramePending&&(!state.projectReplacing||initialMapLoading)&&
+    if(jump&&!event.originalEvent&&!zoomFramePending&&(!state.projectReplacing||initialMapLoading)&&
      (lastPresentedZoom===null||Math.abs(zoom-lastPresentedZoom)>=2-ZOOM_EPSILON)){
      if(initialMapLoading){initialZoomHidden=true;map.getCanvas().style.visibility='hidden';}
      else if(lastPresentedZoom!==null)preserveDisplayedFrame();
      zoomFramePending=true;
     }
-    ready=false;preparedReady=false;
+    if(zoomFramePending){ready=false;preparedReady=false;}
     if(applyingCamera||state.projectReplacing)return;
     invalidate('maplibre-camera');
    });
-   map.on('movestart',()=>{previousActiveRender=null;deps.domains.renderingDomain?.beginInteraction('maplibre-move');});
-   map.on('moveend',()=>{previousActiveRender=null;deps.domains.renderingDomain?.endInteraction('maplibre-move-end');});
+   map.on('movestart',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.beginInteraction('maplibre-move');});
+   map.on('moveend',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.endInteraction('maplibre-move-end');});
    if(!initialCamera){
     if(pendingCameraFit)applyCameraFit();else syncCameraFromState(initialView);
    }
@@ -804,7 +808,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const camera=cameraForMapBounds(pendingCameraFit.bounds,pendingCameraFit.safeInsets);
   if(!camera)return false;
   pendingCameraFit=null;
-  map.jumpTo({...camera,pitch:0,roll:0});return true;
+  jumpCamera({...camera,pitch:0,roll:0});return true;
  }
  function isAtWorldView(padding){
   const world=cameraForMapBounds(WORLD_VIEW_BOUNDS,padding);
@@ -820,6 +824,14 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   return {country:isWithinDisplayZoom(zoom,MAPLIBRE_LABEL_MIN_ZOOM.country),places:isWithinDisplayZoom(zoom,MAPLIBRE_LABEL_MIN_ZOOM.places)};
  }
  let applyingCamera=false;
+ function jumpCamera(target){
+  const center=Array.isArray(target.center)?target.center:target.center.toArray();
+  const far=Math.abs(target.zoom-map.getZoom())>=2-ZOOM_EPSILON||!projection.projectVisibleCoordinate(center);
+  if(far&&lastPresentedZoom!==null&&!state.projectReplacing&&!contextLost){
+   preserveDisplayedFrame();zoomFramePending=true;ready=false;preparedReady=false;
+  }
+  map.jumpTo(target);
+ }
  function syncCameraFromState(view=state.view){
   pendingCameraFit=null;
   if(!map||!loaded)return;
@@ -828,7 +840,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const orientation={};for(const key of ['bearing','pitch','roll'])if(Number.isFinite(view[key]))orientation[key]=view[key];
   const current=map.getCenter();
   if(Math.abs(current.lng-center[0])<1e-8&&Math.abs(current.lat-center[1])<1e-8&&Math.abs(map.getZoom()-zoom)<1e-8&&Object.entries(orientation).every(([key,value])=>Math.abs(({bearing:()=>map.getBearing(),pitch:()=>map.getPitch(),roll:()=>map.getRoll()})[key]()-value)<1e-8))return;
-  applyingCamera=true;try{map.jumpTo({center,zoom,...orientation});}finally{applyingCamera=false;}
+  applyingCamera=true;try{jumpCamera({center,zoom,...orientation});}finally{applyingCamera=false;}
  }
  function setTerritorialFeatures(features){
   const entities=deps.territorialModel.entityRepository.list?.()??features;
@@ -1191,9 +1203,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     keys.push(key);if(!hovered)selectedKeys.push(key);
     const cap=polarGeometry(geometry);
     const polygon=geometry.type==='Polygon'||geometry.type==='MultiPolygon';
-    const addNative=(shape,alpha)=>{
+    const addNative=(shape,alpha,partitioned=false)=>{
      nativeKeys.push([ref.key,revision,shape.type,color,alpha,width]);
-     native.push({type:'Feature',geometry:shape,properties:{objectKey:ref.key,color,alpha,width}});
+     const properties={objectKey:ref.key,color,alpha,width};
+     if(partitioned&&alpha<1)properties.splitOpacity=alpha;
+     native.push({type:'Feature',geometry:shape,properties});
     };
     if(polygon&&fillAlpha>0)addNative(geometry,fillAlpha);
     if(geometry.type==='Point'||geometry.type==='MultiPoint')addNative(geometry,1);
@@ -1204,8 +1218,12 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
      paths={segments:buildRenderableBoundarySegments(geometry)};
      highlightLines.set(geometry,paths);
     }
-    paths.native ||=clipMercatorLines({type:'MultiLineString',coordinates:connectBoundarySegments(paths.segments)});
-    if(paths.native.coordinates.length)addNative(paths.native,strokeAlpha);
+    if(!paths.native){
+     const clipped=clipMercatorLines({type:'MultiLineString',coordinates:connectBoundarySegments(paths.segments)});
+     paths.native=partitionHighlightLines(clipped);
+     paths.partitioned=paths.native!==clipped;
+    }
+    if(paths.native.coordinates.length)addNative(paths.native,strokeAlpha,paths.partitioned);
     const packet=paths.cap ||=polarLinePacket(paths.segments);
     if(packet.indices.length)polar.push({packet,color:rgba(color,strokeAlpha),width});
    }
@@ -1321,6 +1339,17 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    }
    return {succeeded:false,deferred:true,presentationReady:false};
   }
+  if(initialMapLoading){
+   // The certified frame still contains the loading surface. Draw the real
+   // scene and its symbols behind those saved pixels before admitting it.
+   preserveDisplayedFrame();
+   initialFrameStaging='drawing';
+   initialMapLoading=false;
+   syncInitialMapSkeleton();
+   dirty();
+   map.triggerRepaint();
+   return {succeeded:false,deferred:true,presentationReady:false};
+  }
   presentation.markTemporalFrame(frame);preparedReady=true;
   const result={succeeded:true,presentationReady:true,frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
   if(presentation.canPresentVisualFrame(frame,result)){state.countryVisualPhase='canonical';if(stats.firstCanonicalFrameMs===null)stats.firstCanonicalFrameMs=performance.now();}
@@ -1330,8 +1359,9 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const committed=presentation.commitVisualFrame(frame);
   if(committed){
    if(!initialMapLoading)lastPresentedZoom=map.getZoom();
-   zoomFramePending=false;discardUnusedPreservedFrame();
-   if(initialZoomHidden&&!initialMapLoading){initialZoomHidden=false;map.getCanvas().style.removeProperty('visibility');}
+   if(initialFrameStaging)initialFrameStaging='certified';
+   projectFrameHeld=false;zoomFramePending=false;
+   discardUnusedPreservedFrame();
    metrics.publish();pendingFrame=null;ready=true;notify('ready','지도 준비 완료');
    scheduleDatedRetirement();
   }
@@ -1354,7 +1384,17 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(changed&&loaded){styleController?.apply(currentMapStyle(),{updateVisibility:!temporalOverlay});if(map.getLayer('hydro-edits-fill')?.type==='fill')map.setPaintProperty('hydro-edits-fill','fill-antialias',value.antiAlias!==false);}
   syncVectorGroups();if(selectionSnapshot)setSelection(selectionSnapshot);invalidate('interaction-style');
  }
- return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot(){return map&&loaded?readMapLibreCamera(map):null;},setInitialMapLoading(value){initialMapLoading=value===true;syncInitialMapSkeleton();dirty();invalidate('initial-map-skeleton');},attach,initialize,setTerritorialFeatures,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>sourceRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
+ function setInitialMapLoading(value){
+  if(value!==true&&initialFrameStaging==='certified'){
+   initialFrameStaging=null;
+   if(initialZoomHidden){initialZoomHidden=false;map.getCanvas().style.removeProperty('visibility');}
+   discardUnusedPreservedFrame();
+   return;
+  }
+  if(value!==true&&!initialMapLoading)return;
+  initialMapLoading=value===true;syncInitialMapSkeleton();dirty();invalidate('initial-map-skeleton');
+ }
+ return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot(){return map&&loaded?readMapLibreCamera(map):null;},setInitialMapLoading,attach,initialize,setTerritorialFeatures,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>sourceRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
   get map(){return map;},get projection(){return projection;},get loaded(){return loaded;},isStyleReady:styleReady,renderFrame,commitVisualFrame,measureWork:metrics.track,
   panBy(dx,dy){map.panBy([-dx,-dy],{animate:false});return true;},
   fitGeometry(feature,padding){
@@ -1363,13 +1403,13 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    const boxes=geometries.map(geometry=>coordinateBounds(geometry.coordinates)).filter(box=>box.every(Number.isFinite));if(!boxes.length)return false;
    const bounds=[[Math.min(...boxes.map(box=>box[0])),Math.min(...boxes.map(box=>box[1]))],[Math.max(...boxes.map(box=>box[2])),Math.max(...boxes.map(box=>box[3]))]];
    if(bounds[0][0]===bounds[1][0]&&bounds[0][1]===bounds[1][1]){
-    map.jumpTo({center:bounds[0],zoom:map.getZoom()});return true;
+    jumpCamera({center:bounds[0],zoom:map.getZoom()});return true;
    }
    return fitMapBounds(bounds,padding);
   },
   fitMapBounds,fitWorld:padding=>fitMapBounds(WORLD_VIEW_BOUNDS,padding),isAtWorldView,
   canPresentVisualFrame:presentation.canPresentVisualFrame,prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
-  beginTemporalViewTransition(isCurrent){cancelDatedRetirement();const ticket=presentation.beginTemporalViewTransition(isCurrent);if(externalBasemap&&!basemapRecovery){const finish=()=>{basemapRecovery=null;flushStyleChanges();invalidate('basemap-transition-recovered');};const recovery=Promise.resolve().then(()=>externalBasemap.cancelPending()).then(value=>{finish();return value;},cause=>{finish();throw cause;});basemapRecovery=recovery;recovery.catch(failMapPreparation);}return ticket;},
+  beginTemporalViewTransition(isCurrent,onPresented){cancelDatedRetirement();const ticket=presentation.beginTemporalViewTransition(isCurrent,onPresented);if(externalBasemap&&!basemapRecovery){const finish=()=>{basemapRecovery=null;flushStyleChanges();invalidate('basemap-transition-recovered');};const recovery=Promise.resolve().then(()=>externalBasemap.cancelPending()).then(value=>{finish();return value;},cause=>{finish();throw cause;});basemapRecovery=recovery;recovery.catch(failMapPreparation);}return ticket;},
   admitTemporalViewTransition(ticket){
    if(!presentation.admitTemporalViewTransition(ticket))return false;
    if(highlight?.hasHover())highlight.reset();
@@ -1380,7 +1420,10 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   finishTemporalViewTransition(ticket){const finished=presentation.finishTemporalViewTransition(ticket);if(finished)scheduleDatedRetirement();return finished;},
   waitForTemporalPresentation:presentation.waitForTemporalPresentation,
   waitForMapPresentation:presentation.waitForMapPresentation,getProjectGeneration:()=>generation,
-  resetProjectRenderState(options){if(options.presentation!=='temporal'){zoomFramePending=false;lastPresentedZoom=null;releaseTemporalFrame();hydroPresentation?.suspend();cancelHydroStartup();}countryGeometryAbort?.abort();geometryAbort.abort();geometryAbort=new AbortController();polarInputs=[];highlight?.reset();generation=options.generation;pendingSceneDomains=null;pendingSourceOperations.clear();if(activeCountryTasks.size){countrySourceNeedsSwap=true;countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
+  resetProjectRenderState(options){if(options.presentation!=='temporal'){
+   if(!initialMapLoading&&!initialFrameStaging&&lastPresentedZoom!==null){preserveDisplayedFrame();projectFrameHeld=true;}
+   zoomFramePending=false;lastPresentedZoom=null;releaseTemporalFrame();hydroPresentation?.suspend();cancelHydroStartup();
+  }countryGeometryAbort?.abort();geometryAbort.abort();geometryAbort=new AbortController();polarInputs=[];highlight?.reset();generation=options.generation;pendingSceneDomains=null;pendingSourceOperations.clear();if(activeCountryTasks.size){countrySourceNeedsSwap=true;countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
   labelZoomVisibility,
   getRuntimeState:()=>({...stats,projectRenderBlocked:!!error,mapReady:ready,webglContextLost:contextLost,temporalPresentationPending:presentation.temporalPending(),temporalViewPending:presentation.temporalPending()&&presentation.ticket?.kind==='view',temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false,physicalContextRevision:landRevision}),
   getStats:()=>({...stats,datedSources:{territories:countrySourceId,land:physicalLandSourceId,water:physicalWaterSourceId},performance:metrics.snapshot(),polar:polarLayer?.stats(),highlight:highlight?.stats(),hydro:hydroLoader?.stats(),errorMessage:error?.message||null,generation,projectReplacing:!!state.projectReplacing,webglContextLost:contextLost,projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},hydroFeatureCount:hydroFeatures.length,sourceRevision,certifiedRevision,labelLayout:deps.countryLabelModel.labelLayoutMetrics,mapMoving:state.mapMoving}),

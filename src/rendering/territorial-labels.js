@@ -74,7 +74,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     return builtin;
   }
 
-  function territorialLabelScreenMetrics(feature, fontSize, projectedExtent, labelFeature, frame) {
+  function territorialLabelScreenMetrics(feature, fontSize, projectedExtent, primaryName, frame) {
     let width = Number(projectedExtent?.width);
     let height = Number(projectedExtent?.height);
     if (!Number.isFinite(width) || !Number.isFinite(height)) {
@@ -96,7 +96,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
         height=Math.min(frame.size.height,Math.max(...ys)-Math.min(...ys));
       }
     }
-    const textWidth = Math.max(20, [...(0, dependencies.objectPresentation.territorialEntityName)(labelFeature)].length * fontSize * 1.02 + 8);
+    const textWidth = Math.max(20, [...primaryName].length * fontSize * 1.02 + 8);
     return {
       width: Number.isFinite(width) ? width : 0,
       height: Number.isFinite(height) ? height : 0,
@@ -136,11 +136,13 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       const id = String(feature.id || '');
       const group = 'objects';
       const namesVisible = visibility.name;
+      const labelRef = renderCountries.labelRefs.get(id);
+      const primaryName = dependencies.objectPresentation.territorialEntityName(
+        dependencies.territorialModel.entityRepository.get(labelRef.id) || feature, { fallback: '' });
       const rows = territorialNativeLabelRows(feature, dependencies.projectState.state.timelineCursor, {
-        zoom, enabled: dependencies.preferences.userPreferences?.labels?.place?.showNativeNames === true,
+        enabled: dependencies.preferences.userPreferences?.labels?.place?.showNativeNames === true, primaryName,
       });
       territorialRows.set(id, rows);
-      const labelRef = renderCountries.labelRefs.get(id);
       if (!(0, dependencies.layerPresentation.isLayerItemVisible)(group, labelRef?.id || id)) continue;
       if (!(0, dependencies.layerPresentation.isLayerItemVisible)('objectLabels', id) || dependencies.labelPresentation.pendingCountryLabelAnchors.has(id)) continue;
       const flag = namesVisible ? null : territorialLabelFlag(feature, flagOptions);
@@ -152,13 +154,9 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       if (!Array.isArray(coordinate)) continue;
       const selected = dependencies.domains.selectionDomain.has(labelRef);
       const displayFeature = dependencies.territorialObjectModel.territorialScope.displayFeature(renderCountries.labelRefs.get(String(feature.id))?.id || feature.id);
-      const baseMetrics = territorialLabelScreenMetrics(displayFeature, (0, dependencies.surfaces.isMobile)() ? 8 : 9, null, feature, frameContext);
+      const baseMetrics = territorialLabelScreenMetrics(displayFeature, (0, dependencies.surfaces.isMobile)() ? 8 : 9, null, primaryName, frameContext);
       const fontSize = baseMetrics.area >= ((0, dependencies.surfaces.isMobile)() ? 3200 : 2200) ? ((0, dependencies.surfaces.isMobile)() ? 10 : 12) : (0, dependencies.surfaces.isMobile)() ? 8 : 9;
-      const metrics = territorialLabelScreenMetrics(displayFeature, fontSize, baseMetrics, feature, frameContext);
-      if (rows.length > 1) {
-        metrics.textWidth = Math.max(metrics.textWidth, rows[1].text.length * fontSize);
-        metrics.textHeight += fontSize * 1.2;
-      }
+      const metrics = territorialLabelScreenMetrics(displayFeature, fontSize, baseMetrics, primaryName, frameContext);
       if (namesVisible && !selected && !shouldShowTerritorialLabel(feature, metrics)) continue;
       candidates.push({
         key: (0, dependencies.labelPresentation.labelKey)('territorial', labelRef.id), sourceType: 'territorial', source: feature,
@@ -191,13 +189,12 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       const viewportVisible=coordinateInGeographicBounds(coordinate,frameContext.viewState.geographicBounds);
       if(!Array.isArray(coordinate)||!Number.isFinite(coordinate[0])||!Number.isFinite(coordinate[1])||Math.abs(coordinate[1])>90)continue;
       const priority = builtinDisplay ? Number(builtinDisplay.priority) : (settings.priority ?? (label.kind === 'capital' ? dependencies.labelPresentation.LABEL_PRIORITIES.capital : label.kind === 'city' ? dependencies.labelPresentation.LABEL_PRIORITIES.majorCity : label.kind === 'region' ? dependencies.labelPresentation.LABEL_PRIORITIES.administrative : dependencies.labelPresentation.LABEL_PRIORITIES.place));
-      const names = builtinDisplay
-        ? mapPlaceLabelRowsAtMonth(label, dependencies.projectState.state.timelineCursor, { zoom, showNativeNames })
-        : { rows: [{ language: 'ko', text: label.name }], secondaryRows: [] };
-      const { rows, secondaryRows } = names;
+      const rows = builtinDisplay
+        ? mapPlaceLabelRowsAtMonth(label, dependencies.projectState.state.timelineCursor, { showNativeNames })
+        : [{ language: 'ko', text: label.name }];
       if (!rows.length) continue;
       candidates.push({
-        key: (0, dependencies.labelPresentation.labelKey)('label', label.id), sourceType: 'label', source: label, rows, secondaryRows,
+        key: (0, dependencies.labelPresentation.labelKey)('label', label.id), sourceType: 'label', source: label, rows,
         priority, minZoom, maxZoom: settings.maxZoom,
         pinned: settings.pinned, collisionGroup: settings.collisionGroup,
         selected, viewportVisible,
@@ -212,11 +209,9 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     // MapLibre projects, occludes and places them on every camera frame.
     const countries=candidates.filter(item=>item.sourceType==='territorial');
     const places=selectPlaceLabelCandidates(candidates.filter(item=>item.sourceType==='label'),dependencies.renderScene.currentRenderQuality.labelCandidateLimit);
-    const placed=[...countries,...places].map(item=>({...item,rows:item.rows?[...item.rows,...(item.secondaryRows||[]).slice(0,1)]:item.rows}));
     const territorialFlags = new Map(countries.flatMap(item=>{const flag=territorialLabelFlag(item.source,flagOptions);return flag?[[String(item.source.id),flag]]:[];}));
-    const placedTerritorialLabels = placed.filter(item => item.sourceType === 'territorial'
-      && (item.nameVisible || territorialFlags.has(String(item.source.id))));
-    const placedUserLabels = placed.filter(item => item.sourceType === 'label');
+    const placedTerritorialLabels = countries.filter(item => item.nameVisible || territorialFlags.has(String(item.source.id)));
+    const placedUserLabels = places;
     labelLayoutMetrics = nextLabelLayoutMetrics;
     if (dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label) dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label.finalVisibleCount = placedUserLabels.length;
     return {

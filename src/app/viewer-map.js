@@ -332,7 +332,12 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
 
     applyPresentation:projectSession.applyViewingPresentation,
     distributionPresentation:{bumpVisibilityRevision:()=>{objectPresentation.distributionVisibilityRevision++;}},
-    refreshAppearance(options){renderQuality.applyMapAppearanceChange(options);objectCatalog.invalidateObjectPresentation();onPlacesSettled('render');},
+    refreshAppearance(options){
+      if(options?.reason==='formal-country-name-display')renderingDomain.invalidateLabels(options.reason);
+      else renderQuality.applyMapAppearanceChange(options);
+      objectCatalog.invalidateObjectPresentation();
+      onPlacesSettled('render');
+    },
 
     navigation,mapProjection,projectSession,renderingDomain,
     dispose(){disposed=true;releaseGeometryLoader();projectSourceRuntime.dispose();entityStore.dispose();inputPresentation.dispose();pointerTargets.cancelCountryHoverPick();countryIndex.resetCountryLabelAnchorRuntime();mapHost.stopMapResizeObserver();renderingDomain.dispose();renderer.dispose();},

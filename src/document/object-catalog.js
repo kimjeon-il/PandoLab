@@ -42,7 +42,8 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
         return {id,name:dependencies.objectPresentation.territorialEntityName(feature),
           color:dependencies.colorModel.territorialEntityColor(feature),
           flagUrl:effectiveTerritorialFlagUrl(feature,{assetRevision:dependencies.layerPresentation.ASSET_REVISION}),
-          searchText:dependencies.objectPresentation.territorialRootName(feature),
+          searchText:[dependencies.objectPresentation.territorialEntitySearchText(feature),
+            root?.id !== feature.id && root?.properties.entityKind === 'general' ? dependencies.objectPresentation.territorialEntitySearchText(root) : ''].join(' '),
           meta:group==='objectLabels'&&dependencies.labelPresentation.pendingCountryLabelAnchors.has(id)?'계산 중':'',
           folderName:'객체',countryId:String(root?.id||''),parentId:String(feature.properties.parentId||''),
           selected:dependencies.projectState.state.selected?.domain==='territorial'&&dependencies.projectState.state.selected.id===id};

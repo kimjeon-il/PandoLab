@@ -6,7 +6,7 @@ const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 
 const DEFAULTS = Object.freeze({
   version: 2,
-  appearance: Object.freeze({ theme: 'system', smoothLines: true }),
+  appearance: Object.freeze({ theme: 'system', smoothLines: true, showFormalCountryNames: false }),
   labels: Object.freeze({
     country: Object.freeze({ font: 'default', color: null }),
     place: Object.freeze({ font: 'default', color: null, pointColor: null, showNativeNames: false }),
@@ -34,7 +34,7 @@ export function defaultUserPreferences() {
   return {
     backgrounds:{viewer:{graticule:true}},
     version: DEFAULTS.version,
-    appearance: { theme: DEFAULTS.appearance.theme, smoothLines: DEFAULTS.appearance.smoothLines },
+    appearance: { ...DEFAULTS.appearance },
     labels: {
       country: { font: DEFAULTS.labels.country.font, color: DEFAULTS.labels.country.color },
       place: {
@@ -66,6 +66,7 @@ export function normalizeUserPreferences(value) {
     appearance: {
       theme,
       smoothLines: source.appearance?.smoothLines !== false,
+      showFormalCountryNames: source.appearance?.showFormalCountryNames === true,
     },
     labels: {
       country: {

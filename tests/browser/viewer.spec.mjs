@@ -87,6 +87,9 @@ for(const [profile,viewport,saved] of [
      if(canvas&&getComputedStyle(canvas).visibility==='visible'){
       const center=map.getCenter();
       (window.__visibleGlobeFrames??=[]).push([center.lng,center.lat,map.getZoom(),map.getBearing()]);
+      if(document.querySelector('#viewer')?.dataset.initialLoading==='true'&&
+       !map.getLayer('initial-map-land')&&!document.querySelector('[data-map-preserved-frame]'))
+       window.__uncoveredInitialFrame=true;
      }
      if(document.querySelector('#viewerStatus')?.dataset.ready!=='true')requestAnimationFrame(capture);
     };
@@ -98,6 +101,7 @@ for(const [profile,viewport,saved] of [
    expect(await page.locator('#viewer').getAttribute('data-initial-loading')).toBe('true');
    allowGeometry();
    await ready(page,'globe camera after loading');
+   expect(await page.evaluate(()=>window.__uncoveredInitialFrame??false)).toBe(false);
    const {frames,final}=await page.evaluate(()=>{
     const map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter();
     return {frames:window.__visibleGlobeFrames,final:[center.lng,center.lat,map.getZoom(),map.getBearing()]};
@@ -382,7 +386,9 @@ test('rapid zoom keeps the previous frame until the shared inland boundary and l
  await ready(page,'maximum zoom with delayed required tiles');
  const frames=await page.evaluate(()=>window.__rapidZoom.finish());
  expect(frames.some(frame=>!frame.loaded)).toBe(true);
- expect(frames.filter(frame=>!frame.ready).every(frame=>frame.retained)).toBe(true);
+ const firstReady=frames.findIndex(frame=>frame.ready);
+ const beforeFirstReady=firstReady===-1?frames:frames.slice(0,firstReady);
+ expect(beforeFirstReady.filter(frame=>!frame.loaded||!frame.ready).every(frame=>frame.retained)).toBe(true);
  await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
  const visible=await page.evaluate(()=>{
   const map=window.__PANDOLAB_MAPLIBRE__;
@@ -398,6 +404,60 @@ test('rapid zoom keeps the previous frame until the shared inland boundary and l
  await jump(22);
  await ready(page,'fitted view to maximum zoom');
  await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
+});
+
+for(const mobile of [false,true])test(`ordinary camera gestures never preserve the whole frame (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
+ const context=await browser.newContext({baseURL,viewport:mobile?{width:390,height:844}:{width:1200,height:800},
+  deviceScaleFactor:mobile?2:1,hasTouch:mobile,isMobile:mobile});
+ try{
+  const page=await context.newPage();await open(page);
+  await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:3,globeRotation:[-112,-31,0]}}));
+  await ready(page,'gesture camera');
+  await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
+  const before=await page.evaluate(()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,stats=window.__PANDOLAB_VIEWER__.rendererStats;
+   const baseline=stats(),gaps=[];let previous,request,overlays=0,longTasks=0;
+   const tileRequests=new Map();
+   const tileSources=Object.values(baseline.datedSources).map(id=>map.getSource(id)).filter(Boolean);
+   const restore=tileSources.map(source=>{
+    const load=source.loadTile;
+    source.loadTile=function(tile){
+     const key=this.id+':'+tile.tileID.key;
+     tileRequests.set(key,(tileRequests.get(key)||0)+1);
+     return load.call(this,tile);
+    };
+    return ()=>{source.loadTile=load;};
+   });
+   const observer=new PerformanceObserver(list=>{longTasks+=list.getEntries().length;});observer.observe({entryTypes:['longtask']});
+   const sample=now=>{if(previous!==undefined)gaps.push(now-previous);previous=now;
+    overlays+=Number(!!document.querySelector('[data-map-preserved-frame]'));request=requestAnimationFrame(sample);};
+   request=requestAnimationFrame(sample);
+   window.__finishCameraProbe=()=>{
+    cancelAnimationFrame(request);longTasks+=observer.takeRecords().length;observer.disconnect();gaps.sort((a,b)=>a-b);
+    restore.forEach(fn=>fn());
+    const after=stats(),percentile=p=>gaps[Math.ceil(gaps.length*p)-1];
+    return {center:map.getCenter().toArray(),zoom:map.getZoom(),overlays,longTasks,p95:percentile(.95),p99:percentile(.99),
+     copies:after.preservedFrameCopies-baseline.preservedFrameCopies,sourceWrites:after.sourceWrites-baseline.sourceWrites,
+     repeatedTiles:[...tileRequests.values()].reduce((total,count)=>total+count-1,0),
+     approvalAttempts:after.approvalAttempts-baseline.approvalAttempts};
+   };
+   return {center:map.getCenter().toArray(),zoom:map.getZoom()};
+  });
+  const bounds=await page.locator('#map').boundingBox(),x=Math.round(bounds.x+bounds.width/2),y=Math.round(bounds.y+bounds.height/2);
+  if(mobile){
+   const session=await context.newCDPSession(page);
+   await session.send('Input.synthesizePinchGesture',{x,y,scaleFactor:1.4,relativeSpeed:280,gestureSourceType:'touch'});
+  }else{
+   await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+95,y-40,{steps:20});await page.mouse.up();
+   await page.mouse.wheel(0,-130);
+  }
+  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getZoom())).toBeGreaterThan(before.zoom);
+  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
+  const result=await page.evaluate(()=>window.__finishCameraProbe());
+  console.log('[camera-gesture]',JSON.stringify({mobile,...result}));
+  if(!mobile)expect(result.center).not.toEqual(before.center);
+  expect(result.copies).toBe(0);expect(result.overlays).toBe(0);
+ }finally{await context.close();}
 });
 
 for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} names and flags stay attached during globe movement`,async({page})=>{
@@ -1297,6 +1357,74 @@ test('a delayed highlight keeps the previous outline and fill until both new fea
  expect(await shown()).toEqual(visiblePair(france));
  await page.evaluate(()=>window.releaseHighlightFixture());
  await expect.poll(shown).toEqual(visiblePair(germany));
+});
+
+test('large globe highlights stay within the native line vertex budget',async({page})=>{
+ test.setTimeout(180_000);
+ const warnings=[];
+ page.on('console',message=>{if(message.text().includes('Max vertices per segment'))warnings.push(message.text());});
+ await open(page);
+ for(const [id,center] of [['RUS',[100,55]],['CAN',[-100,61]],['BRA',[-52,-10]]]){
+  await page.evaluate(center=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.7,globeRotation:[-center[0],-center[1],0]}}),center);
+  await ready(page,id+' highlight camera');
+  const bounds=await page.locator('#map').boundingBox(),x=bounds.x+bounds.width/2,y=bounds.y+bounds.height/2;
+  const key='territorial:entity:'+id;
+  const shown=()=>page.evaluate(async key=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,highlight=window.__PANDOLAB_VIEWER__.rendererStats().highlight;
+   if(!highlight?.sourceId||highlight.pending)return [];
+   const data=await map.getSource(highlight.sourceId).getData();
+   return data.features.filter(feature=>feature.properties.objectKey===key).map(feature=>feature.geometry.type);
+  },key);
+  await page.mouse.move(x,y);await expect.poll(shown).toEqual(['MultiPolygon','MultiLineString']);
+  if(id==='CAN')await page.keyboard.down('Control');
+  await page.mouse.click(x,y);
+  if(id==='CAN')await page.keyboard.up('Control');
+  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe(key);
+  await expect.poll(shown).toEqual(['MultiPolygon','MultiLineString']);
+  expect(warnings).toEqual([]);
+  if(id!=='CAN')continue;
+  const secondary='territorial:entity:RUS';
+  const seam=await page.evaluate(async key=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,{sourceId}=window.__PANDOLAB_VIEWER__.rendererStats().highlight;
+   const data=await map.getSource(sourceId).getData();
+   const {coordinates}=data.features.find(row=>row.properties.objectKey===key&&row.geometry.type==='MultiLineString').geometry;
+   return coordinates.slice(1).find((line,index)=>line[0][0]===coordinates[index].at(-1)[0]&&line[0][1]===coordinates[index].at(-1)[1]&&Math.abs(line[0][1])<80)?.[0];
+  },secondary);
+  expect(seam,'the detailed outline should contain a split').toBeDefined();
+  await page.evaluate(([longitude,latitude])=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:7,globeRotation:[-longitude,-latitude,0]}}),seam);
+  await ready(page,'detailed highlight split');
+  const sample=await page.evaluate(async({key,seam})=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,viewer=window.__PANDOLAB_VIEWER__;
+   const source=map.getSource(viewer.rendererStats().highlight.sourceId),original=await source.getData();
+   const {coordinates}=original.features.find(row=>row.properties.objectKey===key&&row.geometry.type==='MultiLineString').geometry;
+   const index=coordinates.findIndex((line,i)=>i>0&&line[0][0]===seam[0]&&line[0][1]===seam[1]&&coordinates[i-1].at(-1)[0]===seam[0]&&coordinates[i-1].at(-1)[1]===seam[1]);
+   const capture=()=>new Promise(resolve=>{map.once('render',()=>{
+    const canvas=map.getCanvas(),dpr=map.getPixelRatio(),gl=canvas.getContext('webgl2'),point=map.project(seam),pixels=new Uint8Array(9*9*4);
+    gl.readPixels(Math.round(point.x*dpr)-4,canvas.height-5-Math.round(point.y*dpr),9,9,gl.RGBA,gl.UNSIGNED_BYTE,pixels);resolve([...pixels]);
+   });map.triggerRepaint();});
+   const composite=map.getLayersOrder().find(id=>id.startsWith('interaction-line-opacity-')&&map.getLayer(id).source===source.id&&map.getPaintProperty(id,'line-layer-opacity')===0.72);
+   if(!composite)throw Error('The split secondary outline did not use native opacity compositing');
+   const split=await capture(),merged=structuredClone(original);
+   const lines=merged.features.find(row=>row.properties.objectKey===key&&row.geometry.type==='MultiLineString').geometry.coordinates;
+   lines.splice(index-1,2,[...lines[index-1],...lines[index].slice(1)]);
+   try{
+    await source.setData(merged);
+    while(!map.isSourceLoaded(source.id))await new Promise(resolve=>map.once('render',resolve));
+    const continuous=await capture();
+    map.setPaintProperty(composite,'line-layer-opacity',0);
+    const background=await capture();
+    const strength=pixels=>pixels.reduce((total,value,i)=>total+Math.abs(value-background[i]),0);
+    return {centerDelta:Math.max(...split.slice(160,163).map((value,i)=>Math.abs(value-continuous[160+i]))),
+     splitStrength:strength(split),continuousStrength:strength(continuous)};
+   }finally{map.setPaintProperty(composite,'line-layer-opacity',0.72);await source.setData(original);}
+  },{key:secondary,seam});
+  // The rasterized fringes of a joined line and two round ends can differ
+  // per pixel. Check the center and the total stroke contribution separately.
+  expect(sample.continuousStrength).toBeGreaterThan(0);
+  expect(sample.centerDelta,JSON.stringify(sample)).toBeLessThanOrEqual(24);
+  expect(sample.splitStrength/sample.continuousStrength,JSON.stringify(sample)).toBeGreaterThan(0.85);
+  expect(sample.splitStrength/sample.continuousStrength,JSON.stringify(sample)).toBeLessThan(1.15);
+ }
 });
 
 test('selection outlines omit the antimeridian polygon closure',async({page})=>{

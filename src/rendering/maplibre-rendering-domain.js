@@ -1,5 +1,6 @@
 import {createMapContentPresentation} from '../ui/map-content-presentation.js';
 import {createMapLibreLabelPresentation} from './maplibre-label-presentation.js';
+import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
 
 /** Assemble geographic sources before MapLibre draws; publish labels after its render event. */
 export function createMapLibreRenderingDomain(options){
@@ -8,7 +9,12 @@ export function createMapLibreRenderingDomain(options){
  let viewportOverlaysDirty=false;
  let lastPlaceQueryAt=-Infinity;
  let previousLabelVisibility=null;
+ let previousHydroZoomBand=null;
  let pendingPlaceViewport=null;
+ const hydroZoomBand=()=>{
+  const zoom=renderer.map.getZoom();
+  return HYDRO_DISPLAY_ZOOMS.filter(threshold=>zoom>=threshold).length;
+ };
  const stats={invalidations:0,visualFrameCommittedCount:0};
  // MapLibre owns per-frame camera projection and symbol placement. Keep label
  // sources intact across moves; a new source snapshot or settled view changes them.
@@ -51,6 +57,7 @@ export function createMapLibreRenderingDomain(options){
     (labelVisibility.country!==previousLabelVisibility.country||labelVisibility.places!==previousLabelVisibility.places);
    labelsDirty||=labelThresholdChanged;
    previousLabelVisibility=labelVisibility;
+   previousHydroZoomBand=hydroZoomBand();
    const frame=prepareView({frameId:++frameId,withBounds:labelsDirty});lastFrame=frame;
    renderer.syncHydroState();
    const refreshContent=contentDirty;
@@ -93,9 +100,12 @@ export function createMapLibreRenderingDomain(options){
   invalidateView:reason=>{
    if(reason==='map-retry'){labels.retry();content.retryTerritorialBoundaries();return invalidate(reason,true);}
    if(reason==='maplibre-camera'){
-    if(renderer.labelZoomVisibility().places)prepareMovingPlaces();
+    const visibility=renderer.labelZoomVisibility();
+    if(visibility.places)prepareMovingPlaces();
     else if(previousLabelVisibility?.places)options.labelResources.preparePlaces();
-    return invalidate(reason,false,false);
+    const crossesDisplayThreshold=!previousLabelVisibility||visibility.country!==previousLabelVisibility.country||
+     visibility.places!==previousLabelVisibility.places||hydroZoomBand()!==previousHydroZoomBand;
+    return crossesDisplayThreshold||renderer.isFramePreserved()?invalidate(reason,false,false):false;
    }
    // Source/render certificates never change label identities. Keep the
    // existing symbol source while waiting for the native frame to publish.

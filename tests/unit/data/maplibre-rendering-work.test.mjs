@@ -1,11 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
-import {createMapLibreHighlight} from '../../../src/rendering/maplibre-highlight.js';
+import {createMapLibreHighlight,partitionHighlightLines} from '../../../src/rendering/maplibre-highlight.js';
+
+test('long highlights share their split endpoints and preserve every original segment',()=>{
+ const long=Array.from({length:18000},(_,index)=>[index/1000,(index%3)/1000]);
+ const short=[[0,0],[4,5]];
+ const {coordinates}=partitionHighlightLines({type:'MultiLineString',coordinates:[long,short]});
+ const pieces=coordinates.slice(0,-1);
+ assert.ok(pieces.length>1);
+ assert.ok(pieces.every(piece=>piece.length<6000));
+ assert.deepEqual(pieces.flatMap((piece,index)=>index?piece.slice(1):piece),long);
+ for(let index=1;index<pieces.length;index++)assert.equal(pieces[index][0],pieces[index-1].at(-1));
+ assert.equal(coordinates.at(-1),short);
+});
+
+test('a highlight retries only the stalled phase and waits for the settled camera',async context=>{
+ context.mock.timers.enable({apis:['setTimeout']});
+ const flush=async()=>{for(let pass=0;pass<8;pass++)await Promise.resolve();};
+ for(const phase of ['source-write','polar-prepare','tile-render']){
+  const sources=new Map(),layers=new Map(),errors=[];
+  let moving=false,writes=0,preparations=0,removed=0;
+  const map={style:{},isMoving:()=>moving,isSourceLoaded:()=>phase!=='tile-render',getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+   addSource:(id,row)=>sources.set(id,row),addLayer:row=>layers.set(row.id,row),removeSource:id=>{removed++;sources.delete(id);},
+   removeLayer:id=>layers.delete(id),setPaintProperty(){},setLayoutProperty(){},triggerRepaint(){}};
+  const stall=()=>new Promise(()=>{});
+  const owner=createMapLibreHighlight({map,write:()=>{writes++;return phase==='source-write'?stall():Promise.resolve(true);},
+   preparePolar:()=>{preparations++;return phase==='polar-prepare'?stall():Promise.resolve(()=>true);},
+   clearPolar(){},onShown(){},onError:error=>errors.push(error),onRestoreSelection(){}});
+  try{
+   owner.submit('discarded',[],[],'[]');owner.reset();await flush();
+   assert.equal(writes+preparations,0,'A discarded request cannot start new source or polar preparation');
+   owner.submit('selection',[{properties:{objectKey:'object-A'}}],[],'selection');await flush();
+   if(phase==='tile-render'){
+    context.mock.timers.tick(9000);moving=true;owner.onCameraChange();
+    context.mock.timers.tick(30000);assert.equal(owner.stats().pending,true);assert.equal(writes,1);
+    moving=false;owner.onCameraChange();
+   }
+   context.mock.timers.tick(10000);context.mock.timers.tick(125);await flush();
+   context.mock.timers.tick(10000);
+   assert.equal(writes,phase==='polar-prepare'?1:2);
+   assert.equal(preparations,phase==='polar-prepare'?2:1);
+   assert.equal(removed,phase==='polar-prepare'?0:1);
+   assert.equal(owner.stats().pending,false);
+   assert.deepEqual(errors.map(error=>[error.phase,error.sourceId,error.objectKeys,error.attempts]),[[phase,'interaction',['object-A'],2]]);
+  }finally{owner.dispose();}
+ }
+});
 
 test('highlight preserves the complete previous frame until native and polar work are both ready', async () => {
  const sources=new Map(),layers=new Map(),shown=[],errors=[],restored=[];
- const map={style:{},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+ const map={style:{},isMoving:()=>false,getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
   addSource:(id,source)=>sources.set(id,source),addLayer:layer=>layers.set(layer.id,layer),
   setPaintProperty:(id,key,value)=>{layers.get(id).paint[key]=value;},
   setLayoutProperty:(id,key,value)=>{layers.get(id).layout[key]=value;},
@@ -22,7 +67,7 @@ test('highlight preserves the complete previous frame until native and polar wor
    if(block)await new Promise(resolve=>{deferredPolar=resolve;});
    return ()=>{polar=items[0];return true;};
   },
-  clearPolar:()=>{polar=null;},onShown:value=>shown.push(value),onError:error=>errors.push(error.message),
+  clearPolar:()=>{polar=null;},onShown:value=>shown.push(value),onError:error=>errors.push(error.cause.message),
   onRestoreSelection:key=>{restored.push(key);submit(key);}});
  const feature=(key,type)=>({type:'Feature',geometry:{type,coordinates:[]},properties:{objectKey:key}});
  const submit=key=>owner.submit(key,[feature(key,'Polygon'),feature(key,'LineString')],[key],key);
@@ -97,6 +142,7 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
  globalThis.document={baseURI:'https://fixture.test/',documentElement:{dataset:{}}};
  const sources=new Map(),layers=new Map(),frames=[];
  const map={
+  getZoom:()=>4,
   getStyle:()=>({'font-faces':{}}),setFontFaces(){},
   getSource:id=>sources.get(id)||null,
   addSource(id){sources.set(id,{on(){},off(){},async setData(){},async updateData(){}});},
@@ -159,10 +205,11 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   await flush();
   assert.equal(labelRuns,1);assert.equal(contentRuns,1);
   assert.equal(frames[0].withBounds,true);
-  const baselineQueries=placeQueries;
+  const baselineQueries=placeQueries,baselineFrames=prepared;
   for(let i=0;i<25;i++){time+=16;domain.invalidateView('maplibre-camera');await flush();}
   assert.equal(labelRuns,1,'Native camera movement cannot rebuild unchanged labels');
   assert.equal(contentRuns,1,'Native camera movement cannot rebuild the geographic scene');
+  assert.equal(prepared,baselineFrames,'Unchanged camera display bands do not schedule application frames');
   for(const event of ['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint']){
    domain.invalidateView(event);await flush();
   }
@@ -182,7 +229,6 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(contentRuns,1,'Quality tier changes do not rebuild unrelated geometry');
   domain.invalidateLabels('new-viewport-records');await flush();
   assert.equal(labelRuns,4,'Worker-accepted place data must refresh symbol source');
-  assert.ok(prepared>=29);
   const publications=domain.getStats().visualFrameCommittedCount;
   let completePlaces;
   placeTask=new Promise(resolve=>{completePlaces=resolve;});preserved=true;

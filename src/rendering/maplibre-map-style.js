@@ -1,4 +1,4 @@
-import {mapLibreHydroOpacity} from './maplibre-hydro-presentation.js';
+import {mapLibreHydroOpacity,mapLibreRiverWidth} from './maplibre-hydro-presentation.js';
 
 // One MapLibre paint/layout contract for the white map. Neither the source
 // geometry nor stored object color is modified by this presentation.
@@ -29,7 +29,7 @@ export function resolveMapLibreMapStyle({
   },
   'physical-water':{'fill-antialias':smooth,'fill-color':water,'fill-opacity':1},
   lakes:{'fill-antialias':smooth,'fill-color':water,'fill-opacity':mapLibreHydroOpacity()},
-  rivers:{'line-color':river,'line-width':palette.strokes?.river?.width??0.8,'line-opacity':mapLibreHydroOpacity()},
+  rivers:{'line-color':river,'line-width':mapLibreRiverWidth(palette.strokes?.river?.width),'line-opacity':mapLibreHydroOpacity()},
   'initial-map-ocean':{'background-color':loading.ocean||ocean},
   'initial-map-land':{'fill-color':loading.land||land,'fill-antialias':true},
  });
@@ -37,6 +37,6 @@ export function resolveMapLibreMapStyle({
   lakes:{visibility:layerVisibility?.lakes===false?'none':'visible'},
   rivers:{visibility:layerVisibility?.rivers===false?'none':'visible'},
  });
- return Object.freeze({paint,layout,territorialFillPaint,countryStroke,
+ return Object.freeze({paint,layout,territorialFillPaint,countryStroke,smoothLines:smooth,
   borderAlpha:palette.borderAlpha??1});
 }

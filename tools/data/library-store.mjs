@@ -306,7 +306,8 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
   }
 
   const territorial='assets/data/territorial-entities',generated=territorial+'/generated/v2/';
-  const sourceEntity=(p,read)=>decodeTerritorialSource(JSON.parse(read(p)),file=>read(territorial+'/source/'+file));
+  const decodeSource=(descriptor,read)=>decodeTerritorialSource(descriptor,file=>read(territorial+'/source/'+file));
+  const sourceEntity=(p,read)=>decodeSource(JSON.parse(read(p)),read);
   const previousSource=p=>readPreviousSource?readPreviousSource(p,oldBytes):sourceEntity(p,oldBytes);
   const generatedSelected=prefixes.some(p=>p===territorial||p.startsWith(generated)||generated.startsWith(p+'/'));
   let retirementPlan=null;
@@ -390,7 +391,15 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
      const world=JSON.parse(newBytes(retirementWorldPath));if(retirementPlan.mixed&&!isDeepStrictEqual(world,verifiedMixedCurrentWorld(retirementPlan,{readRecovery:retirementReadRecovery})))throw Error('Territorial retirement: current-world output differs');const expected=builtinIndex.sourceIdentities.flatMap(row=>row.sourceFeatureIds),actual=world.features?.map(row=>row.id);
      if(world.type!=='FeatureCollection'||!actual||new Set(actual).size!==actual.length||actual.length!==expected.length||expected.some(id=>!actual.includes(id)))throw Error('Territorial retirement: unpaired current-world identities');
     }
-    const source=(entry,read)=>{const bytes=read(sourceBase+entry.file);if(contentHash(bytes)!==entry.sha256)throw Error('Historical source chunk hash mismatch: '+entry.entityId);const entity=JSON.parse(gunzipSync(bytes));if(entity.entityId!==entry.entityId)throw Error('Historical source identity mismatch');return entity;};
+    const source=(entry,read)=>{
+      const bytes=read(sourceBase+entry.file);
+      if(contentHash(bytes)!==entry.sha256)throw Error('Historical source chunk hash mismatch: '+entry.entityId);
+      const descriptor=JSON.parse(gunzipSync(bytes));
+      if(descriptor.entityId!==entry.entityId)throw Error('Historical source identity mismatch');
+      // Pinned chunks with inline geometry already contain the materialized entity.
+      if(read===oldBytes&&entry.storageLayout===undefined&&descriptor.storageLayout===undefined)return descriptor;
+      return decodeSource(descriptor,read);
+    };
     const country=(entry,index,read)=>readBuiltinCountry(entry,index,file=>read(countryBase+file));
     const previousCountry=readPreviousCountry?entry=>readPreviousCountry(entry,previousBuiltinIndex,file=>oldBytes(countryBase+file))
       :entry=>country(entry,previousBuiltinIndex,oldBytes);

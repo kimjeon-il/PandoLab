@@ -7,6 +7,17 @@ const hydroLayers=[['lakes','lake','fill'],['rivers','river','line']].flatMap(([
 const hydroLayerById=new Map(hydroLayers.map(layer=>[layer.id,layer]));
 export const mapLibreHydroLayer=id=>hydroLayerById.get(id);
 
+const riverWidthTaperStart=3,riverWidthTaperEnd=4;
+export function riverWidthAtZoom(zoom,width=1){
+ const lowZoomWidth=Math.max(1.5,width);
+ const remaining=Math.max(0,Math.min(1,(riverWidthTaperEnd-zoom)/(riverWidthTaperEnd-riverWidthTaperStart)));
+ return width+(lowZoomWidth-width)*remaining;
+}
+
+export function mapLibreRiverWidth(width=1){
+ return ['interpolate',['linear'],['zoom'],riverWidthTaperStart,riverWidthAtZoom(riverWidthTaperStart,width),riverWidthTaperEnd,width];
+}
+
 // Globe coverage can use more than one tile zoom at the same time.
 // Paint expressions use the camera zoom regardless of the source tile level.
 export const mapLibreHydroOpacity=(zoom=HYDRO_DISPLAY_ZOOMS[0],opacity=1)=>['step',['zoom'],0,zoom,opacity];
@@ -17,7 +28,7 @@ export function mapLibreHydroPaint(paint,type,zoom,opacity=1){
 export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){
  const paints=stylePaint||{
   lakes:{'fill-antialias':antiAlias,'fill-color':'#5aa9d6'},
-  rivers:{'line-color':'#3b82c4','line-width':0.8},
+  rivers:{'line-color':'#3b82c4','line-width':mapLibreRiverWidth()},
  };
  return {sources:{hydro:{type:'geojson',data:{type:'FeatureCollection',features:[]},promoteId:'featureId'}},
   layers:hydroLayers.map(({id,baseId,category,type,zoom})=>({

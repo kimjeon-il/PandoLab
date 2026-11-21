@@ -1,6 +1,9 @@
 import {MAPLIBRE_LABEL_LAYERS} from './maplibre-label-presentation.js';
 import {mapLibreHydroLayer,mapLibreHydroPaint} from './maplibre-hydro-presentation.js';
 
+const hardLineLayer=layer=>layer.id.split('--',1)[0]==='borders'||
+ (layer.source==='hydro'&&mapLibreHydroLayer(layer.id)?.baseId==='rivers');
+
 /** Apply MapLibre paint/layout changes without resetting style, sources or camera. */
 export function createMapLibreStyleController(map){
  if(!map||typeof map.getLayer!=='function'||typeof map.setPaintProperty!=='function')
@@ -27,7 +30,12 @@ export function createMapLibreStyleController(map){
  }
  function apply(style,{updateVisibility=true}={}){
   if(!style?.paint||!style?.layout)throw new TypeError('A resolved white map style is required.');
-  let changed=false;
+  const hardEdges=style.smoothLines===false?hardLineLayer:undefined;
+  let changed=map.painter.pandoHardLineEdges!==hardEdges;
+  if(changed){
+   map.painter.pandoHardLineEdges=hardEdges;
+   map.triggerRepaint();
+  }
   for(const [id,properties] of Object.entries(style.paint)){
    if(id.startsWith('initial-map-'))continue;
    changed=paint(id,properties)||changed;

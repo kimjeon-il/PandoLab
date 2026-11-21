@@ -50,13 +50,13 @@ export function createMapPresentationSession({
       invalidateFrame('await-current-map-frame');
     });
   }
-  function beginTemporalViewTransition(isCurrent = () => true) {
+  function beginTemporalViewTransition(isCurrent = () => true, onPresented = () => {}) {
     const token = ++viewSequence;
     temporalTicket = {
       kind: 'view', countryContent: null, token, generation: getGeneration(),
       context: getContextRevision(), isCurrent: () => !isDisposed()
         && token === viewSequence && isCurrent(),
-      onPresented: () => {}, presented: false, sourceAdmitted: false,
+      onPresented, presented: false, sourceAdmitted: false,
       error: null, frameId: null,
     };
     return token;
