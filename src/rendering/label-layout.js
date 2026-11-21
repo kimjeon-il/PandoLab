@@ -1,4 +1,5 @@
 import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
+import {PLACE_LIMITS} from '../document/place-limits.js';
 
 export const LABEL_PRIORITIES = Object.freeze({ country: 100, capital: 90, majorCity: 70, administrative: 60, place: 40 });
 
@@ -8,7 +9,7 @@ export const MAP_LABEL_SIZE_STOPS = Object.freeze([
   Object.freeze({zoom:9,flag:46,name:50,cityDiameter:10,cityName:20}),
 ]);
 
-export function territorialLabelSize(componentBounds, [longitude, latitude], zoom) {
+export function territorialLabelShortSide(componentBounds, [longitude, latitude]) {
   let nearest, distance = Infinity, area = 0;
   for (const bounds of componentBounds) {
     const [west, south, east, north] = bounds;
@@ -25,29 +26,39 @@ export function territorialLabelSize(componentBounds, [longitude, latitude], zoo
     }
   }
 
-  let shortSide = 0;
-  if (nearest) {
-    const [west, south, east, north] = nearest;
-    // Use the zoom scale at the label's latitude, independent of pan, clipping
-    // and foreshortening. The globe still projects the actual symbol anchor.
-    const latitudeScale = Math.cos(Math.min(Math.abs(latitude), 85) * Math.PI / 180);
-    const degrees = Math.min(east - west, (north - south) / latitudeScale);
-    shortSide = degrees * referenceZoomPixelsPerDegree(zoom);
-  }
-  const standardFraction = Math.min(1, Math.max(0, (shortSide - 22) / (147 - 22)));
-  const largeFraction = Math.min(1, Math.max(0, (shortSide - 147) / (440 - 147)));
-  // Subpixel precision avoids replacing tiles for imperceptible zoom changes.
-  const standardGrowth = Math.round(60 * standardFraction);
+  if (!nearest) return 0;
+  const [west, south, east, north] = nearest;
+  // Measure at the anchor's latitude, independently of the viewport and camera.
+  const latitudeScale = Math.cos(Math.min(Math.abs(latitude), 85) * Math.PI / 180);
+  return Math.min(east - west, (north - south) / latitudeScale);
+}
+
+export const TERRITORIAL_FLAG_BASE_HEIGHT = 12;
+
+function territorialSizeAtZoom(kind, zoom) {
   const upperIndex = zoom <= MAP_LABEL_SIZE_STOPS[1].zoom ? 1 : 2;
   const upper = MAP_LABEL_SIZE_STOPS[upperIndex], lower = MAP_LABEL_SIZE_STOPS[upperIndex - 1];
   const t = Math.min(1, Math.max(0, (zoom - lower.zoom) / (upper.zoom - lower.zoom)));
-  const nameCap = lower.name + t * (upper.name - lower.name);
-  const flagCap = lower.flag + t * (upper.flag - lower.flag);
-  return {
-    name: (130 + standardGrowth + Math.round((nameCap - 19) * 10 * largeFraction)) / 10,
-    flag: (120 + standardGrowth + Math.round((flagCap - 18) * 10 * largeFraction)) / 10,
-  };
+  const cap = lower[kind] + t * (upper[kind] - lower[kind]);
+  const minimum = kind === 'name' ? 13 : TERRITORIAL_FLAG_BASE_HEIGHT;
+  const shortSide = ['*', ['number', ['get', 'territorialShortSide'], 0], referenceZoomPixelsPerDegree(zoom)];
+  const fraction = (start, end) => ['min', 1, ['max', 0, ['/', ['-', ['var', 'shortSide'], start], end - start]]];
+  const tenths = ['+', minimum * 10,
+    ['round', ['*', 60, fraction(22, 147)]],
+    ['round', ['*', (cap - minimum - 6) * 10, fraction(147, 440)]]];
+  const factor = kind === 'name' ? 1 : TERRITORIAL_FLAG_BASE_HEIGHT;
+  return ['let', 'shortSide', shortSide, ['/', tenths, factor * 10]];
 }
+
+function territorialZoomSize(kind) {
+  const expression = ['interpolate', ['linear'], ['zoom']];
+  // MapLibre interpolates between per-feature sizes sampled at adjacent zoom stops.
+  for (let zoom = 3; zoom <= 22; zoom++) expression.push(zoom, territorialSizeAtZoom(kind, zoom));
+  return expression;
+}
+
+export const TERRITORIAL_NAME_SIZE = territorialZoomSize('name');
+export const TERRITORIAL_ICON_SIZE = territorialZoomSize('flag');
 
 export function bufferedPlaceBounds(bounds, currentBounds) {
   const [west, south, east, north] = bounds;
@@ -78,7 +89,10 @@ export function coordinateInGeographicBounds(coordinate,bounds){
 }
 
 export function selectPlaceLabelCandidates(candidates,limit){
-  return [...candidates].sort((a,b)=>Number(!!b.selected)-Number(!!a.selected)||Number(!!b.viewportVisible)-Number(!!a.viewportVisible)||b.priority-a.priority||a.key.localeCompare(b.key)).slice(0,limit);
+  const ranked=[...candidates].sort((a,b)=>Number(!!b.selected)-Number(!!a.selected)||b.priority-a.priority||a.key.localeCompare(b.key));
+  const active=candidate=>candidate.selected||candidate.viewportVisible;
+  return [...ranked.filter(active).slice(0,limit),
+    ...ranked.filter(candidate=>!active(candidate)).slice(0,Math.min(limit,PLACE_LIMITS.retainedRecords))];
 }
 
 const AUTOMATIC_LABEL_POLICIES = Object.freeze({

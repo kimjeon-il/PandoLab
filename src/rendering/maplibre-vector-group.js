@@ -14,25 +14,36 @@ export function geographicStrokeChains(values){
  return {type:'MultiLineString',coordinates:lines};
 }
 export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource}){
- let version=0,disposed=false,pending=false,dataKey='',tail=Promise.resolve(),sourceOwner=null;
+ let version=0,disposed=false,pending=false,tail=Promise.resolve(),sourceOwner=null,sourceRows=null;
  const noLayers=Object.freeze([]),definitions=new Map();
  let layerIds=noLayers;
  function clear(){for(const layer of [...layerIds].reverse())if(map.getLayer(layer))map.removeLayer(layer);layerIds=noLayers;definitions.clear();}
  function update(next){const request=++version;pending=true;const task=tail.catch(()=>{}).then(()=>apply(next,request));tail=task;return task;}
+ const nativeGeometry=row=>row.kind==='line'?clipMercatorLines(row.geometry):row.geometry;
+ const feature=row=>({type:'Feature',id:row.key,geometry:nativeGeometry(row),properties:{key:row.key,objectKey:row.objectKey||''}});
  async function apply(next,request){
   if(disposed||request!==version)return;
-  const nextKey=JSON.stringify(next.map(row=>[row.key,row.geometryRevision]));
-  const needsData=!sharedSource&&(map.getSource(id)!==sourceOwner||nextKey!==dataKey);
-  const features=[];
-  for(const row of needsData?next:[]){
-   const geometry=row.kind==='line'?clipMercatorLines(row.geometry):row.geometry;
-   features.push({type:'Feature',id:row.key,geometry,properties:{key:row.key,objectKey:row.objectKey||''}});
-  }
-  if(disposed||request!==version)return;
   if(!sharedSource){
-   if(map.getSource(id)!==sourceOwner)dataKey='';
-   if(!map.getSource(id)){map.addSource(id,{type:'geojson',data:{type:'FeatureCollection',features}});sourceOwner=map.getSource(id);dataKey=nextKey;}
-   else if(nextKey!==dataKey){const source=map.getSource(id);sourceOwner=source;await source.setData({type:'FeatureCollection',features});if(map.getSource(id)===source)dataKey=nextKey;}
+   let source=map.getSource(id);
+   const rows=new Map(next.map(row=>[row.key,row]));
+   if(!source||source!==sourceOwner){
+    const data={type:'FeatureCollection',features:next.map(feature)};
+    if(source)await source.setData(data);
+    else{map.addSource(id,{type:'geojson',data});source=map.getSource(id);}
+   }else{
+    const add=[],update=[],remove=[...sourceRows.keys()].filter(key=>!rows.has(key));
+    for(const row of next){
+     const before=sourceRows.get(row.key);
+     if(!before){add.push(feature(row));continue;}
+     const moved=before.geometryRevision!==row.geometryRevision;
+     const refChanged=before.objectKey!==row.objectKey;
+     if(moved||refChanged)update.push({id:row.key,
+      ...(moved?{newGeometry:nativeGeometry(row)}:{}),
+      ...(refChanged?{addOrUpdateProperties:[{key:'objectKey',value:row.objectKey||''}]}:{})});
+    }
+    if(add.length||update.length||remove.length)await source.updateData({add,update,remove});
+   }
+   if(map.getSource(id)===source){sourceOwner=source;sourceRows=rows;}
   }
   if(disposed||request!==version)return;
   const desired=new Map();

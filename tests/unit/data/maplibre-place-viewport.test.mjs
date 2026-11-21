@@ -4,6 +4,25 @@ import {createHash} from 'node:crypto';
 import {encodePlaceTile} from '../../../src/data/place-codec.js';
 import {createPlaceWorkerStore} from '../../../src/data/place-worker-store.js';
 import {createHydroTileWindow,hydroTileSpecsForWindow} from '../../../src/data/hydro-tile-window.js';
+import {resolvePlaceLabelRows} from '../../../src/data/place-name-policy.js';
+
+test('city names mark modern fallback only before the current year',()=>{
+ const place={name:'런던',nameNative:'London',nameTimeline:[]};
+ const languages={ko:true,native:true},referenceDate='2026-11-21';
+ const resolve=(record,date)=>resolvePlaceLabelRows(record,languages,date,referenceDate);
+ for(const date of ['2026-01-31','2026-10-31','2026-11-30']){
+  assert.deepEqual(resolve(place,date).map(row=>[row.text,row.modernName]),[
+   ['런던',false],['London',false],
+  ]);
+ }
+ assert.deepEqual(resolve(place,'2025-12-31').map(row=>[row.text,row.modernName]),[
+  ['(현)런던',true],['(현)London',true],
+ ]);
+ const historical={...place,nameTimeline:[{fromYear:100,ko:'론디니움',native:'Londinium'},{fromYear:600,ko:'런던',native:'London'}]};
+ assert.deepEqual(resolve(historical,'0200-12-31').map(row=>[row.text,row.modernName]),[
+  ['론디니움',false],['Londinium',false],
+ ]);
+});
 
 test('city tiles carry capital periods through viewport reads without changing rank or zoom',async()=>{
  const capitalPeriods=[{countryId:'historical-country:fixture',fromDate:'1922-02-28',untilDateExclusive:'1922-04-01',source:'Fixture record'}];

@@ -1,5 +1,5 @@
 import { isMapVisualFrame } from "./map-visual-frame.js";
-import { bufferedPlaceBounds,coordinateInGeographicBounds,selectPlaceLabelCandidates,territorialLabelSize } from "./label-layout.js";
+import { bufferedPlaceBounds,coordinateInGeographicBounds,selectPlaceLabelCandidates,territorialLabelShortSide } from "./label-layout.js";
 import { coordinateBounds } from "../geometry/coordinate-bounds.js";
 import { admittedGeometryKey } from "../geometry/geometry-version-store.js";
 import { multiCoordinates } from "../geometry/polygon-geometry-utils.js";
@@ -135,7 +135,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       const geometry = dependencies.territorialObjectModel.territorialScope.displayFeature(labelRef.id)?.geometry;
       candidates.push({
         sourceType: 'territorial', source: feature, nameVisible: namesVisible, flag,
-        size: territorialLabelSize(componentBounds(id, geometry), coordinate, zoom),
+        shortSide: territorialLabelShortSide(componentBounds(id, geometry), coordinate),
         priority: settings.priority ?? dependencies.labelPresentation.LABEL_PRIORITIES.country,
       });
     }
@@ -189,7 +189,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       territorialLabelNames: new Map(countries.map(item => [String(item.source.id), item.nameVisible])),
       territorialLabelRows: new Map(countries.map(item => [String(item.source.id), territorialRows.get(String(item.source.id)) || []])),
       territorialFlags,
-      territorialLabelSizes: new Map(countries.map(item => [String(item.source.id), item.size])),
+      territorialLabelShortSides: new Map(countries.map(item => [String(item.source.id), item.shortSide])),
       userLabels: placedUserLabels.map(item => item.source),
       userLabelRows: new Map(placedUserLabels.map(item => [String(item.source.id), item.rows])),
       territorialLabelPriorities:new Map(countries.map(item=>[String(item.source.id),item.priority])),

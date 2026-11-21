@@ -1,6 +1,5 @@
-import { sharedCalculationCore } from "../document/temporal.js";
+import { parseTemporal, sharedCalculationCore, temporalMonthEnd } from "../document/temporal.js";
 import { DEFAULT_PLACE_LANGUAGES } from "../document/place-contract.js";
-import { temporalMonthEnd } from "../document/temporal.js";
 
 /** Shared period projection. No evidence exists here for builtin places in BCE. */
 export function placeLabelRowsAtMonth(place, month, languages = DEFAULT_PLACE_LANGUAGES) {
@@ -14,13 +13,17 @@ export function resolvePlaceLabelRows(place, languages = DEFAULT_PLACE_LANGUAGES
   sourceReferenceDate = new Date().toISOString().slice(0, 10)) {
   if (mapDate != null && !/^\d{4}-\d{2}-\d{2}$/u.test(mapDate)) throw new TypeError('Invalid map label date');
   if (typeof sharedCalculationCore.placeNameRows !== 'function') throw new Error('Required place naming capability is unavailable');
+  const reference = mapDate == null ? null : parseTemporal(sourceReferenceDate, { nullable: false });
+  if (reference && reference.precision !== 'date') throw new TypeError('Invalid place name reference date');
+  // The current year uses the published current names, including earlier months.
+  const historicalCutoff = reference?.canonical.replace(/-\d{2}-\d{2}$/u, '-01-01') || '';
   const rows = [], seen = new Set();
   const add = (language, value, modernName) => {
     const name = String(value || '').trim(), key = name.normalize('NFKC').toLocaleLowerCase();
     if (name && !seen.has(key)) { seen.add(key); rows.push(Object.freeze({ language,
       text: (modernName ? '(현)' : '') + name, modernName })); }
   };
-  for (const row of sharedCalculationCore.placeNameRows(place, languages || {}, mapDate || '', sourceReferenceDate)) {
+  for (const row of sharedCalculationCore.placeNameRows(place, languages || {}, mapDate || '', historicalCutoff)) {
     add(row.language, row.text, row.modernName);
   }
   return rows;

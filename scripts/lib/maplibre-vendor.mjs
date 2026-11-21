@@ -3,7 +3,7 @@ import {resolve} from 'node:path';
 
 function replaceOnce(source,needle,replacement){
  const at=source.indexOf(needle);
- if(at<0||at!==source.lastIndexOf(needle))throw Error('MapLibre solid line hook changed: '+needle);
+ if(at<0||at!==source.lastIndexOf(needle))throw Error('MapLibre renderer hook changed: '+needle);
  return source.slice(0,at)+replacement+source.slice(at+needle.length);
 }
 
@@ -26,6 +26,15 @@ function addHardLineEdges(source){
  return replaceOnce(source,'k=sM(g,r,n,O);','k=sM(g,r,n,O,e.pandoHardLineEdges?.(n));');
 }
 
+// Reuse the source's dirty-tile predicate for dormant tiles as well as the
+// visible pyramid. Full source/style changes still clear native tile data.
+function retainUnaffectedTiles(source){
+ const reload='reload(e,t=void 0){if(this._paused)this._shouldReloadOnResume=!0;else{';
+ const cache='this._outOfViewCache';
+ return replaceOnce(source,reload+cache+'.reset();',
+  reload+'if(t)'+cache+'.filter(tile=>!this._source.shouldReloadTile(tile,t));else '+cache+'.reset();');
+}
+
 // Package the dependency from the installed, lockfile-selected distribution.
 export function mapLibreVendorAssets(root){
  const project=JSON.parse(readFileSync(resolve(root,'package.json'),'utf8'));
@@ -34,7 +43,7 @@ export function mapLibreVendorAssets(root){
  const files=['maplibre-gl.mjs','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs','maplibre-gl.css'];
  const output=new Map(files.map(name=>['assets/vendor/maplibre-gl/'+name,readFileSync(resolve(root,'node_modules/maplibre-gl/dist',name))]));
  const modulePath='assets/vendor/maplibre-gl/maplibre-gl.mjs';
- output.set(modulePath,Buffer.from(addHardLineEdges(output.get(modulePath).toString('utf8'))));
+ output.set(modulePath,Buffer.from(retainUnaffectedTiles(addHardLineEdges(output.get(modulePath).toString('utf8')))));
  output.set('assets/vendor/maplibre-gl/LICENSE.txt',readFileSync(resolve(root,'node_modules/maplibre-gl/LICENSE.txt')));
  return output;
 }

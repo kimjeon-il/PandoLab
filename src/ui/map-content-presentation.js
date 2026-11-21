@@ -3,11 +3,23 @@ import {resolveMapStrokeStyle} from "../map/map-interaction-style.js";
 import {distributionValueRange,distributionValueAlpha} from "../document/distribution-model.js";
 import {createTerritorialFillResolver} from "../rendering/territorial-fill-style.js";
 import {connectBoundarySegments} from "../geometry/boundary-lines.js";
+import {retainViewportItems} from "../runtime/resource-dependency-policy.js";
+
+const overlayStandbyLimit = 128;
 
 /** Canonical map content and scene presentation; product outputs supply registered surfaces. */
 export function createMapContentPresentation({mapPalette=()=>({}),territorial={},generic={},distribution={},
  territorialBoundary={},base={},prepareMapDisplay=null,onMapDisplayReady=()=>{},onMapDisplayFailed=()=>{},
  reportDiagnostic=()=>{},isDisposed=()=>false,isSmooth=()=>document.documentElement.dataset.smoothLines!=='false'}={}) {
+  const residentOverlays = new Map();
+  function retainOverlays(domain, eligible, visible) {
+    const eligibleIds = new Set(eligible.map(row => String(row.id)));
+    const recent = [...residentOverlays.get(domain) || []].filter(id => eligibleIds.has(id));
+    const current = new Set(visible.map(row => String(row.id)));
+    const resident = retainViewportItems(recent, current, overlayStandbyLimit);
+    residentOverlays.set(domain, resident);
+    return eligible.filter(row => resident.has(String(row.id)));
+  }
   const renderTerritorialUnits = () => {
     const t = territorial;
     const state = t.getState?.() || {};
@@ -18,15 +30,16 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
     const visibleIds = new Set((t.visibleMapObjectCandidates?.(['territorial']) || []).map(record => String(record.id)));
     const displayed = t.displayEntities();
     const displayedUnits = displayed.filter(entity => entity.properties.entityKind === 'regional');
-    const data = displayedUnits.filter(feature => {
-      const group = 'objects';
+    const eligible = displayedUnits.filter(feature =>
+      state.layerVisibility?.objects !== false && t.isLayerItemVisible?.('objects', feature.id));
+    const visible = eligible.filter(feature => {
       const selected = t.selectionHas?.(t.normalizeObjectRef?.({
         domain: 'territorial', type: 'entity', id: feature.id,
       }));
-      return state.layerVisibility?.[group] !== false && t.isLayerItemVisible?.(group, feature.id)
-        && (selected || (visibleIds.has(String(feature.id)) && t.geometryMayIntersectViewport?.(feature.geometry)));
+      return selected || (visibleIds.has(String(feature.id)) && t.geometryMayIntersectViewport?.(feature.geometry));
     });
-    if (t.viewportCullingMetrics?.lastByDomain?.territorial) t.viewportCullingMetrics.lastByDomain.territorial.finalVisibleCount = data.length;
+    const data = retainOverlays('territorial', eligible, visible);
+    if (t.viewportCullingMetrics?.lastByDomain?.territorial) t.viewportCullingMetrics.lastByDomain.territorial.finalVisibleCount = visible.length;
     const polygons = [];
     for (const feature of data) {
       const group = 'objects';
@@ -40,11 +53,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
 
     }
     t.replaceSceneDomain?.('territorial-units', { polygons });
-    const boundaryFeatures = displayedUnits.filter(feature => {
-      const group = 'objects';
-      return state.layerVisibility?.[group] !== false && t.isLayerItemVisible?.(group, feature.id);
-    });
-    renderTerritorialInternalBoundaries(displayed, boundaryFeatures);
+    renderTerritorialInternalBoundaries(displayed, eligible);
     return true;
   };
   const renderGenericFeatures = () => {
@@ -54,12 +63,13 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
     const visibleIds = state.layerVisibility?.genericFeatures !== false
       ? new Set((g.visibleMapObjectCandidates?.(['generic']) || []).map(record => String(record.id)))
       : new Set();
-    const data = state.layerVisibility?.genericFeatures !== false
-      ? (state.genericFeatures || []).filter(feature => g.isLayerItemVisible?.('genericFeatures', feature.id))
-        .filter(feature => feature.geometry && ((visibleIds.has(String(feature.id)) && g.geometryMayIntersectViewport?.(feature.geometry))
-          || g.selectionHas?.(g.normalizeObjectRef?.({ domain: 'generic', type: 'feature', id: feature.id }))))
+    const eligible = state.layerVisibility?.genericFeatures !== false
+      ? (state.genericFeatures || []).filter(feature => feature.geometry && g.isLayerItemVisible?.('genericFeatures', feature.id))
       : [];
-    if (g.viewportCullingMetrics?.lastByDomain?.generic) g.viewportCullingMetrics.lastByDomain.generic.finalVisibleCount = data.length;
+    const visible = eligible.filter(feature => (visibleIds.has(String(feature.id)) && g.geometryMayIntersectViewport?.(feature.geometry))
+      || g.selectionHas?.(g.normalizeObjectRef?.({ domain: 'generic', type: 'feature', id: feature.id })));
+    const data = retainOverlays('generic', eligible, visible);
+    if (g.viewportCullingMetrics?.lastByDomain?.generic) g.viewportCullingMetrics.lastByDomain.generic.finalVisibleCount = visible.length;
     const selectedRef = d => g.normalizeObjectRef?.({ domain: 'generic', type: 'feature', id: d.id });
     const polygons = [];
     const strokes = [];
@@ -132,7 +142,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
   };
   const visibleDistributionRenderRows = () => {
     const d = distribution;
-    const rows = buildDistributionRenderRows();
+    const rows = d.getState?.()?.layerVisibility?.distributions === false ? [] : buildDistributionRenderRows();
     const candidates = new Set((d.visibleMapObjectCandidates?.(['distribution']) || []).map(record => String(record.id)));
     const started = globalThis.performance?.now?.() || Date.now();
     let verificationCount = 0;
@@ -149,7 +159,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
       d.viewportCullingMetrics.projectedVerificationCount = (d.viewportCullingMetrics.projectedVerificationCount || 0) + verificationCount;
       d.viewportCullingMetrics.projectedVerificationMs = (d.viewportCullingMetrics.projectedVerificationMs || 0) + ((globalThis.performance?.now?.() || Date.now()) - started);
     }
-    return visible;
+    return retainOverlays('distribution', rows, visible);
   };
   const renderDistributions = () => {
     const d = distribution;
@@ -291,7 +301,8 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
     }] });
     return true;
   };
-  const resetTerritorialBoundaryCache = () => {
+  const resetContentCaches = () => {
+    residentOverlays.clear();
     cancelTerritorialBoundaries();
     territorialBoundaryCache = { inputSignature: '', segments: [], rebuildCount: 0 };
     territorialBoundaryBatchCache = { signature: '', groups: [] };
@@ -311,7 +322,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
     pendingStatus: pendingTerritorialBoundary?.status || 'idle',
   });
   return Object.freeze({renderTerritorialUnits, renderGenericFeatures, renderDistributions, renderBase,
-    buildDistributionRenderRows, resetTerritorialBoundaryCache, retryTerritorialBoundaries, getTerritorialBoundaryStats,
+    buildDistributionRenderRows, resetContentCaches, retryTerritorialBoundaries, getTerritorialBoundaryStats,
     territorialBoundariesPending: () => pendingTerritorialBoundary !== null,
     territorialBoundaryFailure: () => pendingTerritorialBoundary?.error ?? null,
   });

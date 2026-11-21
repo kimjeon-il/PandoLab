@@ -25,6 +25,12 @@ export function resourceUpdate(previous, next) {
     present: prepare || contextChanged || previous.presentation !== next.presentation });
 }
 
+/** Preserve recent inactive identities alongside all current identities. */
+export function retainViewportItems(recent, current, standbyLimit) {
+  const standby = [...recent].filter(id => !current.has(id));
+  return new Set([...standby.slice(Math.max(0, standby.length - standbyLimit)), ...current]);
+}
+
 // Only small dependency metadata belongs here. Coordinates use their existing
 // immutable source/version identity, never whole-project serialization per frame.
 export function resourceKey(value) {

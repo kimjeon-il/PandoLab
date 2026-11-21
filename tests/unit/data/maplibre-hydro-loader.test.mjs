@@ -60,6 +60,43 @@ test('complete tile windows reuse decoded packs and emit live progress for misse
   assert.deepEqual((await revisited).removePacks,[2]);
  }finally{loader.dispose();}
 });
+test('recently shown water packs survive a viewport change and return without another worker request',async()=>{
+ const sent=[];
+ class FakeWorker {
+  postMessage(message){
+   sent.push(message);
+   if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
+   if(message.type!=='view')return;
+   const {revision,tiles}=message,id=tiles[0].x+1;
+   queueMicrotask(()=>{
+    this.onmessage({data:{type:'pack',revision,packId:id,features:[{id:String(id)}]}});
+    this.onmessage({data:{type:'view-ready',revision,packIds:[id]}});
+   });
+  }
+  terminate(){}
+ }
+ const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),baseUrl:'http://example/',
+  tilesForView:view=>view.tiles,packLimit:2});
+ const open=(x,knownKey)=>loader.view({tiles:[{stage:0,x,y:0}],knownKey},{onProgress:()=>{}});
+ try{
+  const a=await open(0,'');
+  const b=await open(1,a.key);
+  assert.deepEqual(b.packIds,[1,2]);
+  assert.deepEqual(b.removePacks,[]);
+  assert.deepEqual(b.addPacks.map(pack=>pack.id),[2]);
+  const back=await open(0,b.key);
+  assert.equal(back.key,b.key);
+  assert.deepEqual(back.addPacks,[]);
+  assert.deepEqual(back.removePacks,[]);
+  assert.equal(loader.stats().viewRequests,2);
+
+  const c=await open(2,back.key);
+  assert.deepEqual(c.packIds,[1,3]);
+  assert.deepEqual(c.removePacks,[2]);
+  assert.deepEqual(sent.filter(message=>message.type==='release').map(message=>message.packIds),[[2]]);
+ }finally{loader.dispose();}
+});
+
 test('inactive cached packs are released when the cache limit is exceeded',async()=>{
  const sent=[];let next=0;class FakeWorker {postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view'){const id=++next;queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:id,features:[]}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[id]}});});}}terminate(){}}
  const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),

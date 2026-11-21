@@ -1,22 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
 import {createMapLibreLabelPresentation} from '../../../src/rendering/maplibre-label-presentation.js';
-import {bufferedPlaceBounds,selectPlaceLabelCandidates,territorialLabelSize} from '../../../src/rendering/label-layout.js';
+import {bufferedPlaceBounds,selectPlaceLabelCandidates,territorialLabelShortSide,TERRITORIAL_NAME_SIZE,TERRITORIAL_ICON_SIZE,TERRITORIAL_FLAG_BASE_HEIGHT} from '../../../src/rendering/label-layout.js';
+import {referenceZoomPixelsPerDegree} from '../../../src/map/map-display-zoom.js';
 import {createCountryIndex} from '../../../src/map/country-index.js';
 import {countryGeometrySignature} from '../../../src/rendering/country-shared-boundary-cache.js';
 import {createGeometryVersionStore} from '../../../src/geometry/geometry-version-store.js';
 
-test('territorial symbols scale with the component near the anchor and the zoom',()=>{
+const requireMapLibre=createRequire(import.meta.resolve('maplibre-gl/package.json'));
+const {expression,latest}=requireMapLibre('@maplibre/maplibre-gl-style-spec');
+function compileSize(value,property){
+ const result=expression.createPropertyExpression(value,property,latest.layout_symbol[property]);
+ assert.equal(result.result,'success',JSON.stringify(result.value));
+ return result.value;
+}
+const nameSize=compileSize(TERRITORIAL_NAME_SIZE,'text-size');
+const iconSize=compileSize(TERRITORIAL_ICON_SIZE,'icon-size');
+function sizeAt(territorialShortSide,zoom){
+ const input={properties:{territorialShortSide}};
+ return {name:nameSize.evaluate({zoom},input),flag:Number((iconSize.evaluate({zoom},input)*TERRITORIAL_FLAG_BASE_HEIGHT).toFixed(8))};
+}
+
+test('territorial symbols scale with the component near the anchor',()=>{
  const bounds=[[0,0,40,70],[150,20,300,80]];
- const referenceZoom=Math.log2(360/512);
- assert.deepEqual(territorialLabelSize(bounds,[20,30],referenceZoom),{name:13.9,flag:12.9});
- assert.deepEqual(territorialLabelSize(bounds,[200,75],referenceZoom),{name:19.1,flag:18.1});
- assert.deepEqual(territorialLabelSize(bounds,[20,30],referenceZoom-1),{name:13,flag:12});
+ assert.equal(territorialLabelShortSide(bounds,[20,30]),40);
+ assert.equal(territorialLabelShortSide(bounds,[200,75]),150);
+ assert.equal(territorialLabelShortSide(bounds,[-160,75]),150);
+ assert.equal(territorialLabelShortSide([],[0,0]),0);
 });
 
 test('territorial symbols keep their existing lower range and grow to the new cap',()=>{
- const zoom=Math.log2(360/512)+2;
- const size=shortSide=>territorialLabelSize([[0,-60,shortSide/4,60]],[0,0],zoom);
+ const zoom=3;
+ const size=shortSide=>sizeAt(shortSide/referenceZoomPixelsPerDegree(zoom),zoom);
  assert.deepEqual(size(21),{name:13,flag:12});
  assert.deepEqual(size(22),{name:13,flag:12});
  assert.deepEqual(size(84.5),{name:16,flag:15});
@@ -27,13 +43,15 @@ test('territorial symbols keep their existing lower range and grow to the new ca
 });
 
 test('large territorial symbols grow with fractional zoom and keep the small end',()=>{
- const size=(zoom,width=100)=>territorialLabelSize([[0,-60,width,60]],[0,0],zoom);
+ const size=(zoom,width=100)=>sizeAt(width,zoom);
  assert.deepEqual(size(4),{name:28,flag:26});
  assert.deepEqual(size(6),{name:38,flag:34});
  assert.deepEqual(size(7.5),{name:44,flag:40});
  assert.deepEqual(size(9),{name:50,flag:46});
  assert.deepEqual(size(12),{name:50,flag:46});
  assert.deepEqual(size(9,.01),{name:13,flag:12});
+ const low=size(4,4),high=size(5,4),middle=size(4.25,4);
+ for(const key of ['name','flag'])assert.ok(Math.abs(middle[key]-(low[key]+(high[key]-low[key])*.25))<1e-8);
 });
 
 test('place query keeps its buffered bounds through small pans and longitude wraps',()=>{
@@ -133,7 +151,27 @@ test('hidden high priority places cannot exhaust the visible place candidate bud
  const hidden=Array.from({length:128},(_,i)=>({key:'hidden-'+i,priority:100,viewportVisible:false}));
  const visible={key:'visible-city',priority:40,viewportVisible:true};
  const selected=selectPlaceLabelCandidates([...hidden,visible],128);
- assert.equal(selected.length,128);assert.ok(selected.includes(visible));
+ assert.equal(selected.length,129);assert.equal(selected[0],visible);
+});
+
+test('accepted city records stay warm across views and expire with the project date',async()=>{
+ const {createPlaceRuntime}=await import('../../../src/data/place-runtime.js');
+ const make=(sourceId,lon)=>({source:'fixture',sourceId,name:sourceId,coordinates:[lon,0]});
+ let presentation={month:'2025-01'};
+ const runtime=createPlaceRuntime({manifestUrl:'https://fixture.test/places.json',
+  getPresentation:()=>presentation,admitReferences:async()=>{},onError:assert.fail,
+  rpc:{async request(_method,{view}){
+   const records=view.presentation.month[0]==='-'?[]:[make(view.bounds[0]===0?'west':'east',view.bounds[0])];
+   return {result:{records,signature:String(view.bounds[0])}};
+  },stop(){}}});
+ const read=()=>runtime.snapshot().records.map(row=>row.sourceId).sort();
+ try{
+  await runtime.settle({bounds:[0,0,10,10],presentation});assert.deepEqual(read(),['west']);
+  await runtime.settle({bounds:[10,0,20,10],presentation});assert.deepEqual(read(),['east','west']);
+  presentation={month:'-1000-01'};
+  await runtime.settle({bounds:[10,0,20,10],presentation});assert.deepEqual(read(),[]);
+  runtime.resetProject();assert.deepEqual(read(),[]);
+ }finally{runtime.dispose();}
 });
 
 test('place viewport results publish during movement and coalesce the next view',async()=>{
@@ -250,7 +288,7 @@ test('labels publish before flags and change selection without mutating tile fea
  const resources={getState:()=>({layerVisibility:{labels:false}}),getTerritorialLabelRef:id=>({id,key:'territorial:entity:'+id}),automaticLabelSettings:()=>({}),labelSettings:()=>({}),countryLabelAnchors:()=>new Map(['a','b','c'].map(id=>[id,[0,0]])),selectionHas:ref=>ref.id===selected};
  let activeLayout;
  const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onFlagsReady:()=>presentation.renderTerritorialLabels(activeLayout),onError:error=>errors.push(error)});
- const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialFlags:new Map(ids.map(id=>[id,{url:id+'.png'}])),territorialLabelNames:new Map(),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),territorialLabelSizes:new Map(ids.map(id=>[id,{name:19,flag:18}])),userLabels:[]});
+ const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialFlags:new Map(ids.map(id=>[id,{url:id+'.png'}])),territorialLabelNames:new Map(),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),territorialLabelShortSides:new Map(ids.map(id=>[id,8])),userLabels:[]});
  const flush=()=>new Promise(resolve=>setImmediate(resolve));
  const show=async (ids,flag)=>{activeLayout=layout(ids);if(flag)activeLayout.territorialFlags.set('c',{url:flag});presentation.prepareFlags(activeLayout);presentation.renderTerritorialLabels(activeLayout);await flush();};
  const rows=()=>sources.get('viewer-labels').data.features.map(f=>f.properties);
@@ -263,7 +301,7 @@ test('labels publish before flags and change selection without mutating tile fea
   const first=rows().map(row=>row.icon);
   assert.equal(new Set(first).size,2);
   assert.ok(first.every(id=>images.has(id)));
-  assert.deepEqual(rows().map(({size,iconScale})=>[size,iconScale]),[[19,1.5],[19,1.5]]);
+  assert.deepEqual(rows().map(({territorialShortSide})=>territorialShortSide),[8,8]);
   const countryLayout=layers.get('viewer-label-country').layout;
   assert.equal(countryLayout['text-justify'],'center');
   assert.equal(countryLayout['icon-optional'],false);
@@ -273,7 +311,9 @@ test('labels publish before flags and change selection without mutating tile fea
   assert.equal(cityLayout['text-anchor'],'left');
   assert.ok(cityLayout['text-offset'][0]>0);
   assert.equal(cityLayout['text-variable-anchor'],undefined);
-  assert.deepEqual(layers.get('viewer-label-country').paint['text-color'].slice(0,2),['case',['get','selected']]);
+  const labelPaint=()=>['viewer-label-country','viewer-label-text'].map(id=>layers.get(id).paint['text-color']);
+  assert.deepEqual(labelPaint(),['#343840','#343840']);
+  assert.deepEqual(layers.get('viewer-label-dot').paint['circle-color'],['case',['get','selected'],'#315e9d','#373b42']);
   const writes=diffs.length;
   presentation.renderTerritorialLabels(activeLayout);await flush();
   assert.equal(diffs.length,writes,'unchanged sizes and coordinates must reuse the label tiles');
@@ -284,16 +324,21 @@ test('labels publish before flags and change selection without mutating tile fea
   assert.equal(countryLayout['text-anchor'].at(-1),'center');
   assert.equal(countryLayout['icon-anchor'].at(-1),'center');
   selected='b';await show(['a','b']);assert.equal(rows()[1].selected,true);
+  assert.deepEqual(labelPaint(),['#343840','#343840']);
   assert.ok(diffs.at(-1).update.find(row=>row.id==='territorial:entity:b').addOrUpdateProperties.some(p=>p.key==='selected'&&p.value===true));
   tilesReady=false;await show(['b']);presentation.publishOptionalFlags();assert.ok(images.has(first[0]));
-  tilesReady=true;presentation.publishOptionalFlags();assert.ok(!images.has(first[0]));
+  tilesReady=true;presentation.publishOptionalFlags();assert.ok(images.has(first[0]));
+  await show(['a','b']);assert.equal(rows().find(row=>row.objectKey==='territorial:entity:a').icon,first[0]);
+  assert.equal(presentation.getStats().flagRequests,2,'Returning flags must reuse their decoded image');
   await show(['b','c']);
   assert.deepEqual(rows().map(row=>row.icon),[first[1],'']);
   await show(['b','c'],'new-c.png');
   presentation.publishOptionalFlags();
   finishes.get('c.png')({data:{width:24,height:12}});
-  finishes.get('new-c.png')({data:{width:24,height:12}});await flush();
-  assert.equal(images.size,2);assert.ok(rows().every(row=>images.has(row.icon)));
+  const newestFlag={width:32,height:12};
+  finishes.get('new-c.png')({data:newestFlag});await flush();
+  assert.ok(rows().every(row=>images.has(row.icon)));
+  assert.equal(images.get(rows().find(row=>row.objectKey==='territorial:entity:c').icon),newestFlag);
   assert.equal(fullUploads,1);assert.equal(fontWrites,1);assert.equal(faces.External[0].url,'external.woff2');
   sources.get('viewer-labels').listener({error:new Error('font unavailable')});
   assert.equal(errors.length,1);assert.equal(presentation.pending,false);await show(['b','c'],'new-c.png');assert.equal(sources.size,0);

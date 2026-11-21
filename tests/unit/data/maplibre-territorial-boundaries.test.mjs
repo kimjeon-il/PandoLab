@@ -116,6 +116,38 @@ test('a regional patch rebuilds only intersecting topology and leaves cancelled 
   assert.strictEqual(noChange.segments, updated.segments);
 });
 
+test('project overlays stay installed when the camera leaves and respect explicit hiding', () => {
+  const shapes = ['west', 'east'].map((id, index) => ({id, geometry: {type:'Point', coordinates:[index,0]}}));
+  let visible = 'west';
+  const hidden = new Set(), scenes = new Map();
+  const state = {layerVisibility: {}, genericFeatures: shapes,
+    distributionLayers:[{id:'values'}],
+    distributionEntries:shapes.map(row=>({...row,layerId:'values',value:1,mode:'geometry',
+      geometry:{type:'LineString',coordinates:[row.geometry.coordinates,[1,1]]}}))};
+  const regions=shapes.map((row,index)=>polygon(row.id,'regional',index,0,index+.5,1));
+  const common={
+    getState:()=>state,visibleMapObjectCandidates:()=>[{id:visible}],
+    isLayerItemVisible:(_group,id)=>!hidden.has(id),geometryMayIntersectViewport:()=>true,
+    replaceSceneDomain:(id,scene)=>scenes.set(id,scene),layerStyle:()=>({boundaryVisible:true}),
+  };
+  const content=createMapContentPresentation({
+    territorial:{...common,displayEntities:()=>regions,entityRepository:{get:()=>null}},
+    generic:{...common,genericFeatureColor:()=> '#333333'},
+    distribution:{...common,DISTRIBUTION_MODES:{TERRITORIAL:'territorial'},
+      DISTRIBUTION_RENDER_MODES:{SINGLE:'single'},distributionColor:()=> '#333333'},
+    isSmooth:()=>true,
+  });
+  const render=()=>{
+    content.renderTerritorialUnits();content.renderGenericFeatures();content.renderDistributions();
+    return [...scenes.values()].map(scene=>[...(scene.polygons||[]),...(scene.strokes||[])].map(row=>row.key));
+  };
+  assert.deepEqual(render().map(rows=>rows.length),[1,1,1]);
+  visible='east';
+  assert.deepEqual(render().map(rows=>rows.length),[2,2,2]);
+  hidden.add('west');state.distributionEntries=state.distributionEntries.filter(row=>row.id!=='west');
+  assert.ok(render().every(rows=>rows.length===1&&rows[0].includes('east')));
+});
+
 test('territorial presentation cancels superseded input and publishes after retry', async t => {
   let entities = [polygon('region', 'regional', 1, 1, 3, 3)];
   const pending = [], diagnostics = [], strokes = new Map();
@@ -138,7 +170,7 @@ test('territorial presentation cancels superseded input and publishes after retr
     reportDiagnostic: entry => diagnostics.push(entry), onMapDisplayReady: () => ready++,
     onMapDisplayFailed: error => failures.push(error),
   });
-  t.after(content.resetTerritorialBoundaryCache);
+  t.after(content.resetContentCaches);
   const flush = () => new Promise(resolve => setImmediate(resolve));
   content.renderTerritorialUnits();
   entities = [polygon('region', 'regional', 2, 2, 4, 4)];

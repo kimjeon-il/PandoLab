@@ -119,11 +119,11 @@ export function createMapLibreRenderingDomain(options){
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},
   beginInteraction(){lastPlaceQueryAt=-Infinity;options.labelResources.getState().mapMoving=true;options.labelResources.beginPlaceInteraction();},
   endInteraction(reason){lastPlaceQueryAt=-Infinity;options.labelResources.getState().mapMoving=false;preparePlacesForPublication();viewportOverlaysDirty=true;return invalidate(reason);},
-  resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetTerritorialBoundaryCache();contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
+  resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetContentCaches();contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
   getStats:()=>({...stats,lastFrameId:lastFrame?.frameId}),getDistributionRenderRows:()=>content.buildDistributionRenderRows(),
   getTerritorialBoundaryStats:content.getTerritorialBoundaryStats,
   recordSelectionRenderError:entry=>reportDiagnostic(entry),
-  dispose(){disposed=true;labels.dispose();content.resetTerritorialBoundaryCache();options.disposeMapDisplay?.();options.labelResources.disposePlaces();},
+  dispose(){disposed=true;labels.dispose();content.resetContentCaches();options.disposeMapDisplay?.();options.labelResources.disposePlaces();},
  };
  for(const name of ['invalidateCountryPatch','invalidateHydroPatch','invalidateTerritorialPatch','invalidateGenericPatch','invalidateProjection','invalidateViewSettle'])methods[name]=reason=>invalidate(reason,true);
  return Object.freeze(methods);

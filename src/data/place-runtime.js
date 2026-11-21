@@ -1,7 +1,7 @@
 import { createWorkerRpcClient } from "../runtime/worker-rpc.js";
 import { createLatestWorkerJobScheduler, createWorkerCancellationError } from "../runtime/worker-job-scheduler.js";
 import { isBuiltinPlaceId, normalizePlace, PLACE_LIMITS } from "../document/place-contract.js";
-import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
+import { resourceKey, resourceUpdate, retainViewportItems } from "../runtime/resource-dependency-policy.js";
 import { placeLabelRowsAtMonth } from "./place-name-policy.js";
 import { indexPlaceUrbanLifetimes,placeUrbanLabelActiveAtMonth } from "./place-lifetime-policy.js";
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
@@ -12,7 +12,7 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
   if (typeof manifestUrl !== 'string' || !manifestUrl) throw new TypeError('Place manifest URL must be a nonempty string');
   if(typeof admitReferences!=='function')throw new TypeError('Place publication requires its accepted identity admission boundary.');
   let snapshot=EMPTY, revision=0, projectEpoch=0, moving=false, closed=false, desired=null, requestedDependencies=null, snapshotDependencies=null, referenceSequence=0;
-  let admittedReferenceKey=null;
+  let admittedReferenceKey=null,snapshotMonth=null;
   let viewportTask=null,viewportContext=null;
   let lifetimeIndex=urbanLifetimes?indexPlaceUrbanLifetimes(urbanLifetimes):null;
   let lifetimeTask=null;
@@ -138,12 +138,20 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
       if (!Array.isArray(result.records) || result.records.length > PLACE_LIMITS.candidates) throw new RangeError('Place snapshot candidate budget exceeded');
       // The worker returns spatial candidates; the accepted source snapshot
       // contains only identities eligible at the project's selected month.
-      const records=Object.freeze(result.records.map(normalizePlace)
-        .filter(record=>sourceActive(record,view.presentation)));
-      const next={source:manifestUrl,content:resourceKey(records),preparation:'place-normalization-v1',context:null,
-        presentation:resourceKey(result.signature || 'records')};
+      const currentRecords=result.records.map(normalizePlace).filter(record=>sourceActive(record,view.presentation));
+      const month=view.presentation?.month??null;
       return await publishAccepted(async()=>{
         if(!viewportCurrent(current,view))return false;
+        // The worker returns highest priority first. Keep those records
+        // longest when an entire view becomes inactive at once.
+        const currentIds=new Set(currentRecords.map(record=>record.id).reverse());
+        const byId=new Map(snapshot.records.filter(record=>snapshotMonth===month||sourceActive(record,view.presentation))
+          .map(record=>[record.id,record]));
+        const ids=retainViewportItems(byId.keys(),currentIds,PLACE_LIMITS.retainedRecords);
+        for(const record of currentRecords)byId.set(record.id,record);
+        const records=Object.freeze([...ids].map(id=>byId.get(id)));
+        const next={source:manifestUrl,content:resourceKey(records),preparation:'place-normalization-v1',context:null,
+          presentation:resourceKey(result.signature || 'records')};
         const change=resourceUpdate(snapshotDependencies,next);
         const activeKey=JSON.stringify(references(records,retained,view.presentation));
         const referenceChanged=activeKey!==admittedReferenceKey;
@@ -154,6 +162,7 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
           if(!closed)await admitReferences(()=>references());
           return false;
         }
+        snapshotMonth=month;
         if(change.present){
           snapshot=Object.freeze({ ...result, revision: current, records:change.input?records:snapshot.records });
           snapshotDependencies=next;
@@ -183,7 +192,7 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
     projectEpoch++;revision++;moving=false;desired=null;
     viewportTask=null;viewportContext=null;
     scheduler.cancelAll('project-replaced');
-    retained.clear();snapshot=EMPTY;admittedReferenceKey=null;
+    retained.clear();snapshot=EMPTY;admittedReferenceKey=null;snapshotMonth=null;
     requestedDependencies=null;snapshotDependencies=null;
   }
   return Object.freeze({

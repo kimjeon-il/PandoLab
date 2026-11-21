@@ -5,7 +5,7 @@ const wrappedDistance=(a,b)=>Math.abs((((a-b)+180)%360+360)%360-180);
 const windowLimit=16;
 
 export async function createHydroBrowserLoader({
- manifest,baseUrl,createWorker,tilesForView,dataRevision,packLimit=32,viewTimeoutMs=30000,signal,
+ manifest,baseUrl,createWorker,tilesForView,dataRevision,packLimit=96,viewTimeoutMs=30000,signal,
 }){
  if(!Number.isInteger(packLimit)||packLimit<1)throw new TypeError('A positive hydro pack limit is required');
  signal?.throwIfAborted();
@@ -53,6 +53,12 @@ export async function createHydroBrowserLoader({
    if(!packs.has(id))throw Error('Hydro worker did not deliver pack '+id);
    const features=packs.get(id);packs.delete(id);packs.set(id,features);
    if(!old.has(id))addPacks.push({id,features});
+  }
+  // Keep already drawn offscreen packs in the source and the decoded cache.
+  // Current coverage is protected first, even when it fills the whole budget.
+  if(current.size<packLimit)for(const id of [...packs.keys()].reverse()){
+   if(old.has(id))current.add(id);
+   if(current.size>=packLimit)break;
   }
   protectedPacks=current;
   const packIds=[...current].sort((a,b)=>a-b);

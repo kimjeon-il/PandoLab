@@ -38,21 +38,26 @@ test('shared boundary segments retain continuous chains for dash and join placem
 });
 
 test('native vector style changes reuse geometry and dispose only owned resources',async()=>{
- const sources=new Map(),layers=new Map([['other',{}]]);let uploads=0,removals=0;
- const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),addSource(id,value){sources.set(id,{...value,setData:async()=>{uploads++;}});},addLayer:layer=>layers.set(layer.id,layer),removeLayer(id){removals++;layers.delete(id);},removeSource:id=>sources.delete(id),moveLayer(){},setPaintProperty(id,key,value){layers.get(id).paint[key]=value;},setLayoutProperty(id,key,value){layers.get(id).layout[key]=value;},setFilter(id,value){layers.get(id).filter=value;}};
+ const sources=new Map(),layers=new Map([['other',{}]]),diffs=[];let uploads=0,removals=0;
+ const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),addSource(id,value){sources.set(id,{...value,setData:async()=>{uploads++;},updateData:async diff=>{diffs.push(diff);}});},addLayer:layer=>layers.set(layer.id,layer),removeLayer(id){removals++;layers.delete(id);},removeSource:id=>sources.delete(id),moveLayer(){},setPaintProperty(id,key,value){layers.get(id).paint[key]=value;},setLayoutProperty(id,key,value){layers.get(id).layout[key]=value;},setFilter(id,value){layers.get(id).filter=value;}};
  const row={key:'a',kind:'fill',geometryRevision:'shape-1',geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[1,1],[0,0]]]},style:{color:'#ffaa00',fillAlpha:.5},blendMode:'multiply'};
  const group=createMapLibreVectorGroup(map,{id:'owned',onChange(){}});
  await group.update([row]);assert.equal(layers.get('owned').paint['fill-layer-blend'],'multiply');
  await group.update([{...row,style:{color:'#00aaff',fillAlpha:.25}}]);assert.equal(uploads,0);assert.equal(layers.get('owned').paint['fill-opacity'],.25);
  assert.equal(removals,0,'changing paint must not remove a live layer');
- await group.update([{...row,geometryRevision:'shape-2'}]);assert.equal(uploads,1);
+ await group.update([row,{...row,key:'b'}]);
+ assert.deepEqual(diffs[0].add.map(feature=>feature.id),['b']);
+ assert.deepEqual(diffs[0].remove,[]);assert.deepEqual(diffs[0].update,[]);
+ await group.update([{...row,geometryRevision:'shape-2'}]);
+ assert.deepEqual(diffs[1].remove,['b']);assert.deepEqual(diffs[1].update.map(row=>row.id),['a']);
+ assert.equal(uploads,0);
  group.dispose();group.dispose();assert.equal(sources.size,0);assert.deepEqual([...layers.keys()],['other']);
 });
 
 test('vector group reports concrete layer order only when its structure changes',async()=>{
  const sources=new Map(),layers=new Map(),changes=[];
  const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
-  addSource(id){sources.set(id,{setData:async()=>{}});},removeSource:id=>sources.delete(id),
+  addSource(id){sources.set(id,{updateData:async()=>{}});},removeSource:id=>sources.delete(id),
   addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),
   setPaintProperty(){},setLayoutProperty(){},setFilter(){}};
  const geometry={type:'LineString',coordinates:[[0,0],[1,1]]};
@@ -73,7 +78,7 @@ test('vector group reports concrete layer order only when its structure changes'
 
 test('an obsolete applied upload cannot make a return to the prior geometry look unchanged',async()=>{
  const sources=new Map(),layers=new Map();let release,block=false;
- const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),addSource(id,value){sources.set(id,{...value,setData:async data=>{if(block){block=false;await new Promise(resolve=>{release=resolve;});}sources.get(id).data=data;}});},addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),moveLayer(){}};
+ const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),addSource(id,value){sources.set(id,{...value,updateData:async diff=>{if(block){block=false;await new Promise(resolve=>{release=resolve;});}sources.get(id).data.features[0].geometry=diff.update[0].newGeometry;}});},addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),moveLayer(){}};
  const row={key:'a',kind:'fill',geometryRevision:'A',geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[1,1],[0,0]]]},style:{color:'#ffaa00'}};
  const group=createMapLibreVectorGroup(map,{id:'owned',onChange(){}});await group.update([row]);block=true;
  const intermediate=group.update([{...row,geometryRevision:'B',geometry:{type:'Polygon',coordinates:[[[5,0],[6,0],[6,1],[5,0]]]}}]);
@@ -111,7 +116,7 @@ test('polar drawing uses MapLibre custom-layer state restoration without synchro
   uniform4fv:(name,value)=>{if(name==='u_color')colors.push(value);},
   bindVertexArray:value=>{lastVao=value;}},
   {get:(target,key)=>key in target?target[key]:key===String(key).toUpperCase()?key:()=>({})});
- const map={getCanvas:()=>({clientWidth:800,clientHeight:600}),getLayer:()=>layer,addLayer(value){layer=value;layer.onAdd(map,gl);},removeLayer(){layer.onRemove();layer=null;}};
+ const map={getCanvas:()=>({clientWidth:800,clientHeight:600}),getZoom:()=>3,getLayer:()=>layer,addLayer(value){layer=value;layer.onAdd(map,gl);},removeLayer(){layer.onRemove();layer=null;}};
  const owner=createPolarLayer({map,prepare:assert.fail,onChange(){},onError:error=>errors.push(error)});
  const packet={positions:new Float32Array([0,-90,1,-86,-1,-86]),indices:new Uint32Array([0,1,2])};
  const ocean=[1,1,1,1],land=[.9,.9,.9,1],grid=[.5,.5,.5,.15],border=[0,0,0,1];
@@ -134,7 +139,7 @@ test('a staged polar highlight uploads before commit and cannot survive context 
   getUniformLocation:(_program,name)=>name,
   uniform4fv:(name,value)=>{if(name==='u_color')colors.push(value);},bufferData(){uploads++;}},
   {get:(target,key)=>key in target?target[key]:key===String(key).toUpperCase()?key:()=>({})});
- const map={getCanvas:()=>({clientWidth:800,clientHeight:600}),getLayer:()=>layer,
+ const map={getCanvas:()=>({clientWidth:800,clientHeight:600}),getZoom:()=>3,getLayer:()=>layer,
   addLayer(value){layer=value;layer.onAdd(map,gl);},removeLayer(){layer.onRemove();layer=null;}};
  const owner=createPolarLayer({map,prepare:assert.fail,onChange(){},onError:error=>errors.push(error)});
  const packet=()=>({positions:new Float32Array([0,-90,1,-86,-1,-86]),indices:new Uint32Array([0,1,2])});

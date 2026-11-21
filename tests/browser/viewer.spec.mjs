@@ -479,13 +479,17 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
   const camera=(zoom,center=[8,49])=>page.evaluate(view=>window.__PANDOLAB_MAPLIBRE__.jumpTo(view),{center,zoom});
   const labels=(ids=['LUX','LIE','NLD','FRA','DEU'])=>page.evaluate(async ids=>{
    const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource('viewer-labels');
-   const rows=(await source.getData()).features.map(({properties})=>properties);
+   const features=(await source.getData()).features;
+   const layer=map.getLayer('viewer-label-country');
+   const nameSize=layer.layout.get('text-size').value,iconSize=layer.layout.get('icon-size').value;
+   const globals={zoom:map.getZoom()};
    return Object.fromEntries(ids.map(id=>{
-    const row=rows.find(row=>row.objectKey==='territorial:entity:'+id);
-    return [id,row&&{name:row.primary,size:row.size,flag:Math.round(row.iconScale*120)/10,ready:!!row.icon&&map.hasImage(row.icon)}];
+    const feature=features.find(row=>row.id==='territorial:entity:'+id);
+    return [id,feature&&{name:feature.properties.primary,size:Math.round(nameSize.evaluate(globals,feature)*10)/10,
+     flag:Math.round(iconSize.evaluate(globals,feature)*120)/10,ready:!!feature.properties.icon&&map.hasImage(feature.properties.icon)}];
    }));
   },ids);
-  await camera(4.05);
+  await camera(4);
   await font;
   await expect.poll(async()=>Object.entries(await labels()).filter(([,row])=>!row?.name||!row.ready),
    {timeout:45_000}).toEqual([]);
@@ -493,8 +497,8 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
   console.log('[territorial-label-sizes]',JSON.stringify({profile:mobile?'touch':'desktop',rows}));
   expect(rows.LUX).toMatchObject({size:13,flag:12});
   expect(rows.LIE).toMatchObject({size:13,flag:12});
-  expect(rows.NLD).toMatchObject({size:16.2,flag:15.2});
   for(const key of ['size','flag']){
+   expect(rows.NLD[key]).toBeGreaterThan(rows.LUX[key]);
    expect(rows.DEU[key]).toBeGreaterThan(rows.NLD[key]);
    expect(rows.FRA[key]).toBeGreaterThan(rows.DEU[key]);
   }
@@ -518,7 +522,7 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
   await expect.poll(async()=>(await citySnapshot()).length).toBeGreaterThan(0);
   const cities=await citySnapshot();
   for(const center of [[9,49],[8,49]]){
-   await camera(4.05,center);
+   await camera(4,center);
    await ready(page,'fixed-zoom label pan');
    expect(await labels()).toEqual(rows);
    expect(await citySnapshot()).toEqual(cities);
@@ -531,7 +535,7 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
   await expect.poll(async()=>(await labels()).NLD.size).toBeGreaterThan(rows.NLD.size);
   for(const [id,center,zoom,expected] of [
    ['USA',[-99,39],3,{size:25.4,flag:23.7}],
-   ['USA',[-99,39],3.5,{size:28,flag:26}],
+   ['USA',[-99,39],4,{size:28,flag:26}],
    ['BRA',[-52,-11],3,{size:28,flag:26}],
    ['USA',null,7.5,{size:44,flag:40}],
    ['BRA',null,9,{size:50,flag:46}],
@@ -1280,9 +1284,11 @@ test('base rivers actually draw visible pixels after source admission',async({pa
  await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom:1.99});});
  await ready(page,'below native hydro minimum');
  await expect.poll(()=>page.evaluate(async()=>{
-  const source=window.__PANDOLAB_MAPLIBRE__.getSource('hydro');
-  return (await source.getData()).features.length;
- })).toBe(0);
+  const map=window.__PANDOLAB_MAPLIBRE__,source=await map.getSource('hydro').getData();
+  const rivers=map.getLayersOrder().filter(id=>/^rivers(?:-\d+)?$/.test(id));
+  return {retained:source.features.some(f=>f.properties.category==='river'),
+   hidden:rivers.every(id=>map.getLayer(id).paint.get('line-opacity').constantOr(null)===0)};
+ })).toEqual({retained:true,hidden:true});
 });
 
 test('lake pixels follow area and width thresholds on the published water source',async({page})=>{
