@@ -66,12 +66,12 @@ export function createMapGeometryRequester({getWorker,restartWorker,isDisposed=(
 const layerVisibleAtZoom=(layer,zoom)=>layer.visible&&isWithinDisplayZoom(zoom,layer.minzoom,layer.maxzoom);
 
 /** MapLibre owns map pixels and picking. Core and the physical owner retain all data. */
-export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPreparationStatus,initialCamera,readInitialSafeInsets}={}) {
+export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPreparationStatus,initialCamera,readSafeInsets=()=>({}),onWorldFitChange}={}) {
  if(typeof deps.objectRefVisible!=='function')throw new TypeError('MapLibre requires the canonical object visibility query.');
  const state=deps.projectState.state;
  const metrics=createRenderingMetrics();
  let map,api,projection,container,stylesheet,initialization,loadedStyle=null,disposed=false,loaded=false,generation=0,contextRevision=0,contextLost=false;
- let pendingCameraFit=null;
+ let pendingCameraFit=null,worldFit=null,nativeMinZoom;
  let sourceRevision=0,certifiedRevision=-1,certifiedGeneration=-1,certifiedContext=-1,certifiedCamera='',pendingFrame=null,ready=false,preparedReady=false,error=null,countryGeneration=-1,countryContentKey='';
  let requestedCertificate=null,previousActiveRender=null;
  let endSourceFrame=null;
@@ -707,6 +707,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
      {id:'borders',type:'line',source:'territories',filter:['==',['get','displayRole'],'country-border'],
       layout:{'line-cap':'round','line-join':'round'},paint:initialStyle.paint.borders},
     ]}});
+   nativeMinZoom=map.getMinZoom();
    styleController=createMapLibreStyleController(map);
    projection=createMapLibreProjection(map);
    map.on('styledata',()=>{indexedStyle=null;});
@@ -750,10 +751,12 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    const initialView=state.view;
    loaded=true;
    styleController.apply(currentMapStyle(),{updateVisibility:false});
+   if(initialCamera)map.resize();
+   const initialInsets=readSafeInsets('startup-camera');
+   refreshWorldFit(initialInsets);
    if(initialCamera){
-    map.resize();
     if(startupView)syncCameraFromState(startupView);
-    else fitMapBounds(WORLD_VIEW_BOUNDS,readInitialSafeInsets());
+    else fitMapBounds(WORLD_VIEW_BOUNDS,initialInsets);
     syncInitialMapSkeleton();
     map.once('render',()=>container.style.removeProperty('visibility'));
     map.triggerRepaint();
@@ -793,25 +796,54 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   pendingCameraFit={bounds,safeInsets};
   return applyCameraFit();
  }
- function cameraForMapBounds(bounds,safeInsets){
-  if(!loaded)return null;
+ function fitPadding(safeInsets,world=false){
   const {clientWidth:width,clientHeight:height}=map.getCanvas();
   if(!width||!height)return null;
-  const padding=Object.fromEntries(['left','right','top','bottom'].map(side=>{
+  // With a large canvas, fitting the geographic samples alone can clip the
+  // globe's silhouette. Provide extra fit padding only for the whole globe.
+  const minimum=world?Math.max(24,(Math.min(width,height)-1024)*.18):24;
+  return Object.fromEntries(['left','right','top','bottom'].map(side=>{
    const extent=side==='left'||side==='right'?width:height;
-   return [side,Math.min(extent/4,Math.max(24,Number(safeInsets[side])||0))];
+   return [side,Math.min(extent/4,Math.max(minimum,Number(safeInsets[side])||0))];
   }));
-  return map.cameraForBounds(bounds,{padding,bearing:0});
+ }
+ function refreshWorldFit(safeInsets=readSafeInsets()){
+  if(!loaded)return null;
+  const padding=fitPadding(safeInsets,true);
+  if(!padding)return null;
+  const {clientWidth,clientHeight}=map.getCanvas();
+  const key=[clientWidth,clientHeight,...Object.values(padding)].join(':');
+  if(worldFit?.key===key)return worldFit.camera;
+  // The globe's fit calculation clones the current transform, including minZoom.
+  // Remove the old floor synchronously so it cannot constrain the new fit.
+  let minimum=map.getMinZoom();
+  if(minimum!==nativeMinZoom)map.setMinZoom(nativeMinZoom);
+  try{
+   const camera=map.cameraForBounds(WORLD_VIEW_BOUNDS,{padding,bearing:0});
+   if(!camera||!Number.isFinite(camera.zoom))return null;
+   // MapLibre stores the globe's minimum at the equator and adjusts it by latitude.
+   const latitude=Math.min(Math.abs(camera.center.lat),WORLD_VIEW_BOUNDS[1][1]);
+   const latitudeAdjustment=Math.log2(Math.cos(latitude*Math.PI/180));
+   minimum=Math.max(nativeMinZoom,Math.min(map.getMaxZoom(),camera.zoom-latitudeAdjustment));
+   worldFit={key,camera:{...camera,zoom:Math.max(camera.zoom,minimum+latitudeAdjustment)}};
+  }finally{
+   if(map.getMinZoom()!==minimum)map.setMinZoom(minimum);
+  }
+  onWorldFitChange?.();
+  return worldFit.camera;
  }
  function applyCameraFit(){
-  if(!pendingCameraFit)return false;
-  const camera=cameraForMapBounds(pendingCameraFit.bounds,pendingCameraFit.safeInsets);
+  if(!loaded||!pendingCameraFit)return false;
+  const {bounds,safeInsets}=pendingCameraFit;
+  const padding=fitPadding(safeInsets);
+  if(!padding)return false;
+  const camera=bounds===WORLD_VIEW_BOUNDS?refreshWorldFit(safeInsets):map.cameraForBounds(bounds,{padding,bearing:0});
   if(!camera)return false;
   pendingCameraFit=null;
   jumpCamera({...camera,pitch:0,roll:0});return true;
  }
- function isAtWorldView(padding){
-  const world=cameraForMapBounds(WORLD_VIEW_BOUNDS,padding);
+ function isAtWorldView(){
+  const world=worldFit?.camera;
   if(!world)return true;
   const center=map.getCenter();
   return Math.abs(center.wrap().lng-world.center.wrap().lng)<0.1
@@ -1433,7 +1465,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   setRenderQuality(value){quality=value;if(map&&value?.dprCap&&Math.abs(map.getPixelRatio()-value.dprCap)>1e-9)map.setPixelRatio(value.dprCap);},
   setInteractionStyle,
   getRenderPixelRatio:()=>quality?.dprCap||window.devicePixelRatio||1,
-  verifyLayout(){if(map){map.resize();syncBaseLayer();applyCameraFit();}},failMapPreparation,retryMapPreparation,
+  verifyLayout(){if(map){map.resize();refreshWorldFit();syncBaseLayer();applyCameraFit();}},failMapPreparation,retryMapPreparation,
   dispose(){disposed=true;cancelDatedRetirement();countryGeometryAbort?.abort();geometryAbort.abort();highlight?.dispose();polarLayer?.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();zoomFramePending=false;releaseTemporalFrame();presentation.dispose();hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();geometryRpc?.stop('maplibre-dispose');for(const entry of vectorLayers.values())entry.layer.dispose();vectorLayers.clear();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
  });
 }

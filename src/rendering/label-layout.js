@@ -2,6 +2,12 @@ import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
 
 export const LABEL_PRIORITIES = Object.freeze({ country: 100, capital: 90, majorCity: 70, administrative: 60, place: 40 });
 
+export const MAP_LABEL_SIZE_STOPS = Object.freeze([
+  Object.freeze({zoom:4,flag:26,name:28,cityDiameter:5,cityName:12}),
+  Object.freeze({zoom:6,flag:34,name:38,cityDiameter:7,cityName:16}),
+  Object.freeze({zoom:9,flag:46,name:50,cityDiameter:10,cityName:20}),
+]);
+
 export function territorialLabelSize(componentBounds, [longitude, latitude], zoom) {
   let nearest, distance = Infinity, area = 0;
   for (const bounds of componentBounds) {
@@ -28,10 +34,19 @@ export function territorialLabelSize(componentBounds, [longitude, latitude], zoo
     const degrees = Math.min(east - west, (north - south) / latitudeScale);
     shortSide = degrees * referenceZoomPixelsPerDegree(zoom);
   }
-  const fraction = Math.min(1, Math.max(0, (shortSide - 22) / (147 - 22)));
+  const standardFraction = Math.min(1, Math.max(0, (shortSide - 22) / (147 - 22)));
+  const largeFraction = Math.min(1, Math.max(0, (shortSide - 147) / (440 - 147)));
   // Subpixel precision avoids replacing tiles for imperceptible zoom changes.
-  const growth = Math.round(60 * fraction);
-  return { name: (130 + growth) / 10, flag: (120 + growth) / 10 };
+  const standardGrowth = Math.round(60 * standardFraction);
+  const upperIndex = zoom <= MAP_LABEL_SIZE_STOPS[1].zoom ? 1 : 2;
+  const upper = MAP_LABEL_SIZE_STOPS[upperIndex], lower = MAP_LABEL_SIZE_STOPS[upperIndex - 1];
+  const t = Math.min(1, Math.max(0, (zoom - lower.zoom) / (upper.zoom - lower.zoom)));
+  const nameCap = lower.name + t * (upper.name - lower.name);
+  const flagCap = lower.flag + t * (upper.flag - lower.flag);
+  return {
+    name: (130 + standardGrowth + Math.round((nameCap - 19) * 10 * largeFraction)) / 10,
+    flag: (120 + standardGrowth + Math.round((flagCap - 18) * 10 * largeFraction)) / 10,
+  };
 }
 
 export function bufferedPlaceBounds(bounds, currentBounds) {

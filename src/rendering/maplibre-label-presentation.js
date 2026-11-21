@@ -1,10 +1,17 @@
 import {temporalMonthEnd} from '../document/temporal.js';
+import {MAP_LABEL_SIZE_STOPS} from './label-layout.js';
 import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
 
 /** Ordinary geographic labels use MapLibre symbols, shaping and collision placement. */
 const labelTextLayers=['viewer-label-text','viewer-label-country'];
 export const MAPLIBRE_LABEL_LAYERS=Object.freeze(['viewer-label-dot','viewer-label-capital-ring',...labelTextLayers]);
 export const MAPLIBRE_LABEL_MIN_ZOOM=Object.freeze({country:3,places:PLACE_DISPLAY_ZOOM_FLOOR});
+
+const zoomSize=size=>['interpolate',['linear'],['zoom'],...MAP_LABEL_SIZE_STOPS.flatMap(stop=>[stop.zoom,size(stop)])];
+const urbanSize=(size,base)=>['case',['boolean',['get','urban'],false],size,base];
+const cityRadius=zoomSize(stop=>urbanSize(stop.cityDiameter/2,2.5));
+const cityNameSize=zoomSize(stop=>urbanSize(stop.cityName,12));
+const capitalRadius=zoomSize(stop=>stop.cityDiameter/2+1.5);
 
 export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlagsReady=onChange,onError,onSourceError=onError}){
  const sourceId='viewer-labels';let signature='',failedKey='',pending=false,disposed=false,sequence=0,tail=Promise.resolve(),nextImageId=0;
@@ -115,7 +122,8 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    features.push({type:'Feature',id:ref.key,geometry:{type:'Point',coordinates:coordinate},properties:{objectKey:ref.key,
     text:rows.map(row=>row.text).join('\n'),primary:rows[0]?.text||'',secondary:rows.slice(1).map(row=>row.text).join('\n'),kind:domain,rank:selected?-1e12:-priority,
     selected:!!selected,capital:!!capital,icon:image?.ready&&map.hasImage(image.id)?image.id:'',iconScale:size?size.flag/12:1,size:size?size.name:12,
-    ...(domain==='label'?{viewerMinZoom:layout.userLabelMinZooms.get(String(item.id))}:{})}});
+    ...(domain==='label'?{viewerMinZoom:layout.userLabelMinZooms.get(String(item.id)),
+     urban:!!capital||['capital','city','town'].includes(item.kind)}:{})}});
   };
   for(const item of layout.territorialLabels||[]){const settings=labels.automaticLabelSettings('country',labels.labelSettings(state,'territorial',labels.getTerritorialLabelRef(item.id).id));
    add(item,'territorial',settings.pinned&&settings.manualPosition?settings.manualPosition:labels.countryLabelAnchors().get(String(item.id)),layout.territorialLabelNames.get(String(item.id))===false?[]:layout.territorialLabelRows.get(String(item.id))||[],layout.territorialFlags.get(String(item.id)));}
@@ -141,10 +149,10 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
   const marker={type:'circle',source:sourceId,minzoom:MAPLIBRE_LABEL_MIN_ZOOM.places,layout:{visibility:'none'}};
   const pointColor=['case',['get','selected'],palette.selection,palette.point];
   applyPaint({id:'viewer-label-dot',...marker,filter:placeFilter},{
-   'circle-stroke-width':.5,'circle-color':pointColor,'circle-stroke-color':palette.halo,'circle-radius':2.5,
+   'circle-stroke-width':.5,'circle-color':pointColor,'circle-stroke-color':palette.halo,'circle-radius':cityRadius,
   });
   applyPaint({id:'viewer-label-capital-ring',...marker,filter:['all',placeFilter,['==',['get','capital'],true]]},{
-   'circle-stroke-width':1,'circle-color':'rgba(0,0,0,0)','circle-stroke-color':pointColor,'circle-radius':4,
+   'circle-stroke-width':1,'circle-color':'rgba(0,0,0,0)','circle-stroke-color':pointColor,'circle-radius':capitalRadius,
   });
   const textLayout={'text-field':['format',['get','primary'],{'font-scale':1},['case',['==',['get','secondary'],''],'',['concat','\n',['get','secondary']]],{'font-scale':.82}],'text-size':['get','size'],'text-letter-spacing':.015,'text-line-height':1.25,'symbol-sort-key':['get','rank'],'text-max-width':12};
   const paired=['all',['!=',['get','primary'],''],['!=',['get','icon'],'']];
@@ -156,7 +164,7 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    'icon-anchor':['case',paired,'bottom','center'],
    'icon-optional':false,'text-optional':false,
   };
-  const cityLayout={'text-font':[font],'text-anchor':'left','text-offset':[.85,0],'text-justify':'left'};
+  const cityLayout={'text-font':[font],'text-size':cityNameSize,'text-anchor':'left','text-offset':[.85,0],'text-justify':'left'};
   // Selection is part of the label row, so tile reloads never replay a separate feature state.
   for(const id of labelTextLayers){
    const country=id==='viewer-label-country';

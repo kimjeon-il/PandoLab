@@ -60,6 +60,7 @@ for(const [profile,viewport,saved] of [
  ['mobile',{width:390,height:844},null],
  ['desktop',{width:1440,height:900},null],
  ['saved desktop',{width:1440,height:900},{projection:'globe',center:[38,42],zoom:3.25,bearing:12,pitch:0,roll:0}],
+ ['saved below world fit',{width:1440,height:900},{projection:'globe',center:[38,42],zoom:-2,bearing:12,pitch:0,roll:0}],
 ]){
  test(`first visible globe keeps its camera through data loading (${profile})`,async({browser,baseURL})=>{
   const context=await browser.newContext({baseURL,viewport,hasTouch:profile==='mobile',isMobile:profile==='mobile'});
@@ -102,12 +103,15 @@ for(const [profile,viewport,saved] of [
    allowGeometry();
    await ready(page,'globe camera after loading');
    expect(await page.evaluate(()=>window.__uncoveredInitialFrame??false)).toBe(false);
-   const {frames,final}=await page.evaluate(()=>{
+   const {frames,final,minZoom}=await page.evaluate(()=>{
     const map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter();
-    return {frames:window.__visibleGlobeFrames,final:[center.lng,center.lat,map.getZoom(),map.getBearing()]};
+    return {frames:window.__visibleGlobeFrames,final:[center.lng,center.lat,map.getZoom(),map.getBearing()],minZoom:map.getMinZoom()};
    });
    for(const frame of frames)frame.forEach((value,index)=>expect(value).toBeCloseTo(final[index],5));
-   if(saved)[...saved.center,saved.zoom,saved.bearing].forEach((value,index)=>expect(final[index]).toBeCloseTo(value,5));
+   if(saved){
+    const adjustedMinimum=minZoom+Math.log2(Math.cos(saved.center[1]*Math.PI/180));
+    [...saved.center,Math.max(saved.zoom,adjustedMinimum),saved.bearing].forEach((value,index)=>expect(final[index]).toBeCloseTo(value,5));
+   }
   }finally{
    allowGeometry();
    await context.close();
@@ -338,10 +342,14 @@ test('rapid zoom keeps the previous frame until the shared inland boundary and l
   if(!nearest||distance>.1)throw Error('German–Czech boundary is missing near the fixture');
   return nearest;
  });
- expect(await page.evaluate(()=>[window.__PANDOLAB_MAPLIBRE__.getMinZoom(),window.__PANDOLAB_MAPLIBRE__.getMaxZoom()])).toEqual([-2,22]);
+ expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getMaxZoom())).toBe(22);
  const jump=zoom=>page.evaluate(({center,zoom})=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom});},{center,zoom});
  await jump(-2);
  await ready(page,'minimum zoom');
+ await expect.poll(()=>page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__;
+  return map.getZoom()-Math.log2(Math.cos(map.getCenter().lat*Math.PI/180))-map.getMinZoom();
+ })).toBeCloseTo(0,6);
  await page.evaluate(center=>{
   const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas();
   const source=map.getSource(map.getLayer('territories').source),land=map.getSource('physical-land');
@@ -460,7 +468,8 @@ for(const mobile of [false,true])test(`ordinary camera gestures never preserve t
  }finally{await context.close();}
 });
 
-for(const mobile of [false,true])test(`territorial symbols use the nearby European shape for scale (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
+for(const mobile of [false,true])test(`territorial symbols keep their scale from microstates to large countries (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
+ test.setTimeout(240_000);
  const viewport=mobile?{width:390,height:844}:{width:1440,height:900};
  const context=await browser.newContext({baseURL,viewport,isMobile:mobile,hasTouch:mobile});
  try{
@@ -468,14 +477,14 @@ for(const mobile of [false,true])test(`territorial symbols use the nearby Europe
   const font=page.waitForResponse(response=>response.url().endsWith('/Pretendard-ExtraBold.woff2')&&response.ok());
   await open(page);
   const camera=(zoom,center=[8,49])=>page.evaluate(view=>window.__PANDOLAB_MAPLIBRE__.jumpTo(view),{center,zoom});
-  const labels=()=>page.evaluate(async()=>{
+  const labels=(ids=['LUX','LIE','NLD','FRA','DEU'])=>page.evaluate(async ids=>{
    const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource('viewer-labels');
    const rows=(await source.getData()).features.map(({properties})=>properties);
-   return Object.fromEntries(['LUX','LIE','NLD','FRA','DEU'].map(id=>{
+   return Object.fromEntries(ids.map(id=>{
     const row=rows.find(row=>row.objectKey==='territorial:entity:'+id);
-    return [id,row&&{name:row.primary,size:row.size,flag:row.iconScale*12,ready:!!row.icon&&map.hasImage(row.icon)}];
+    return [id,row&&{name:row.primary,size:row.size,flag:Math.round(row.iconScale*120)/10,ready:!!row.icon&&map.hasImage(row.icon)}];
    }));
-  });
+  },ids);
   await camera(4.05);
   await font;
   await expect.poll(async()=>Object.entries(await labels()).filter(([,row])=>!row?.name||!row.ready),
@@ -484,10 +493,11 @@ for(const mobile of [false,true])test(`territorial symbols use the nearby Europe
   console.log('[territorial-label-sizes]',JSON.stringify({profile:mobile?'touch':'desktop',rows}));
   expect(rows.LUX).toMatchObject({size:13,flag:12});
   expect(rows.LIE).toMatchObject({size:13,flag:12});
-  expect(rows.NLD.size).toBeGreaterThan(13);
-  expect(rows.NLD.size).toBeLessThan(19);
-  expect(rows.FRA).toMatchObject({size:19,flag:18});
-  expect(rows.DEU).toMatchObject({size:19,flag:18});
+  expect(rows.NLD).toMatchObject({size:16.2,flag:15.2});
+  for(const key of ['size','flag']){
+   expect(rows.DEU[key]).toBeGreaterThan(rows.NLD[key]);
+   expect(rows.FRA[key]).toBeGreaterThan(rows.DEU[key]);
+  }
   await expect.poll(()=>page.evaluate(async()=>{
    const map=window.__PANDOLAB_MAPLIBRE__,id='territorial:entity:DEU';
    const feature=(await map.getSource('viewer-labels').getData()).features.find(row=>row.id===id);
@@ -519,6 +529,24 @@ for(const mobile of [false,true])test(`territorial symbols use the nearby Europe
   })).toBe('left');
   await camera(5);
   await expect.poll(async()=>(await labels()).NLD.size).toBeGreaterThan(rows.NLD.size);
+  for(const [id,center,zoom,expected] of [
+   ['USA',[-99,39],3,{size:25.4,flag:23.7}],
+   ['USA',[-99,39],3.5,{size:28,flag:26}],
+   ['BRA',[-52,-11],3,{size:28,flag:26}],
+   ['USA',null,7.5,{size:44,flag:40}],
+   ['BRA',null,9,{size:50,flag:46}],
+  ]){
+   const target=center??await page.evaluate(async id=>{
+    const source=window.__PANDOLAB_MAPLIBRE__.getSource('viewer-labels');
+    return (await source.getData()).features.find(row=>row.id==='territorial:entity:'+id).geometry.coordinates;
+   },id);
+   await camera(zoom,target);
+   await expect.poll(async()=>(await labels([id]))[id],{timeout:30_000}).toMatchObject({...expected,ready:true});
+   await expect.poll(()=>page.evaluate(id=>{
+    const map=window.__PANDOLAB_MAPLIBRE__,key='territorial:entity:'+id;
+    return map.queryRenderedFeatures({layers:['viewer-label-country']}).some(row=>row.properties.objectKey===key);
+   },id),{timeout:30_000}).toBe(true);
+  }
  }finally{await context.close();}
 });
 
@@ -1247,6 +1275,8 @@ test('base rivers actually draw visible pixels after source admission',async({pa
    resolve(matches);
   });map.triggerRepaint();});
  });expect(matches,'the admitted base river must be visible, not merely selectable').toBeGreaterThan(0);
+ await page.setViewportSize({width:390,height:844});
+ await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getMinZoom())).toBeLessThan(1.99);
  await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom:1.99});});
  await ready(page,'below native hydro minimum');
  await expect.poll(()=>page.evaluate(async()=>{
@@ -1256,7 +1286,7 @@ test('base rivers actually draw visible pixels after source admission',async({pa
 });
 
 test('lake pixels follow area and width thresholds on the published water source',async({page})=>{
- await page.setViewportSize({width:1280,height:800});
+ await page.setViewportSize({width:390,height:844});
  await open(page);
  const jump=async(center,zoom)=>{
   await page.evaluate(({center,zoom})=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom}),{center,zoom});
@@ -1291,6 +1321,57 @@ test('lake pixels follow area and width thresholds on the published water source
   .toEqual(overview.map(({minZoom})=>({painted:minZoom===2,minZoom,stage:0})));
  await jump(tahoe.point,4);
  await expect.poll(()=>sample([tahoe]),{timeout:20000}).toEqual([{painted:true,minZoom:4,stage:0}]);
+});
+
+for(const mobile of [false,true])test(`native zoom out stops at world fit (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
+ const viewport=mobile?{width:390,height:844}:{width:1280,height:800};
+ const context=await browser.newContext({baseURL,viewport,isMobile:mobile,hasTouch:mobile});
+ try{
+  const page=await context.newPage();await open(page);
+  const read=()=>page.evaluate(()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,{lng,lat}=map.getCenter();
+   return {lng,lat,floor:map.getMinZoom(),equatorialZoom:map.getZoom()-Math.log2(Math.cos(lat*Math.PI/180))};
+  });
+  const world=await read();
+  expect(world.equatorialZoom).toBeCloseTo(world.floor,6);
+  await page.evaluate(zoom=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,38],zoom}),world.floor+1);
+  expect((await read()).equatorialZoom).toBeGreaterThan(world.floor+.5);
+  const bounds=await page.locator('.maplibregl-canvas').boundingBox();
+  const x=Math.round(bounds.x+bounds.width/2),y=Math.round(bounds.y+bounds.height/2);
+  if(mobile){
+   const session=await context.newCDPSession(page);
+   const touchPoints=offset=>[{x:x-offset,y,id:0},{x:x+offset,y,id:1}];
+   await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:touchPoints(120)});
+   for(const offset of [105,90,75,60,45,30,16]){
+    await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:touchPoints(offset)});
+    await page.evaluate(()=>new Promise(requestAnimationFrame));
+   }
+   await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  }else{
+   await page.mouse.move(x,y);
+   for(let step=0;step<4;step++){
+    const before=(await read()).equatorialZoom;
+    if(before-world.floor<1e-5)break;
+    await page.mouse.wheel(0,1500);
+    await expect.poll(async()=>(await read()).equatorialZoom).toBeLessThan(before);
+    await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
+   }
+  }
+  await expect.poll(async()=>(await read()).equatorialZoom).toBeCloseTo(world.floor,5);
+  expect((await read()).lat).toBeCloseTo(38,0);
+  await page.setViewportSize(mobile?{width:844,height:390}:{width:900,height:620});
+  await expect.poll(async()=>(await read()).floor).not.toBeCloseTo(world.floor,3);
+  await page.locator('#resetViewBtn').click();
+  await expect.poll(async()=>{const view=await read();return view.equatorialZoom-view.floor;}).toBeCloseTo(0,6);
+  if(mobile){
+   const fitted=await read();
+   await expect(page.locator('#resetViewBtn')).toBeHidden();
+   await page.setViewportSize({width:700,height:320});
+   await expect.poll(async()=>(await read()).floor).toBeLessThan(fitted.floor-.01);
+   await expect(page.locator('#resetViewBtn')).toBeVisible();
+   expect((await read()).equatorialZoom).toBeCloseTo(fitted.equatorialZoom,6);
+  }
+ }finally{await context.close();}
 });
 
 test('native world fit contains the globe at desktop, narrow and high-resolution sizes',async({page})=>{
@@ -1376,7 +1457,12 @@ test('the city marker gains and loses its capital ring at the recorded dates',as
    dotRadius:map.getPaintProperty(dot,'circle-radius'),ringRadius:map.getPaintProperty(ring,'circle-radius')}:null;
  });
  await month(page,'2026-09');
- await expect.poll(read).toMatchObject({ring:false,minZoom:3.5,ringMinZoom:3.5,dotRadius:2.5,ringRadius:4});
+ await expect.poll(read).toMatchObject({ring:false,minZoom:3.5,ringMinZoom:3.5,
+  dotRadius:['interpolate',['linear'],['zoom'],
+   4,['case',['boolean',['get','urban'],false],2.5,2.5],
+   6,['case',['boolean',['get','urban'],false],3.5,2.5],
+   9,['case',['boolean',['get','urban'],false],5,2.5]],
+  ringRadius:['interpolate',['linear'],['zoom'],4,4,6,5,9,6.5]});
  const ordinary=await read();
  await month(page,'2026-10');
  await expect.poll(read).toEqual({...ordinary,ring:true});

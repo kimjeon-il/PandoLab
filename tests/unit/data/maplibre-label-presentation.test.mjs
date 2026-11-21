@@ -10,8 +10,30 @@ test('territorial symbols scale with the component near the anchor and the zoom'
  const bounds=[[0,0,40,70],[150,20,300,80]];
  const referenceZoom=Math.log2(360/512);
  assert.deepEqual(territorialLabelSize(bounds,[20,30],referenceZoom),{name:13.9,flag:12.9});
- assert.deepEqual(territorialLabelSize(bounds,[200,75],referenceZoom),{name:19,flag:18});
+ assert.deepEqual(territorialLabelSize(bounds,[200,75],referenceZoom),{name:19.1,flag:18.1});
  assert.deepEqual(territorialLabelSize(bounds,[20,30],referenceZoom-1),{name:13,flag:12});
+});
+
+test('territorial symbols keep their existing lower range and grow to the new cap',()=>{
+ const zoom=Math.log2(360/512)+2;
+ const size=shortSide=>territorialLabelSize([[0,-60,shortSide/4,60]],[0,0],zoom);
+ assert.deepEqual(size(21),{name:13,flag:12});
+ assert.deepEqual(size(22),{name:13,flag:12});
+ assert.deepEqual(size(84.5),{name:16,flag:15});
+ assert.deepEqual(size(147),{name:19,flag:18});
+ assert.deepEqual(size(293.5),{name:23.5,flag:22});
+ assert.deepEqual(size(440),{name:28,flag:26});
+ assert.deepEqual(size(800),{name:28,flag:26});
+});
+
+test('large territorial symbols grow with fractional zoom and keep the small end',()=>{
+ const size=(zoom,width=100)=>territorialLabelSize([[0,-60,width,60]],[0,0],zoom);
+ assert.deepEqual(size(4),{name:28,flag:26});
+ assert.deepEqual(size(6),{name:38,flag:34});
+ assert.deepEqual(size(7.5),{name:44,flag:40});
+ assert.deepEqual(size(9),{name:50,flag:46});
+ assert.deepEqual(size(12),{name:50,flag:46});
+ assert.deepEqual(size(9,.01),{name:13,flag:12});
 });
 
 test('place query keeps its buffered bounds through small pans and longitude wraps',()=>{

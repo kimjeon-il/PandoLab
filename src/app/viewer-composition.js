@@ -175,23 +175,20 @@ export async function composeViewer({ productMode, meta }) {
     onError:error=>report(error,'소속 객체를 선택하지 못했습니다.','PL-OBJECT-DETAIL-SELECTION'),
   });
   disposables.push(objectDetailsPanel);
+  const resetView=get('resetViewBtn');
+  const syncResetView=()=>resetView.classList.toggle('is-world-view',map.renderer.isAtWorldView());
   map=createViewerMap({owners,runtimeContext,element:get('map'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,isSafeKoreanErrorMessage:notifications.isSafeKoreanErrorMessage,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
-    initialCamera:readSavedCamera(),
+    initialCamera:readSavedCamera(),onWorldFitChange:syncResetView,
     onMapPreparationStatus:(presentation,generation)=>{initialPresentation.observe(presentation,generation);mapSkeleton.reconsider();},isInitialPresentation:()=>!initialPresentation.hasPresented()});
   map.renderer.setInitialMapLoading(true);
   map.ready.then(()=>{
-    const instance=map.renderer.map,resetView=get('resetViewBtn');
-    const syncResetView=()=>{
-      resetView.classList.toggle('is-world-view',map.renderer.isAtWorldView(map.mapProjection.currentMapSafeInsets()));
-    };
+    const instance=map.renderer.map;
     instance.on('moveend',persistViewing);
     instance.on('moveend',syncResetView);
-    instance.on('resize',syncResetView);
     syncResetView();
     disposables.push({dispose(){
       instance.off('moveend',persistViewing);
       instance.off('moveend',syncResetView);
-      instance.off('resize',syncResetView);
     }});
   }).catch(error=>report(error,'지도 보기 설정을 연결하지 못했습니다.','PL-WORKSPACE-WRITE-001'));
   disposables.push(map);

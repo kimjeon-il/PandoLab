@@ -59,7 +59,7 @@ function createViewerMapPreparationPresenter(getElement) {
 // End viewer map presentation helpers
 
 /** Presentation adapter shared by the Viewer and Windows reviewer. */
-export function createViewerMap({ runtimeContext,owners,element, projectDomain, documentSession, getPreferences, onError, onPlacesSettled, onStatus,isSafeKoreanErrorMessage,isMobile,diagnostics,getInteractionStyle,onMapPreparationStatus=null,isInitialPresentation,initialCamera }) {
+export function createViewerMap({ runtimeContext,owners,element, projectDomain, documentSession, getPreferences, onError, onPlacesSettled, onStatus,isSafeKoreanErrorMessage,isMobile,diagnostics,getInteractionStyle,onMapPreparationStatus=null,isInitialPresentation,initialCamera,onWorldFitChange }) {
   const meta=runtimeContext.meta;
   const d3 = globalThis.d3;
   if (!d3) throw new Error('지도 투영 라이브러리를 불러오지 못했습니다.');
@@ -149,7 +149,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     mapView:{get mapHost(){return mapHost.mapHost;}},domains:{get renderingDomain(){return renderingDomain;}},
     renderQuality,renderScene:{get currentRenderQuality(){return renderQuality.currentRenderQuality;}},
     feedback:{reportOperationError:onError,setActionStatus:onStatus}},{presentMapPreparation:createViewerMapPreparationPresenter(id=>document.getElementById(id)),onMapPreparationStatus,
-    initialCamera,readInitialSafeInsets:()=>mapProjection.refreshMapLayoutMetrics('startup-camera').safe});
+    initialCamera,onWorldFitChange,readSafeInsets:reason=>(reason?mapProjection.refreshMapLayoutMetrics(reason):mapProjection.projectionLayoutMetrics()).safe});
   let initialView=state.view;
   Object.defineProperty(state,'view',{configurable:true,enumerable:true,get(){
     const camera=renderer.cameraSnapshot();
