@@ -172,6 +172,7 @@ export function artifactGraph(root,{archive=null,readGeneratedJson=p=>archive&&p
     const retiredSourcePaths=new Set([
       'assets/data/world/build-input.json',
       'assets/data/builtin-world/display-policy-v1.json',
+      'assets/data/builtin-world/source/formal-country-names.json',
       'assets/data/historical-world/policy.json',
     ]);
     if(present('assets/data/world/current.json')&&

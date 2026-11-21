@@ -7,6 +7,9 @@ import {readFileSync} from 'node:fs';
 import {createBuiltinWorldLoader} from '../../src/data/builtin-world-loader.js';
 import {PROJECT_SCHEMA_VERSION} from '../../src/runtime/version-contract.js';
 import {buildBuiltinGeometryPacks} from '../../scripts/lib/builtin-geometry-packs.mjs';
+import {historicalWorldCases} from '../fixtures/historical-world-cases.mjs';
+import {compileBuiltinWorldCatalog,readBuiltinWorldFormalNames} from '../../tools/build/builtin-world-compiler.mjs';
+import {buildBuiltinWorldNamePublication} from '../../tools/build/build-builtin-world.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const base='https://example.test/Pando/';
@@ -47,6 +50,58 @@ test('builtin startup geometry packs are deterministic and isolate a single chan
   assert.equal(first.receipt.packs.flatMap(pack=>pack.members).length,world.index.geometryAssets.length);
 });
 
+test('a composite country accepts names only from its recorded representative',()=>{
+ const {index}=fixture();
+ const sourceId='state:CAN',minorId='state:minor',entry=index.entities[0],readIndex=index.readIndex;
+ const timelineRecords=Object.fromEntries(Object.entries(readIndex.records).map(([key,value])=>
+  [key,Array.isArray(value)?value.filter(row=>row.objectRef.id==='CAN'):value]));
+ const priorName={id:'historical-world:names:CAN:0',objectRef:{domain:'territorial',id:'CAN'},property:'name',validFrom:'2026-01-01',validTo:null,
+  value:{name:'캐나다',nameExplicit:true,names:{ko:{common:'캐나다'},en:{common:'Canada'}}}};
+ timelineRecords.propertyBindings.push(priorName);
+ const country={schemaVersion:3,entityId:'CAN',identity:{id:'CAN',properties:{name:'캐나다',entityKind:'general',
+  metadata:{historicalTimeline:{entityId:sourceId,sourceEntityIds:[sourceId,minorId]}}}},geometryRefs:entry.geometryRefs,sourceBindings:[],timelineRecords};
+ const raw=Buffer.from(JSON.stringify(country)),bytes=gzipSync(raw);
+ Object.assign(entry,{sha256:hash(bytes),compressedBytes:bytes.length,decodedBytes:raw.length});
+ entry.file='countries/CAN-sha256-'+entry.sha256+'.json.gz';
+ index.readIndex.sourceHashes[0]=entry.sha256;
+ index.inputHashes={sourceRevisions:{[sourceId]:'old',[minorId]:'unchanged'}};
+ index.sourceIdentities=[{projectEntityId:'CAN',sourceEntityIds:[sourceId,minorId],sourceFeatureIds:['CAN','minor']}];
+ const preferred={entityId:sourceId,names:{ko:'캐나다'},lifetime:{validFrom:'2026-01',validTo:null}};
+ const updated={...preferred,nameVersions:[{...preferred.lifetime,names:{ko:{common:'캐나다',formal:'캐나다'}}}]};
+ const options={sourceIndex:{entities:[{entityId:sourceId,sha256:'new'},{entityId:minorId,sha256:'irrelevant'}]},
+  previousIndex:index,readSource:id=>({...updated,entityId:id}),readPreviousSource:id=>({...preferred,entityId:id}),readCountry:()=>bytes};
+ const files=buildBuiltinWorldNamePublication({...options,entityIds:[sourceId]});
+ const next=JSON.parse(files.get('index.json'));
+ assert.deepEqual(next.geometryAssets,[...index.geometryAssets].sort((a,b)=>a.id.localeCompare(b.id)));
+ assert.equal(next.inputHashes.sourceRevisions[minorId],'unchanged');
+ assert.equal(next.readIndex.records.propertyBindings.find(row=>row.objectRef.id==='CAN'&&row.property==='name').value.names.ko.formal,'캐나다');
+ assert.throws(()=>buildBuiltinWorldNamePublication({...options,entityIds:[minorId]}),/representative/);
+ const unchangedSource={entities:[{entityId:sourceId,sha256:'old'}]};
+ const shouldNotRead=()=>assert.fail('Name-only rebuild must not read unchanged raw coordinates');
+ const formal=buildBuiltinWorldNamePublication({entityIds:[sourceId],previousIndex:index,readCountry:()=>bytes,
+  sourceIndex:unchangedSource,readSource:shouldNotRead,readPreviousSource:shouldNotRead,
+  formalNames:readBuiltinWorldFormalNames({schema:'pandolab-builtin-formal-names',schemaVersion:1,
+   names:[{entityId:sourceId,ko:'캐나다',validFrom:'2026-11-21'}]})});
+ const formalIndex=JSON.parse(formal.get('index.json'));
+ const names=formalIndex.readIndex.records.propertyBindings.filter(row=>row.objectRef.id==='CAN'&&row.property==='name');
+ assert.deepEqual(names.map(row=>[row.validFrom,row.validTo,row.value.names]),[
+  ['2026-01-01','2026-11-20',priorName.value.names],
+  ['2026-11-21',null,{ko:{common:'캐나다',formal:'캐나다'},en:{common:'Canada'}}],
+ ]);
+ assert.deepEqual(formalIndex.inputHashes.sourceRevisions,index.inputHashes.sourceRevisions);
+ const corrected=buildBuiltinWorldNamePublication({entityIds:[sourceId],previousIndex:formalIndex,
+  readCountry:file=>formal.get(file),sourceIndex:unchangedSource,readSource:shouldNotRead,readPreviousSource:shouldNotRead,
+  formalNames:readBuiltinWorldFormalNames({schema:'pandolab-builtin-formal-names',schemaVersion:1,
+   names:[{entityId:sourceId,ko:'수정된 정식명',validFrom:'2026-12-01',validTo:'2026-12-31'}]})});
+ const revised=JSON.parse(corrected.get('index.json')).readIndex.records.propertyBindings
+  .filter(row=>row.objectRef.id==='CAN'&&row.property==='name');
+ assert.deepEqual(revised.map(row=>[row.validFrom,row.validTo,row.value.names.ko.formal??null]),[
+  ['2026-01-01','2026-11-30',null],
+  ['2026-12-01','2026-12-31','수정된 정식명'],
+  ['2027-01-01',null,null],
+ ]);
+});
+
 test('current boundary seeds retain the exact selected shapes and reject corrupt inputs',()=>{
  const world=fixture(),computeLabelAnchor=createCountryLabelAnchorComputer({d3Source:readFileSync(new URL('../../assets/js-vendor/d3.min.js',import.meta.url)),workerSource:readFileSync(new URL('../../src/rendering/workers/label-anchor-worker.js',import.meta.url))}),options={index:world.index,month:'2026-11',catalogSha256:world.manifestSpec.sha256,algorithmSha256:'algorithm',computeLabelAnchor,readGeometryAssets:paths=>new Map(paths.map(path=>[path,world.files.get(path)]))};
  const first=buildCountryBoundarySeed(options),decoded=JSON.parse(gunzipSync(first.bytes));
@@ -84,4 +139,41 @@ test('builtin startup geometry verifies packs and recovers only unavailable or i
     await loader.loadGeometryResources(required);
     assert.equal(requests.length,count,'the timeline and startup share prepared member bytes');
   }
+});
+
+test('a fresh builtin compilation applies the dated formal name source and preserves earlier names and geometry',()=>{
+ const fixture=historicalWorldCases();
+ const selections=fixture.currentSnapshot.entityRefs.map(entityId=>{
+  const entity=fixture.entities.find(row=>row.entityId===entityId);
+  return {entityId,geometryVersionId:entity.geometryVersions[0].versionId};
+ });
+ const input={entities:fixture.entities,view:{schemaVersion:1,id:'world-test',selections,sourceInfo:{collectionMetadata:{}}},
+  currentWorld:fixture.currentWorld,policy:fixture.policy,displayPolicy:fixture.displayPolicy};
+ const id=selections[0].entityId;
+ const baseline=compileBuiltinWorldCatalog(input);
+ const nameEntry={entityId:id,ko:'테스트 정식 국명',validFrom:'2026-11-21'};
+ const priorEntry={...nameEntry,ko:'테스트 이전 국명',validFrom:'2026-10-15',validTo:'2026-10-30'};
+ const source={schema:'pandolab-builtin-formal-names',schemaVersion:1,names:[nameEntry,priorEntry]};
+ const rebuilt=compileBuiltinWorldCatalog({...input,formalNames:readBuiltinWorldFormalNames(source)});
+ const getCountry=output=>{
+  const {projectEntityId}=output.index.sourceIdentities.find(row=>row.sourceEntityIds.includes(id));
+  return output.countries.find(country=>country.entityId===projectEntityId);
+ };
+ const before=getCountry(baseline),after=getCountry(rebuilt);
+ const names=country=>country.timelineRecords.propertyBindings.filter(row=>row.property==='name');
+ const earlier=names(before).at(-1),updated=names(after).at(-1);
+ assert.equal(updated.validFrom,'2026-11-21');
+ assert.deepEqual(updated.value.names.ko,{...earlier.value.names.ko,formal:'테스트 정식 국명'});
+ assert.deepEqual(names(after).slice(-4).map(row=>[row.validFrom,row.validTo,row.value.names.ko.formal??null]),[
+  [earlier.validFrom,'2026-10-14',earlier.value.names.ko.formal??null],
+  ['2026-10-15','2026-10-30','테스트 이전 국명'],
+  ['2026-10-31','2026-11-20',earlier.value.names.ko.formal??null],
+  ['2026-11-21',earlier.validTo,'테스트 정식 국명'],
+ ]);
+ const omitNames=country=>({...country,timelineRecords:{...country.timelineRecords,
+  propertyBindings:country.timelineRecords.propertyBindings.filter(row=>row.property!=='name')}});
+ assert.deepEqual(omitNames(after),omitNames(before));
+ assert.deepEqual(rebuilt.coverageReport,baseline.coverageReport);
+ assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[nameEntry,nameEntry]}),/duplicate/i);
+ assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[nameEntry,{...priorEntry,validTo:'2026-11-21'}]}),/overlap/i);
 });

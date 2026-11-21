@@ -5,7 +5,7 @@ import {mapProjectManifestSourcePath,validateMapProjectManifest,mapProjectResour
 
 export const GENERATION_INPUT_ROLES=Object.freeze([
  'territorialSourceRoot','territorialSourceIndex','territorialCurrentWorld',
- 'worldView','historicalPolicy','displayPolicy','worldBuildRecipe',
+ 'worldView','historicalPolicy','displayPolicy','formalCountryNames','worldBuildRecipe',
 ]);
 const validPath=value=>typeof value==='string'&&/^assets\/data\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value)
  &&!value.split('/').some(part=>!part||part==='.'||part==='..')

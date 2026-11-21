@@ -70,9 +70,9 @@ function applyNameBaseline(identity,entity) {
   }
 }
 
-export function compileBuiltinWorldNameBindings(entity,id) {
+export function compileBuiltinWorldNameBindings(entity,id,formalName) {
   const lifetimes=lifetimeBounds(entity.lifetime);
-  return territorialNameData(entity).versions.flatMap((version,i)=>{
+  const bindings=territorialNameData(entity).versions.flatMap((version,i)=>{
     const naming=territorialNameData({lifetime:{validFrom:null,validTo:null},nameVersions:[{...version,validFrom:null,validTo:null}]});
     return lifetimes.flatMap((lifetime,j)=>{
       const period=intersection(bounds(version),lifetime);
@@ -82,6 +82,7 @@ export function compileBuiltinWorldNameBindings(entity,id) {
         value:{name:naming.name,nameExplicit:true,names:naming.names}}];
     });
   });
+  return formalName ? applyBuiltinWorldFormalNames(bindings,id,formalName) : bindings;
 }
 
 // Historical flag editions compile to the existing C++ flag property binding.
@@ -107,16 +108,98 @@ export function compileBuiltinWorldFlagBindings(entity,id) {
  });
 }
 
-export function replaceBuiltinWorldCountryNames(country,entity) {
+export function replaceBuiltinWorldCountryNames(country,entity,formalName) {
   const result=structuredClone(country);
   applyNameBaseline(result.identity,entity);
   result.timelineRecords.propertyBindings=[...result.timelineRecords.propertyBindings.filter(row=>row.property!=='name'),
-    ...compileBuiltinWorldNameBindings(entity,result.entityId)];
+    ...compileBuiltinWorldNameBindings(entity,result.entityId,formalName)];
   return result;
 }
 
+export function readBuiltinWorldFormalNames(input) {
+  if(input?.schema!=='pandolab-builtin-formal-names'||input.schemaVersion!==1||!Array.isArray(input.names))
+    throw Error('Invalid builtin formal name source');
+  const formalNames=new Map();
+  for(const row of input.names) {
+    if(!/^[a-z]+:[A-Za-z0-9_-]+$/.test(row?.entityId??'')
+      ||typeof row.ko!=='string'||!row.ko||row.ko.trim()!==row.ko
+      ||parseTemporal(row.validFrom,{nullable:false}).precision!=='date'
+      ||(row.validTo!=null&&parseTemporal(row.validTo,{nullable:false}).precision!=='date'))
+      throw Error('Invalid builtin formal name: '+row?.entityId);
+    const names=formalNames.get(row.entityId)??[];
+    const period=bounds(row);
+    names.push({ko:row.ko,...period});
+    formalNames.set(row.entityId,names);
+  }
+  for(const [entityId,names] of formalNames){
+    names.sort((a,b)=>compare(a.start,b.start));
+    for(let i=1;i<names.length;i++){
+      const prior=names[i-1],current=names[i];
+      if(compare(prior.start,current.start)===0)throw Error('Duplicate builtin formal name: '+entityId);
+      if(prior.end&&compare(prior.end,current.start)>=0)throw Error('Overlapping builtin formal names: '+entityId);
+      prior.end??=shiftDay(current.start,-1);
+    }
+  }
+  return formalNames;
+}
+
+function applyBuiltinWorldFormalNames(bindings,entityId,names) {
+  const matched=new Set();
+  const result=bindings.flatMap(row=>{
+    if(row.property!=='name'||!row.value.names?.ko?.common)return [row];
+    const period=bounds(row);
+    const parts=[];
+    let nextStart=period.start;
+    let consumed=false;
+    for(const name of names){
+      const within=intersection(period,name);
+      if(!within)continue;
+      const existing=row.value.names.ko.formal;
+      if(existing&&existing!==name.ko)throw Error('Conflicting formal names for '+entityId);
+      matched.add(name);
+      if(existing===name.ko)continue;
+      if(!nextStart||compare(nextStart,within.start)<0){
+        parts.push({...row,id:parts.length?row.id+':from:'+date(nextStart):row.id,
+          validFrom:nextStart&&date(nextStart),validTo:date(shiftDay(within.start,-1))});
+      }
+      parts.push({...row,id:row.id+':formal:'+date(within.start),
+        validFrom:date(within.start),validTo:within.end&&date(within.end),
+        value:{...row.value,names:{...row.value.names,ko:{...row.value.names.ko,formal:name.ko}}}});
+      consumed=!within.end;
+      nextStart=within.end&&shiftDay(within.end,1);
+    }
+    if(!parts.length)return [row];
+    if(!consumed&&(!period.end||compare(nextStart,period.end)<=0)){
+      parts.push({...row,id:row.id+':from:'+date(nextStart),validFrom:date(nextStart)});
+    }
+    return parts;
+  });
+  if(matched.size!==names.length)throw Error('Formal name publication requires an active short name: '+entityId);
+  return result.length===bindings.length&&result.every((row,i)=>row===bindings[i])?bindings:result;
+}
+
+export function addBuiltinWorldFormalName(country,formalName) {
+  const prior=country.timelineRecords.propertyBindings;
+  // Recover the underlying name bindings before applying a revised source.
+  // Existing formal names that came from the country source have no suffix.
+  const original=[];
+  let reapplying=false;
+  for(const row of prior){
+    const derived=row.property==='name'&&row.id.match(/^(historical-world:names:.+):(formal|from):[+-]?\d{4,}-\d{2}-\d{2}$/);
+    if(!derived){original.push({...row});continue;}
+    reapplying=true;
+    const [,id,role]=derived;
+    const value=structuredClone(row.value);
+    if(role==='formal')delete value.names.ko.formal;
+    appendAdjacentInterval(original,{...row,id,value},(a,b)=>a.id===b.id);
+  }
+  const propertyBindings=applyBuiltinWorldFormalNames(reapplying?original:prior,country.entityId,formalName);
+  if(propertyBindings===prior)return country;
+  return {...country,timelineRecords:{...country.timelineRecords,propertyBindings}};
+}
+
 /** Build an ordinary editable project; library inputs and raw intervals stay immutable. */
-export function compileBuiltinWorldCatalog({ entities, view, currentWorld = null, policy, clipper = historicalWorldClipper, availableSourceIds = null,displayPolicy=loadBuiltinDisplayPolicy() }) {
+export function compileBuiltinWorldCatalog({ entities, view, currentWorld = null, policy, clipper = historicalWorldClipper, availableSourceIds = null,displayPolicy=loadBuiltinDisplayPolicy(),formalNames=new Map() }) {
   entities=entities.filter(entity=>['general','regional'].includes(entity.entityKind));
   if(view?.schemaVersion!==1 || !Array.isArray(view.selections) || Object.hasOwn(view,'referenceDate'))throw new Error('Invalid world view');
   if (!policy || policy.schemaVersion !== 1) throw new Error('Missing historical world policy');
@@ -271,12 +354,13 @@ export function compileBuiltinWorldCatalog({ entities, view, currentWorld = null
   const records = { schemaVersion: 3, lifetimes: [], geometryBindings: [], parentRelations: [], propertyBindings: [] };
   for (const [id] of ordered) {
     const rows = rowsByEntity.get(id); if (!rows) continue;
+    const {nameSource}=definitions.get(id);
     territorialLifetimeIntervals(definitions.get(id).identity.properties.metadata.historicalTimeline.lifetime)
       .forEach((lifetime,i)=>records.lifetimes.push({ id: `historical-world:lifetimes:${id}:${i}`,
         objectRef: {domain:"territorial",id}, ...structuredClone(lifetime) }));
     for (const name of ['geometryBindings', 'parentRelations']) rows[name].forEach((row, i) => records[name].push({ id: `historical-world:${name}:${id}:${i}`, ...row }));
-    records.propertyBindings.push(...compileBuiltinWorldNameBindings(definitions.get(id).nameSource,id));
-    records.propertyBindings.push(...compileBuiltinWorldFlagBindings(definitions.get(id).nameSource,id));
+    records.propertyBindings.push(...compileBuiltinWorldNameBindings(nameSource,id,formalNames.get(nameSource.entityId)));
+    records.propertyBindings.push(...compileBuiltinWorldFlagBindings(nameSource,id));
   }
   const normalized = normalizeTimelineRecords(records, { entities: identities.map(row => ({ objectRef: {domain:"territorial",id:row.id}, entityKind: row.properties.entityKind })), geometryExists: ref => archive.get(ref) !== null });
   const availability=new Map([...rowsByEntity].map(([id,rows])=>[id,rows.availability]));

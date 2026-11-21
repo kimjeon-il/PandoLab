@@ -6,12 +6,12 @@ import {createHash} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
 import {execFileSync} from 'node:child_process';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";
-import {libraryConfig,libraryCheckout,decodeArchiveEntry} from "../data/library-context.mjs";
+import {libraryConfig,libraryCheckout,decodeArchiveEntry,readLibraryDataFile} from "../data/library-context.mjs";
 import {readTerritorialSources,readTerritorialSource,entityFileName,territorialSourceRoot,territorialDataRoot} from "../data/territorial-entity-sources.mjs";
 import {normalizeTerritorialLibraryEntity} from "../gis/territorial-library.js";
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {buildCurrentWorld} from "../data/territorial-current-world.mjs";
-import {compileBuiltinWorldCatalog,coalesceCoverageAdjustments,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
+import {addBuiltinWorldFormalName,compileBuiltinWorldCatalog,coalesceCoverageAdjustments,readBuiltinWorldFormalNames,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
 import {builtinSubunitId} from "../../src/document/territorial-display-identity.js";
 import {loadBuiltinDisplayPolicy} from "../gis/builtin-display-policy.mjs";
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountryStoredBytes,readBuiltinCountry} from "../data/builtin-country-bytes.mjs";
@@ -35,6 +35,9 @@ export function recordBuiltinWorldInputs(index,sourceRevisions,view,policy){
  index.inputHashes={entities:sha(JSON.stringify(ordered)),sourceRevisions:ordered,view:sha(JSON.stringify(view)),policy:sha(JSON.stringify(policy))};
  return index;
 }
+function loadFormalNamesForProject(generation){
+ return readBuiltinWorldFormalNames(JSON.parse(readLibraryDataFile(generation.source('formalCountryNames'))));
+}
 export function buildBuiltinWorldPublication({input=null,previousIndex=null,policyFile=new URL("../../assets/data/historical-world/policy.json",import.meta.url)}={}){
  const policy=input?.policy||JSON.parse(fs.readFileSync(policyFile));
  // Explicit entities/readSource are caller-verified inputs (for example, an
@@ -42,7 +45,8 @@ export function buildBuiltinWorldPublication({input=null,previousIndex=null,poli
  const entities=input?.entities||readTerritorialSources(territorialSourceRoot,{sourceIndex:input?.sourceIndex});
  const view=input?.view||JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json')));
  const currentWorld=input?.currentWorld;
- const {index,countries,coverageReport}=compileBuiltinWorldCatalog({entities,view,currentWorld,policy,displayPolicy:input?.displayPolicy||loadBuiltinDisplayPolicy()});
+ const formalNames=input?input.formalNames:loadFormalNamesForProject(readProjectGenerationContext());
+ const {index,countries,coverageReport}=compileBuiltinWorldCatalog({entities,view,currentWorld,policy,displayPolicy:input?.displayPolicy||loadBuiltinDisplayPolicy(),formalNames});
  // In the full compiler, previously verified geometry resources are a
  // content-addressed cache. Name/flag/property changes may replace the small
  // country descriptor but cannot re-gzip the unchanged source coordinates.
@@ -58,24 +62,37 @@ export function buildBuiltinWorldPublication({input=null,previousIndex=null,poli
  files.set('coverage-report.json',Buffer.from(JSON.stringify(coverageReport)+'\n'));
  return files;
 }
-export function buildBuiltinWorldNamePublication({entityIds,sourceIndex,previousIndex,readSource=null,readPreviousSource,readCountry}) {
+export function buildBuiltinWorldNamePublication({entityIds,sourceIndex,previousIndex,readSource=null,readPreviousSource,readCountry,formalNames=null}) {
  if(!entityIds?.length||new Set(entityIds).size!==entityIds.length)throw Error('Explicit unique name scope required');
+ if(!readPreviousSource&&entityIds.some(id=>!formalNames?.has(id)))
+  throw Error('Formal names must match the selected source identities');
  readSource??=id=>readTerritorialSource(id,territorialSourceRoot,{sourceIndex});
  const index=structuredClone(previousIndex),files=new Map();
  const revisions={...index.inputHashes.sourceRevisions};
  for(const id of entityIds){
   const mapping=index.sourceIdentities.filter(row=>row.sourceEntityIds.includes(id));
-  if(mapping.length!==1||mapping[0].sourceEntityIds.length!==1)throw Error(`Name-only update requires one source identity: ${id}`);
-  const entry=index.entities.find(row=>row.entityId===mapping[0].projectEntityId),source=sourceIndex.entities.find(row=>row.entityId===id);
-  if(!entry||!source)throw Error(`Missing named country: ${id}`);
+  if(mapping.length!==1)throw Error(`Name-only update requires one Viewer identity: ${id}`);
+  const entry=index.entities.find(row=>row.entityId===mapping[0].projectEntityId);
+  if(!entry)throw Error(`Missing named country: ${id}`);
   const stored=readBuiltinCountryStoredBytes(entry,readCountry);
-  const country=JSON.parse(gunzipSync(stored)),entity=readSource(id),prior=readPreviousSource(id);
-  if(country.entityId!==entry.entityId||entity.entityId!==id)throw Error('Name scope identity mismatch');
-  const unnamed=({names,alternateNames,nameVersions,...rest})=>rest;
-  if(JSON.stringify(unnamed(entity))!==JSON.stringify(unnamed(prior)))throw Error(`Name-only scope includes non-name changes: ${id}`);
-  const next=replaceBuiltinWorldCountryNames(country,entity);
+  const country=JSON.parse(gunzipSync(stored));
+  if(country.entityId!==entry.entityId)throw Error('Name scope identity mismatch');
+  if(mapping[0].sourceEntityIds.length>1&&country.identity.properties.metadata.historicalTimeline?.entityId!==id)
+   throw Error(`Name-only update requires the recorded composite representative: ${id}`);
+  const source=sourceIndex?.entities.find(row=>row.entityId===id),formalName=formalNames?.get(id);
+  let next;
+  if(formalName&&(!readPreviousSource||source&&source.sha256===revisions[id])){
+   next=addBuiltinWorldFormalName(country,formalName);
+  }else{
+   if(!source)throw Error(`Missing named source: ${id}`);
+   const entity=readSource(id),prior=readPreviousSource(id);
+   if(entity.entityId!==id||prior.entityId!==id)throw Error('Name scope identity mismatch');
+   const unnamed=({names,alternateNames,nameVersions,...rest})=>rest;
+   if(JSON.stringify(unnamed(entity))!==JSON.stringify(unnamed(prior)))throw Error(`Name-only scope includes non-name changes: ${id}`);
+   next=replaceBuiltinWorldCountryNames(country,entity,formalName);
+   revisions[id]=source.sha256;
+  }
   for(const [file,bytes] of encodeBuiltinCountries(index,[next],new Map()))files.set(file,bytes);
-  revisions[id]=source.sha256;
  }
  const ordered=Object.fromEntries(Object.entries(revisions).sort(([a],[b])=>a.localeCompare(b,'en')));
  index.inputHashes.sourceRevisions=ordered;index.inputHashes.entities=sha(JSON.stringify(ordered));
@@ -118,7 +135,7 @@ export function buildBuiltinWorldRetiredPartialPublication(input){
 /** Recompile only connected spatial/hierarchy components. Unrelated payloads
  * are neither read nor returned: their verified descriptors stay in the index. */
 export function buildBuiltinWorldPartialPublication({entityIds,sourceIndex,previousSourceIndex,view,policy,
- previousIndex,previousCoverage,readSource=null,currentWorld=null,onScope=()=>{},planOnly=false,displayPolicy=loadBuiltinDisplayPolicy()}){
+ previousIndex,previousCoverage,readSource=null,currentWorld=null,onScope=()=>{},planOnly=false,displayPolicy=loadBuiltinDisplayPolicy(),formalNames}){
  if(!entityIds?.length||new Set(entityIds).size!==entityIds.length)throw new Error('Explicit unique entity scope required');
  if(previousIndex.inputHashes.view!==sha(JSON.stringify(view))||previousIndex.inputHashes.policy!==sha(JSON.stringify(policy)))throw new Error('World view or policy changed; partial country scope is insufficient');
  const sources=new Map(sourceIndex.entities.map(row=>[row.entityId,row])),oldSources=new Map(previousSourceIndex.entities.map(row=>[row.entityId,row]));
@@ -194,7 +211,7 @@ export function buildBuiltinWorldPartialPublication({entityIds,sourceIndex,previ
    ...(policy.parentRelations ? {parentRelations:policy.parentRelations.filter(row=>ids.has(row.entityId)&&ids.has(row.parentEntityId))} : {})};
   const selectedFeatureIds=new Set(scopedView.selections.map(row=>loadedSources.get(row.entityId).sourceInfo.featureId));
   const world=currentWorld?{...currentWorld,features:currentWorld.features.filter(row=>selectedFeatureIds.has(row.id))}:null;
-  const compiled=compileBuiltinWorldCatalog({entities,view:scopedView,currentWorld:world,policy:scopedPolicy,availableSourceIds,displayPolicy});
+  const compiled=compileBuiltinWorldCatalog({entities,view:scopedView,currentWorld:world,policy:scopedPolicy,availableSourceIds,displayPolicy,formalNames});
   compiled.index.geometryAssets=previousIndex.geometryAssets;
   for(const [file,bytes] of encodeBuiltinCountries(compiled.index,compiled.countries,new Map()))files.set(file,bytes);
   for(const asset of compiled.index.geometryAssets)geometryAssets.set(JSON.stringify([asset.id,asset.version]),asset);
@@ -284,20 +301,22 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  const sourceIndexPath=generation.source('territorialSourceIndex');
  const sourceIndexAbsolute=path.resolve(root,sourceIndexPath);
  const output=path.dirname(path.resolve(root,generation.catalogs.territorial));
- const selectedView=JSON.parse(fs.readFileSync(path.resolve(root,generation.source('worldView'))));
- const selectedPolicy=JSON.parse(fs.readFileSync(path.resolve(root,generation.source('historicalPolicy'))));
- const selectedDisplayPolicy=JSON.parse(fs.readFileSync(path.resolve(root,generation.source('displayPolicy'))));
+ const namesOnly=process.argv.includes('--names-only');
+ const readInput=role=>JSON.parse(readLibraryDataFile(generation.source(role),{root}));
+ const selectedView=namesOnly?null:readInput('worldView');
+ const selectedPolicy=namesOnly?null:readInput('historicalPolicy');
+ const selectedDisplayPolicy=namesOnly?null:readInput('displayPolicy');
+ const formalNames=loadFormalNamesForProject(generation);
  const selectedRead=id=>readTerritorialSource(id,sourceRoot,{sourceIndex,
   chunkRoot:path.dirname(sourceIndexAbsolute)});
  if(process.argv.includes('--pack-existing'))throw Error('--pack-existing is retired; use country-scoped --entities=<ids> generation');
  const selected=process.argv.find(arg=>arg.startsWith('--entities='));
  const retirementFile=process.argv.find(arg=>arg.startsWith('--retirement-manifest='));
- const namesOnly=process.argv.includes('--names-only');
  if(projectId!=='default-world'&&retirementFile)throw Error('Territorial retirement requires a project-paired archive and source retirement manifest');
  if(namesOnly&&!selected)throw Error('--names-only requires --entities');
  if(namesOnly&&process.argv.includes('--plan'))throw Error('--plan is only supported for geometry generation');
  if(process.argv.includes('--plan')&&!selected)throw new Error('--plan requires --entities');
- const sourceIndex=JSON.parse(fs.readFileSync(sourceIndexAbsolute));
+ const sourceIndex=readInput('territorialSourceIndex');
  const priorCatalogPath=path.join(output,'index.json');
  const index=(selected||retirementFile||fs.existsSync(priorCatalogPath))
    ?JSON.parse(fs.readFileSync(priorCatalogPath)):null;
@@ -308,14 +327,14 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   retirementInputs={retirement,sourceIndex,previousSourceIndex:JSON.parse(fs.readFileSync(retirement.previousIndex.path)),
    view:JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json'))),
    policy:JSON.parse(fs.readFileSync(new URL('../../assets/data/historical-world/policy.json',import.meta.url))),displayPolicy:planTerritorialRetirement(retirement,JSON.parse(readRetirementReceipt(retirement.previousIndex))).displayPolicy};
-  const input={...retirementInputs,previousIndex:JSON.parse(readRetirementReceipt(retirement.previousBuiltinIndex)),previousCoverage:JSON.parse(readRetirementReceipt(retirement.previousCoverage))};
+  const input={...retirementInputs,formalNames,previousIndex:JSON.parse(readRetirementReceipt(retirement.previousBuiltinIndex)),previousCoverage:JSON.parse(readRetirementReceipt(retirement.previousCoverage))};
   files=selected?buildBuiltinWorldRetiredPartialPublication({...input,entityIds:selected.slice('--entities='.length).split(',').filter(Boolean)}):buildBuiltinWorldRetirementPublication(input);
  }else if(selected){
   if(namesOnly){
    const ids=selected.slice('--entities='.length).split(',').filter(Boolean);
    const root=fileURLToPath(new URL("../../",import.meta.url)),config=libraryConfig(root),checkout=libraryCheckout(root);
    const archive=JSON.parse(execFileSync('git',['-c','maintenance.auto=false','-c','gc.auto=0','show',`${config.revision}:archive/index.json`],{cwd:checkout,maxBuffer:16*1024*1024}));
-   files=buildBuiltinWorldNamePublication({entityIds:ids,sourceIndex,previousIndex:index,readSource:selectedRead,readCountry:file=>fs.readFileSync(path.join(output,file)),
+   files=buildBuiltinWorldNamePublication({entityIds:ids,sourceIndex,previousIndex:index,readSource:selectedRead,formalNames,readCountry:file=>fs.readFileSync(path.join(output,file)),
     readPreviousSource:id=>normalizeTerritorialLibraryEntity(decodeTerritorialSource(JSON.parse(decodeArchiveEntry(checkout,archive.files[`${generation.source('territorialSourceRoot')}/countries/${entityFileName(id)}`],config.revision)),file=>decodeArchiveEntry(checkout,archive.files[generation.source('territorialSourceRoot')+'/'+file],config.revision)))});
    console.log(`Name-only generation: ${ids.length} selected source; geometry and coverage reused without recomputation.`);
   }else{
@@ -323,14 +342,14 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const archive=JSON.parse(execFileSync('git',['-c','maintenance.auto=false','-c','gc.auto=0','show',`${config.revision}:archive/index.json`],{cwd:checkout,maxBuffer:16*1024*1024}));
   const previousSourceIndex=JSON.parse(decodeArchiveEntry(checkout,archive.files[sourceIndexPath],config.revision));
   files=buildBuiltinWorldPartialPublication({entityIds:selected.slice('--entities='.length).split(',').filter(Boolean),sourceIndex,previousSourceIndex,
-   view:selectedView,policy:selectedPolicy,displayPolicy:selectedDisplayPolicy,readSource:selectedRead,
+   view:selectedView,policy:selectedPolicy,displayPolicy:selectedDisplayPolicy,formalNames,readSource:selectedRead,
    previousIndex:index,previousCoverage:JSON.parse(fs.readFileSync(path.join(output,'coverage-report.json'))),
    planOnly:process.argv.includes('--plan'),
    onScope:planned=>{console.log(`Scoped generation: ${planned.requested} requested; ${planned.sourceIds.length} connected source inputs in ${planned.components.length} components; other source and country payload files are not read.`);}});
   if(process.argv.includes('--plan')){console.log(JSON.stringify(files,null,2));process.exit(0);}
   }
  }else files=buildBuiltinWorldPublication({previousIndex:index,input:{sourceIndex,entities:readTerritorialSources(sourceRoot,{sourceIndex,chunkRoot:path.dirname(sourceIndexAbsolute)}),
-   view:selectedView,policy:selectedPolicy,displayPolicy:selectedDisplayPolicy}});
+   view:selectedView,policy:selectedPolicy,displayPolicy:selectedDisplayPolicy,formalNames}});
  writeBuiltinWorldPublication(files,output,{check:process.argv.includes('--check'),retirementInputs});
  console.log(`Builtin world: ${JSON.parse(files.get('index.json')).entities.length} country references; ${[...files.keys()].filter(file=>file.startsWith('countries/')||file.startsWith('country-parts/')).length} bounded files emitted; ${[...files.values()].reduce((n,b)=>n+b.length,0)} output bytes; no aggregate transport`);
 }
