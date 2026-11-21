@@ -1,18 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreLabelPresentation} from '../../../src/rendering/maplibre-label-presentation.js';
-import {selectPlaceLabelCandidates,territorialLabelSize} from '../../../src/rendering/label-layout.js';
+import {bufferedPlaceBounds,selectPlaceLabelCandidates,territorialLabelSize} from '../../../src/rendering/label-layout.js';
 import {createCountryIndex} from '../../../src/map/country-index.js';
 import {countryGeometrySignature} from '../../../src/rendering/country-shared-boundary-cache.js';
 import {createGeometryVersionStore} from '../../../src/geometry/geometry-version-store.js';
 
-test('territorial symbols scale with the visible component near the anchor',()=>{
- const bounds=[[0,0,40,250],[150,20,300,180]];
- const frame={size:{width:400,height:400},projectVisibleCoordinate:point=>point};
- assert.deepEqual(territorialLabelSize(bounds,[20,80],frame),{name:13.9,flag:12.9});
- assert.deepEqual(territorialLabelSize(bounds,[200,80],frame),{name:19,flag:18});
- const narrow={...frame,size:{width:22,height:400}};
- assert.deepEqual(territorialLabelSize(bounds,[20,80],narrow),{name:13,flag:12});
+test('territorial symbols scale with the component near the anchor and the zoom',()=>{
+ const bounds=[[0,0,40,70],[150,20,300,80]];
+ const referenceZoom=Math.log2(360/512);
+ assert.deepEqual(territorialLabelSize(bounds,[20,30],referenceZoom),{name:13.9,flag:12.9});
+ assert.deepEqual(territorialLabelSize(bounds,[200,75],referenceZoom),{name:19,flag:18});
+ assert.deepEqual(territorialLabelSize(bounds,[20,30],referenceZoom-1),{name:13,flag:12});
+});
+
+test('place query keeps its buffered bounds through small pans and longitude wraps',()=>{
+ const coverage=bufferedPlaceBounds([170,-10,190,10],null);
+ assert.deepEqual(coverage,[167,-13,193,13]);
+ assert.equal(bufferedPlaceBounds([-188,-11,-168,9],coverage),coverage);
+ assert.notEqual(bufferedPlaceBounds([-185,-11,-165,9],coverage),coverage);
+ assert.deepEqual(bufferedPlaceBounds([-180,75,180,89],null),[-180,72.9,180,90]);
 });
 
 test('matching baked anchors avoid browser geometry work but changed shapes still use the worker',async()=>{
@@ -240,7 +247,10 @@ test('labels publish before flags and change selection without mutating tile fea
   assert.equal(countryLayout['icon-optional'],false);
   assert.equal(countryLayout['text-optional'],false);
   assert.match(faces[countryLayout['text-font'][0]][0].url,/Pretendard-ExtraBold\.woff2$/);
-  assert.deepEqual(layers.get('viewer-label-text').layout['text-variable-anchor'],['left','right','top','bottom']);
+  const cityLayout=layers.get('viewer-label-text').layout;
+  assert.equal(cityLayout['text-anchor'],'left');
+  assert.ok(cityLayout['text-offset'][0]>0);
+  assert.equal(cityLayout['text-variable-anchor'],undefined);
   assert.deepEqual(layers.get('viewer-label-country').paint['text-color'].slice(0,2),['case',['get','selected']]);
   const writes=diffs.length;
   presentation.renderTerritorialLabels(activeLayout);await flush();

@@ -1,6 +1,8 @@
+import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
+
 export const LABEL_PRIORITIES = Object.freeze({ country: 100, capital: 90, majorCity: 70, administrative: 60, place: 40 });
 
-export function territorialLabelSize(componentBounds, [longitude, latitude], frame) {
+export function territorialLabelSize(componentBounds, [longitude, latitude], zoom) {
   let nearest, distance = Infinity, area = 0;
   for (const bounds of componentBounds) {
     const [west, south, east, north] = bounds;
@@ -20,24 +22,31 @@ export function territorialLabelSize(componentBounds, [longitude, latitude], fra
   let shortSide = 0;
   if (nearest) {
     const [west, south, east, north] = nearest;
-    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-    for (const lng of [west, (west + east) / 2, east]) {
-      for (const lat of [south, (south + north) / 2, north]) {
-        const point = frame.projectVisibleCoordinate([lng, lat], { allowOutsideViewport: true });
-        if (!point) continue;
-        left = Math.min(left, point[0]); right = Math.max(right, point[0]);
-        top = Math.min(top, point[1]); bottom = Math.max(bottom, point[1]);
-      }
-    }
-    shortSide = Math.max(0, Math.min(
-      Math.min(frame.size.width, right) - Math.max(0, left),
-      Math.min(frame.size.height, bottom) - Math.max(0, top),
-    ));
+    // Use the zoom scale at the label's latitude, independent of pan, clipping
+    // and foreshortening. The globe still projects the actual symbol anchor.
+    const latitudeScale = Math.cos(Math.min(Math.abs(latitude), 85) * Math.PI / 180);
+    const degrees = Math.min(east - west, (north - south) / latitudeScale);
+    shortSide = degrees * referenceZoomPixelsPerDegree(zoom);
   }
   const fraction = Math.min(1, Math.max(0, (shortSide - 22) / (147 - 22)));
-  // Subpixel precision avoids sending fresh tile data for projection noise.
+  // Subpixel precision avoids replacing tiles for imperceptible zoom changes.
   const growth = Math.round(60 * fraction);
   return { name: (130 + growth) / 10, flag: (120 + growth) / 10 };
+}
+
+export function bufferedPlaceBounds(bounds, currentBounds) {
+  const [west, south, east, north] = bounds;
+  if (currentBounds) {
+    const [left, bottom, right, top] = currentBounds;
+    const turns = Math.round(((left + right) - (west + east)) / 720);
+    if (south >= bottom && north <= top && (right - left >= 360 ||
+        (west + turns * 360 >= left && east + turns * 360 <= right))) return currentBounds;
+  }
+  // Keep a modest margin so a small pan and its return share the same query.
+  const longitudeMargin = Math.min(180 - (east - west) / 2, (east - west) * .15);
+  const latitudeMargin = (north - south) * .15;
+  return [west - longitudeMargin, Math.max(-90, south - latitudeMargin),
+    east + longitudeMargin, Math.min(90, north + latitudeMargin)];
 }
 
 /** Conservative camera-bound check shared by the place Worker and Viewer.

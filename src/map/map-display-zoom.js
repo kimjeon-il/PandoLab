@@ -3,7 +3,8 @@
 const hydroStageZooms = new Map([[6, 2], [6.7, 3], [7, 4], [7.5, 5]]);
 export const HYDRO_DISPLAY_ZOOMS = Object.freeze([...hydroStageZooms.values()]);
 export const PLACE_DISPLAY_ZOOM_FLOOR = 3.5;
-const referencePixelsPerKm = 512 / 40030;
+const referenceWorldPixels = zoom => 512 * 2 ** zoom;
+export const referenceZoomPixelsPerDegree = zoom => referenceWorldPixels(zoom) / 360;
 const lakeAreaImportanceKm2 = [10000, 1000, 100, 0];
 const lakeMinimumAreaPx2 = 16;
 const lakeMinimumWidthPx = 1.25;
@@ -28,7 +29,7 @@ export function hydroLakeDisplayMinZoom(areaKm2, widthKm) {
   // Reference screen size near the globe center. Keep a finest-stage display
   // for lakes that still measure below the readability target at that stage.
   const readableZoom = HYDRO_DISPLAY_ZOOMS.find(zoom => {
-    const scale = referencePixelsPerKm * 2 ** zoom;
+    const scale = referenceWorldPixels(zoom) / 40030;
     return areaKm2 * scale ** 2 >= lakeMinimumAreaPx2 && widthKm * scale >= lakeMinimumWidthPx;
   }) ?? finestZoom;
   return Math.max(importanceZoom, readableZoom);

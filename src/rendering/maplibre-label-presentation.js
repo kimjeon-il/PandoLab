@@ -156,7 +156,7 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    'icon-anchor':['case',paired,'bottom','center'],
    'icon-optional':false,'text-optional':false,
   };
-  const cityLayout={'text-font':[font],'text-variable-anchor':['left','right','top','bottom'],'text-radial-offset':.85,'text-justify':'auto'};
+  const cityLayout={'text-font':[font],'text-anchor':'left','text-offset':[.85,0],'text-justify':'left'};
   // Selection is part of the label row, so tile reloads never replay a separate feature state.
   for(const id of labelTextLayers){
    const country=id==='viewer-label-country';

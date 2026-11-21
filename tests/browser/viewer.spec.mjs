@@ -467,7 +467,7 @@ for(const mobile of [false,true])test(`territorial symbols use the nearby Europe
   const page=await context.newPage();
   const font=page.waitForResponse(response=>response.url().endsWith('/Pretendard-ExtraBold.woff2')&&response.ok());
   await open(page);
-  const camera=zoom=>page.evaluate(zoom=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[8,49],zoom}),zoom);
+  const camera=(zoom,center=[8,49])=>page.evaluate(view=>window.__PANDOLAB_MAPLIBRE__.jumpTo(view),{center,zoom});
   const labels=()=>page.evaluate(async()=>{
    const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource('viewer-labels');
    const rows=(await source.getData()).features.map(({properties})=>properties);
@@ -500,6 +500,23 @@ for(const mobile of [false,true])test(`territorial symbols use the nearby Europe
     city:hits.some(hit=>hit.layer.id==='viewer-label-text'),
    }));
   })).toEqual([{country:true,city:false},{country:true,city:false}]);
+  const citySnapshot=()=>page.evaluate(async()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__;
+   const features=(await map.getSource('viewer-labels').getData()).features;
+   return features.filter(row=>row.properties.kind==='label').map(row=>[row.id,row.geometry.coordinates]);
+  });
+  await expect.poll(async()=>(await citySnapshot()).length).toBeGreaterThan(0);
+  const cities=await citySnapshot();
+  for(const center of [[9,49],[8,49]]){
+   await camera(4.05,center);
+   await ready(page,'fixed-zoom label pan');
+   expect(await labels()).toEqual(rows);
+   expect(await citySnapshot()).toEqual(cities);
+  }
+  expect(await page.evaluate(()=>{
+   const map=window.__PANDOLAB_MAPLIBRE__;
+   return map.getLayoutProperty('viewer-label-text','text-anchor');
+  })).toBe('left');
   await camera(5);
   await expect.poll(async()=>(await labels()).NLD.size).toBeGreaterThan(rows.NLD.size);
  }finally{await context.close();}

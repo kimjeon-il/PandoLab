@@ -1,5 +1,5 @@
 import { isMapVisualFrame } from "./map-visual-frame.js";
-import { coordinateInGeographicBounds,selectPlaceLabelCandidates,territorialLabelSize } from "./label-layout.js";
+import { bufferedPlaceBounds,coordinateInGeographicBounds,selectPlaceLabelCandidates,territorialLabelSize } from "./label-layout.js";
 import { coordinateBounds } from "../geometry/coordinate-bounds.js";
 import { admittedGeometryKey } from "../geometry/geometry-version-store.js";
 import { multiCoordinates } from "../geometry/polygon-geometry-utils.js";
@@ -27,12 +27,13 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
   let dependencies;
   let labelLayoutMetrics;
   const labelComponentBounds = new Map();
-  let builtinPlaces,activeSource='unbound';
+  let builtinPlaces,activeSource='unbound',placeWindow=null;
 
   function setProjectSource(source) {
     if(!['builtin','project','new'].includes(source))throw new TypeError('Unknown map source');
     activeSource=source==='builtin'?'builtin':'project';
 
+    placeWindow=null;
     builtinPlaces?.resetProject();
   }
   function connect(ports) {
@@ -49,8 +50,11 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
   function placeView() {
     const state = dependencies.projectState.state;
     const view = dependencies.mapHostView.projectionViewSnapshot();
-    return { projection: state.projection, threshold: view.zoom, mapDate: placeMapDate(), presentation: {month:state.timelineCursor,languages:PLACE_SEARCH_LANGUAGES}, width: state.size.width, height: state.size.height,
-      bounds:view.geographicBounds };
+    if(!view.geographicBounds)return null;
+    const reuse=placeWindow?.threshold===view.zoom&&placeWindow.width===state.size.width&&placeWindow.height===state.size.height;
+    placeWindow={ projection: state.projection, threshold: view.zoom, mapDate: placeMapDate(), presentation: {month:state.timelineCursor,languages:PLACE_SEARCH_LANGUAGES}, width: state.size.width, height: state.size.height,
+      bounds:bufferedPlaceBounds(view.geographicBounds,reuse?placeWindow.bounds:null) };
+    return placeWindow;
   }
 
   function preparePlaces({ force = false } = {}) {
@@ -61,7 +65,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       builtinPlaces.cancelViewport(); return builtinPlaces.settle(null);
     }
     const view=placeView();
-    if(!view.bounds)return Promise.resolve(false);
+    if(!view)return Promise.resolve(false);
     return dependencies.projectState.state.mapMoving?builtinPlaces.prepare(view):builtinPlaces.settle(view);
   }
 
@@ -131,7 +135,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       const geometry = dependencies.territorialObjectModel.territorialScope.displayFeature(labelRef.id)?.geometry;
       candidates.push({
         sourceType: 'territorial', source: feature, nameVisible: namesVisible, flag,
-        size: territorialLabelSize(componentBounds(id, geometry), coordinate, frameContext),
+        size: territorialLabelSize(componentBounds(id, geometry), coordinate, zoom),
         priority: settings.priority ?? dependencies.labelPresentation.LABEL_PRIORITIES.country,
       });
     }
@@ -153,7 +157,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
         : Math.max(settings.minZoom, Number(label.minZoom || 0)));
       if (!isWithinDisplayZoom(zoom,minZoom,settings.maxZoom)) continue;
       const coordinate = settings.pinned && settings.manualPosition ? settings.manualPosition : label.coordinates;
-      const viewportVisible=coordinateInGeographicBounds(coordinate,frameContext.viewState.geographicBounds);
+      const viewportVisible=coordinateInGeographicBounds(coordinate,placeWindow?.bounds??frameContext.viewState.geographicBounds);
       if(!Array.isArray(coordinate)||!Number.isFinite(coordinate[0])||!Number.isFinite(coordinate[1])||Math.abs(coordinate[1])>90)continue;
       const priority = builtinDisplay ? Number(builtinDisplay.priority) : (settings.priority ?? (label.kind === 'capital' ? dependencies.labelPresentation.LABEL_PRIORITIES.capital : label.kind === 'city' ? dependencies.labelPresentation.LABEL_PRIORITIES.majorCity : label.kind === 'region' ? dependencies.labelPresentation.LABEL_PRIORITIES.administrative : dependencies.labelPresentation.LABEL_PRIORITIES.place));
       const rows = builtinDisplay
