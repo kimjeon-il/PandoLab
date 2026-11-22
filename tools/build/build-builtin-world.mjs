@@ -13,6 +13,8 @@ import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {buildCurrentWorld} from "../data/territorial-current-world.mjs";
 import {addBuiltinWorldFormalName,compileBuiltinWorldCatalog,coalesceCoverageAdjustments,readBuiltinWorldFormalNames,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
 import {builtinSubunitId} from "../../src/document/territorial-display-identity.js";
+import {compareTemporal,normalizeTemporalInterval,temporalIntervalsOverlap} from "../../src/document/temporal.js";
+import {territorialLifetimeIntervals} from "../gis/territorial-library.js";
 import {loadBuiltinDisplayPolicy} from "../gis/builtin-display-policy.mjs";
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountryStoredBytes,readBuiltinCountry} from "../data/builtin-country-bytes.mjs";
 import {isDeepStrictEqual} from 'node:util';
@@ -132,6 +134,21 @@ export function buildBuiltinWorldRetiredPartialPublication(input){
  return rememberRetirementPublication(files,input);
 }
 
+function activeGeometryWindows(entity, currentVersionId) {
+ const lifetimes=territorialLifetimeIntervals(entity.lifetime)
+   .map(({validFrom,validTo})=>normalizeTemporalInterval(validFrom,validTo));
+ return entity.geometryVersions.flatMap(version=>{
+  const period=normalizeTemporalInterval(version.validFrom,version.validTo);
+  const currentSnapshot=version.versionId===currentVersionId;
+  return lifetimes.filter(lifetime=>temporalIntervalsOverlap(lifetime,period)).map(lifetime=>{
+   const {start,end}=lifetime;
+   const startsLater=period.start&&(!start||compareTemporal(period.start,start)>0);
+   const endsEarlier=period.end&&(!end||compareTemporal(period.end,end,{leftBoundary:'end',rightBoundary:'end'})<0);
+   return {start:startsLater?period.start:start,end:endsEarlier?period.end:end,currentSnapshot};
+  });
+ });
+}
+
 /** Recompile only connected spatial/hierarchy components. Unrelated payloads
  * are neither read nor returned: their verified descriptors stay in the index. */
 export function buildBuiltinWorldPartialPublication({entityIds,sourceIndex,previousSourceIndex,view,policy,
@@ -151,22 +168,25 @@ export function buildBuiltinWorldPartialPublication({entityIds,sourceIndex,previ
  const current=new Map(view.selections.map(row=>[row.entityId,row.geometryVersionId]));
  const subunits=new Map(displayPolicy.subunits.map(row=>[builtinSubunitId(row.sourceCountryId),row.parentId]));
  const nodes=previousIndex.sourceIdentities.map(row=>{
-  const versions=row.sourceEntityIds.flatMap(id=>[sources.get(id),oldSources.get(id)]).filter(Boolean);
+  const versions=[...new Set(row.sourceEntityIds.flatMap(id=>[sources.get(id),oldSources.get(id)]).filter(Boolean))];
   const first=sources.get(row.sourceEntityIds[0])||oldSources.get(row.sourceEntityIds[0]);
   if(!first)throw new Error(`Missing catalog metadata: ${row.projectEntityId}`);
   const parents=new Set(versions.map(value=>subunits.get(row.projectEntityId)||mapping.get(value.parentEntityId)||value.parentEntityId));
   const bbox=[Math.min(...versions.map(v=>v.bbox[0])),Math.min(...versions.map(v=>v.bbox[1])),Math.max(...versions.map(v=>v.bbox[2])),Math.max(...versions.map(v=>v.bbox[3]))];
   if(bbox[0]<-180||bbox[2]>180||bbox[2]-bbox[0]>180){bbox[0]=-180;bbox[2]=180;}
-  return {...row,parents,
-   historical:versions.some(value=>!current.has(value.entityId)||value.geometryVersions.some(v=>v.versionId!==current.get(value.entityId))),
-   bbox};
+  const windows=versions.flatMap(entity=>activeGeometryWindows(entity,current.get(entity.entityId)));
+  return {...row,parents,windows,bbox};
  });
  const edges=new Map(nodes.map(row=>[row.projectEntityId,new Set()]));
  const connect=(a,b)=>{edges.get(a).add(b);edges.get(b).add(a);};
  for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
   const a=nodes[i],b=nodes[j];
   const overlap=a.bbox[0]<=b.bbox[2]&&b.bbox[0]<=a.bbox[2]&&a.bbox[1]<=b.bbox[3]&&b.bbox[1]<=a.bbox[3];
-  if(a.parents.has(b.projectEntityId)||b.parents.has(a.projectEntityId)||[...a.parents].some(parent=>b.parents.has(parent))&&(a.historical||b.historical)&&overlap)connect(a.projectEntityId,b.projectEntityId);
+  const parentDependency=a.parents.has(b.projectEntityId)||b.parents.has(a.projectEntityId);
+  const potentialPeerOverlap=overlap&&[...a.parents].some(parent=>b.parents.has(parent))
+   &&a.windows.some(left=>b.windows.some(right=>
+    (!left.currentSnapshot||!right.currentSnapshot)&&temporalIntervalsOverlap(left,right)));
+  if(parentDependency||potentialPeerOverlap)connect(a.projectEntityId,b.projectEntityId);
  }
  for (const row of policy.parentRelations || []) {
   const child=mapping.get(row.entityId)||row.entityId,parent=mapping.get(row.parentEntityId)||row.parentEntityId;
