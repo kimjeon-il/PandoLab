@@ -193,7 +193,13 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   const rawReview=JSON.parse(archived(row.rebased));
   archived(rawReview.source);archived(rawReview.priorPreparedSourceReview);
   if(rawReview.previousSharedArcReview)archived(rawReview.previousSharedArcReview);
-  if(!equal(rawReview.sharedArcChanges.map(a=>a.original),origin.sharedArcChanges.map(a=>a.original)))fail('rebased original chains differ '+row.entityId);
+  const originals=origin.sharedArcChanges.map(a=>a.original);
+  let previous=-1;
+  for(const {original} of rawReview.sharedArcChanges){
+   const index=originals.findIndex(candidate=>equal(candidate,original));
+   if(index<=previous)fail('rebased original chains differ '+row.entityId);
+   previous=index;
+  }
   return rawReview;
  });
  const rawChanges=reviewed[0].sharedArcChanges.map(a=>({before:[a.original.coordinates[0],a.original.coordinates.at(-1)],

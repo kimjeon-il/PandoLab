@@ -90,9 +90,15 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
       for(const [logical,bytes] of result.files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
       for(const [logical,sha256] of Object.entries(result.reports)){
         const entry=evidence.files[logical];
+        const prior=baseline.files[logical];
+        if(!entry&&prior){
+          if(contentHash(decodeArchiveEntry(shared,prior,result.baseline))!==sha256)
+            throw Error('Reviewed evidence differs from a retained report: '+logical);
+          continue;
+        }
         if(!entry){
           const bytes=workingReports.get(logical);
-          if(!Buffer.isBuffer(bytes)||contentHash(bytes)!==sha256||baseline.files[logical])
+          if(!Buffer.isBuffer(bytes)||contentHash(bytes)!==sha256)
             throw Error('Reviewed working original does not match the sealed evidence: '+logical);
           assertReportSubject(root,logical);
           archived.files[logical]=archiveFile(logical,bytes,true,put);
@@ -100,7 +106,6 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
         }
         if(entry?.sha256!==sha256)throw Error('Reviewed evidence is not archived with the verified hash: '+logical);
         const bytes=decodeArchiveEntry(shared,entry,evidenceRevision);
-        const prior=baseline.files[logical];
         if(prior&&prior.sha256!==contentHash(bytes))throw Error('Reviewed evidence differs from a retained report: '+logical);
         if(prior)continue;
         archived.files[logical]=entry;

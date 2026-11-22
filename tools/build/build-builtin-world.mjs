@@ -218,6 +218,7 @@ async function main(){
   const workingReports=new Map();
   const readEvidence=p=>{
    if(evidence.files[p])return reader(evidence,evidenceRevision)(p);
+   if(old.files[p])return reader(old,baseline)(p);
    if(!editRoot||!p.startsWith('reports/borders/validation/')||!reviewFolders.includes(p.slice(0,p.lastIndexOf('/')+1)))
     throw Error('Missing archived reviewed input: '+p);
    if(!workingReports.has(p))workingReports.set(p,fs.readFileSync(checkedReportPath(editRoot,p.slice('reports/'.length))));
