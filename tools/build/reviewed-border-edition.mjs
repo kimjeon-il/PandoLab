@@ -30,18 +30,33 @@ const dateOverlap=(a,b)=>temporalIntervalsOverlap(a,b);
 const issued=new WeakMap();
 
 export function locateReviewedExteriorArc(geometry,coordinates){
- const matches=[];
+ return createReviewedExteriorLookup(geometry,[coordinates[0]])(coordinates);
+}
+
+export function createReviewedExteriorLookup(geometry,anchors){
+ const positions=new Map();
+ for(const [x,y] of anchors){
+  if(!positions.has(x))positions.set(x,new Map());
+  if(!positions.get(x).has(y))positions.get(x).set(y,[]);
+ }
  for(const [polygonIndex,[ring]] of parts(geometry).entries()){
   const period=ring.length-1;
   if(!equal(ring[0],ring[period]))fail('review requires closed exterior rings');
-  if(coordinates.length>period)continue;
   for(let startIndex=0;startIndex<period;startIndex++){
-   if(!equal(ring[startIndex],coordinates[0]))continue;
-   if(coordinates.every((p,i)=>equal(p,ring[(startIndex+i)%period])))
-    matches.push({polygonIndex,startIndex,endIndex:startIndex+coordinates.length-1});
+   const [x,y]=ring[startIndex];
+   const starts=positions.get(x)?.get(y);
+   if(starts)starts.push({polygonIndex,startIndex,ring,period});
   }
  }
- return matches;
+ return coordinates=>{
+  const [x,y]=coordinates[0];
+  const matches=[];
+  for(const {polygonIndex,startIndex,ring,period} of positions.get(x)?.get(y)??[]){
+   if(coordinates.length<=period&&coordinates.every((p,i)=>equal(p,ring[(startIndex+i)%period])))
+    matches.push({polygonIndex,startIndex,endIndex:startIndex+coordinates.length-1});
+  }
+  return matches;
+ };
 }
 
 function verifySplice({before,after,beforeSha256}){
@@ -74,9 +89,10 @@ function spliceExteriorRanges(geometry,targets){
 
 export function applyReviewedExteriorArcs(geometry,changes){
  if(!Array.isArray(changes)||!changes.length)fail('reviewed sections required');
+ for(const change of changes)verifySplice(change);
+ const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({before})=>[before[0],before.at(-1)]));
  const targets=changes.map(change=>{
-  verifySplice(change);
-  const forward=locateReviewedExteriorArc(geometry,change.before),reverse=locateReviewedExteriorArc(geometry,change.before.toReversed());
+  const forward=locate(change.before),reverse=locate(change.before.toReversed());
   if(forward.length+reverse.length!==1)fail('unique exterior section preimage required');
   return {...(forward[0]??reverse[0]),coordinates:forward.length?change.after:change.after.toReversed()};
  });
@@ -90,11 +106,14 @@ export function applyReviewedExteriorArcs(geometry,changes){
 export function applyReviewedSharedArcs(before,changes){
  if(!Array.isArray(before)||before.length!==2||!Array.isArray(changes)||!changes.length)fail('paired sections required');
  const [left,right]=before.map(g=>structuredClone(g)),targets=[[],[]];
+ for(const change of changes)verifySplice(change);
+ const anchors=changes.flatMap(({before:arc})=>[arc[0],arc.at(-1)]);
+ const locateLeft=createReviewedExteriorLookup(left,anchors),locateRight=createReviewedExteriorLookup(right,anchors);
  for(const change of changes){
   const old=change.before,next=change.after;
-  verifySplice(change);
-  const forward=locateReviewedExteriorArc(left,old),reverse=locateReviewedExteriorArc(left,old.toReversed());
-  const peerForward=locateReviewedExteriorArc(right,old),peerReverse=locateReviewedExteriorArc(right,old.toReversed());
+  const reversed=old.toReversed();
+  const forward=locateLeft(old),reverse=locateLeft(reversed);
+  const peerForward=locateRight(old),peerReverse=locateRight(reversed);
   if(forward.length+reverse.length!==1||peerForward.length+peerReverse.length!==1||forward.length!==peerReverse.length)
    fail('unique reciprocal section preimages required');
   targets[0].push({...(forward[0]??reverse[0]),coordinates:forward.length?next:next.toReversed()});

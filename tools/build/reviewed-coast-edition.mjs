@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {gunzipSync} from 'node:zlib';
 import {coordinateBounds} from '../../src/geometry/coordinate-bounds.js';
+import {createBoundarySpatialIndex} from '../../src/geometry/boundary-spatial-index.js';
 import {temporalIntervalsOverlap} from '../../src/document/temporal.js';
 import {applyPhysicalLandPatch,regionalLandLayout} from '../../src/data/physical-land-patch.js';
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
@@ -11,7 +12,7 @@ import {createPhysicalLandPatch} from '../data/physical-land-storage.mjs';
 import {assertHistoricalCompiledChanges} from '../gis/historical-display-review.mjs';
 import {historicalWorldClipper as clip} from '../gis/historical-world-territories.mjs';
 import {territorialLifetimeIntervals} from '../gis/territorial-library.js';
-import {applyReviewedExteriorArcs,carriesArc,coordinateDigest,locateReviewedExteriorArc,proveUnchangedMergedMembers,
+import {applyReviewedExteriorArcs,carriesArc,coordinateDigest,createReviewedExteriorLookup,proveUnchangedMergedMembers,
  replaceReviewedDisplayBinding,replaceReviewedViewerBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod} from './reviewed-border-edition.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -22,16 +23,42 @@ const overlaps=(a,b)=>a[0]<=b[2]&&b[0]<=a[2]&&a[1]<=b[3]&&b[1]<=a[3];
 const fail=reason=>{throw Error('Reviewed coastline: '+reason);};
 const issued=new WeakMap();
 
-function validateExterior(geometry,arc){
- const [match]=[...locateReviewedExteriorArc(geometry,arc),...locateReviewedExteriorArc(geometry,arc.toReversed())];
+const exteriorBounds=new WeakMap();
+function polygonBounds(polygon){
+ let bounds=exteriorBounds.get(polygon);
+ if(!bounds){bounds=coordinateBounds(polygon[0]);exteriorBounds.set(polygon,bounds);}
+ return bounds;
+}
+
+function indexExterior(geometry,changes){
+ const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({after})=>[after[0],after.at(-1)]));
+ const footprints=changes.map(({after})=>coordinateBounds(after));
+ const blocks=[],boxes=[];
+ for(const polygon of parts(geometry)){
+  const bounds=polygonBounds(polygon);
+  if(!footprints.some(footprint=>overlaps(footprint,bounds)))continue;
+  for(const ring of polygon)for(let start=0;start<ring.length-1;start+=32){
+   const end=Math.min(start+32,ring.length-1);
+   const box=coordinateBounds(ring.slice(start,end+1));
+   if(!footprints.some(footprint=>overlaps(footprint,box)))continue;
+   blocks.push({ring,start,end,bounds});boxes.push(box);
+  }
+ }
+ const index=createBoundarySpatialIndex();
+ index.loadPacked(blocks,boxes);
+ return {locate,query:footprint=>index.query(footprint)};
+}
+
+function validateExterior(geometry,index,arc){
+ const [match]=[...index.locate(arc),...index.locate(arc.toReversed())];
  if(!match)fail('corrected exterior missing');
  const polygons=parts(geometry),target=polygons[match.polygonIndex][0],period=target.length-1;
  const edges=new Set(Array.from({length:arc.length-1},(_,i)=>(match.startIndex+i)%period));
  const footprint=coordinateBounds(arc);
  const pairs=[];
- for(const rings of polygons){
-  if(!overlaps(footprint,coordinateBounds(rings[0])))continue;
-  for(const ring of rings)for(let i=0;i<ring.length-1;i++){
+ for(const {ring,start,end,bounds:polygonExtent} of index.query(footprint)){
+  if(!overlaps(footprint,polygonExtent))continue;
+  for(let i=start;i<end;i++){
    const ends=[ring[i],ring[i+1]],bounds=coordinateBounds(ends);
    if(overlaps(footprint,bounds))pairs.push({ring,i,ends,bounds});
   }
@@ -54,7 +81,7 @@ function validateExterior(geometry,arc){
 }
 
 function windowed(geometry,bounds,window){
- const candidates=parts(geometry).filter(polygon=>overlaps(bounds,coordinateBounds(polygon[0])));
+ const candidates=parts(geometry).filter(polygon=>overlaps(bounds,polygonBounds(polygon)));
  return candidates.length?clip.intersection(candidates,window):[];
 }
 
@@ -92,6 +119,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   ||input.sections.some(row=>!selected.includes(row.entityId))||!selected.every(id=>input.sections.some(row=>row.entityId===id))
   ||input.displayValidFrom!=='2026-11-01')fail('reviewed revision, date or country scope differs');
  archived(input.visual);
+ if(input.screening)archived(input.screening);
  const donor=JSON.parse(archived(input.source));
  if(donor.type!=='FeatureCollection'||!Array.isArray(donor.features)||typeof donor.provenance?.publication!=='string'
   ||!/^https:\/\//.test(donor.provenance.publication)||!/^\w/.test(donor.provenance.layer||'')
@@ -152,8 +180,9 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
  const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
+ const physicalIndex=indexExterior(physicalAfter,sections);
  for(const [index,section] of sections.entries()){
-  try{validateExterior(physicalAfter,section.after);}
+  try{validateExterior(physicalAfter,physicalIndex,section.after);}
   catch(cause){throw new Error(`Reviewed coastline section ${index} (${section.entityId}) physical exterior failed`,{cause});}
  }
  const affected=[],dependencies=[];
@@ -162,9 +191,10 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   const changes=sections.filter(row=>row.entityId===source.entityId);
   dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));
   const display=applyReviewedExteriorArcs(geometry.geojson,changes);
+  const displayIndex=indexExterior(display,changes);
   for(const change of changes){
    try{
-    validateExterior(display,change.after);
+    validateExterior(display,displayIndex,change.after);
     affected.push({entityId:source.entityId,...coastlineChanges([geometry.geojson,display],[physicalBefore,physicalAfter],change)});
    }catch(cause){throw new Error(`Reviewed coastline section ${sections.indexOf(change)} (${source.entityId}) display validation failed`,{cause});}
   }
