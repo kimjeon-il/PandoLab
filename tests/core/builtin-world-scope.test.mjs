@@ -6,6 +6,7 @@ import {applyReviewedSharedArcs,coordinateDigest,proveUnchangedMergedMembers,rep
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 import * as reviewedBorder from '../../tools/build/reviewed-border-edition.mjs';
+import {validateReviewedPhysicalCoast} from '../../tools/build/reviewed-coast-edition.mjs';
 import * as physicalLand from '../../src/data/physical-land-patch.js';
 
 test('one coastline correction can replay the same source arc in differently ordered land rings',()=>{
@@ -16,6 +17,26 @@ test('one coastline correction can replay the same source arc in differently ord
   assert.deepEqual(reviewedBorder.applyReviewedExteriorArcs(coast,[change]).coordinates[0],
     [start,after[1],end,corner,other,start]);
   assert.throws(()=>reviewedBorder.applyReviewedExteriorArcs(coast,[{...change,after:[[0,.1],after[1],end]}]),/fixed section endpoints/);
+});
+
+test('a coastline batch reports each independently invalid land arc in one pass',()=>{
+  const touchingRing=offset=>[[offset,0],[offset+2,1],[offset+2,0],[offset,2],[offset,0]];
+  const first=touchingRing(0),second=touchingRing(3),intact=[[8,0],[9,0],[9,1],[8,1],[8,0]];
+  const geometry={type:'MultiPolygon',coordinates:[[first],[second],[intact]]};
+  const sections=[
+    {entityId:'state:AAA',after:first.slice(0,2)},
+    {entityId:'state:BBB',after:intact.slice(0,2)},
+    {entityId:'state:CCC',after:second.slice(0,2)},
+  ];
+  assert.throws(()=>validateReviewedPhysicalCoast(geometry,sections),error=>{
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map(failure=>failure.message),[
+      'Reviewed coastline section 0 (state:AAA) physical exterior failed',
+      'Reviewed coastline section 2 (state:CCC) physical exterior failed',
+    ]);
+    assert.ok(error.errors.every(failure=>failure.cause.message.includes('crosses or contacts')));
+    return true;
+  });
 });
 
 test('the reviewed modern coast is selected without replacing historical land masks',()=>{

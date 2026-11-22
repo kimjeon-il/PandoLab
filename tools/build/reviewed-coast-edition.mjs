@@ -80,6 +80,15 @@ function validateExterior(geometry,index,arc){
  }
 }
 
+export function validateReviewedPhysicalCoast(geometry,sections){
+ const index=indexExterior(geometry,sections),failures=[];
+ for(const [position,section] of sections.entries()){
+  try{validateExterior(geometry,index,section.after);}
+  catch(cause){failures.push(new Error(`Reviewed coastline section ${position} (${section.entityId}) physical exterior failed`,{cause}));}
+ }
+ if(failures.length)throw new AggregateError(failures,'Reviewed coastline physical exterior validation failed');
+}
+
 function windowed(geometry,bounds,window){
  const candidates=parts(geometry).filter(polygon=>overlaps(bounds,polygonBounds(polygon)));
  return candidates.length?clip.intersection(candidates,window):[];
@@ -180,11 +189,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
  const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
- const physicalIndex=indexExterior(physicalAfter,sections);
- for(const [index,section] of sections.entries()){
-  try{validateExterior(physicalAfter,physicalIndex,section.after);}
-  catch(cause){throw new Error(`Reviewed coastline section ${index} (${section.entityId}) physical exterior failed`,{cause});}
- }
+ validateReviewedPhysicalCoast(physicalAfter,sections);
  const affected=[],dependencies=[];
 
  const countries=owners.map(({source,identity,country,version,entry,geometry})=>{
