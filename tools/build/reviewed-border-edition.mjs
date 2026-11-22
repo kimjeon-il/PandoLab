@@ -68,10 +68,26 @@ export function applyReviewedSharedArcs(before,changes){
  return [left,right];
 }
 
-function validatePair(before,after,label){
+const sectionBounds=({before,after})=>coordinateBounds([before,after]);
+
+export function validateReviewedPair(before,after,changes,label){
  for(const g of after)if(!globalThis.PandoLabPolygonGeometry.normalizePolygonGeometry(g))fail('empty '+label+' country');
  if(clip.intersection(...after.map(parts)).length)fail(label+' pair overlaps');
- if(clip.xor(clip.union(...before.map(parts)),clip.union(...after.map(parts))).length)fail(label+' pair exterior changed');
+ // An exact splice replaces one chain between fixed endpoints. Its winding
+ // contribution is unchanged outside the bounds of the old and new chains.
+ // Clip each edition before comparing so untouched coastlines do not enter
+ // the same polygon operation twice.
+ return changes.flatMap(change=>{
+  const [west,south,east,north]=sectionBounds(change);
+  const padding=.001;
+  const left=Math.max(-180,west-padding),right=Math.min(180,east+padding);
+  const bottom=Math.max(-90,south-padding),top=Math.min(90,north+padding);
+  const window=[[[[left,bottom],[right,bottom],[right,top],[left,top],[left,bottom]]]];
+  const withinWindow=geometry=>clip.intersection(parts(geometry),window);
+  const original=before.map(withinWindow),updated=after.map(withinWindow);
+  if(clip.xor(clip.union(...original),clip.union(...updated)).length)fail(label+' pair exterior changed');
+  return original.flatMap((polygons,i)=>clip.xor(polygons,updated[i]));
+ });
 }
 
 function liesOnEdge([x,y],[ax,ay],[bx,by]){
@@ -80,7 +96,7 @@ function liesOnEdge([x,y],[ax,ay],[bx,by]){
  return Math.abs(px*dy-py*dx)<=1e-12&&progress>=-1e-12&&progress<=extent+1e-12;
 }
 
-function proveNeighbors({sourceIndex,builtin,policy,ids,binding,raw,display,readRaw,readCountry,changes}){
+function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawDelta,displayDelta,readRaw,readCountry,changes}){
  // Two simultaneous priority cutters subtract their union. This remains true
  // during a dated replacement and for its descendants if the union is equal.
  const cutters=new Map();
@@ -98,9 +114,7 @@ function proveNeighbors({sourceIndex,builtin,policy,ids,binding,raw,display,read
  }
  if((policy.parentRelations||[]).some(r=>dateOverlap(r,binding)&&[r.entityId,r.parentEntityId].some(id=>ids.includes(id))))
   fail('selected country has a dated parent dependency');
- const footprints=changes.map(c=>coordinateBounds([...c.before,...c.after]));
- const delta=(set)=>set[0].flatMap((before,i)=>clip.xor(parts(before),parts(set[1][i])));
- const rawDelta=delta(raw),displayDelta=delta(display);
+ const footprints=changes.map(sectionBounds);
  const readOnly=[];
  const masks=(polygons)=>polygons.map(p=>[p,coordinateBounds(p)]);
  const touches=(geometry,difference)=>{
@@ -219,9 +233,10 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
    ||(after.length-end===2&&!liesOnEdge(after[end],before.at(-2),before.at(-1)));
  }))fail('display sections must carry the archived arcs in order');
  const afterDisplay=applyReviewedSharedArcs(beforeDisplay,input.sections);
- validatePair(beforeRaw,afterRaw,'raw');validatePair(beforeDisplay,afterDisplay,'display');
- const dependencies=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,raw:[beforeRaw,afterRaw],
-  display:[beforeDisplay,afterDisplay],readRaw:id=>source(id,readBaseline),readCountry,changes:[...rawChanges,...input.sections]});
+ const rawDelta=validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
+ const displayDelta=validateReviewedPair(beforeDisplay,afterDisplay,input.sections,'display');
+ const dependencies=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawDelta,displayDelta,
+  readRaw:id=>source(id,readBaseline),readCountry,changes:[...rawChanges,...input.sections]});
 
  const files=new Map(),nativeRows=new Map(),outCountries=[];
  const rawScope=selected.flatMap((id,i)=>[rawPath(id),sourceRoot+'/geometries/sha256-'+digest(geometryBytes(afterRaw[i]))+'.json']);

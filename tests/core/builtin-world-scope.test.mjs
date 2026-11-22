@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedDisplayPeriod} from '../../tools/build/reviewed-border-edition.mjs';
+import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedDisplayPeriod,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 
@@ -14,6 +14,11 @@ test('a reviewed shared arc updates only its reciprocal sections',()=>{
     polygon([[1,0],[2,0],[2,1],[1,1],[1.1,.5],[1,0]])];
   assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
   assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
+  assert.equal(validateReviewedPair(before,expected,[change],'source').length,2);
+  assert.throws(()=>validateReviewedPair(before,[expected[0],before[1]],[change],'source'),/pair overlaps/);
+  const gapChange={...change,after:[[1,0],[.9,.5],[1,1]]};
+  const gap=[polygon([[0,0],[1,0],[.9,.5],[1,1],[0,1],[0,0]]),before[1]];
+  assert.throws(()=>validateReviewedPair(before,gap,[gapChange],'source'),/pair exterior changed/);
   assert.throws(()=>applyReviewedSharedArcs(before,[{...change,beforeSha256:'stale'}]),/preimage/);
   assert.throws(()=>applyReviewedSharedArcs([before[0],before[0]],[change]),/reciprocal/);
 });
