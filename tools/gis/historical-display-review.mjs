@@ -312,6 +312,61 @@ export function assertHistoricalDisplayChanges(next,previous){
  for(const version of next.geometryVersions){const old=before.get(version.versionId);if(old&&digest(old.geometry)===digest(version.geometry))continue;if(historical(version)){assertHistoricalDisplayReview(next.entityId,version);checked++;}}
  return checked;
 }
+
+const sharedArcMethods=new Set(['lossless-original-shared-arc','lossless-original-current-version-shared-arc']);
+
+function assertStoredSharedArcDisplayReview(next,previous,{prefixes,readEvidence}){
+ const priorById=new Map(previous.geometryVersions.map(version=>[version.versionId,version]));
+ const changes=next.geometryVersions.filter(version=>{
+  const prior=priorById.get(version.versionId);
+  return sharedArcMethods.has(prior?.modernBoundarySupplement?.adoptionMode)&&version.validTo===null
+   &&!isDeepStrictEqual(version.historicalProvenance?.displayDetailReview,prior.historicalProvenance?.displayDetailReview);
+ });
+ if(!changes.length)return 0;
+ const fail=reason=>{throw Error('Stored current shared arc display review: '+reason);};
+ const descriptor='assets/data/territorial-entities/source/countries/'+next.entityId.replace(':','-')+'.json';
+ if(changes.length!==1||!prefixes?.includes(descriptor))fail('one explicit current source descriptor required');
+ const version=changes[0],prior=priorById.get(version.versionId),restored=structuredClone(next);
+ const copy=restored.geometryVersions.find(row=>row.versionId===version.versionId);
+ const priorReview=prior.historicalProvenance?.displayDetailReview;
+ if(copy.historicalProvenance){
+  if(priorReview===undefined)delete copy.historicalProvenance.displayDetailReview;
+  else copy.historicalProvenance.displayDetailReview=priorReview;
+ }
+ if(!isDeepStrictEqual(restored,previous))fail('only the display review may change');
+ const verified=new Map();
+ const archived=receipt=>{
+  if(!evidence(receipt)||!/^(?:reports\/borders|assets\/data\/territorial-entities\/source\/geometries|tools\/historical-library\/sources)\/(?:[\w.-]+\/)*[\w.-]+$/.test(receipt.reference)
+   ||receipt.reference.split('/').some(part=>part==='.'||part==='..')||typeof readEvidence!=='function')fail('archived display evidence required');
+  const previous=verified.get(receipt.reference);
+  if(previous?.sha256===receipt.sha256)return previous.bytes;
+  const bytes=readEvidence(receipt.reference);
+  if(!Buffer.isBuffer(bytes)||createHash('sha256').update(bytes).digest('hex')!==receipt.sha256)fail('missing or corrupt archived display evidence');
+  verified.set(receipt.reference,{bytes,sha256:receipt.sha256});
+  return bytes;
+ };
+ const supplement=prior.modernBoundarySupplement,source=JSON.parse(archived(supplement.sourceAdoptionReview));
+ if(source.schemaVersion!==1||source.entityId!==next.entityId||source.versionId!==version.versionId
+  ||source.validFrom!==version.validFrom||source.validTo!==version.validTo||source.status!=='raw-source-only-not-display-approved'
+  ||source.method!==supplement.adoptionMode||source.geometrySha256!==digest(version.geometry))fail('stored shared arc source review differs');
+ const review=assertHistoricalDisplayReview(next.entityId,version);
+ const checkEvidence=row=>{
+  for(const receipt of [row.master,row.source,row.comparison.reference,row.comparison.projection.evidence,row.visual,row.topology.evidence])archived(receipt);
+ };
+ checkEvidence(review);
+ const derivatives=review.compiledDerivatives??[];
+ if(!Array.isArray(derivatives))fail('invalid compiled derivatives');
+ for(const row of derivatives){
+  if(row?.entityId!==next.sourceInfo?.featureId||row?.validTo!==null
+   ||!(row?.validFrom===null||/^\d{4}-\d{2}-\d{2}$/.test(row?.validFrom))
+   ||(version.validFrom&&(row.validFrom===null||row.validFrom<version.validFrom)))fail('only the same open-ended current display geometry may be linked');
+  const derivative=assertHistoricalDisplayReview(next.sourceInfo.featureId,{
+   ...version,validFrom:row.validFrom,historicalProvenance:{displayDetailReview:row},
+  });
+  checkEvidence(derivative);
+ }
+ return 1;
+}
 // This partial-source contract is deliberately separate from complete-feature/hole
 // adoption. Archived evidence is supplied by the owner; no display gate is bypassed.
 function assertOriginalSharedArcs(next,previous,review,{prefixes,archivedReview,fail}){
@@ -554,7 +609,9 @@ export function assertHistoricalSourceStorageChanges(next,previous,{prefixes,rea
    const immutable=e=>{const copy=structuredClone(e);delete copy.names;return copy;};
    if(!isDeepStrictEqual(immutable(next),immutable(previous)))throw Error('Raw source adoption: whole-feature completion: unchanged geometry permits names-only metadata edits');
   }
-  // The explicit dated-current contract is not a metadata-only escape hatch.
+  const reviewed=assertStoredSharedArcDisplayReview(next,previous,{prefixes,readEvidence});
+  if(reviewed)return reviewed;
+  // The explicit dated-current contract continues to protect other metadata.
   if([...versions,...previous.geometryVersions].some(v=>['lossless-original-current-version-shared-arc','lossless-original-existing-component'].includes(v.modernBoundarySupplement?.adoptionMode))&&!isDeepStrictEqual(next,previous))throw Error('Raw source adoption: dated-current unchanged geometry requires exact metadata');
   return assertHistoricalDisplayChanges(next,previous);
  }
