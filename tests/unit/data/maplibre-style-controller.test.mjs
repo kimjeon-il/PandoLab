@@ -7,7 +7,7 @@ const types={ocean:'background','physical-land-fill':'fill',territories:'fill',
 function fixture(){
  const layers=new Map(Object.entries(types).map(([id,type])=>[id,{id,type,paint:{},layout:{}}])),calls=[];
  return {layers,calls,painter:{},triggerRepaint(){},
-  getLayer:id=>layers.get(id),getStyle:()=>({layers:[...layers.values()]}),
+  getLayer:id=>layers.get(id),getLayersOrder:()=>[...layers.keys()],
   getPaintProperty:(id,key)=>layers.get(id)?.paint?.[key],
   getLayoutProperty:(id,key)=>layers.get(id)?.layout?.[key],
   setPaintProperty(id,key,value){layers.get(id).paint[key]=value;calls.push(['paint',id,key]);},
@@ -91,7 +91,7 @@ test('loading skeleton uses white palette without adding sources',()=>{
  assert.equal(map.getLayoutProperty('viewer-label-dot','visibility'),'none');
  assert.equal(map.layers.get('initial-map-ocean').paint['background-color'],'#ffffff');
  assert.equal(map.layers.get('initial-map-land').paint['fill-color'],'#f1f1f1');
- assert.equal(map.getStyle().layers.at(-1).id,'initial-map-land');
+ assert.equal(map.getLayersOrder().at(-1),'initial-map-land');
  map.addLayer({id:'pando-polar-caps',type:'custom'});
  controller.syncLoadingSurface(style,true,'pando-polar-caps');
  assert.deepEqual([...map.layers.keys()].slice(-3),['initial-map-ocean','initial-map-land','pando-polar-caps']);

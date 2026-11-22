@@ -117,15 +117,25 @@ export function replaceBuiltinWorldCountryNames(country,entity,formalName) {
 }
 
 export function readBuiltinWorldFormalNames(input) {
-  if(input?.schema!=='pandolab-builtin-formal-names'||input.schemaVersion!==1||!Array.isArray(input.names))
+  if(input?.schema!=='pandolab-builtin-formal-names'||input.schemaVersion!==1||!Array.isArray(input.names)
+    ||(input.deferred!==undefined&&!Array.isArray(input.deferred)))
     throw Error('Invalid builtin formal name source');
+  const validId=id=>typeof id==='string'&&/^[a-z]+:[A-Za-z0-9_-]+$/.test(id);
+  const nonempty=text=>typeof text==='string'&&text.trim().length>0;
+  const validPrecision=value=>['month','date'].includes(parseTemporal(value,{nullable:false}).precision);
   const formalNames=new Map();
   for(const row of input.names) {
-    if(!/^[a-z]+:[A-Za-z0-9_-]+$/.test(row?.entityId??'')
+    if(!validId(row?.entityId)
       ||typeof row.ko!=='string'||!row.ko||row.ko.trim()!==row.ko
-      ||parseTemporal(row.validFrom,{nullable:false}).precision!=='date'
-      ||(row.validTo!=null&&parseTemporal(row.validTo,{nullable:false}).precision!=='date'))
+      ||!validPrecision(row.validFrom)
+      ||(row.validTo!=null&&!validPrecision(row.validTo)))
       throw Error('Invalid builtin formal name: '+row?.entityId);
+    const evidence=row.dateEvidence;
+    if(!['effective-date','documented-use'].includes(row.dateBasis)
+      ||evidence?.date!==row.validFrom||!nonempty(evidence.statement)
+      ||typeof evidence.sourceUrl!=='string'||!/^https?:\/\/\S+$/i.test(evidence.sourceUrl)
+      ||!Array.isArray(row.sources)||!row.sources.includes(evidence.sourceUrl))
+      throw Error('Missing direct formal name date evidence: '+row.entityId);
     const names=formalNames.get(row.entityId)??[];
     const period=bounds(row);
     names.push({ko:row.ko,...period});
@@ -139,6 +149,13 @@ export function readBuiltinWorldFormalNames(input) {
       if(prior.end&&compare(prior.end,current.start)>=0)throw Error('Overlapping builtin formal names: '+entityId);
       prior.end??=shiftDay(current.start,-1);
     }
+  }
+  // An explicitly deferred identity can replace a previously generated formal
+  // interval with its underlying name binding during a scoped rebuild.
+  for(const row of input.deferred??[]){
+    if(!validId(row?.entityId)||!nonempty(row.reason))
+      throw Error('Invalid deferred builtin formal name: '+row?.entityId);
+    if(!formalNames.has(row.entityId))formalNames.set(row.entityId,[]);
   }
   return formalNames;
 }

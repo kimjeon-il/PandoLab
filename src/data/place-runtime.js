@@ -11,7 +11,7 @@ const EMPTY = Object.freeze({ revision: 0, signature: 'empty', records: Object.f
 export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/manifest.json', import.meta.url).href, createWorker = null, rpc = null, onSnapshot = () => {}, onError = () => {}, onSettled = () => {}, getProtectedIds = () => [],getPresentation=()=>null,admitReferences,urbanLifetimes=null,loadUrbanLifetimes=null,urbanLifetimesUrl=new URL('../../data/places/urban-lifetimes-v1.json',import.meta.url).href } = {}) {
   if (typeof manifestUrl !== 'string' || !manifestUrl) throw new TypeError('Place manifest URL must be a nonempty string');
   if(typeof admitReferences!=='function')throw new TypeError('Place publication requires its accepted identity admission boundary.');
-  let snapshot=EMPTY, revision=0, projectEpoch=0, moving=false, closed=false, desired=null, requestedDependencies=null, snapshotDependencies=null, referenceSequence=0;
+  let snapshot=EMPTY, revision=0, projectEpoch=0, moving=false, closed=false, desired=null, desiredKey=null, requestedDependencies=null, snapshotDependencies=null, referenceSequence=0;
   let admittedReferenceKey=null,snapshotMonth=null;
   let viewportTask=null,viewportContext=null;
   let lifetimeIndex=urbanLifetimes?indexPlaceUrbanLifetimes(urbanLifetimes):null;
@@ -106,42 +106,44 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
     return [...new Map([...cache.values(),...records].filter(record=>sourceActive(record,presentation)).map(record=>[record.id,
       Object.freeze({domain:'placeBuiltin',type:record.kind,id:record.id})])).values()];
   }
-  function viewportCurrent(current,view){
-    if(closed||current!==revision)return false;
+  function viewportCurrent(current,view,viewKey){
+    if(closed||current!==revision||desiredKey!==viewKey)return false;
     const presentation=getPresentation();
     return !view.presentation||!presentation||resourceKey(view.presentation)===resourceKey(presentation);
   }
   function prepare(view){
-    desired=view;if(closed)return Promise.resolve(false);
+    if(closed)return Promise.resolve(false);
     const context=resourceKey([view?.mapDate??null,view?.presentation??null]);
-    if(viewportTask&&viewportContext===context)return viewportTask;
-    if(viewportTask)cancelViewport();
-    desired=view;viewportContext=context;
-    const task=prepareViewport(view);viewportTask=task;
+    const viewKey=resourceKey(view);
+    if(viewportTask&&viewportContext!==context)cancelViewport();
+    desired=view;desiredKey=viewKey;
+    if(viewportTask)return viewportTask;
+    viewportContext=context;
+    const task=prepareViewport(view,viewKey);viewportTask=task;
     const finish=()=>{if(viewportTask!==task)return;viewportTask=null;viewportContext=null;
-      if(!closed&&desired&&resourceKey(desired)!==resourceKey(view))void prepare(desired);
+      if(!closed&&desired&&desiredKey!==viewKey)void prepare(desired);
     };
     task.then(finish,finish);return task;
   }
-  async function prepareViewport(view) {
+  async function prepareViewport(view,viewKey) {
     if (closed) return false;
-    const requested={source:manifestUrl,content:'place-source',preparation:resourceKey(view),context:null,presentation:'viewport-query'};
+    const requested={source:manifestUrl,content:'place-source',preparation:viewKey,context:null,presentation:'viewport-query'};
     if (!resourceUpdate(requestedDependencies,requested).prepare) return false;
     requestedDependencies=requested;
     const current=++revision;
     try {
       await ensureUrbanLifetimes();
-      if(!viewportCurrent(current,view))return false;
+      if(!viewportCurrent(current,view,viewKey))return false;
       const job=scheduler.enqueue({ jobKey: 'viewport', targetRevision: current, payload: { view }, metadata: { controller: new AbortController() } });
       const result=await job.promise;
-      if (!viewportCurrent(current,view)) return false;
+      if (!viewportCurrent(current,view,viewKey)) return false;
       if (!Array.isArray(result.records) || result.records.length > PLACE_LIMITS.candidates) throw new RangeError('Place snapshot candidate budget exceeded');
       // The worker returns spatial candidates; the accepted source snapshot
       // contains only identities eligible at the project's selected month.
       const currentRecords=result.records.map(normalizePlace).filter(record=>sourceActive(record,view.presentation));
       const month=view.presentation?.month??null;
       return await publishAccepted(async()=>{
-        if(!viewportCurrent(current,view))return false;
+        if(!viewportCurrent(current,view,viewKey))return false;
         // The worker returns highest priority first. Keep those records
         // longest when an entire view becomes inactive at once.
         const currentIds=new Set(currentRecords.map(record=>record.id).reverse());
@@ -158,7 +160,7 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
         if(!change.present&&!referenceChanged)return false;
         if(change.input||referenceChanged)
           await admitReferences(()=>references(records,retained,view.presentation));
-        if(!viewportCurrent(current,view)) {
+        if(!viewportCurrent(current,view,viewKey)) {
           if(!closed)await admitReferences(()=>references());
           return false;
         }
@@ -177,19 +179,21 @@ export function createPlaceRuntime({ manifestUrl = new URL('../../data/places/ma
       return false;
     }
   }
-  function cancelViewport() { desired=null;viewportTask=null;viewportContext=null;requestedDependencies=null; revision++; scheduler.cancelKey('viewport'); }
+  function cancelViewport() { desired=null;desiredKey=null;viewportTask=null;viewportContext=null;requestedDependencies=null; revision++; scheduler.cancelKey('viewport'); }
   function settle(view=desired) {
     const wasMoving=moving;
     moving=false;
-    const task=view?prepare(view):Promise.resolve(false);
     if(wasMoving)onSettled();
+    if(!view)return Promise.resolve(false);
+    const task=prepare(view);
+    const settledKey=desiredKey;
     // A drag query may still be running. Its completion starts the coalesced
     // final viewport before this continuation runs.
-    return task.then(result=>desired===view&&viewportTask&&viewportTask!==task?viewportTask:result);
+    return task.then(result=>desiredKey===settledKey&&viewportTask&&viewportTask!==task?viewportTask:result);
   }
   function resetProject() {
     if(closed)return;
-    projectEpoch++;revision++;moving=false;desired=null;
+    projectEpoch++;revision++;moving=false;desired=null;desiredKey=null;
     viewportTask=null;viewportContext=null;
     scheduler.cancelAll('project-replaced');
     retained.clear();snapshot=EMPTY;admittedReferenceKey=null;snapshotMonth=null;

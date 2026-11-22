@@ -50,6 +50,12 @@ test('builtin startup geometry packs are deterministic and isolate a single chan
   assert.equal(first.receipt.packs.flatMap(pack=>pack.members).length,world.index.geometryAssets.length);
 });
 
+const formalNameEvidence = (entityId,ko,validFrom,options={})=>{
+ const sourceUrl='https://example.test/official/names';
+ return {entityId,ko,validFrom,dateBasis:'effective-date',sources:[sourceUrl],
+  dateEvidence:{date:validFrom,sourceUrl,statement:'The cited instrument states that the name takes effect on '+validFrom},...options};
+};
+
 test('a composite country accepts names only from its recorded representative',()=>{
  const {index}=fixture();
  const sourceId='state:CAN',minorId='state:minor',entry=index.entities[0],readIndex=index.readIndex;
@@ -81,7 +87,7 @@ test('a composite country accepts names only from its recorded representative',(
  const formal=buildBuiltinWorldNamePublication({entityIds:[sourceId],previousIndex:index,readCountry:()=>bytes,
   sourceIndex:unchangedSource,readSource:shouldNotRead,readPreviousSource:shouldNotRead,
   formalNames:readBuiltinWorldFormalNames({schema:'pandolab-builtin-formal-names',schemaVersion:1,
-   names:[{entityId:sourceId,ko:'캐나다',validFrom:'2026-11-21'}]})});
+   names:[formalNameEvidence(sourceId,'캐나다','2026-11-21')]})});
  const formalIndex=JSON.parse(formal.get('index.json'));
  const names=formalIndex.readIndex.records.propertyBindings.filter(row=>row.objectRef.id==='CAN'&&row.property==='name');
  assert.deepEqual(names.map(row=>[row.validFrom,row.validTo,row.value.names]),[
@@ -92,7 +98,7 @@ test('a composite country accepts names only from its recorded representative',(
  const corrected=buildBuiltinWorldNamePublication({entityIds:[sourceId],previousIndex:formalIndex,
   readCountry:file=>formal.get(file),sourceIndex:unchangedSource,readSource:shouldNotRead,readPreviousSource:shouldNotRead,
   formalNames:readBuiltinWorldFormalNames({schema:'pandolab-builtin-formal-names',schemaVersion:1,
-   names:[{entityId:sourceId,ko:'수정된 정식명',validFrom:'2026-12-01',validTo:'2026-12-31'}]})});
+   names:[formalNameEvidence(sourceId,'수정된 정식명','2026-12-01',{validTo:'2026-12-31'})]})});
  const revised=JSON.parse(corrected.get('index.json')).readIndex.records.propertyBindings
   .filter(row=>row.objectRef.id==='CAN'&&row.property==='name');
  assert.deepEqual(revised.map(row=>[row.validFrom,row.validTo,row.value.names.ko.formal??null]),[
@@ -100,6 +106,15 @@ test('a composite country accepts names only from its recorded representative',(
   ['2026-12-01','2026-12-31','수정된 정식명'],
   ['2027-01-01',null,null],
  ]);
+ const deferred=buildBuiltinWorldNamePublication({entityIds:[sourceId],previousIndex:formalIndex,
+  readCountry:file=>formal.get(file),readSource:shouldNotRead,
+  formalNames:readBuiltinWorldFormalNames({schema:'pandolab-builtin-formal-names',schemaVersion:1,
+   names:[],deferred:[{entityId:sourceId,ko:'캐나다',reason:'The available publication does not date the name use.'}]})});
+ const deferredIndex=JSON.parse(deferred.get('index.json'));
+ assert.deepEqual(deferredIndex.readIndex.records.propertyBindings
+  .filter(row=>row.objectRef.id==='CAN'&&row.property==='name'),[priorName]);
+ assert.deepEqual(deferredIndex.geometryAssets,formalIndex.geometryAssets);
+ assert.deepEqual(deferredIndex.inputHashes.sourceRevisions,formalIndex.inputHashes.sourceRevisions);
 });
 
 test('current boundary seeds retain the exact selected shapes and reject corrupt inputs',()=>{
@@ -136,6 +151,10 @@ test('builtin startup geometry verifies packs and recovers only unavailable or i
     assert.equal(project.geometries.length,required.length);
     assert.deepEqual(project.geometries.map(row=>row.id).sort(),required.map(row=>row.id).sort());
     const count=requests.length;
+    let idleWaits=0;
+    const warm=await loader.loadProject(mode==='month'?'2025-12':'2026-11',{waitForIdle:async()=>{idleWaits++;}});
+    assert.deepEqual(warm.project.geometries,project.geometries);
+    assert.equal(idleWaits,1,'only the final publication gate remains for a fully cached month');
     await loader.loadGeometryResources(required);
     assert.equal(requests.length,count,'the timeline and startup share prepared member bytes');
   }
@@ -151,8 +170,8 @@ test('a fresh builtin compilation applies the dated formal name source and prese
   currentWorld:fixture.currentWorld,policy:fixture.policy,displayPolicy:fixture.displayPolicy};
  const id=selections[0].entityId;
  const baseline=compileBuiltinWorldCatalog(input);
- const nameEntry={entityId:id,ko:'테스트 정식 국명',validFrom:'2026-11-21'};
- const priorEntry={...nameEntry,ko:'테스트 이전 국명',validFrom:'2026-10-15',validTo:'2026-10-30'};
+ const nameEntry=formalNameEvidence(id,'테스트 정식 국명','2026-11-21');
+ const priorEntry=formalNameEvidence(id,'테스트 이전 국명','2026-10-15',{validTo:'2026-10-30'});
  const source={schema:'pandolab-builtin-formal-names',schemaVersion:1,names:[nameEntry,priorEntry]};
  const rebuilt=compileBuiltinWorldCatalog({...input,formalNames:readBuiltinWorldFormalNames(source)});
  const getCountry=output=>{
@@ -176,4 +195,25 @@ test('a fresh builtin compilation applies the dated formal name source and prese
  assert.deepEqual(rebuilt.coverageReport,baseline.coverageReport);
  assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[nameEntry,nameEntry]}),/duplicate/i);
  assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[nameEntry,{...priorEntry,validTo:'2026-11-21'}]}),/overlap/i);
+});
+
+test('formal name date evidence distinguishes actual dated use from publication metadata',()=>{
+ const accepted=formalNameEvidence('state:AZE','아제르바이잔 공화국','1995-11-12',{dateBasis:'documented-use'});
+ const source={schema:'pandolab-builtin-formal-names',schemaVersion:1,names:[accepted]};
+ assert.deepEqual(readBuiltinWorldFormalNames(source).get('state:AZE'),[
+  {ko:'아제르바이잔 공화국',start:[1995,11,12],end:null},
+ ]);
+ const monthly=formalNameEvidence('state:GIN','기니 인민혁명공화국','1978-11',{dateBasis:'documented-use'});
+ const earlier=formalNameEvidence('state:GIN','기니 공화국','1958-10-02',{validTo:'1978-10'});
+ assert.deepEqual(readBuiltinWorldFormalNames({...source,names:[earlier,monthly]}).get('state:GIN'),[
+  {ko:'기니 공화국',start:[1958,10,2],end:[1978,10,31]},
+  {ko:'기니 인민혁명공화국',start:[1978,11,1],end:null},
+ ]);
+ assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[{...earlier,validTo:'1978-11'},monthly]}),/overlap/i);
+ assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[formalNameEvidence('state:GIN','기니 공화국','1978')]}),/Invalid builtin formal name/i);
+ for(const row of [{...accepted,validFrom:'2012-05-21',dateEvidence:undefined},
+  {...accepted,dateBasis:'publication-date'},
+  {...accepted,validFrom:'2012-05-21'},
+  {...accepted,dateEvidence:{...accepted.dateEvidence,sourceUrl:'https://example.test/unlinked'}},
+ ])assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[row]}),/date evidence/i);
 });

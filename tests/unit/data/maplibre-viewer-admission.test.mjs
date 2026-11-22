@@ -128,6 +128,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const shownHighlight=async(key=null)=>{
     for(let time=0;time<100;time++){
      const status=renderer.getStats().highlight;
+     if(key===null&&!status?.sourceId&&!status?.pending)return [];
      if(status?.sourceId&&!status.pending){
       const source=renderer.map.getSource(status.sourceId);
       if(source){
@@ -139,8 +140,9 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
     }
     throw new Error('Expected highlight was not displayed: '+key);
    };
-   renderer.setSelection(interactionSnapshot([]));await settle();await shownHighlight();
-   const prototype=Object.getPrototypeOf(renderer.map.getSource('interaction')),writeInteraction=prototype.setData;
+   renderer.setSelection(interactionSnapshot([]));await settle();
+   if(renderer.getStats().highlight?.sourceId)throw new Error('An empty selection activated highlight tiles');
+   const prototype=Object.getPrototypeOf(renderer.map.getSource('territories')),writeInteraction=prototype.setData;
    const writes=[];
    let beginWrite,releaseWrite;
    const began=new Promise(resolve=>beginWrite=resolve);
@@ -491,9 +493,15 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    if(!renderer.map.style.tileManagers[inactiveCountry]?.used)
     throw new Error('A stationary resize event must not retire the warm dated slot');
    renderer.map.panBy([1,0],{animate:false});await settle();
-   const inactiveLayers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
-   if(!inactiveLayers.length||inactiveLayers.some(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')!=='none')||
-    renderer.map.style.tileManagers[inactiveCountry]?.used)
+   const isInactiveSourceRetained=()=>{
+    const layers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
+    return layers.length&&layers.every(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')==='none')&&
+     !renderer.map.style.tileManagers[inactiveCountry]?.used;
+   };
+   const retirementDeadline=performance.now()+8000;
+   while(!isInactiveSourceRetained()&&performance.now()<retirementDeadline)
+    await new Promise(resolve=>setTimeout(resolve,50));
+   if(!isInactiveSourceRetained())
     throw new Error('The inactive dated slot is still used for native tiling');
    await new Promise(resolve=>setTimeout(resolve,100));const optionalStillLoading=!renderer.map.areTilesLoaded();renderer.map.removeLayer('optional-fixture');renderer.map.removeSource('optional-fixture');
    const first=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();const retained=globalThis.document.querySelector('#map > div:last-child');
@@ -570,9 +578,18 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const propertyOnly=updates[0].update.every(row=>!row.newGeometry);
    visible=false;renderer.setSelection({selection:{items:[{domain:'territorial',type:'entity',id:after.id,key:'territorial:entity:'+encodeURIComponent(after.id)}],primaryKey:'territorial:entity:'+encodeURIComponent(after.id)},hover:null});await settle();const hiddenHighlight=(await shownHighlight()).length;
    const boundaryRefresh=renderer.setTerritorialFeatures([after,adjacent]);
-   renderer.setSceneDomains(new Map([['top-overlay',{polygons:[{key:'top-overlay',geometryRevision:'top-overlay-v1',geometry:{type:'Polygon',coordinates:[[[24,-2],[28,-2],[28,2],[24,2],[24,-2]]]},order:5000,style:{color:'#1234ff',fillAlpha:1},blendMode:'normal'}],strokes:[]}]]));
+   const overlayGeometry={type:'Polygon',coordinates:[[[24,-2],[28,-2],[28,2],[24,2],[24,-2]]]};
+   const overlayScene=color=>new Map([['top-overlay',{polygons:[{key:'top-overlay',geometryRevision:'top-overlay-v1',geometry:overlayGeometry,order:5000,style:{color,fillAlpha:1},blendMode:'normal'}],strokes:[]}]]);
+   renderer.setSceneDomains(overlayScene('#1234ff'));
    await boundaryRefresh;await settle();point=renderer.projection.projectCoordinate([26,0]);const topPixel=await sample();
    if(![18,52,255].every((value,index)=>Math.abs(topPixel[index]-value)<=3))throw new Error('An asynchronously completed country boundary covered a later overlay: '+topPixel);
+   const overlaySource=map.getSource('scene-fill-5000-independent'),applyOverlayDiff=overlaySource.updateData.bind(overlaySource);
+   let overlayDiff;
+   overlaySource.updateData=diff=>{overlayDiff=diff;return applyOverlayDiff(diff);};
+   renderer.setSceneDomains(overlayScene('#7034ff'));await settle();
+   if(overlayDiff?.add.length!==0||overlayDiff?.remove.length!==0||overlayDiff?.update.length!==1||
+    overlayDiff.update[0].newGeometry||overlayDiff.update[0].addOrUpdateProperties?.[0]?.value!=='#7034ff')
+    throw new Error('An overlay color change resubmitted the geometry');
    renderer.setSceneDomains(new Map());await settle();
    const optionalStroke={key:'optional-hydro',role:'hydro-detail',geometryRevision:'one',geometry:{type:'LineString',coordinates:[[24,0],[26,0]]},order:200,style:{color:'#1234ff',width:1,alpha:1}};
    const optionalScene=()=>new Map([['water-detail',{polygons:[],strokes:[optionalStroke]}]]);

@@ -17,7 +17,7 @@ import {createTerritorialFillResolver} from './territorial-fill-style.js';
 import {createHydroTileWindow,hydroTileSpecsForWindow} from '../data/hydro-tile-window.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {admittedGeometryKey as geometryKey,geometryReferenceFor} from '../geometry/geometry-version-store.js';
-import {classifyTerritorialPropertyOnly} from '../document/territorial-entity-store.js';
+import {countryDefaultColor} from '../ui/color-adapter.js';
 import {distributionEntriesForLayer,DISTRIBUTION_MODES} from '../document/distribution-model.js';
 import {createMapLibreVectorGroup} from './maplibre-vector-group.js';
 import {createMapLibreHighlight,partitionHighlightLines} from './maplibre-highlight.js';
@@ -85,7 +85,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let countryRows=new Map(),hydroStateKey='',hydroEditsKey='',physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null,selectionSnapshot=null;
  const physicalDisplayCache=new Map(),retainedSources=new Map();
  const retiringDatedSources=new Set();
- let retirementTimer=null,datedRetirementCamera=null;
+ let retirementTimer=null;
  let countryTileRows=new Map(),countryBoundaryGeometry=new Map();
  const physicalPending=new Map();
  const handledSourceErrors=new WeakSet(),sourceQueues=new WeakMap();
@@ -441,13 +441,9 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   }
  }
  function cancelDatedRetirement(){clearTimeout(retirementTimer);retirementTimer=null;}
- function datedCameraPosition(){
-  const center=map.getCenter();
-  return [center.lng,center.lat,map.getZoom(),map.getBearing(),map.getPitch(),map.getRoll()];
- }
  function retireDatedSources(){
   cancelDatedRetirement();
-  if(!retiringDatedSources.size||!styleReady()||presentation.temporalPending()||zoomFramePending)return;
+  if(!retiringDatedSources.size||!styleReady()||presentation.temporalPending()||zoomFramePending||map.isMoving())return;
   for(const layer of mapSourceLayers()){
    if(retiringDatedSources.has(layer.source)&&layer.visible&&!layer.id.startsWith('initial-map-')&&map.getLayer(layer.id)){
     map.setLayoutProperty(layer.id,'visibility','none');
@@ -455,11 +451,10 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    }
   }
   retiringDatedSources.clear();
-  datedRetirementCamera=null;
  }
  function scheduleDatedRetirement(){
-  // Layout visibility rebuilds MapLibre vector tiles. Keep the prior slot
-  // warm for scrubbing at the same camera; a new view retires it immediately.
+  // Keep the prior slot warm during camera motion. Layout visibility changes
+  // rebuild its native tiles, so defer retirement to a settled view.
   if(retirementTimer===null&&retiringDatedSources.size&&!presentation.temporalPending())
    retirementTimer=setTimeout(retireDatedSources,DATED_TILE_GRACE_MS);
  }
@@ -474,7 +469,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    map.setPaintProperty(layer.id,slotOpacity(layer.type),active?1:0);
   }
   retiringDatedSources.add(previous);
-  datedRetirementCamera=datedCameraPosition();
   if(kind==='territories')countrySourceId=id;
   else if(kind==='physical-land')physicalLandSourceId=id;
   else physicalWaterSourceId=id;
@@ -511,7 +505,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   return outcome;
  }
  function setData(id,data,isCurrent,options){return sourceUpdate(source=>source.setData(data),id,isCurrent,options);}
- function preparePhysicalSource(kind,key,data){
+ function preparePhysicalSource(kind,key,data,displayPrepared=false){
   const previous=physicalPending.get(kind);
   if(previous?.key===key&&previous.source===map.getSource(previous.id))return;
   const publish=(id,source)=>{
@@ -534,7 +528,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   physicalPending.set(kind,entry);
   retainedSources.set(id,{kind,source});
   const current=()=>!disposed&&physicalPending.get(kind)===entry&&map.getSource(id)===source;
-  const prepared=kind==='physical-land'?preparePhysicalDisplay(key,data.features[0].geometry).then(geometry=>collection([{...data.features[0],geometry}])):Promise.resolve(data);
+  if(kind==='physical-land'&&displayPrepared)stats.physicalLandAssetHits++;
+  const prepared=kind==='physical-land'&&!displayPrepared?preparePhysicalDisplay(key,data.features[0].geometry).then(geometry=>collection([{...data.features[0],geometry}])):Promise.resolve(data);
   prepared.then(value=>current()?setData(id,value,current,{shareAcrossGenerations:true}):false,cause=>{if(current()){physicalPending.delete(kind);failMapPreparation(cause);}return false;})
    .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){retainedSources.set(id,{kind,source,key});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===generation)failMapPreparation(cause);else invalidate('physical-source-retry');});
  }
@@ -558,11 +553,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    physicalDisplayCache.delete(oldest);
   }
   const entry={controller:new AbortController(),geometry:null,task:null};physicalDisplayCache.set(key,entry);
-  entry.task=Promise.resolve(deps.physicalResources.loadPhysicalLandDisplay?.(key)).then(prepared=>{
-    if(prepared){stats.physicalLandAssetHits++;return {result:{geometry:prepared,durationMs:0}};}
-    return requestMapGeometry('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},generation,entry.controller.signal).then(result=>({result}));
-  })
-   .then(({result})=>{entry.geometry=result.geometry;stats.physicalLandPreparations++;stats.physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
+  entry.task=requestMapGeometry('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},generation,entry.controller.signal)
+   .then(result=>{entry.geometry=result.geometry;stats.physicalLandPreparations++;stats.physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
   return entry.task;
  }
  async function prepareRenderGeometry(items,revision,boundary,signal=geometryAbort.signal){
@@ -766,10 +758,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     if(event.originalEvent&&zoomFramePending&&!initialMapLoading&&!initialFrameStaging){
      zoomFramePending=false;discardUnusedPreservedFrame();
     }
-    // MapLibre also emits move events for canvas resize and panel layout.
-    // A stationary camera must keep a just-used date warm.
-    if(datedRetirementCamera&&datedCameraPosition().some((value,index)=>
-     Math.abs(value-datedRetirementCamera[index])>1e-6))retireDatedSources();
     const zoom=map.getZoom(),jump=Math.abs(zoom-lastCameraZoom)>=2-ZOOM_EPSILON;
     lastCameraZoom=zoom;
     if(jump&&!event.originalEvent&&!zoomFramePending&&(!state.projectReplacing||initialMapLoading)&&
@@ -783,7 +771,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     invalidate('maplibre-camera');
    });
    map.on('movestart',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.beginInteraction('maplibre-move');});
-   map.on('moveend',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.endInteraction('maplibre-move-end');});
+   map.on('moveend',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.endInteraction('maplibre-move-end');scheduleDatedRetirement();});
    if(!initialCamera){
     if(pendingCameraFit)applyCameraFit();else syncCameraFromState(initialView);
    }
@@ -882,8 +870,16 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    visible:state.layerVisibility.objects,stroke:JSON.stringify([countryStyle.countryStroke,countryStyle.borderAlpha])};
   const accepted=acceptedCountryInputs;
   const immutable=rows=>rows.every(row=>Object.isFrozen(row)&&Object.isFrozen(row.properties)&&geometryReferenceFor(row.geometry));
-  const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>row===after[index])
-    ||classifyTerritorialPropertyOnly(before,after)?.paintChangedIds.length===0;
+  // The country tiles consume geometry, hierarchy and fill inputs. Dated
+  // names, flags and other metadata belong to the separate label scene.
+  const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>{
+   const next=after[index];
+   return row===next||row.id===next.id&&row.geometry===next.geometry
+    &&row.properties.parentId===next.properties.parentId
+    &&row.properties.entityKind===next.properties.entityKind
+    &&row.properties.style?.color===next.properties.style?.color
+    &&countryDefaultColor(row)===countryDefaultColor(next);
+  });
   if(accepted&&styleReady()&&!error&&countryGeneration===generation&&!activeCountryTasks.size&&!countrySourceNeedsSwap
     &&accepted.generation===inputs.generation&&accepted.source===inputs.source&&accepted.stroke===inputs.stroke
     &&accepted.presentation===inputs.presentation&&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible
@@ -1026,7 +1022,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   // The derived land revision includes any actual change to the land mask.
   // A water-only change must keep the existing land tiles and their coverage.
   if(map.getSource(physicalLandSourceId)&&(physicalLandKey!==context.revision||physicalLandSource!==map.getSource(physicalLandSourceId)))
-   preparePhysicalSource('physical-land',context.revision,collection([{type:'Feature',properties:{},geometry:context.geometry}]));
+   preparePhysicalSource('physical-land',context.revision,collection([{type:'Feature',properties:{},geometry:context.geometry}]),context.displayPrepared);
   // The physical owner resolves the drawn water and its identities together.
   // Admission into the searchable hydro catalog can complete independently.
   const waterFeatures=context.waterFeatures??(context.water?[{type:'Feature',properties:{},geometry:context.water}]:[]);
@@ -1179,19 +1175,51 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const rows=[...domains].flatMap(([domain,value])=>domain==='physical-land'||domain==='physical-water'?[]:[...value.polygons.map(item=>({...item,kind:'fill'})),...value.strokes.map(item=>({...item,kind:'line'}))]);
   const native=row=>row.kind==='line'||row.blendMode==='multiply'||row.style?.blendMode==='multiply';
   sceneVectors=rows.filter(native).filter(row=>row.kind==='fill'?(row.style?.fillAlpha??1)>0:(row.style?.alpha??1)>0).map(row=>['Point','MultiPoint'].includes(row.geometry?.type)?{...row,kind:'point'}:row);
-  const key=rows.map(row=>[row.key,row.geometryRevision,row.order,row.role,row.blendMode,JSON.stringify(row.style)].join(':')).join('|');
+  const key=rows.map(row=>[row.key,row.objectKey,row.geometryRevision,row.order,row.role,row.blendMode,JSON.stringify(row.style)].join(':')).join('|');
   if(key===sceneKey)return;sceneKey=key;
   const groups=new Map();
   rows.filter(row=>!native(row)).sort((a,b)=>a.order-b.order).forEach(row=>{const kind=['Point','MultiPoint'].includes(row.geometry?.type)?'circle':row.kind,band=row.role==='territorial-fill'?'territorial':row.order<0?'base':'independent';const id='scene-'+kind+'-'+row.order+'-'+band;if(!groups.has(id))groups.set(id,[]);groups.get(id).push({...row,kind});});
   for(const id of dynamicLayers)if(!groups.has(id)){map.removeLayer(id);map.removeSource(id);dynamicLayers.delete(id);dynamicSources.delete(id);sceneGroups.delete(id);indexedStyle=null;}
   for(const [id,items]of groups){
-   const features=items.filter(item=>item.geometry).map(item=>({type:'Feature',id:item.key,geometry:item.geometry,properties:{objectKey:item.objectKey||'',color:item.style?.color||'#ffffff',alpha:item.style?.fillAlpha??item.style?.alpha??1}}));
-   if(!features.length)continue;
-   const signature=items.map(item=>[item.key,item.geometryRevision,item.blendMode,JSON.stringify(item.style)].join(':')).join('|');
-   if(sceneGroups.get(id)===signature)continue;sceneGroups.set(id,signature);
-   if(map.getSource(id))setData(id,collection(features));
+   const signature=items.map(item=>[item.key,item.objectKey,item.geometryRevision,item.blendMode,JSON.stringify(item.style)].join(':')).join('|');
+   const currentSource=map.getSource(id),previous=sceneGroups.get(id);
+   if(previous&&previous.source===currentSource&&previous.signature===signature)continue;
+   const next=new Map(items.filter(item=>item.geometry).map(item=>[item.key,{revision:item.geometryRevision,
+    feature:{type:'Feature',id:item.key,geometry:item.geometry,properties:{objectKey:item.objectKey||'',color:item.style?.color||'#ffffff',alpha:item.style?.fillAlpha??item.style?.alpha??1}}}]));
+   if(!next.size)continue;
+   const data=()=>collection(Array.from(next.values(),row=>row.feature));
+   if(currentSource){
+    const group=previous?.source===currentSource?previous:{source:currentSource,rows:null};
+    group.signature=signature;sceneGroups.set(id,group);
+    sourceUpdate(async source=>{
+     const before=group.rows;
+     if(!before)await source.setData(data());
+     else{
+      const remove=[...before.keys()].filter(key=>!next.has(key)),add=[],update=[];
+      for(const [key,{feature,revision}] of next){
+       const old=before.get(key);
+       if(!old){add.push(feature);continue;}
+       const newGeometry=old.revision!==revision||revision==null&&old.feature.geometry!==feature.geometry?feature.geometry:null;
+       const properties=Object.entries(feature.properties).filter(([name,value])=>old.feature.properties[name]!==value)
+        .map(([key,value])=>({key,value}));
+       if(newGeometry||properties.length)update.push({id:key,...(newGeometry?{newGeometry}:{}),
+        ...(properties.length?{addOrUpdateProperties:properties}:{})});
+      }
+      if(add.length||remove.length||update.length)await source.updateData({add,remove,update});
+     }
+    },id,()=>sceneGroups.get(id)===group&&group.signature===signature)
+     .then(applied=>{
+      if(applied){group.rows=next;return;}
+      if(sceneGroups.get(id)===group&&group.signature===signature){group.signature=null;sceneKey='';}
+     },()=>{
+      if(sceneGroups.get(id)!==group)return;
+      group.rows=null;
+      if(group.signature===signature){group.signature=null;sceneKey='';}
+     });
+   }
    else{
-    map.addSource(id,{type:'geojson',data:collection(features)});dynamicSources.add(id);indexedStyle=null;
+    map.addSource(id,{type:'geojson',data:data()});dynamicSources.add(id);indexedStyle=null;
+    sceneGroups.set(id,{source:map.getSource(id),rows:next,signature});
     const kind=items[0].kind;
     const paint=kind==='fill'?{'fill-color':['get','color'],'fill-opacity':['get','alpha']}:{'circle-color':['get','color'],'circle-radius':5,'circle-opacity':['get','alpha']};
     const before=items[0].role==='territorial-fill'?'physical-water':items[0].order<0?'territories':undefined;
@@ -1427,7 +1455,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   initialMapLoading=value===true;syncInitialMapSkeleton();dirty();invalidate('initial-map-skeleton');
  }
  return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot(){return map&&loaded?readMapLibreCamera(map):null;},setInitialMapLoading,attach,initialize,setTerritorialFeatures,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>sourceRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
-  get map(){return map;},get projection(){return projection;},get loaded(){return loaded;},isStyleReady:styleReady,renderFrame,commitVisualFrame,measureWork:metrics.track,
+ get map(){return map;},get projection(){return projection;},get loaded(){return loaded;},isStyleReady:styleReady,renderFrame,commitVisualFrame,measureWork:metrics.track,measureSyncWork:metrics.run,
   panBy(dx,dy){map.panBy([-dx,-dy],{animate:false});return true;},
   fitGeometry(feature,padding){
    const geometries=[];

@@ -9,6 +9,7 @@
         "tests/core/runtime.test.mjs",
         "tests/core/storage.test.mjs",
         "tests/core/current-world-stream.test.mjs",
+        "tests/core/builtin-world-scope.test.mjs",
         "tests/core/world-bundle.test.mjs",
         "tests/core/builtin-geometry-packs.test.mjs",
         "tests/unit/data/core-timeline-preparation.test.mjs",

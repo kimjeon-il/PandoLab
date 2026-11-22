@@ -7,6 +7,22 @@ import {referenceZoomPixelsPerDegree} from '../../../src/map/map-display-zoom.js
 import {createCountryIndex} from '../../../src/map/country-index.js';
 import {countryGeometrySignature} from '../../../src/rendering/country-shared-boundary-cache.js';
 import {createGeometryVersionStore} from '../../../src/geometry/geometry-version-store.js';
+import {createLabelGlyphPreparation} from '../../../scripts/lib/maplibre-label-glyphs.mjs';
+
+test('pending glyphs share rasterization and yield between bounded batches',async()=>{
+ const frames=[],drawn=[];let time=0;
+ const prepare=createLabelGlyphPreparation({now:()=>time,schedule:task=>frames.push(task)});
+ const font={};
+ const draw=text=>()=>{time+=4;drawn.push(text);return text;};
+ const a=prepare(font,'가',draw('가'));
+ assert.strictEqual(prepare(font,'가',()=>assert.fail('duplicate draw')),a);
+ const b=prepare(font,'나',draw('나'));
+ const alternate=prepare({},'가',draw('bold 가'));
+ frames.shift()();assert.deepEqual(drawn,['가']);
+ frames.shift()();assert.deepEqual(drawn,['가','나']);
+ frames.shift()();assert.deepEqual(await Promise.all([a,b,alternate]),['가','나','bold 가']);
+ assert.equal(frames.length,0);
+});
 
 const requireMapLibre=createRequire(import.meta.resolve('maplibre-gl/package.json'));
 const {expression,latest}=requireMapLibre('@maplibre/maplibre-gl-style-spec');
@@ -174,7 +190,7 @@ test('accepted city records stay warm across views and expire with the project d
  }finally{runtime.dispose();}
 });
 
-test('place viewport results publish during movement and coalesce the next view',async()=>{
+test('superseded place viewport results cannot publish before the final settled view',async()=>{
  const {createPlaceRuntime}=await import('../../../src/data/place-runtime.js');
  const calls=[],published=[];let presentation=null;
  const runtime=createPlaceRuntime({manifestUrl:'https://fixture.test/places.json',getPresentation:()=>presentation,admitReferences:async()=>{},onSnapshot:snapshot=>published.push(snapshot),rpc:{request(_method,payload){return new Promise(resolve=>calls.push({payload,resolve}));},stop(){}}});
@@ -186,7 +202,7 @@ test('place viewport results publish during movement and coalesce the next view'
   const final=runtime.settle(c).then(()=>{settled=true;});
   assert.equal(calls.length,1,'Keep only one running viewport query');
   calls[0].resolve({result:{records:[],signature:'a'}});await first;await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(published.length,1,'A completed geographic snapshot can publish while dragging');
+  assert.equal(published.length,0,'The obsolete viewport cannot publish or replace the current view');
   assert.equal(calls.length,2);assert.deepEqual(calls[1].payload.view,c);
   assert.equal(settled,false,'A protected frame must wait for the requested final viewport');
   calls[1].resolve({result:{records:[],signature:'c'}});await final;
@@ -238,6 +254,45 @@ test('eligible geographic flags are prepared before panning reveals their hemisp
  assert.equal(presentation.prepareFlags(layout),true);assert.equal(requests.length,2);presentation.dispose();
 });
 
+test('visible flags start first and standby decoding yields to direct movement',async()=>{
+ const previous=globalThis.requestIdleCallback,requests=[],idle=[],finish=new Map(),registered=[];
+ globalThis.requestIdleCallback=callback=>idle.push(callback);
+ let moving=false;
+ const map={isMoving:()=>moving,loadImage:url=>{requests.push(url);return new Promise(resolve=>finish.set(url,resolve));},
+  getSource:()=>null,getLayer:()=>null,hasImage:id=>registered.includes(id),addImage:id=>registered.push(id),removeImage:id=>registered.splice(registered.indexOf(id),1)};
+ const owner=createMapLibreLabelPresentation({renderer:{map},labels:{},onChange(){},onError:assert.fail});
+ try{
+  const flags=new Map(['far1','near','far2'].map(id=>[id,{url:id+'.png'}]));
+  owner.prepareFlags({territorialFlags:flags,visibleFlagIds:new Set(['near'])});
+  assert.deepEqual(requests,['near.png']);
+  finish.get('near.png')({data:{height:12}});await new Promise(resolve=>setImmediate(resolve));
+  moving=true;idle.shift()();assert.deepEqual(requests,['near.png']);
+  moving=false;owner.publishOptionalFlags();idle.shift()();
+  assert.deepEqual(requests,['near.png','far1.png']);
+  finish.get('far1.png')({data:{height:12}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(registered.length,1,'standby decoding does not invalidate active symbol tiles');
+  owner.prepareFlags({territorialFlags:flags,visibleFlagIds:new Set(['far1'])});owner.publishOptionalFlags();
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(registered.length,2);assert.equal(requests.length,2);
+ }finally{owner.dispose();if(previous===undefined)delete globalThis.requestIdleCallback;else globalThis.requestIdleCallback=previous;}
+});
+
+test('the adjacent zoom decodes at most eight visible flags after frame publication',async()=>{
+ const previous=globalThis.requestIdleCallback,idle=[],requests=[];
+ globalThis.requestIdleCallback=callback=>idle.push(callback);
+ const flags=new Map(Array.from({length:12},(_,i)=>[String(i),{url:i+'.png'}]));
+ const visible=new Set([...flags.keys()].slice(2));
+ const map={getZoom:()=>2.75,getSource:()=>null,getLayer:()=>null,hasImage:()=>false,addImage:assert.fail,
+  loadImage:async url=>{requests.push(url);return {data:{height:12}};}};
+ const owner=createMapLibreLabelPresentation({renderer:{map},labels:{},onChange(){},onError:assert.fail});
+ try{
+  owner.prepareFlags({territorialFlags:flags,visibleFlagIds:visible},false);
+  assert.deepEqual(requests,[]);assert.equal(idle.length,0);
+  owner.publishOptionalFlags();
+  while(idle.length){idle.shift()();await new Promise(resolve=>setImmediate(resolve));}
+  assert.deepEqual(requests,[...visible].slice(0,8).map(id=>id+'.png'));
+ }finally{owner.dispose();if(previous===undefined)delete globalThis.requestIdleCallback;else globalThis.requestIdleCallback=previous;}
+});
+
 test('bundled flag cache busting does not reload the same image during a date change',()=>{
  const previous=globalThis.document;globalThis.document={baseURI:'https://fixture.test/Pando/'};
  const OriginalURL=globalThis.URL;let parses=0;globalThis.URL=class extends OriginalURL{constructor(...args){super(...args);parses++;}};
@@ -257,27 +312,38 @@ test('flag completions share one image installation frame after the dated map is
  const previous=globalThis.requestAnimationFrame;let flush;globalThis.requestAnimationFrame=callback=>{flush=callback;return 1;};
  const finishes=[],images=new Set();let changes=0;
  const map={loadImage:()=>new Promise(resolve=>finishes.push(resolve)),getLayer:()=>null,getSource:()=>null,hasImage:id=>images.has(id),addImage:id=>images.add(id),removeImage:id=>images.delete(id)};
- let temporalPending=true;
+ let temporalPending=true,moving=false;
+ map.isMoving=()=>moving;
  const presentation=createMapLibreLabelPresentation({renderer:{map,getRuntimeState:()=>({temporalPresentationPending:temporalPending})},labels:{},onChange:assert.fail,onFlagsReady:()=>changes++,onError:assert.fail});
  try{
-  presentation.prepareFlags({territorialFlags:new Map([['a',{url:'a.png'}],['b',{url:'b.png'}]])});
+  presentation.prepareFlags({territorialFlags:new Map(Array.from({length:9},(_,i)=>[String(i),{url:i+'.png'}]))});
+  assert.equal(finishes.length,8,'initial preparation limits simultaneous flag decodes');
   for(const finish of finishes)finish({data:{width:24,height:12}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(finishes.length,9);
+  finishes[8]({data:{width:24,height:12}});await new Promise(resolve=>setImmediate(resolve));
   assert.equal(images.size,0);assert.equal(typeof flush,'function');flush();
   assert.equal(images.size,0,'optional image uploads yield to the required dated frame');
-  temporalPending=false;presentation.publishOptionalFlags();flush();
-  assert.equal(images.size,2);assert.equal(changes,1);
+  temporalPending=false;moving=true;presentation.publishOptionalFlags();flush();
+  assert.equal(images.size,0,'optional image uploads yield to direct movement');
+  moving=false;presentation.publishOptionalFlags();flush();
+  assert.equal(images.size,8);assert.equal(changes,0);
+  flush();assert.equal(images.size,9);assert.equal(changes,1);
  }finally{presentation.dispose();globalThis.requestAnimationFrame=previous;}
 });
 
 test('labels publish before flags and change selection without mutating tile feature state',async()=>{
  const previous=globalThis.document;globalThis.document={baseURI:'https://fixture.test/'};
  const sources=new Map(),layers=new Map(),images=new Map(),errors=[],diffs=[],finishes=new Map();
- let fontWrites=0,fullUploads=0,tilesReady=true,selected=null,faces={External:[{url:'external.woff2'}]};
- const map={getStyle:()=>({'font-faces':faces}),setFontFaces:value=>{faces=value;fontWrites++;},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),hasImage:id=>images.has(id),addImage:(id,image)=>images.set(id,image),removeImage:id=>images.delete(id),loadImage:url=>new Promise(resolve=>finishes.set(url,resolve)),isSourceLoaded:()=>tilesReady,
+ let fontWrites=0,fullUploads=0,tilesReady=true,selected=null,failIconWrite=false,moving=false,faces={External:[{url:'external.woff2'}]};
+ const map={isMoving:()=>moving,getFontFaces:()=>faces,setFontFaces:value=>{faces=value;fontWrites++;},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),hasImage:id=>images.has(id),addImage:(id,image)=>images.set(id,image),removeImage:id=>images.delete(id),loadImage:url=>new Promise(resolve=>finishes.set(url,resolve)),isSourceLoaded:()=>tilesReady,
   addSource:(id,value)=>sources.set(id,{...value,on(_type,listener){this.listener=listener;},off(){this.listener=null;},
    async setData(data){fullUploads++;this.data=data;},
    async updateData(diff){
     diffs.push(diff);
+    if(failIconWrite&&diff.update.some(row=>row.addOrUpdateProperties?.some(property=>property.key==='icon'&&property.value))){
+     this.listener({error:new Error('label tile update failed')});
+     return;
+    }
     this.data.features=[...this.data.features.filter(feature=>!diff.remove.includes(feature.id)),...diff.add];
     for(const update of diff.update){
      const feature=this.data.features.find(f=>f.id===update.id);
@@ -287,7 +353,7 @@ test('labels publish before flags and change selection without mutating tile fea
   }),addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),setPaintProperty(){assert.fail('Unchanged paint must not be reapplied');},setFeatureState:assert.fail,removeFeatureState:assert.fail};
  const resources={getState:()=>({layerVisibility:{labels:false}}),getTerritorialLabelRef:id=>({id,key:'territorial:entity:'+id}),automaticLabelSettings:()=>({}),labelSettings:()=>({}),countryLabelAnchors:()=>new Map(['a','b','c'].map(id=>[id,[0,0]])),selectionHas:ref=>ref.id===selected};
  let activeLayout;
- const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onFlagsReady:()=>presentation.renderTerritorialLabels(activeLayout),onError:error=>errors.push(error)});
+ const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onFlagsReady(){},onError:error=>errors.push(error)});
  const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialFlags:new Map(ids.map(id=>[id,{url:id+'.png'}])),territorialLabelNames:new Map(),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),territorialLabelShortSides:new Map(ids.map(id=>[id,8])),userLabels:[]});
  const flush=()=>new Promise(resolve=>setImmediate(resolve));
  const show=async (ids,flag)=>{activeLayout=layout(ids);if(flag)activeLayout.territorialFlags.set('c',{url:flag});presentation.prepareFlags(activeLayout);presentation.renderTerritorialLabels(activeLayout);await flush();};
@@ -298,6 +364,7 @@ test('labels publish before flags and change selection without mutating tile fea
   assert.equal(presentation.pending,false,'image decoding cannot hold the label source');
   for(const url of ['a.png','b.png'])finishes.get(url)({data:{width:24,height:12}});
   await flush();
+  assert.ok(diffs.at(-1).update.every(row=>row.addOrUpdateProperties.length===1&&row.addOrUpdateProperties[0].key==='icon'));
   const first=rows().map(row=>row.icon);
   assert.equal(new Set(first).size,2);
   assert.ok(first.every(id=>images.has(id)));
@@ -313,12 +380,23 @@ test('labels publish before flags and change selection without mutating tile fea
   assert.equal(cityLayout['text-variable-anchor'],undefined);
   const labelPaint=()=>['viewer-label-country','viewer-label-text'].map(id=>layers.get(id).paint['text-color']);
   assert.deepEqual(labelPaint(),['#343840','#343840']);
-  assert.deepEqual(layers.get('viewer-label-dot').paint['circle-color'],['case',['get','selected'],'#315e9d','#373b42']);
+  const markerColor=expression.createPropertyExpression(layers.get('viewer-label-dot').paint['circle-color'],
+   'circle-color',latest.paint_circle['circle-color']);
+  assert.equal(markerColor.result,'success');
+  const color=(markerRing,selected)=>markerColor.value.evaluate({zoom:5},{properties:{markerRing,selected}});
+  assert.equal(color(true,true).a,0);
+  assert.equal(color(false,true).a,1);
+  assert.notDeepEqual(color(false,true),color(false,false));
   const writes=diffs.length;
   presentation.renderTerritorialLabels(activeLayout);await flush();
   assert.equal(diffs.length,writes,'unchanged sizes and coordinates must reuse the label tiles');
   activeLayout.territorialLabelNames.set('a',false);
   activeLayout.territorialFlags.delete('b');
+  presentation.renderTerritorialLabels(activeLayout,{deferWhileMoving:true});
+  moving=true;await flush();
+  assert.equal(diffs.length,writes,'A newly started gesture defers a queued viewport label write');
+  assert.equal(presentation.pending,false);
+  moving=false;
   presentation.renderTerritorialLabels(activeLayout);await flush();
   assert.deepEqual(rows().map(({primary,icon})=>[primary,icon]),[['',first[0]],['b','']]);
   assert.equal(countryLayout['text-anchor'].at(-1),'center');
@@ -342,6 +420,16 @@ test('labels publish before flags and change selection without mutating tile fea
   assert.equal(fullUploads,1);assert.equal(fontWrites,1);assert.equal(faces.External[0].url,'external.woff2');
   sources.get('viewer-labels').listener({error:new Error('font unavailable')});
   assert.equal(errors.length,1);assert.equal(presentation.pending,false);await show(['b','c'],'new-c.png');assert.equal(sources.size,0);
+  presentation.retry();
+  await show(['b','c'],'retry-c.png');
+  assert.equal(rows().find(row=>row.objectKey==='territorial:entity:c').icon,'');
+  failIconWrite=true;
+  finishes.get('retry-c.png')({data:newestFlag});await flush();
+  assert.equal(errors.length,2);assert.equal(presentation.pending,false);
+  await show(['b','c'],'retry-c.png');assert.equal(sources.size,0,'a failed flag delta stays stopped until explicit retry');
+  failIconWrite=false;presentation.retry();
+  await show(['b','c'],'retry-c.png');
+  assert.ok(rows().every(row=>images.has(row.icon)));
  }
  finally{presentation.dispose();globalThis.document=previous;}
 });

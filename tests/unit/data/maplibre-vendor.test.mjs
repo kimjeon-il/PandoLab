@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mapLibreVendorAssets} from '../../../scripts/lib/maplibre-vendor.mjs';
 import {createLabelGlyphMasks,createLabelGlyphCollision} from '../../../scripts/lib/maplibre-label-glyphs.mjs';
+import {createLabelZoomWorker,createLabelZoomRenderer} from '../../../scripts/lib/maplibre-label-zoom.mjs';
 import {transformSync} from 'esbuild';
 
 test('Viewer receives the MapLibre module, worker, stylesheet and license',()=>{
@@ -59,7 +60,50 @@ test('country and place names can overlap while same-type text and flags retain 
  collision.inserted(cityKey,cityBox);
  assert.equal(collision.predicate({kind:'place'})(cityKey),true);
  assert.equal(collision.predicate(overlap)(cityKey),false);
- const paint=['viewer-label-country','viewer-label-text'];
- assert.deepEqual(collision.placementOrder(paint),[...paint].reverse());
- assert.equal(paint[0],'viewer-label-country');
+ assert.equal(collision.predicate({kind:'country'})(cityKey),false,'a city name must not hide a country flag and its paired name');
+ assert.equal(collision.predicate({kind:'country'})(key),true,'country flags still participate in country-label collision');
+});
+
+test('a retained symbol bucket updates only its supplementary size buffer at the next stop band',()=>{
+ const worker=createLabelZoomWorker(),renderer=createLabelZoomRenderer();
+ const native={kind:'composite',minZoom:4,maxZoom:5,interpolationType:{name:'linear'}};
+ const stops=[3,4,5,6,7],sizes=[13,14,17,21,26];
+ const value={expression:{kind:'composite',zoomStops:stops},
+  possiblyEvaluate:zoom=>({evaluate:feature=>sizes[zoom-3]+feature.offset})};
+ const bucket={zoom:4,layers:[{_unevaluatedLayout:{_values:{'text-size':value}}}]};
+ const buffers={placedSymbolArray:{length:1},layoutVertexBuffer:{length:12}};
+ worker.add(bucket,buffers,'text-size',{offset:0},{},4,4,zoom=>zoom);
+ buffers.placedSymbolArray.length++;
+ worker.add(bucket,buffers,'text-size',{offset:3},{},12,8,zoom=>zoom);
+ const uploads=[];
+ const read=data=>uploads.push(Array.from(new Uint16Array(data.arrayBuffer)));
+ let destroyed=0;
+ const gpu={updateData:read,destroy:()=>destroyed++};
+ const context={createVertexBuffer(data,attributes,dynamic){
+  assert.equal(attributes[0].name,'a_pando_label_size');
+  assert.equal(dynamic,true);
+  read(data);
+  return gpu;
+ }};
+ assert.equal(renderer.prepare(buffers,native,4.3,context),native);
+ const next=renderer.prepare(buffers,native,5.3,context);
+ assert.deepEqual([next.minZoom,next.maxZoom],[5,6]);
+ assert.deepEqual(uploads[0],[...Array(4).fill([17*128,21*128]).flat(),...Array(8).fill([20*128,24*128]).flat()]);
+ assert.equal(buffers.pandoActiveSizeBuffer,gpu);
+ renderer.prepare(buffers,native,5.7,context);
+ assert.equal(uploads.length,1);
+ const interval=renderer.band(buffers,native,5.7);
+ const zoomFactor=(data,zoom)=>(zoom-data.minZoom)/(data.maxZoom-data.minZoom);
+ const featureSize=(_data,t,{lowerSize,upperSize})=>(lowerSize+(upperSize-lowerSize)*t)/128;
+ const collision=renderer.collision(buffers,interval,0,{x1:-10,y1:-5,x2:10,y2:5},5.7,zoomFactor,featureSize);
+ assert.equal(collision.size,19.8);
+ assert.ok(collision.box.x2>10);
+ renderer.prepare(buffers,native,6.2,context);
+ assert.equal(uploads.length,2);
+ renderer.prepare(buffers,native,4.7,context);
+ assert.equal(buffers.pandoActiveSizeBuffer,null);
+ renderer.prepare(buffers,native,3.6,context);
+ assert.deepEqual(uploads[2].slice(0,2),[13*128,14*128]);
+ renderer.destroy(buffers);
+ assert.equal(destroyed,1);
 });

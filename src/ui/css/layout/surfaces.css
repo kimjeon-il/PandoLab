@@ -288,13 +288,3 @@ body .app-root[data-layout="phone-landscape"] .mobile-global-menu { display: gri
   pointer-events: auto;
   transform: none;
 }
-.app-root[data-layout="mobile"] .surface-details > .surface-header .surface-header-actions {
-  display: flex;
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: end;
-  z-index: 2;
-}
-.app-root[data-layout="mobile"] .surface-details > .surface-header .sheet-close-btn {
-  display: grid;
-}

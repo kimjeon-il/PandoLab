@@ -458,11 +458,7 @@ body .app-root[data-layout="phone-landscape"] .mobile-menu-toolbar { padding: 0;
 }
 
 .app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header {
-  position: absolute;
-  z-index: 1;
-  inset: 0 0 auto;
-  display: grid;
-  grid-template: minmax(0, 1fr) / minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 0;
   min-height: calc(var(--ui-viewer-map-bar-height) - var(--ui-border-width) * 2);
   padding: 0 var(--ui-space-1);
@@ -470,18 +466,16 @@ body .app-root[data-layout="phone-landscape"] .mobile-menu-toolbar { padding: 0;
   cursor: default;
 }
 
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header .surface-header-title {
-  display: none;
-}
-
 .app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header .sheet-drag-handle {
   display: grid;
   grid-area: 1 / 1;
   justify-self: stretch;
-  place-items: center end;
+  place-items: center;
+  padding-inline-start: calc(var(--ui-icon-control-mobile-size) + var(--ui-space-2));
   width: auto;
   min-height: var(--ui-icon-control-mobile-size);
-  padding: 0 var(--ui-space-2);
+  padding-block: 0;
+  padding-inline-end: var(--ui-space-2);
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -504,42 +498,51 @@ body .app-root[data-layout="phone-landscape"] .mobile-menu-toolbar { padding: 0;
   display: grid;
 }
 
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context {
-  display: flex;
-  align-items: center;
-  box-sizing: border-box;
-  min-height: calc(var(--ui-viewer-map-bar-height) - var(--ui-border-width) * 2);
-  padding: 0 calc(var(--ui-icon-control-mobile-size) + var(--ui-space-8)) 0 var(--ui-space-3);
+.app-root.viewer-root[data-layout="phone-landscape"] .object-details-flag {
+  height: 4rem;
 }
 
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context .ui-object-context-main {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: var(--ui-space-2);
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details:not([data-sheet-snap="0"], .is-sheet-dragging, .is-sheet-settling) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.object-details-flag { display: none; }
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-flag:not([hidden]) {
-  display: block;
-  width: var(--design-control-md);
-  height: var(--ui-icon-control-mobile-size);
-  object-fit: contain;
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details:not([data-sheet-snap="0"]) > .object-details-body {
+  flex: 1 0 auto;
+  overflow: visible;
 }
-.object-details-type { display: none; }
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-type:not([hidden]) {
-  display: block;
-}
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context:has(.object-details-affiliation:not([hidden])) .object-details-type {
-  display: none;
-}
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context .ui-object-context-heading {
-  min-width: 0;
-}
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .object-details-context :is(h2, .object-details-affiliation) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details[data-sheet-snap="0"]:not(.is-sheet-dragging, .is-sheet-settling) > :is(.surface-tabs, .surface-body) {
-  display: none;
+
+.app-root.viewer-root:is([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details[data-sheet-snap="0"]:not(.is-sheet-dragging, .is-sheet-settling) {
+  > .surface-header {
+    position: absolute;
+    inset: 0 0 auto;
+    pointer-events: none;
+  }
+
+  .sheet-drag-handle {
+    justify-self: start;
+    width: var(--ui-icon-control-mobile-size);
+    padding: 0;
+    pointer-events: auto;
+  }
+
+  .sheet-close-btn {
+    pointer-events: auto;
+  }
+
+  .object-details-context {
+    flex: 1 1 auto;
+    min-height: 0;
+    align-items: safe center;
+    padding: 0 calc(var(--ui-icon-control-mobile-size) + var(--ui-space-4));
+    overflow-y: auto;
+  }
+
+  .object-details-heading h2 {
+    font-size: var(--design-font-xl);
+  }
+
+  :is(.object-details-flag, .object-details-type, .object-details-affiliation, .surface-tabs, .surface-body) {
+    display: none;
+  }
 }

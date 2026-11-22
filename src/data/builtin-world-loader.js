@@ -74,7 +74,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  // unchanged files must survive a newer catalog/data revision without refetching.
  const catalogs=createStoredAssetLoader(assetOptions);
  const assets=createStoredAssetLoader({...assetOptions,cachePolicy:'immutable'});
- let indexPromise,readMetadata;
+ let indexPromise,readMetadata,geometryAssetsByRef;
  const geometries=new Map(),pending=new Map(),geometryStates=new Map();
  let activeReads=0;
  const readQueue=[];
@@ -98,6 +98,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     normalizeTemporalInterval(interval.validFrom,interval.validTo);
    }
   }
+  geometryAssetsByRef=new Map(value.geometryAssets.map(asset=>[geometryKey(asset),asset]));
   return value;
  }
  async function loadIndex(){
@@ -149,10 +150,10 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   return done;
  }
  async function loadGeometryResources(requirements,{isCurrent=()=>true}={}){
-  const index=await loadIndex(),byRef=new Map(index.geometryAssets.map(asset=>[JSON.stringify([asset.id,asset.version]),asset]));
+  await loadIndex();
   const rows=await Promise.all(requirements.map(async requirement=>{
    if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
-   const asset=byRef.get(JSON.stringify([requirement.id,requirement.version]));
+   const asset=geometryAssetsByRef.get(geometryKey(requirement));
    if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))throw Error('Builtin geometry requirement does not match pinned catalog');
    return {id:asset.id,version:asset.version,source:await loadGeometry(asset)};
   }));
@@ -160,7 +161,8 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   return rows;
  }
  async function geometryState(ref){
-  const index=await loadIndex(),asset=index.geometryAssets.find(asset=>asset.id===ref.id&&asset.version===ref.version);
+  await loadIndex();
+  const asset=geometryAssetsByRef.get(geometryKey(ref));
   if(!asset)throw Error('Unknown builtin geometry reference');
   return geometryStates.get(asset.file)||'unloaded';
  }
@@ -170,7 +172,6 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   assertCurrent();
   const index=await loadIndex();assertCurrent();
   async function loadAll(selected,read){
-  const loaded=new Array(selected.length);
   let next=0,failed=false;
   const workers=Array.from({length:Math.min(concurrency,selected.length)},async()=>{
    try{
@@ -178,7 +179,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
      assertCurrent();
      if(waitForIdle){await waitForIdle();assertCurrent();}
      if(failed||next>=selected.length)break;
-     const i=next++;loaded[i]=await read(selected[i]);assertCurrent();
+     const i=next++;await read(selected[i]);assertCurrent();
     }
    }catch(error){failed=true;throw error;}
   });
@@ -189,7 +190,6 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
    if(error?.name!=='AbortError')await Promise.allSettled(workers);
    throw error;
   }
-  return loaded;
   }
   // Published metadata is immutable. Only active geometry is loaded; no
   // country-document reconstruction or parallel runtime model is retained.
@@ -203,13 +203,14 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   }
   const files=new Map([...required.values()].map(asset=>[asset.file,asset]));
   const eligible=packs.filter(pack=>pack.members.every(({asset})=>files.has(asset.file)));
-  if(eligible.length){
-   const packed=new Set(eligible.flatMap(pack=>pack.members.map(({asset})=>asset.file)));
-   const reads=eligible.map(pack=>()=>loadPack(pack));
-   for(const asset of files.values())if(!packed.has(asset.file))reads.push(()=>loadGeometry(asset));
-   await loadAll(reads,read=>read());
-  }
-  project.geometries=await loadAll([...required.values()],async asset=>({id:asset.id,version:asset.version,source:await loadGeometry(asset)}));
+  const packed=new Set(eligible.flatMap(pack=>pack.members.map(({asset})=>asset.file)));
+  const reads=eligible.filter(pack=>pack.members.some(({asset})=>!geometries.has(asset.file))).map(pack=>()=>loadPack(pack));
+  for(const asset of files.values())if(!packed.has(asset.file)&&!geometries.has(asset.file))reads.push(()=>loadGeometry(asset));
+  await loadAll(reads,read=>read());
+  // A failed pack or a concurrent pack reader may leave individual members outstanding.
+  const outstanding=[...files.values()].filter(asset=>!geometries.has(asset.file));
+  await loadAll(outstanding,loadGeometry);
+  project.geometries=Array.from(required.values(),asset=>({id:asset.id,version:asset.version,source:geometries.get(asset.file)}));
   if(waitForIdle)await waitForIdle();
   assertCurrent();
   return {project,fingerprint:`${manifestSpec.sha256}:complete-timeline`};

@@ -356,7 +356,7 @@ test('required physical resource failure ends startup loading with an error and 
     resolveBaseUrl:()=>new URL('https://fixture.invalid/data/'),
     createLoader:options=>createStoredAssetLoader({...options,cacheStorage:null,subtle:webcrypto.subtle,
       fetchFn:()=>{requested.resolve();return network.promise;}})});
-  const lifecycle=createApplicationLifecycle({window,startup:()=>reader.loadPhysicalLandMask(),
+  const lifecycle=createApplicationLifecycle({window,startup:()=>reader.loadPhysicalLand(),
     onReady:()=>{ready++;},onError:error=>errors.push(error),
     getDisposables:()=>[{dispose(){disposed++;}}]});
   try {

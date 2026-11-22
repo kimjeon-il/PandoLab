@@ -1,11 +1,11 @@
 import {createHash} from 'node:crypto';
-import {gzipSync,gunzipSync} from 'node:zlib';
+import {gunzipSync} from 'node:zlib';
 import {BUILTIN_COUNTRY_MAX_STORED_BYTES,builtinCountryFileSpecs,builtinCountryAssets,builtinGeometryAssets,materializeBuiltinCountry,compileBuiltinReadIndex} from "../../src/data/builtin-country-files.js";
+import {packLibraryGzip} from './library-archive.mjs';
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fields=['entityId','file','encoding','sha256','compressedBytes','decodedBytes'];
 const same=(a,b)=>a&&b&&['encoding','sha256','compressedBytes','decodedBytes'].every(key=>a[key]===b[key]);
 const refKey=ref=>JSON.stringify([ref.id,ref.version]);
-const compress=bytes=>{const stored=gzipSync(bytes,{level:9,mtime:0});stored[9]=3;return stored;};
 
 /** Only incoming owners are re-encoded. Coordinate identity is independent of
  * country names/flags, and immutable payloads are shared across logical refs. */
@@ -27,7 +27,7 @@ export function encodeBuiltinCountries(index,countries,files){
     if(prior&&prior.contentSha256!==contentSha256)throw Error('Conflicting immutable geometry identity: '+geometry.id);
     let resource=byContent.get(contentSha256);
     if(!resource){
-     const stored=compress(decoded),sha256=hash(stored),file='geometries/sha256-'+sha256+'.json.gz';
+     const stored=packLibraryGzip(decoded),sha256=hash(stored),file='geometries/sha256-'+sha256+'.json.gz';
      resource={type:geometry.geojson.type,file,encoding:'gzip',sha256,contentSha256,compressedBytes:stored.length,decodedBytes:decoded.length};
      files.set(file,stored);byContent.set(contentSha256,resource);
     }
@@ -37,7 +37,7 @@ export function encodeBuiltinCountries(index,countries,files){
     ?['geometryRefs',value.map(({id,version})=>({id,version}))]:[key,key==='schemaVersion'?3:structuredClone(value)]));
   }
   entry.geometryRefs=structuredClone(descriptor.geometryRefs);
-  const decoded=Buffer.from(JSON.stringify(descriptor)+'\n'),stored=compress(decoded),sha256=hash(stored);
+  const decoded=Buffer.from(JSON.stringify(descriptor)+'\n'),stored=packLibraryGzip(decoded),sha256=hash(stored);
   const file='countries/'+country.entityId.replaceAll(':','-')+'-sha256-'+sha256+'.json.gz';
   files.set(file,stored);Object.assign(entry,{file,encoding:'gzip',sha256,compressedBytes:stored.length,decodedBytes:decoded.length});
  }

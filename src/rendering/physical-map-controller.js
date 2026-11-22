@@ -1,9 +1,9 @@
+import {loadPhysicalLandGeometry} from '../data/physical-land-patch.js';
 import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
 import {timelineObjectKey} from '../document/timeline-records.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {projectResourceOverlay} from '../document/project-resource-overlay.js';
 import {createPhysicalAssetReader} from '../data/physical-asset-reader.js';
-import {loadPhysicalLandGeometry} from '../data/physical-land-patch.js';
 import {mapProjectResourcePath} from '../data/map-project-manifest.js';
 import {resolvePhysicalWaterObjects,physicalWaterContextKey,physicalWaterReferenceView,composePhysicalWaterGeometry} from '../data/physical-water-model.js';
 import {createPhysicalWaterPresentation} from './physical-water-presentation.js';
@@ -21,7 +21,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     resolveBaseUrl:()=>dependencies.physicalConfig.PHYSICAL_DATA_BASE_URL,
     onLandReady:()=>dependencies.domains.renderingDomain.invalidateProject('physical-land-ready')});
   const storedPhysicalAssets=()=>assetReader.storedPhysicalAssets();
-  const loadPhysicalLandMask=options=>assetReader.loadPhysicalLandMask(options);
+  const loadPhysicalLand=assetReader.loadPhysicalLand;
   const waterContexts=new Map();
   let requestedWaterKey=null;
   let physicalSelection=null;
@@ -54,14 +54,12 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
   function ensurePhysicalContext({rows:selected,key}) {
     if(waterContexts.has(key))return waterContexts.get(key);
     const landAsset=selected[0].assets.land;
-    assetReader.loadPhysicalLandDisplay(landAsset.sha256).catch(()=>{});
     const entry={status:'loading',value:null,promise:null,activation:null,presentation:null,presentationKey:null};
     waterContexts.set(key,entry);
     const loader=storedPhysicalAssets(),decode=buffer=>JSON.parse(new TextDecoder().decode(buffer));
     entry.promise=Promise.all([
       loadPhysicalLandGeometry(landAsset,{
-        loadGeometry:spec=>spec.sha256===buildMeta.physicalLand.sha256?loadPhysicalLandMask({notify:false}).then(value=>value.geometry)
-          :loader.loadAsset(spec,'background',key+'-land','육지 배경',decode).then(result=>result.value),
+        loadGeometry:spec=>loader.loadAsset(spec,'background',key+'-land','육지 배경',decode).then(result=>result.value),
         loadPatch:spec=>loader.loadAsset(spec,'background',key+'-land-replacement','지역 육지 변경',decode).then(result=>result.value),
       }).then(value=>({value})),
       ...selected.map(row=>loader.loadAsset(row.assets.asset,'background',JSON.stringify(row.geometryRef)+'-water','수역 형상',decode)),
@@ -81,7 +79,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     assertCurrent();
     const selection=physicalSelectionFor(month),entry=waterContexts.get(selection.key);
     if(entry?.status==='error')waterContexts.delete(selection.key);
-    const result=selection.rows.length?await ensurePhysicalContext(selection).promise:await loadPhysicalLandMask({notify:false});
+    const result=selection.rows.length?await ensurePhysicalContext(selection).promise:await loadPhysicalLand();
     assertCurrent();return result;
   }
   function activatePhysicalContext(entry,key) {
@@ -235,7 +233,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
   }
 
   async function loadPhysicalData({includeHydro=true}={}){
-    try{return await Promise.all([loadPhysicalLandMask(),includeHydro ? loadHydroData() : false]);}
+    try{return await Promise.all([loadPhysicalLand(),includeHydro ? loadHydroData() : false]);}
     catch(error){dependencies.feedback.reportOperationError(error,'지도 배경 자료를 준비하지 못했습니다.','PL-PHYSICAL-LOAD-001',4200);return false;}
   }
 
@@ -305,8 +303,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     connect,
     setProjectSource,
     initializeHydroService,
-    loadPhysicalLandMask,
-    loadPhysicalLandDisplay:assetReader.loadPhysicalLandDisplay,
+    loadPhysicalLand,
     preparePhysicalContext,
     get physicalLand() { return currentPhysicalContext(); },
     get physicalLandSourceRevision() { return buildMeta.physicalLand?.sha256 || null; },

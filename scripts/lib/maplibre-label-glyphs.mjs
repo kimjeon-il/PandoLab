@@ -1,4 +1,31 @@
-// These two factories are embedded in the pinned MapLibre Worker and map module.
+// Embedded in the pinned MapLibre map module. The atlas and glyph cache remain
+// MapLibre-owned. Only pending rasterization work is shared here.
+export function createLabelGlyphPreparation({now=()=>performance.now(),schedule=callback=>setTimeout(callback,0)}={}) {
+ const pendingByFont=new WeakMap(),queue=[];
+ let scheduled=false;
+ function drain(){
+  const started=now();
+  do {
+   const {draw,resolve,reject}=queue.shift();
+   try{resolve(draw());}catch(error){reject(error);}
+  }while(queue.length&&now()-started<4);
+  if(queue.length)schedule(drain);else scheduled=false;
+ }
+ return function prepare(font,text,draw){
+  let pending=pendingByFont.get(font);
+  if(!pending)pendingByFont.set(font,pending=new Map());
+  const existing=pending.get(text);
+  if(existing)return existing;
+  const job=new Promise((resolve,reject)=>queue.push({draw,resolve,reject}));
+  pending.set(text,job);
+  const forget=()=>pending.delete(text);
+  job.then(forget,forget);
+  if(!scheduled){scheduled=true;schedule(drain);}
+  return job;
+ };
+}
+
+// These factories are embedded in the pinned MapLibre Worker and map module.
 export function createLabelGlyphMasks() {
  const cache = new Map(), glyphsByAtlas = new WeakMap();
  const budget = 2 * 1024 * 1024;
@@ -145,12 +172,5 @@ export function createLabelGlyphCollision() {
   const candidate=placedMasks.get(box);
   if(candidate)keyMasks.set(key,candidate);
  }
- function placementOrder(order) {
-  const country=order.indexOf('viewer-label-country'),place=order.indexOf('viewer-label-text');
-  if(country<0||place<country)return order;
-  const result=order.slice();
-  [result[country],result[place]]=[result[place],result[country]];
-  return result;
- }
- return {predicate,placed,inserted,overlaps,placementOrder};
+ return {predicate,placed,inserted,overlaps};
 }

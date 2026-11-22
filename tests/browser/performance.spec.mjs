@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {writeFile} from 'node:fs/promises';
-import {installPerformanceProbe,performanceIdentity} from './performance-probe.mjs';
+import {installPerformanceProbe,observePerformanceMapLibre,performanceIdentity} from './performance-probe.mjs';
 
 // Timestamp approval inside the browser, rather than the later Playwright poll.
 function captureInitialPresentation(){
@@ -126,8 +126,10 @@ for(const iteration of [1,2,3])test(`input to painted Antarctic hover and select
  await page.setViewportSize({width:900,height:850});
  await page.addInitScript(installPerformanceProbe);
  await page.addInitScript(captureInitialPresentation);
+ const observeMapLibre=observePerformanceMapLibre(page);
  const navigation=await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
  await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__),null,{timeout:90000});
+ const identity=await performanceIdentity(page,navigation,observeMapLibre);
  const camera=async(center,zoom)=>{
   await page.evaluate(({center,zoom})=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom});},{center,zoom});
   await page.waitForFunction(()=>{
@@ -173,7 +175,7 @@ for(const iteration of [1,2,3])test(`input to painted Antarctic hover and select
   selection.push({...paint,...await page.evaluate(()=>window.__PANDO_PERF_INTERACTION_COST__())});
   previousPoint=point;
  }
- const output={scenario:'painted-interaction',metricVersion:1,iteration,identity:await performanceIdentity(page,navigation),
+ const output={scenario:'painted-interaction',metricVersion:1,iteration,identity,
   hover,selection,polarBefore,polarAfter};
  await writeFile(testInfo.outputPath('painted-interaction.json'),JSON.stringify(output,null,2));
 });
@@ -216,8 +218,10 @@ for(const iteration of [1,2,3])test(`rapid zoom and polar admission repeat ${ite
  await page.setViewportSize({width:1280,height:800});
  await page.addInitScript(installPerformanceProbe);
  await page.addInitScript(captureInitialPresentation);
+ const observeMapLibre=observePerformanceMapLibre(page);
  const navigation=await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
  await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__),null,{timeout:90000});
+ const identity=await performanceIdentity(page,navigation,observeMapLibre);
  const camera=async(states,needsPolarPixels)=>page.evaluate(async({states,needsPolarPixels})=>{
   const map=window.__PANDOLAB_MAPLIBRE__,viewer=window.__PANDOLAB_VIEWER__;
   const before=viewer.rendererStats(),canvas=map.getCanvas();
@@ -256,7 +260,7 @@ for(const iteration of [1,2,3])test(`rapid zoom and polar admission repeat ${ite
  },{states,needsPolarPixels});
  const rapidZoom=await camera([3,5,6].map(zoom=>({center:[90,25],zoom})),false);
  const polarRotation=await camera([{center:[20,-85],zoom:3}],true);
- const output={scenario:'camera-admission',metricVersion:1,iteration,identity:await performanceIdentity(page,navigation),rapidZoom,polarRotation};
+ const output={scenario:'camera-admission',metricVersion:1,iteration,identity,rapidZoom,polarRotation};
  await writeFile(testInfo.outputPath('camera-admission.json'),JSON.stringify(output,null,2));
 });
 
@@ -331,8 +335,10 @@ for(const profile of ['desktop','mobile'])test.describe(profile,()=>{
  for(const iteration of [1,2,3])test(`startup and dates ${profile} repeat ${iteration}`,async({page},testInfo)=>{
   test.skip(process.env.PANDO_PERF_CAPTURE!=='1','Explicit performance capture required');test.setTimeout(240000);
   await page.addInitScript(installPerformanceProbe);await page.addInitScript(captureInitialPresentation);
+  const observeMapLibre=observePerformanceMapLibre(page);
   const navigation=await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
   await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__),null,{timeout:90000});
+  const identity=await performanceIdentity(page,navigation,observeMapLibre);
   const initial=await page.evaluate(()=>({presentedAtMs:window.__PANDO_PERF_INITIAL_MS__,
    month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,
    stats:window.__PANDOLAB_VIEWER__.rendererStats(),diagnostics:window.__PANDO_PERF_DIAGNOSTICS__()}));
@@ -376,9 +382,10 @@ for(const profile of ['desktop','mobile'])test.describe(profile,()=>{
     stats:window.__PANDOLAB_VIEWER__.rendererStats(),diagnostics:window.__PANDO_PERF_DIAGNOSTICS__(),
    }),{month,before}));
   }
-  const identity=await performanceIdentity(page,navigation);
-  await page.reload({waitUntil:'domcontentloaded'});
+  const observeWarmMapLibre=observePerformanceMapLibre(page);
+  const warmNavigation=await page.reload({waitUntil:'domcontentloaded'});
   await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__),null,{timeout:90000});
+  expect(await observeWarmMapLibre(warmNavigation)).toEqual(identity.mapLibre);
   const warm=await page.evaluate(()=>({presentedAtMs:window.__PANDO_PERF_INITIAL_MS__,
    month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,stats:window.__PANDOLAB_VIEWER__.rendererStats()}));
   expect(warm.month).toBe(initial.month);
@@ -396,6 +403,7 @@ for(const view of [1,3,5,'polar'])for(const iteration of [1,2,3])test(`globe per
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.addInitScript(captureInitialPresentation);
   await page.addInitScript(installPerformanceProbe);
+  const observeMapLibre=observePerformanceMapLibre(page);
   const navigation=await page.goto('./?debug=1', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => {
     const viewer = window.__PANDOLAB_VIEWER__;
@@ -404,6 +412,7 @@ for(const view of [1,3,5,'polar'])for(const iteration of [1,2,3])test(`globe per
       && stats?.mapReadiness?.mapReady && !stats?.projectRenderBlocked);
   },null,{timeout:90_000});
   await page.waitForFunction(()=>Number.isFinite(window.__PANDO_PERF_INITIAL_MS__));
+  const identity=await performanceIdentity(page,navigation,observeMapLibre);
   const initialMapPresentedMs=await page.evaluate(()=>window.__PANDO_PERF_INITIAL_MS__);
 
   await page.evaluate(({zoom,polar}) => {
@@ -539,7 +548,7 @@ for(const view of [1,3,5,'polar'])for(const iteration of [1,2,3])test(`globe per
   }
   const output = {
     metricVersion:5,scenario:polar?'polar-interaction':'interaction',profile:'desktop',label: process.env.PANDO_PERF_LABEL || 'candidate',zoom,iteration,
-    identity:await performanceIdentity(page,navigation),
+    identity,
     url: page.url(), viewport: { width: 1280, height: 800 },
     initial: {presentedAtMs:initialMapPresentedMs,revision: initial.revision, camera: initial.camera,
       heapBytes: initial.heapBytes },

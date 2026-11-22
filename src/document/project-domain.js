@@ -143,7 +143,7 @@ export function createProjectDomain({
   // command queue but do not mutate the active document or generation.
   // No baseline admission occurs until the existing replacement transaction
   // has captured a reversible Core capsule.
-  const prepareTemporalBuiltin = (facts,setup,{dataRevision,manifestSha256,transition=false,
+  const prepareTemporalBuiltin = (facts,setup,{dataRevision,manifestSha256,transition=false,transferSource=false,
     expectedGeneration = generation,isCurrent = () => true} = {}) => {
     const operation=commandQueue.then(async()=>{
       assertActive();
@@ -162,7 +162,7 @@ export function createProjectDomain({
       let source;
       const sourceEpoch=commandOwner.state()?.epoch;
       try {
-        source=await commandOwner.temporalSourcePrepare(facts,{dataRevision,manifestSha256,isCurrent:current});
+        source=await commandOwner.temporalSourcePrepare(facts,{dataRevision,manifestSha256,isCurrent:current,transferSource});
         if(!current())throw stale();
         // Only independent-document opening allocates another document identity.
         // Existing projects navigate dates by commandOwner.setTimelineCursor.

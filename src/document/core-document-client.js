@@ -54,13 +54,15 @@ export function createCoreDocumentClient({
         return staleGeometryReceipt;
       const request = injectEpoch ? { ...payload,
         expectedEpoch: Object.hasOwn(payload, 'expectedEpoch') ? payload.expectedEpoch : currentState?.epoch ?? 0 } : payload;
+      const transfer=operation==='core.document-temporal-source-prepare'&&options.transferSource
+        ?[request.source.sourceBytes.buffer]:[];
       // A synchronous C++ confirm cannot be interrupted. Once dispatched, its
       // acknowledgement must update the read model even if the caller aborts.
       // A native commit cannot be interrupted. Likewise, speculative work
       // must receive its acknowledgement so that cancelled handles can be
       // explicitly released rather than leaking after a lost Worker result.
       const { result } = await rpc.request(operation, request, atomic || speculative
-        ? { timeoutMs: 0 } : { signal: options.signal });
+        ? { timeoutMs: 0, transfer } : { signal: options.signal, transfer });
       if (disposed) throw Object.assign(new Error('The C++ document owner was disposed.'),
         { code: 'PL-CORE-CANCELLED', name: 'AbortError', cancelled: true });
       if (speculative && (options.signal?.aborted || options.isCurrent?.() === false)) {

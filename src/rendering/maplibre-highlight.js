@@ -219,6 +219,15 @@ export function createMapLibreHighlight({map, write, preparePolar, clearPolar, o
 
   function submit(key, features, polar, selectionKey, nativeKey=key) {
     if (disposed || key === pending?.key || (!pending && key === applied?.key)) return;
+    // Leaving a hovered object can coincide with the first camera frame.
+    // Hide the existing highlight without submitting an empty tile source.
+    if (!features.length && !polar.length) {
+      if (active !== null || pending) {
+        reset();
+        map.triggerRepaint();
+      }
+      return;
+    }
     clearTimers(pending);
     const reuseNative=active!==null&&applied?.nativeKey===nativeKey;
     const slot = reuseNative?active:active===0?1:0;

@@ -135,6 +135,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       const geometry = dependencies.territorialObjectModel.territorialScope.displayFeature(labelRef.id)?.geometry;
       candidates.push({
         sourceType: 'territorial', source: feature, nameVisible: namesVisible, flag,
+        viewportVisible: flag && coordinateInGeographicBounds(coordinate, frameContext.viewState.geographicBounds),
         shortSide: territorialLabelShortSide(componentBounds(id, geometry), coordinate),
         priority: settings.priority ?? dependencies.labelPresentation.LABEL_PRIORITIES.country,
       });
@@ -181,6 +182,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     const countries=candidates.filter(item=>item.sourceType==='territorial');
     const places=selectPlaceLabelCandidates(candidates.filter(item=>item.sourceType==='label'),dependencies.renderScene.currentRenderQuality.labelCandidateLimit);
     const territorialFlags = new Map(countries.filter(item => item.flag).map(item => [String(item.source.id), item.flag]));
+    const visibleFlagIds = new Set(countries.filter(item => item.viewportVisible).map(item => String(item.source.id)));
     const placedUserLabels = places;
     labelLayoutMetrics = nextLabelLayoutMetrics;
     if (dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label) dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label.finalVisibleCount = placedUserLabels.length;
@@ -189,6 +191,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       territorialLabelNames: new Map(countries.map(item => [String(item.source.id), item.nameVisible])),
       territorialLabelRows: new Map(countries.map(item => [String(item.source.id), territorialRows.get(String(item.source.id)) || []])),
       territorialFlags,
+      visibleFlagIds,
       territorialLabelShortSides: new Map(countries.map(item => [String(item.source.id), item.shortSide])),
       userLabels: placedUserLabels.map(item => item.source),
       userLabelRows: new Map(placedUserLabels.map(item => [String(item.source.id), item.rows])),

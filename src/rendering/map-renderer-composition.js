@@ -11,11 +11,7 @@ export function createMapRenderingResources({ports,session}) {
   const common={
     getState:()=>ports.projectState.state,
     layerStyle,
-    visibleMapObjectCandidates:ports.spatialQuery.visibleMapObjectCandidates,
-    geometryMayIntersectViewport:ports.spatialRecords.geometryMayIntersectViewport,
     normalizeObjectRef,
-    selectionHas:ref=>session.selectionDomain.has(ref),
-    viewportCullingMetrics:ports.spatialQuery.viewportCullingMetrics,
     buildRenderableStrokeFeature,
   };
   return {

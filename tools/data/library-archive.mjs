@@ -1,11 +1,19 @@
 import {createHash} from 'node:crypto';
-import {gunzipSync} from 'node:zlib';
+import {gunzipSync,gzipSync} from 'node:zlib';
 import {isDeepStrictEqual as equal} from 'node:util';
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex'),sha=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
 export const archiveChunkBytes=32*1024*1024;
 export const archiveChunkThreshold=90*1024*1024;
 const schema='pando-library-gzip-chunks-v1';
 const fail=message=>{throw Error('Library chunk archive: '+message);};
+
+/** Identical decoded geometry can share one Git blob on every build host. */
+export function packLibraryGzip(bytes){
+ const packed=gzipSync(bytes,{level:9,mtime:0});
+ packed[9]=3;
+ return packed;
+}
+
 function manifestFor(entry){return {schema,sha256:entry.sha256,bytes:entry.bytes,packedSha256:entry.packedSha256,packedBytes:entry.packedBytes,chunks:entry.chunks};}
 export function assertChunkEntry(entry){
  if(entry?.encoding!=='gzip-chunks'||!sha(entry.sha256)||!Number.isSafeInteger(entry.bytes)||entry.bytes<0||entry.bytes>2*1024**3||!sha(entry.packedSha256)||!Number.isSafeInteger(entry.packedBytes)||entry.packedBytes<1||entry.packedBytes>512*1024**2||!sha(entry.manifestSha256)||!Number.isSafeInteger(entry.manifestBytes)||entry.manifestBytes<1||entry.manifestBytes>1024*1024||entry.stored!=='archive/blobs/'+entry.sha256+'.gzip-chunks.json'||!Array.isArray(entry.chunks)||entry.chunks.length<1||entry.chunks.length>1024)fail('invalid manifest identity or bounds');

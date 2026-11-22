@@ -3,6 +3,32 @@ import assert from 'node:assert/strict';
 import {createCoreDocumentClient} from '../../../src/document/core-document-client.js';
 import {createProjectDomain} from '../../../src/document/project-domain.js';
 
+test('builtin source transfer moves only owned bytes and keeps stale inputs intact',async()=>{
+ const received=[];
+ const worker={postMessage(message,transfer=[]){
+  const {operation,payload}=structuredClone(message,{transfer});
+  let result={state:{epoch:1}};
+  if(operation==='core.document-temporal-source-prepare'){
+   received.push([...payload.source.sourceBytes]);
+   result={sourceId:received.length};
+  }
+  queueMicrotask(()=>worker.onmessage({data:{...message,type:'result',ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker});
+ try{
+  await client.load('{}');
+  const owned={sourceBytes:Uint8Array.of(1,2,3)};
+  await client.temporalSourcePrepare(owned,{transferSource:true});
+  assert.equal(owned.sourceBytes.byteLength,0);
+  const reusable={sourceBytes:Uint8Array.of(4,5)};
+  await client.temporalSourcePrepare(reusable);
+  assert.deepEqual([...reusable.sourceBytes],[4,5]);
+  await assert.rejects(client.temporalSourcePrepare(reusable,{transferSource:true,isCurrent:()=>false}),{code:'PL-CORE-STALE'});
+  assert.deepEqual([...reusable.sourceBytes],[4,5]);
+  assert.deepEqual(received,[[1,2,3],[4,5]]);
+ }finally{client.dispose();}
+});
+
 test('timeline geometry can be prepared without changing the displayed cursor',async()=>{
  const calls=[];
  const state={epoch:1,timelineCursor:'2026-12'};

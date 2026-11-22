@@ -125,25 +125,29 @@ test('highlight preserves the complete previous frame until native and polar wor
   assert.equal(owner.stats().sourceId,null,'Clear a superseded hover when there is no confirmed selection');
   assert.equal(polar,null);
   assert.deepEqual(restored,['F']);
-  owner.reset();
+  submitHover('hover-C');await tick();draw();
+  const beforeClear=writes;
   owner.submit('[]',[],[],'[]','[]');
   assert.equal(owner.selectionPending(),false,'A fresh date with no confirmed selection must not wait for empty highlight tiles');
   await tick();draw();
+  assert.equal(writes,beforeClear,'Clearing hover hides the current highlight without writing empty tiles');
+  assert.equal(owner.stats().sourceId,null);
+  assert.equal(polar,null);
   block=true;submit('E');
   assert.equal(owner.selectionPending(),true,'An actual confirmed selection still gates the dated frame');
  }finally{owner.dispose();}
 });
 
 test('camera frames reuse MapLibre symbols; viewport and quality work are scoped',async()=>{
- const previous={requestAnimationFrame:globalThis.requestAnimationFrame,performance:globalThis.performance,document:globalThis.document};
- const queue=[];let time=0,labelRuns=0,placeQueries=0,contentRuns=0,overlayRuns=0,sceneSubmissions=0,prepared=0;
+ const previous={requestAnimationFrame:globalThis.requestAnimationFrame,document:globalThis.document};
+ const queue=[];let labelRuns=0,placeQueries=0,contentRuns=0,overlayRuns=0,sceneSubmissions=0,prepared=0;
  globalThis.requestAnimationFrame=callback=>{queue.push(callback);return queue.length;};
- Object.defineProperty(globalThis,'performance',{configurable:true,value:{now:()=>time}});
  globalThis.document={baseURI:'https://fixture.test/',documentElement:{dataset:{}}};
  const sources=new Map(),layers=new Map(),frames=[];
+ let moving=false,zoom=4;
  const map={
-  getZoom:()=>4,
-  getStyle:()=>({'font-faces':{}}),setFontFaces(){},
+  getZoom:()=>zoom,isMoving:()=>moving,
+  getFontFaces:()=>({}),setFontFaces(){},
   getSource:id=>sources.get(id)||null,
   addSource(id){sources.set(id,{on(){},off(){},async setData(){},async updateData(){}});},
   removeSource:id=>sources.delete(id),
@@ -176,7 +180,7 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
   mapPalette:()=>({defaultLand:'#ffffff'}),syncMapScene(){sceneSubmissions++;},
   territorialResources:{getState:()=>state,displayEntities:()=>features,visibleMapObjectCandidates:()=>[],
-   isLayerItemVisible:()=>true,entityRepository:{},replaceSceneDomain(){}},
+   isLayerItemVisible:()=>true,entityRepository:{get:()=>null},replaceSceneDomain(){}},
   genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){overlayRuns++;}},
   distributionResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){}},
   territorialBoundaryResources:{getState:()=>state,geometryToken:()=> 'region-v1',
@@ -206,7 +210,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(labelRuns,1);assert.equal(contentRuns,1);
   assert.equal(frames[0].withBounds,true);
   const baselineQueries=placeQueries,baselineFrames=prepared;
-  for(let i=0;i<25;i++){time+=16;domain.invalidateView('maplibre-camera');await flush();}
+  moving=true;
+  domain.beginInteraction();
+  zoom=3.2;
+  for(let i=0;i<25;i++){domain.invalidateView('maplibre-camera');await flush();}
   assert.equal(labelRuns,1,'Native camera movement cannot rebuild unchanged labels');
   assert.equal(contentRuns,1,'Native camera movement cannot rebuild the geographic scene');
   assert.equal(prepared,baselineFrames,'Unchanged camera display bands do not schedule application frames');
@@ -217,11 +224,15 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(labelRuns,1,'Native source completion must not recompile the unchanged symbol source');
   assert.equal(contentRuns,1,'Native source completion must not rebuild unrelated geometry');
   assert.ok(frames.slice(1).every(frame=>frame.withBounds===false),'Camera frames must not query geographic bounds');
-  assert.ok(placeQueries-baselineQueries>=3&&placeQueries-baselineQueries<=4,'Viewport worker queries are throttled during movement');
+  assert.equal(placeQueries,baselineQueries,'Ordinary motion keeps the current place snapshot');
+  domain.invalidateLabels('motion-time-worker-result');await flush();
+  assert.equal(labelRuns,1,'A viewport result cannot replace the symbols mid-gesture');
+  moving=false;
   domain.endInteraction('map-move-settled');await flush();
+  assert.equal(placeQueries,baselineQueries+1,'Only the settled viewport is queried');
   assert.equal(labelRuns,2,'Settled camera may change the candidate budget and zoom policy');
-  assert.equal(overlayRuns,2,'Settled camera still re-evaluates spatial overlays');
-  assert.equal(sceneSubmissions,2,'Settled camera submits the updated spatial overlays');
+  assert.equal(overlayRuns,1,'Settled camera leaves project overlays installed');
+  assert.equal(sceneSubmissions,1,'Settled camera must not resubmit the project scene');
   assert.equal(contentRuns,1,'Settled camera must reuse the geographic base');
   assert.equal(frames.at(-1).withBounds,true);
   domain.invalidateQuality('quality-tier-change');await flush();
@@ -279,7 +290,6 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(failure?.message,'boundary worker failed','The same failed boundary input must reject a later dated transition');
  }finally{
   domain.dispose();globalThis.requestAnimationFrame=previous.requestAnimationFrame;
-  Object.defineProperty(globalThis,'performance',{configurable:true,value:previous.performance});
   globalThis.document=previous.document;
  }
 });

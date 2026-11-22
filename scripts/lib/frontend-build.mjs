@@ -56,7 +56,7 @@ function pinnedContext(root){
  return pinnedContexts.get(key);
 }
 /** Build the one Viewer runtime shared by browser and Windows review, without output mutations. */
-export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,readPinnedData,readPinnedDataBatch,dataPaths,readSourceBytes,sourcePaths,runtimeDependencyMap,resourceProfile,projectId='default-world',externalRuntimeData=false,workerSourceTransform=(_path,source)=>source}={}){
+export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,readPinnedData,readPinnedDataBatch,dataPaths,readSourceBytes,sourcePaths,runtimeDependencyMap,resourceProfile,projectId='default-world',externalRuntimeData=false,workerSourceTransform=(_path,source)=>source,mapLibreAssets}={}){
  if(resourceProfile!==undefined&&!['map-data','test-fixture'].includes(resourceProfile))throw Error('Invalid frontend resource profile');
  root=resolve(root);const pinned=readPinnedData?null:pinnedContext(root);
  readPinnedData??=pinned.read;dataPaths??=pinned.dataPaths;
@@ -80,7 +80,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
   assets.set(entry.publicPath,{...entry,bytes});
  }
  const generated=(path,bytes,product='shared')=>assets.set(path,{publicPath:path,sourcePath:null,product,bytes:Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes)});
- for(const [path,bytes] of mapLibreVendorAssets(root))generated(path,bytes,'viewer');
+ for(const [path,bytes] of mapLibreAssets??mapLibreVendorAssets(root))generated(path,bytes,'viewer');
  const read=path=>{
   if(assets.has(path))return assets.get(path).bytes.toString('utf8');
   if(path.startsWith('assets/data/'))return readPinnedData(path).toString('utf8');

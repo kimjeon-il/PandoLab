@@ -6,8 +6,6 @@ import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
 export function createMapLibreRenderingDomain(options){
  const {mapRenderer:renderer,selectionDomain,prepareView,renderers,reportDiagnostic}=options;
  let disposed=false,queued=false,frameId=0,contentDirty=true,selectionDirty=true,labelsDirty=true,lastFrame=null;
- let viewportOverlaysDirty=false;
- let lastPlaceQueryAt=-Infinity;
  let previousLabelVisibility=null;
  let previousHydroZoomBand=null;
  let pendingPlaceViewport=null;
@@ -25,12 +23,6 @@ export function createMapLibreRenderingDomain(options){
   stats.invalidations++;stats.lastReason=reason;
   if(!queued){queued=true;requestAnimationFrame(render);}return true;
  };
- const prepareMovingPlaces=()=>{
-  const now=globalThis.performance?.now?.()??Date.now();
-  if(now-lastPlaceQueryAt<100)return;
-  lastPlaceQueryAt=now;
-  options.labelResources.preparePlaces();
- };
  const preparePlacesForPublication=()=>{
   const task=options.labelResources.preparePlaces();
   pendingPlaceViewport=task;
@@ -41,7 +33,7 @@ export function createMapLibreRenderingDomain(options){
   },error=>{if(pendingPlaceViewport===task&&!disposed)renderer.failMapPreparation(error);});
  };
  const labels=createMapLibreLabelPresentation({renderer,labels:options.labelResources,
-  onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready'),
+  onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready',false,false),
   onSourceError:renderer.failMapPreparation,
   onError:error=>reportDiagnostic({operation:'map-labels',stage:'prepare',result:'failed',message:error.message,error})});
  const content=createMapContentPresentation({mapPalette:options.mapPalette,
@@ -53,34 +45,35 @@ export function createMapLibreRenderingDomain(options){
   queued=false;if(disposed||!renderer.loaded||!renderer.isStyleReady()||renderer.getRuntimeState().webglContextLost)return;
   try{
    const labelVisibility=renderer.labelZoomVisibility();
+   const preserved=renderer.isFramePreserved();
+   const updateViewport=!renderer.map.isMoving?.()||preserved;
    const labelThresholdChanged=previousLabelVisibility!==null&&
     (labelVisibility.country!==previousLabelVisibility.country||labelVisibility.places!==previousLabelVisibility.places);
    labelsDirty||=labelThresholdChanged;
    previousLabelVisibility=labelVisibility;
    previousHydroZoomBand=hydroZoomBand();
-   const frame=prepareView({frameId:++frameId,withBounds:labelsDirty});lastFrame=frame;
+   const updateLabels=labelsDirty&&updateViewport;
+   const frame=prepareView({frameId:++frameId,withBounds:updateLabels});lastFrame=frame;
    renderer.syncHydroState();
    const refreshContent=contentDirty;
-   const refreshViewportOverlays=viewportOverlaysDirty;
-   if(refreshContent){contentDirty=false;preparePlacesForPublication();content.renderBase(frame);}
-   if(refreshContent||refreshViewportOverlays){
-    viewportOverlaysDirty=false;
+   if(refreshContent){
+    contentDirty=false;preparePlacesForPublication();content.renderBase(frame);
     content.renderTerritorialUnits(frame);content.renderGenericFeatures(frame);content.renderDistributions(frame);
+    options.syncMapScene();
    }
-   if(refreshContent||refreshViewportOverlays)options.syncMapScene();
    if(selectionDirty){selectionDirty=false;renderer.setSelection(selectionDomain.snapshot());}
    // Prepare symbol sources alongside geometry, behind the preserved temporal
    // frame. Publication still waits for both sources and a subsequent render.
-   if(labelsDirty){
+   if(updateLabels){
     const layout=renderers.labelLayout(frame);
     if(!layout.pending){
      labels.prepareFlags(layout,labelVisibility.country);
      labelsDirty=false;
-     labels.renderTerritorialLabels(layout);
+     labels.renderTerritorialLabels(layout,{deferWhileMoving:!preserved});
     }
    }
    const result=renderer.renderFrame(frame);
-   const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(labelsDirty||labels.pending);
+   const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(updateLabels&&labelsDirty||labels.pending);
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
    const runtime=renderer.getRuntimeState();
    const waitingForBoundaries=renderer.isFramePreserved()&&runtime.temporalPresentationPending&&content.territorialBoundariesPending();
@@ -100,9 +93,8 @@ export function createMapLibreRenderingDomain(options){
   invalidateView:reason=>{
    if(reason==='map-retry'){labels.retry();content.retryTerritorialBoundaries();return invalidate(reason,true);}
    if(reason==='maplibre-camera'){
+    if(renderer.map.isMoving?.()&&!renderer.isFramePreserved())return false;
     const visibility=renderer.labelZoomVisibility();
-    if(visibility.places)prepareMovingPlaces();
-    else if(previousLabelVisibility?.places)options.labelResources.preparePlaces();
     const crossesDisplayThreshold=!previousLabelVisibility||visibility.country!==previousLabelVisibility.country||
      visibility.places!==previousLabelVisibility.places||hydroZoomBand()!==previousHydroZoomBand;
     return crossesDisplayThreshold||renderer.isFramePreserved()?invalidate(reason,false,false):false;
@@ -117,8 +109,8 @@ export function createMapLibreRenderingDomain(options){
   invalidateLabels:reason=>invalidate(reason),invalidateQuality:reason=>invalidate(reason),
   invalidateBaseScene:reason=>invalidate(reason,true),invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},
-  beginInteraction(){lastPlaceQueryAt=-Infinity;options.labelResources.getState().mapMoving=true;options.labelResources.beginPlaceInteraction();},
-  endInteraction(reason){lastPlaceQueryAt=-Infinity;options.labelResources.getState().mapMoving=false;preparePlacesForPublication();viewportOverlaysDirty=true;return invalidate(reason);},
+  beginInteraction(){options.labelResources.getState().mapMoving=true;options.labelResources.beginPlaceInteraction();},
+  endInteraction(reason){options.labelResources.getState().mapMoving=false;preparePlacesForPublication();return invalidate(reason);},
   resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetContentCaches();contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
   getStats:()=>({...stats,lastFrameId:lastFrame?.frameId}),getDistributionRenderRows:()=>content.buildDistributionRenderRows(),
   getTerritorialBoundaryStats:content.getTerritorialBoundaryStats,

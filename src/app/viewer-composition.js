@@ -115,7 +115,7 @@ export async function composeViewer({ productMode, meta }) {
           if(camera){map.renderer.syncCameraFromState(camera);restoredCamera=true;}
         }
       }
-      await map.loadPhysicalLandMask();
+      await map.loadPhysicalLand();
       if(!startupWorld&&!openingPreserved&&!restoredCamera){
         if(bounds)map.renderer.fitMapBounds([[bounds.west,bounds.south],[bounds.east,bounds.north]],map.mapProjection.currentMapSafeInsets());
         else map.navigation.resetView();
