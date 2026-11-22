@@ -469,7 +469,7 @@ export function reviewedDisplayPeriod(bindings,versions,{displayValidFrom,previo
  }
  const start=parseTemporal(displayValidFrom),end=parseTemporal(previousDisplayThrough);
  if(start?.precision!=='date'||end?.precision!=='date'||start.canonical!==displayValidFrom||end.canonical!==previousDisplayThrough
-   ||!equal(temporalFollowingDay(end.endKey),start.startKey)||bindings.some(row=>compareTemporal(row.validFrom,start)>0))
+   ||!equal(temporalFollowingDay(end.endKey),start.startKey)||bindings.some(row=>row.validFrom!==null&&compareTemporal(row.validFrom,start)>0))
   fail('the display period must begin within both current bindings and immediately follow the retained period');
  return {validFrom:displayValidFrom,validTo:null,previousDisplayThrough};
 }

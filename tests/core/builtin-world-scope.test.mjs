@@ -50,6 +50,20 @@ test('the reviewed modern coast is selected without replacing historical land ma
   assert.throws(()=>select(base,modern,historical,'2026-11'),/land derivative/);
 });
 
+test('a modern coastline can split an undated Viewer geometry without dating the original',()=>{
+  const original={
+    objectRef:{domain:'territorial',id:'ATA'},geometryRef:{id:'original',version:1},validFrom:null,validTo:null,
+  };
+  const {previousDisplayThrough,...period}=reviewedDisplayPeriod([original],[original],{
+    displayValidFrom:'2026-11-01',previousDisplayThrough:'2026-10-31',
+  });
+  const revised={id:'reviewed',version:1};
+  assert.deepEqual(replaceReviewedViewerBinding([original],original,revised,period,previousDisplayThrough),[
+    {...original,validTo:'2026-10-31'},
+    {...original,geometryRef:revised,validFrom:'2026-11-01'},
+  ]);
+});
+
 test('a reviewed waterway uses the exact midpoint of each surveyed cross section',()=>{
   const baseline='a'.repeat(40),entities=['state:AAA','state:BBB'];
   const arc=[[1,.03],[1.1,.5],[1,.97]],before=[[1,0],[1,1]];

@@ -163,7 +163,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   const bindings=country.sourceBindings.filter(row=>row.sourceVersionId===version?.versionId&&row.validTo===null);
   const [entry]=bindings;
   const geometry=country.geometries.find(row=>equal({id:row.id,version:row.version},entry?.geometryRef));
-  if(!identity||!version||bindings.length!==1||!entry.validFrom||!geometry||geometryHash(geometry.geojson)!==displayBefore)
+  if(!identity||!version||bindings.length!==1||!Object.hasOwn(entry,'validFrom')||!geometry||geometryHash(geometry.geojson)!==displayBefore)
    fail('current Viewer preimage differs '+entityId);
   return {source,identity,country,version,entry,geometry};
  });
