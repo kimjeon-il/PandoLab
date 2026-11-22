@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {gzipSync} from 'node:zlib';
-import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateDisplayedBorderAuthority,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
+import {applyReviewedSharedArcs,coordinateDigest,proveUnchangedMergedMembers,replaceReviewedDisplayBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateDisplayedBorderAuthority,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 
@@ -66,6 +66,22 @@ test('a reciprocal border with collinear bridges passes topology verification',(
     [29.627422000770384,64.91864130148583],south]};
   const after=applyReviewedSharedArcs(before,[change]);
   assert.doesNotThrow(()=>validateReviewedPair(before,after,[change],'display'));
+});
+
+test('a display splice preserves the other archived members of a merged country',()=>{
+  const current={validFrom:'2026-11-01',validTo:null};
+  const expired={validFrom:null,validTo:'2026-10-31'};
+  const member='state:CCC';
+  const polygon=(west,east)=>({type:'Polygon',coordinates:[[[west,0],[east,0],[east,1],[west,1],[west,0]]]});
+  const before=[[1,0],[1,1]],after=[[1,0],[1.1,.5],[1,1]];
+  const sections=[{before,after}];
+  const readMember=geometryVersions=>()=>({entityId:member,geometryVersions});
+  const check=proveUnchangedMergedMembers;
+  assert.deepEqual(check([member],current,sections,readMember([
+    {...expired,geometry:polygon(1,1.05)},{...current,geometry:polygon(4,5)},
+  ])),[{id:member,reason:'merged source disjoint from every display section'}]);
+  assert.throws(()=>check([member],current,sections,readMember([{...current,geometry:polygon(1.03,1.06)}])),/merged source intersects.*CCC/);
+  assert.throws(()=>check([member],current,sections,readMember([{...expired,geometry:polygon(4,5)}])),/merged source geometry missing.*CCC/);
 });
 
 test('a modern border review preserves the historical geometry on both sides',()=>{

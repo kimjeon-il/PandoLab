@@ -154,7 +154,23 @@ export function validateDisplayedBorderAuthority(authority,sections,{baseline,en
  }
 }
 
-function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawSections,displaySections,readRaw,readCountry}){
+export function proveUnchangedMergedMembers(ids,binding,sections,readRaw){
+ const footprints=sections.map(sectionBounds);
+ return ids.map(id=>{
+  const member=readRaw(id);
+  const versions=member.geometryVersions.filter(version=>dateOverlap(version,binding));
+  if(member.entityId!==id||!versions.length)fail('merged source geometry missing '+id);
+  for(const {geometry} of versions){
+   const polygons=parts(geometry);
+   if(!polygons.length)fail('merged source geometry missing '+id);
+   if(polygons.some(polygon=>footprints.some(bounds=>overlaps(bounds,coordinateBounds(polygon)))))
+    fail('merged source intersects a display section '+id);
+  }
+  return {id,reason:'merged source disjoint from every display section'};
+ });
+}
+
+function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawSections,displaySections,mergedMembers,readRaw,readCountry}){
  // Two simultaneous priority cutters subtract their union. This remains true
  // during a dated replacement and for its descendants if the union is equal.
  const cutters=new Map();
@@ -176,7 +192,7 @@ function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawSections,disp
  const readOnly=[];
  for(const source of sourceIndex.entities){
   const id=source.entityId;
-  if(ids.includes(id)||!footprints.some(bounds=>overlaps(bounds,source.bbox))
+  if(ids.includes(id)||mergedMembers.includes(id)||!footprints.some(bounds=>overlaps(bounds,source.bbox))
     ||!territorialLifetimeIntervals(source.lifetime).some(interval=>dateOverlap(interval,binding)))continue;
   if(cutters.has(id)){
    const [rule]=cutters.get(id);
@@ -235,11 +251,18 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   return version;
  });
  const ownerIds=old.map(entity=>entity.sourceInfo.featureId);
- const countries=ownerIds.map((id,i)=>{
+ if(new Set(ownerIds).size!==selected.length)fail('shared border requires distinct display countries');
+ const authority=input.displayAuthority?JSON.parse(archived(input.displayAuthority)):null;
+ if(authority)validateDisplayedBorderAuthority(authority,input.sections,{baseline,entities:selected,readEvidence});
+ const identities=ownerIds.map((id,i)=>{
   const identity=index.sourceIdentities.find(row=>row.projectEntityId===id);
-  if(!equal(identity?.sourceEntityIds,[selected[i]])||!equal(identity?.sourceFeatureIds,[id]))fail('merged display identity '+id);
-  return readCountry(id);
+  if(!identity?.sourceEntityIds.includes(selected[i])||!identity.sourceFeatureIds.includes(id))
+   fail('source is absent from its display identity '+id);
+  if(!authority&&(!equal(identity.sourceEntityIds,[selected[i]])||!equal(identity.sourceFeatureIds,[id])))
+   fail('merged display identity requires a display-only authority '+id);
+  return identity;
  });
+ const countries=ownerIds.map(id=>readCountry(id));
  const bindings=countries.map((country,i)=>{
   const matches=country.sourceBindings.filter(row=>row.sourceVersionId===oldVersions[i].versionId&&row.validTo===null);
   const [row]=matches;
@@ -250,8 +273,8 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
  const binding={validFrom,validTo};
  if(countries.some(country=>country.timelineRecords.parentRelations.some(row=>row.parentId&&dateOverlap(row,binding))))
   fail('selected country has a current parent dependency');
- const authority=input.displayAuthority?JSON.parse(archived(input.displayAuthority)):null;
- if(authority)validateDisplayedBorderAuthority(authority,input.sections,{baseline,entities:selected,readEvidence});
+ const mergedMembers=identities.flatMap((identity,i)=>identity.sourceEntityIds.filter(id=>id!==selected[i]));
+ const preservedMembers=proveUnchangedMergedMembers(mergedMembers,binding,input.sections,id=>source(id,readBaseline));
  const reviewed=authority?[]:input.entities.map(row=>{
   const origin=JSON.parse(archived(row.origin));
   const rawReview=JSON.parse(archived(row.rebased));
@@ -279,7 +302,7 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
  const afterDisplay=applyReviewedSharedArcs(beforeDisplay,input.sections);
  const rawSections=authority?[]:validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
  const displaySections=validateReviewedPair(beforeDisplay,afterDisplay,input.sections,'display');
- const dependencies=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawSections,displaySections,
+ const neighbors=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawSections,displaySections,mergedMembers,
   readRaw:id=>source(id,readBaseline),readCountry});
 
  const files=new Map(),nativeRows=new Map(),outCountries=[];
@@ -374,7 +397,7 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   sourceFileChanged:row=>nativeRows.has(row.entityId),readRawSource:row=>source(row.entityId,readNext),
   countryFileChanged:row=>ownerIds.includes(row.entityId)});
  return issue({baseline,files,reports:Object.fromEntries([...reportFiles].sort(([a],[b])=>a.localeCompare(b))),
-  plan:{entities:selected,binding,dependencies,writes:[...files.keys()].sort()}});
+  plan:{entities:selected,binding,dependencies:[...preservedMembers,...neighbors],writes:[...files.keys()].sort()}});
 }
 
 export function reviewedDisplayPeriod(bindings,versions,{displayValidFrom,previousDisplayThrough}){
