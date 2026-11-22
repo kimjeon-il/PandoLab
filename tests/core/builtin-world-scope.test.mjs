@@ -1,9 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
+import {gzipSync} from 'node:zlib';
+import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateDisplayedBorderAuthority,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
+
+test('a reviewed waterway uses the exact midpoint of each surveyed cross section',()=>{
+  const baseline='a'.repeat(40),entities=['state:AAA','state:BBB'];
+  const arc=[[1,.03],[1.1,.5],[1,.97]],before=[[1,0],[1,1]];
+  const section={before,beforeSha256:coordinateDigest(before),after:[before[0],...arc,before[1]]};
+  const authority={schemaVersion:1,baseline,entities,kind:'surveyed-bank-midpoints',source:{reference:'https://example.org/water',sha256:'b'.repeat(64)},arcs:[{coordinates:arc,banks:[[[.99,.03],[1.01,.03]],[[1.09,.5],[1.11,.5]],[[.99,.97],[1.01,.97]]]}]};
+  assert.doesNotThrow(()=>validateDisplayedBorderAuthority(authority,[section],{baseline,entities}));
+  authority.arcs[0].banks[1][0][0]=1;
+  assert.throws(()=>validateDisplayedBorderAuthority(authority,[section],{baseline,entities}),/bank midpoint/);
+});
+
+test('a selected LSIB arc carries original line vertices in either direction',()=>{
+  const baseline='a'.repeat(40),entities=['state:AAA','state:BBB'],line=[[1,0],[1,.25],[1.1,.5],[1,.75],[1,1]];
+  const bytes=gzipSync(JSON.stringify({features:[{properties:{ID:'claim'},geometry:{type:'LineString',coordinates:line}}]}));
+  const source={reference:'tools/historical-library/sources/lsib-11.4/boundaries.geojson.gz',sha256:createHash('sha256').update(bytes).digest('hex')};
+  const before=[line.at(-1),line[0]],coordinates=line.slice(1,4).reverse();
+  const section={before,beforeSha256:coordinateDigest(before),after:[before[0],...coordinates,before[1]]};
+  const authority={schemaVersion:1,baseline,entities,source,naturalEarthSha256:'c'.repeat(64),kind:'lsib-line-selected-by-natural-earth',arcs:[{lineId:'claim',part:0,start:1,end:3,coordinates}]};
+  const options={baseline,entities,readEvidence:()=>bytes};
+  assert.doesNotThrow(()=>validateDisplayedBorderAuthority(authority,[section],options));
+  authority.arcs[0].lineId='other';
+  assert.throws(()=>validateDisplayedBorderAuthority(authority,[section],options),/exact LSIB line slice/);
+});
 
 test('a reviewed shared arc updates only its reciprocal sections',()=>{
   const polygon=ring=>({type:'Polygon',coordinates:[ring]});

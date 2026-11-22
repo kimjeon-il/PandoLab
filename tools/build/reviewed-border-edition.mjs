@@ -115,6 +115,45 @@ function liesOnEdge([x,y],[ax,ay],[bx,by]){
  return Math.abs(px*dy-py*dx)<=1e-12&&progress>=-1e-12&&progress<=extent+1e-12;
 }
 
+function carriesArc(section,arc){
+ const {before,after}=section;
+ if(!chain(before)||!chain(after)||!chain(arc))return false;
+ const at=after.findIndex(p=>equal(p,arc[0])),end=at+arc.length;
+ return at>=0&&equal(after.slice(at,end),arc)&&at<=2&&after.length-end<=2
+  &&(at!==2||liesOnEdge(after[1],before[0],before[1]))
+  &&(after.length-end!==2||liesOnEdge(after[end],before.at(-2),before.at(-1)));
+}
+
+export function validateDisplayedBorderAuthority(authority,sections,{baseline,entities,readEvidence}){
+ const {source,arcs,kind}=authority;
+ if(authority.schemaVersion!==1||authority.baseline!==baseline||!equal(authority.entities,entities)
+  ||!Array.isArray(arcs)||!arcs.length||arcs.length!==sections.length||!shaPattern.test(source?.sha256||''))
+  fail('invalid display authority scope');
+ let features;
+ if(kind==='lsib-line-selected-by-natural-earth'){
+  if(source.reference!=='tools/historical-library/sources/lsib-11.4/boundaries.geojson.gz'
+   ||!shaPattern.test(authority.naturalEarthSha256||''))fail('LSIB and Natural Earth source identities required');
+  const bytes=readEvidence(source.reference);
+  if(digest(bytes)!==source.sha256)fail('LSIB line archive bytes differ');
+  features=JSON.parse(gunzipSync(bytes)).features;
+ }else if(kind!=='surveyed-bank-midpoints'||!/^https:\/\//.test(source.reference||''))fail('unsupported display authority');
+ for(const [i,arc] of arcs.entries()){
+  if(!carriesArc(sections[i],arc.coordinates))fail('display section differs from its source arc');
+  if(features){
+   const feature=features.find(row=>row.properties.ID===arc.lineId);
+   const geometry=feature?.geometry;
+   const lines=geometry?.type==='LineString'?[geometry.coordinates]:geometry?.type==='MultiLineString'?geometry.coordinates:[];
+   const raw=lines[arc.part];
+   const slice=raw?.slice(arc.start,arc.end+1);
+   if(!Number.isInteger(arc.part)||!Number.isInteger(arc.start)||!Number.isInteger(arc.end)||arc.start<0||arc.end>=raw?.length
+    ||!slice||(!equal(slice,arc.coordinates)&&!equal(slice.toReversed(),arc.coordinates)))fail('display arc is not an exact LSIB line slice');
+  }else if(!Array.isArray(arc.banks)||arc.banks.length!==arc.coordinates.length||arc.banks.some((pair,j)=>{
+   if(!Array.isArray(pair)||pair.length!==2||!pair.every(point)||equal(pair[0],pair[1]))return true;
+   return arc.coordinates[j].some((v,k)=>Math.abs(v-(pair[0][k]+pair[1][k])/2)>1e-12);
+  }))fail('surveyed bank midpoint differs');
+ }
+}
+
 function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawSections,displaySections,readRaw,readCountry}){
  // Two simultaneous priority cutters subtract their union. This remains true
  // during a dated replacement and for its descendants if the union is equal.
@@ -211,7 +250,9 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
  const binding={validFrom,validTo};
  if(countries.some(country=>country.timelineRecords.parentRelations.some(row=>row.parentId&&dateOverlap(row,binding))))
   fail('selected country has a current parent dependency');
- const reviewed=input.entities.map(row=>{
+ const authority=input.displayAuthority?JSON.parse(archived(input.displayAuthority)):null;
+ if(authority)validateDisplayedBorderAuthority(authority,input.sections,{baseline,entities:selected,readEvidence});
+ const reviewed=authority?[]:input.entities.map(row=>{
   const origin=JSON.parse(archived(row.origin));
   const rawReview=JSON.parse(archived(row.rebased));
   archived(rawReview.source);archived(rawReview.priorPreparedSourceReview);
@@ -225,68 +266,69 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   }
   return rawReview;
  });
- const rawChanges=reviewed[0].sharedArcChanges.map(a=>({before:[a.original.coordinates[0],a.original.coordinates.at(-1)],
+ const rawChanges=authority?[]:reviewed[0].sharedArcChanges.map(a=>({before:[a.original.coordinates[0],a.original.coordinates.at(-1)],
   beforeSha256:a.previousCoordinatesSha256,after:a.original.coordinates}));
- const beforeRaw=oldVersions.map(v=>v.geometry),afterRaw=applyReviewedSharedArcs(beforeRaw,rawChanges);
+ const beforeRaw=oldVersions.map(v=>v.geometry),afterRaw=authority?beforeRaw:applyReviewedSharedArcs(beforeRaw,rawChanges);
  const beforeDisplay=countries.map((country,i)=>{
   const ref=bindings[i].geometryRef,g=country.geometries.find(g=>g.id===ref.id&&g.version===ref.version);
   if(!g||geometryDigest(g.geojson)!==input.entities[i].displayBefore)fail('display preimage differs '+country.entityId);
   return g.geojson;
  });
- if(input.sections.length!==rawChanges.length||input.sections.some((section,i)=>{
-  const {before,after}=section;
-  if(!chain(before)||!chain(after))return true;
-  const arc=rawChanges[i].after,at=after.findIndex(p=>equal(p,arc[0])),end=at+arc.length;
-  return at<0||!equal(after.slice(at,end),arc)||at>2||after.length-end>2
-   ||(at===2&&!liesOnEdge(after[1],before[0],before[1]))
-   ||(after.length-end===2&&!liesOnEdge(after[end],before.at(-2),before.at(-1)));
- }))fail('display sections must carry the archived arcs in order');
+ if(!authority&&(input.sections.length!==rawChanges.length||input.sections.some((section,i)=>!carriesArc(section,rawChanges[i].after))))
+  fail('display sections must carry the archived arcs in order');
  const afterDisplay=applyReviewedSharedArcs(beforeDisplay,input.sections);
- const rawSections=validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
+ const rawSections=authority?[]:validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
  const displaySections=validateReviewedPair(beforeDisplay,afterDisplay,input.sections,'display');
  const dependencies=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawSections,displaySections,
   readRaw:id=>source(id,readBaseline),readCountry});
 
  const files=new Map(),nativeRows=new Map(),outCountries=[];
  const rawScope=selected.flatMap((id,i)=>[rawPath(id),sourceRoot+'/geometries/sha256-'+digest(geometryBytes(afterRaw[i]))+'.json']);
+ const provenArcs=authority?authority.arcs.map(arc=>arc.coordinates):rawChanges.map(c=>c.after);
+ const anchors=(authority?input.sections:rawChanges).flatMap(({before})=>[before[0],before.at(-1)]);
+ const extent=coordinateBounds(input.sections.map(c=>c.after));
  for(const [i,entity] of old.entries()){
   const projected=structuredClone(entity),original=oldVersions[i],row=input.entities[i];
   const version=projected.geometryVersions.find(v=>v.versionId===original.versionId);
   const geometry=afterRaw[i],sha=geometryDigest(geometry),sourceId='dos-lsib-11.4-scoped-shared-arc';
-  const resourcePath=rawScope[i*2+1],master={reference:resourcePath,sha256:digest(geometryBytes(geometry))};
-  version.geometry=geometry;version.sourceId=sourceId;
-  version.modernBoundarySupplement={...original.modernBoundarySupplement,sourceId,geometrySha256:sha,
-   status:reviewed[i].status,adoptionMode:reviewed[i].method,priorPreparedAttribution:original.modernBoundarySupplement,
-   sourceAdoptionReview:row.rebased,wholeCountryRaw:false};
-  projected.sourceInfo={...projected.sourceInfo,sourceId,title:'Prepared current geometry with exact LSIB 11.4 shared arcs',geometrySha256:sha,geometryVersionId:version.versionId};
-  const rawOptions={prefixes:rawScope,readEvidence};
-  assertOriginalAuthoringSourceStorageChanges(projected,entity,rawOptions);
-  assertHistoricalSourceStorageChanges(projected,entity,rawOptions);
-  const rawApproved=structuredClone(projected);
-  const anchors=rawChanges.flatMap(c=>c.before),extent=coordinateBounds(input.sections.map(c=>c.after));
+  const resourcePath=rawScope[i*2+1];
+  const resource=authority?json(rawPath(entity.entityId)).geometryVersions.find(v=>v.versionId===version.versionId).geometryResource:null;
+  const master=authority?{reference:sourceRoot+'/'+resource.file,sha256:resource.sha256}:{reference:resourcePath,sha256:digest(geometryBytes(geometry))};
   const displayReview={schemaVersion:1,status:'passed',entityId:projected.entityId,versionId:version.versionId,
-   validFrom:version.validFrom,validTo:version.validTo,geometrySha256:sha,master,source:row.rebased,visual:input.visual,
-   comparison:{reference:receipt,arcSha256:coordinateDigest(rawChanges.map(c=>c.after)),extent,scaleDenominator:10000000,
+   validFrom:version.validFrom,validTo:version.validTo,geometrySha256:sha,master,source:input.displayAuthority??row.rebased,visual:input.visual,
+   comparison:{reference:receipt,arcSha256:coordinateDigest(provenArcs),extent,scaleDenominator:10000000,
     projection:{definition:'+proj=aeqd +ellps=WGS84 +units=m',units:'metre',evidence:receipt}},
-   method:'reviewed-display-generalization',reason:'Exact shared LSIB sections with reviewed connections to the pinned display boundary.',
-   parameters:{reviewedSectionCount:rawChanges.length},topology:{status:'passed',evidence:receipt,
+   method:'reviewed-display-generalization',reason:authority?.kind==='surveyed-bank-midpoints'?'Shared display line through surveyed bank midpoints.':
+    authority?'Exact LSIB line selected using the Natural Earth display route.':'Exact shared LSIB sections with reviewed connections to the pinned display boundary.',
+   parameters:{reviewedSectionCount:input.sections.length},topology:{status:'passed',evidence:receipt,
     checks:['validity','shared-boundary','union','gaps-overlaps','connectivity','holes-islands','dates']},
    counterpartVersions:[{entityId:selected[1-i],versionId:oldVersions[1-i].versionId,geometrySha256:geometryDigest(afterRaw[1-i])}],
    fixedAnchors:anchors};
-  version.historicalProvenance={...version.historicalProvenance,displayDetailReview:displayReview};
-  assertHistoricalSourceStorageChanges(projected,rawApproved,{prefixes:[rawPath(entity.entityId)],
-   readEvidence:p=>p===resourcePath?geometryBytes(geometry):readEvidence(p)});
-  assertHistoricalDisplayChanges(projected,entity);
-  const {descriptor,geometries}=encodeTerritorialSource(projected);
-  files.set(rawPath(entity.entityId),jsonBytes(descriptor));
-  files.set(resourcePath,geometries.get(resourcePath.slice(sourceRoot.length+1)));
-  const prior=v2.entities.find(r=>r.entityId===entity.entityId),descriptorBytes=jsonBytes(descriptor);
-  const previous=readBaseline(nativeBase+prior.file);
-  assertIndexedTerritorialChunk(prior,previous);
-  const {stored}=selectTerritorialChunkBytes(descriptorBytes,previous);
-  files.set(nativeBase+prior.file,stored);
-  nativeRows.set(entity.entityId,territorialIndexEntry(projected,{sha256:digest(stored),compressedBytes:stored.length,
-   decodedBytes:descriptorBytes.length,storageLayout:descriptor.storageLayout}));
+  if(!authority){
+   version.geometry=geometry;version.sourceId=sourceId;
+   version.modernBoundarySupplement={...original.modernBoundarySupplement,sourceId,geometrySha256:sha,
+    status:reviewed[i].status,adoptionMode:reviewed[i].method,priorPreparedAttribution:original.modernBoundarySupplement,
+    sourceAdoptionReview:row.rebased,wholeCountryRaw:false};
+   projected.sourceInfo={...projected.sourceInfo,sourceId,title:'Prepared current geometry with exact LSIB 11.4 shared arcs',geometrySha256:sha,geometryVersionId:version.versionId};
+   const rawOptions={prefixes:rawScope,readEvidence};
+   assertOriginalAuthoringSourceStorageChanges(projected,entity,rawOptions);
+   assertHistoricalSourceStorageChanges(projected,entity,rawOptions);
+   const rawApproved=structuredClone(projected);
+   version.historicalProvenance={...version.historicalProvenance,displayDetailReview:displayReview};
+   assertHistoricalSourceStorageChanges(projected,rawApproved,{prefixes:[rawPath(entity.entityId)],
+    readEvidence:p=>p===resourcePath?geometryBytes(geometry):readEvidence(p)});
+   assertHistoricalDisplayChanges(projected,entity);
+   const {descriptor,geometries}=encodeTerritorialSource(projected);
+   files.set(rawPath(entity.entityId),jsonBytes(descriptor));
+   files.set(resourcePath,geometries.get(resourcePath.slice(sourceRoot.length+1)));
+   const prior=v2.entities.find(r=>r.entityId===entity.entityId),descriptorBytes=jsonBytes(descriptor);
+   const previous=readBaseline(nativeBase+prior.file);
+   assertIndexedTerritorialChunk(prior,previous);
+   const {stored}=selectTerritorialChunkBytes(descriptorBytes,previous);
+   files.set(nativeBase+prior.file,stored);
+   nativeRows.set(entity.entityId,territorialIndexEntry(projected,{sha256:digest(stored),compressedBytes:stored.length,
+    decodedBytes:descriptorBytes.length,storageLayout:descriptor.storageLayout}));
+  }
 
   const country=structuredClone(countries[i]),oldRef=bindings[i].geometryRef,display=afterDisplay[i];
   const shapeId='historical-world:'+coordinateDigest(display),next={id:shapeId,version:1};
@@ -304,7 +346,7 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   outCountries.push(country);
  }
  const native={...v2,entities:v2.entities.map(row=>nativeRows.get(row.entityId)||row)};
- files.set(sourceIndexPath,jsonBytes(native));
+ if(!authority)files.set(sourceIndexPath,jsonBytes(native));
  const catalogue=structuredClone(index);
  for(const [id,entry] of nativeRows)catalogue.inputHashes.sourceRevisions[id]=entry.sha256;
  catalogue.inputHashes.entities=coordinateDigest(catalogue.inputHashes.sourceRevisions);
