@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {applyReviewedSharedArcs,coordinateDigest} from '../../tools/build/reviewed-border-edition.mjs';
+import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedDisplayPeriod} from '../../tools/build/reviewed-border-edition.mjs';
+import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 
 test('a reviewed shared arc updates only its reciprocal sections',()=>{
@@ -15,6 +16,28 @@ test('a reviewed shared arc updates only its reciprocal sections',()=>{
   assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
   assert.throws(()=>applyReviewedSharedArcs(before,[{...change,beforeSha256:'stale'}]),/preimage/);
   assert.throws(()=>applyReviewedSharedArcs([before[0],before[0]],[change]),/reciprocal/);
+});
+
+test('a modern border review preserves the historical geometry on both sides',()=>{
+  const oldRef={id:'existing',version:1},newRef={id:'reviewed',version:1};
+  const rows=[
+    {id:'left',validFrom:'1914-08-01',validTo:null,geometryRef:oldRef},
+    {id:'right',validFrom:'1991-08-27',validTo:null,geometryRef:oldRef},
+  ];
+  const versions=[{validFrom:null},{validFrom:'1991-08-27'}];
+  const input={displayValidFrom:'2026-11-01',previousDisplayThrough:'2026-10-31'};
+  const {previousDisplayThrough,...binding}=reviewedDisplayPeriod(rows,versions,input);
+  for(const row of rows){
+    const historical={...row,id:'historical',validFrom:'1900-01-01',validTo:'1910-12-31'};
+    const updated=replaceReviewedDisplayBinding([historical,row],row,newRef,binding,previousDisplayThrough);
+    assert.equal(updated[0],historical);
+    assert.deepEqual(updated[1],{...row,validTo:input.previousDisplayThrough});
+    assert.deepEqual(updated.filter(r=>temporalContains(r,'2026-10-31')).map(r=>r.geometryRef),[oldRef]);
+    assert.deepEqual(updated.filter(r=>temporalContains(r,'2026-11-01')).map(r=>r.geometryRef),[newRef]);
+    assert.notEqual(updated[1].id,updated[2].id);
+  }
+  assert.throws(()=>reviewedDisplayPeriod(rows,versions,{...input,previousDisplayThrough:'2026-11-01'}),/immediately follow/);
+  assert.throws(()=>reviewedDisplayPeriod(rows,versions,{}),/explicit common/);
 });
 
 test('a verified display review can follow a stored shared-arc correction',()=>{

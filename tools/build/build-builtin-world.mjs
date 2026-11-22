@@ -6,7 +6,8 @@ import {createHash} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
 import {execFileSync} from 'node:child_process';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";
-import {libraryConfig,libraryCheckout,decodeArchiveEntry,git,readLibraryDataFile} from "../data/library-context.mjs";
+import {libraryConfig,libraryCheckout,libraryReportEditRoot,decodeArchiveEntry,git,readLibraryDataFile} from "../data/library-context.mjs";
+import {checkedReportPath} from '../data/library-reports.mjs';
 import {readTerritorialSources,readTerritorialSource,entityFileName,territorialSourceRoot,territorialDataRoot} from "../data/territorial-entity-sources.mjs";
 import {normalizeTerritorialLibraryEntity} from "../gis/territorial-library.js";
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
@@ -18,7 +19,7 @@ import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountryStore
 import {isDeepStrictEqual} from 'node:util';
 import {readProjectGenerationContext} from './project-generation-context.mjs';
 import {assertTerritorialRetirement,assertBuiltinRetirement,readRetirementReceipt,planTerritorialRetirement,mixedRetirementPublicationPlan,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
-import {buildReviewedBorderEdition} from './reviewed-border-edition.mjs';
+import {buildReviewedBorderBatch,buildReviewedBorderEdition} from './reviewed-border-edition.mjs';
 export {finalizeBuiltinWorldFiles};
 
 const output=fileURLToPath(new URL("../../assets/data/builtin-world/generated/v1/",import.meta.url));
@@ -201,8 +202,8 @@ async function main(){
   const checkout=libraryCheckout(root),sourceRevision=git(root,['rev-parse','HEAD']);
   const pinned=JSON.parse(git(root,['show',sourceRevision+':config/library-data.json'])).revision;
   const baseline=arg('--baseline')||pinned,evidenceRevision=arg('--evidence-revision')||git(checkout,['rev-parse','HEAD']);
-  const reviewPath=arg('--review');
-  if(!/^[a-f0-9]{40}$/.test(baseline)||!/^[a-f0-9]{40}$/.test(evidenceRevision)||!reviewPath)
+  const reviewPaths=process.argv.filter(value=>value.startsWith('--review=')).map(value=>value.slice('--review='.length));
+  if(!/^[a-f0-9]{40}$/.test(baseline)||!/^[a-f0-9]{40}$/.test(evidenceRevision)||!reviewPaths.length||reviewPaths.some(p=>!p))
    throw Error('Scoped geometry requires --review=<archived review path> and immutable data revisions');
   if(!planOnly&&!check&&baseline!==pinned)throw Error('Reviewed edition baseline differs from the committed application pin');
   const archive=revision=>JSON.parse(git(checkout,['show',revision+':archive/index.json']));
@@ -212,11 +213,22 @@ async function main(){
    if(!entry)throw Error('Missing archived reviewed input: '+p);
    return decodeArchiveEntry(checkout,entry,revision);
   };
-  const result=buildReviewedBorderEdition({baseline,entityIds:selected.split(','),
-   receipt:{reference:reviewPath,sha256:evidence.files[reviewPath]?.sha256},
-   readBaseline:reader(old,baseline),readEvidence:reader(evidence,evidenceRevision),
+  const editRoot=process.argv.includes('--review-working')?libraryReportEditRoot(root):null;
+  const reviewFolders=reviewPaths.map(p=>p.slice(0,p.lastIndexOf('/')+1));
+  const workingReports=new Map();
+  const readEvidence=p=>{
+   if(evidence.files[p])return reader(evidence,evidenceRevision)(p);
+   if(!editRoot||!p.startsWith('reports/borders/validation/')||!reviewFolders.includes(p.slice(0,p.lastIndexOf('/')+1)))
+    throw Error('Missing archived reviewed input: '+p);
+   if(!workingReports.has(p))workingReports.set(p,fs.readFileSync(checkedReportPath(editRoot,p.slice('reports/'.length))));
+   return workingReports.get(p);
+  };
+  const receipts=reviewPaths.map(reference=>({reference,sha256:sha(readEvidence(reference))}));
+  const inputs={baseline,entityIds:selected.split(','),
+   readBaseline:reader(old,baseline),readEvidence,
    sourceRoot:generation.source('territorialSourceRoot'),sourceIndexPath:generation.source('territorialSourceIndex'),
-   builtinIndexPath:generation.catalogs.territorial,policyPath:generation.source('historicalPolicy')});
+   builtinIndexPath:generation.catalogs.territorial,policyPath:generation.source('historicalPolicy')};
+  const result=receipts.length===1?buildReviewedBorderEdition({...inputs,receipt:receipts[0]}):buildReviewedBorderBatch({...inputs,receipts});
   if(planOnly){console.log(JSON.stringify(result.plan,null,2));return;}
   if(check){
    const actual=archive(pinned);
@@ -226,7 +238,7 @@ async function main(){
    console.log('Verified reviewed Viewer edition '+pinned);return;
   }
   const {storeReviewedBorderEdition}=await import('../data/library-store.mjs');
-  console.log(JSON.stringify(await storeReviewedBorderEdition({root,result,evidenceRevision,sourceRevision}),null,2));
+  console.log(JSON.stringify(await storeReviewedBorderEdition({root,result,evidenceRevision,sourceRevision,workingReports}),null,2));
   return;
  }
  const sourceRoot=path.resolve(root,generation.source('territorialSourceRoot'));

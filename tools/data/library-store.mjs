@@ -49,7 +49,7 @@ function directRuntimeDirectories(index){
 }
 
 /** Create the application's scoped edition while retaining the authoring tree. */
-export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision}){
+export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map()}){
   validateExpectedLibraryRevision(evidenceRevision);validateExpectedLibraryRevision(sourceRevision);
   if(!evidenceRevision||!sourceRevision)throw Error('Reviewed edition requires explicit revisions');
   const {assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
@@ -58,7 +58,7 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
     if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active')
       throw Error('Application revision changed before storing the reviewed edition');
     const shared=librarySharedCheckout(root),head=git(shared,['rev-parse','HEAD']);
-    if(git(shared,['symbolic-ref','--short','HEAD'])!=='main'||git(shared,['status','--porcelain']))
+    if(git(shared,['symbolic-ref','--short','HEAD'])!=='main'||git(shared,['status','--porcelain','--untracked-files=no']))
       throw Error('Preserve the library checkout edits before storing the reviewed edition');
     git(shared,['merge-base','--is-ancestor',result.baseline,head]);
     git(shared,['merge-base','--is-ancestor',evidenceRevision,head]);
@@ -90,6 +90,14 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
       for(const [logical,bytes] of result.files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
       for(const [logical,sha256] of Object.entries(result.reports)){
         const entry=evidence.files[logical];
+        if(!entry){
+          const bytes=workingReports.get(logical);
+          if(!Buffer.isBuffer(bytes)||contentHash(bytes)!==sha256||baseline.files[logical])
+            throw Error('Reviewed working original does not match the sealed evidence: '+logical);
+          assertReportSubject(root,logical);
+          archived.files[logical]=archiveFile(logical,bytes,true,put);
+          continue;
+        }
         if(entry?.sha256!==sha256)throw Error('Reviewed evidence is not archived with the verified hash: '+logical);
         const bytes=decodeArchiveEntry(shared,entry,evidenceRevision);
         const prior=baseline.files[logical];
@@ -104,6 +112,8 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
       const tree=run(['write-tree']);
       const revision=run([...ident,'commit-tree',tree,'-p',result.baseline,'-m','Store reviewed shared border Viewer edition']);
       for(const [p,bytes] of result.files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
+      for(const [p,sha256] of Object.entries(result.reports))
+        if(contentHash(decodeArchiveEntry(shared,archived.files[p],revision))!==sha256)throw Error('Edition evidence readback differs: '+p);
       for(const [p,entry] of Object.entries(baseline.files))if(!selected.has(p)&&!isDeepStrictEqual(entry,archived.files[p]))
         throw Error('Reviewed edition changed an unselected file: '+p);
       // Reachability keeps the edition pinned without moving the authoring tree

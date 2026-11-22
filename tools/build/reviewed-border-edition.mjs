@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {coordinateBounds} from '../../src/geometry/coordinate-bounds.js';
-import {temporalIntervalsOverlap,compareTemporal} from '../../src/document/temporal.js';
+import {temporalIntervalsOverlap,compareTemporal,parseTemporal,temporalFollowingDay} from '../../src/document/temporal.js';
 import {decodeTerritorialSource,encodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {selectTerritorialChunkBytes} from '../data/territorial-chunk-compression.mjs';
 import {assertIndexedTerritorialChunk} from '../data/territorial-metadata-projection.mjs';
@@ -179,18 +179,20 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   return readCountry(id);
  });
  const bindings=countries.map((country,i)=>{
-  const matches=country.sourceBindings.filter(row=>row.sourceVersionId===oldVersions[i].versionId);
+  const matches=country.sourceBindings.filter(row=>row.sourceVersionId===oldVersions[i].versionId&&row.validTo===null);
   const [row]=matches;
-  if(matches.length!==1||row.validTo!==null||row.validFrom!==oldVersions[i].validFrom
-    ||!row.validFrom||country.timelineRecords.parentRelations.some(p=>p.parentId&&dateOverlap(p,row)))fail('unsupported current binding '+country.entityId);
+  if(matches.length!==1||!row.validFrom)fail('unsupported current binding '+country.entityId);
   return row;
  });
- const {validFrom,validTo}=bindings[0],binding={validFrom,validTo};
- if(bindings[1].validFrom!==validFrom)fail('paired bindings must have the same effective period');
+ const {validFrom,validTo,previousDisplayThrough}=reviewedDisplayPeriod(bindings,oldVersions,input);
+ const binding={validFrom,validTo};
+ if(countries.some(country=>country.timelineRecords.parentRelations.some(row=>row.parentId&&dateOverlap(row,binding))))
+  fail('selected country has a current parent dependency');
  const reviewed=input.entities.map(row=>{
   const origin=JSON.parse(archived(row.origin));
   const rawReview=JSON.parse(archived(row.rebased));
   archived(rawReview.source);archived(rawReview.priorPreparedSourceReview);
+  if(rawReview.previousSharedArcReview)archived(rawReview.previousSharedArcReview);
   if(!equal(rawReview.sharedArcChanges.map(a=>a.original),origin.sharedArcChanges.map(a=>a.original)))fail('rebased original chains differ '+row.entityId);
   return rawReview;
  });
@@ -233,7 +235,7 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   const rawApproved=structuredClone(projected);
   const anchors=rawChanges.flatMap(c=>c.before),extent=coordinateBounds(input.sections.map(c=>c.after));
   const displayReview={schemaVersion:1,status:'passed',entityId:projected.entityId,versionId:version.versionId,
-   validFrom,validTo,geometrySha256:sha,master,source:row.rebased,visual:input.visual,
+   validFrom:version.validFrom,validTo:version.validTo,geometrySha256:sha,master,source:row.rebased,visual:input.visual,
    comparison:{reference:receipt,arcSha256:coordinateDigest(rawChanges.map(c=>c.after)),extent,scaleDenominator:10000000,
     projection:{definition:'+proj=aeqd +ellps=WGS84 +units=m',units:'metre',evidence:receipt}},
    method:'reviewed-display-generalization',reason:'Exact shared LSIB sections with reviewed connections to the pinned display boundary.',
@@ -258,10 +260,8 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
 
   const country=structuredClone(countries[i]),oldRef=bindings[i].geometryRef,display=afterDisplay[i];
   const shapeId='historical-world:'+coordinateDigest(display),next={id:shapeId,version:1};
-  const replacement=rows=>rows.map(entry=>equal(entry.geometryRef,oldRef)&&entry.validFrom===validFrom&&entry.validTo===validTo
-   ?{...entry,geometryRef:next}:entry);
-  country.sourceBindings=replacement(country.sourceBindings);
-  country.timelineRecords.geometryBindings=replacement(country.timelineRecords.geometryBindings);
+  country.sourceBindings=replaceReviewedDisplayBinding(country.sourceBindings,bindings[i],next,binding,previousDisplayThrough);
+  country.timelineRecords.geometryBindings=replaceReviewedDisplayBinding(country.timelineRecords.geometryBindings,bindings[i],next,binding,previousDisplayThrough);
   if(!country.sourceBindings.some(r=>equal(r.geometryRef,next))||!country.timelineRecords.geometryBindings.some(r=>equal(r.geometryRef,next)))
    fail('paired Viewer binding missing '+country.entityId);
   const stillUses=country.timelineRecords.geometryBindings.some(r=>equal(r.geometryRef,oldRef));
@@ -269,7 +269,7 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
    ?[...(stillUses?[g]:[]),{...next,geojson:display}]:[g]);
   const entry=country.identity.properties.metadata.historicalTimeline.geometryVersions.find(v=>v.versionId===version.versionId);
   entry.historicalProvenance={...entry.historicalProvenance,displayDetailReview:{...displayReview,
-   compiledDerivatives:[{...displayReview,entityId:country.entityId,geometrySha256:geometryDigest(display),
+   compiledDerivatives:[{...displayReview,entityId:country.entityId,validFrom,validTo,geometrySha256:geometryDigest(display),
     counterpartVersions:[{entityId:ownerIds[1-i],versionId:oldVersions[1-i].versionId,geometrySha256:geometryDigest(afterDisplay[1-i])}]}]}};
   outCountries.push(country);
  }
@@ -301,8 +301,57 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   readCountry:row=>readCountry(row.entityId,readNext,catalogue),readPreviousCountry:row=>readCountry(row.entityId),
   sourceFileChanged:row=>nativeRows.has(row.entityId),readRawSource:row=>source(row.entityId,readNext),
   countryFileChanged:row=>ownerIds.includes(row.entityId)});
- const result={baseline,files,reports:Object.fromEntries([...reportFiles].sort(([a],[b])=>a.localeCompare(b))),
-  plan:{entities:selected,binding,dependencies,writes:[...files.keys()].sort()}};
+ return issue({baseline,files,reports:Object.fromEntries([...reportFiles].sort(([a],[b])=>a.localeCompare(b))),
+  plan:{entities:selected,binding,dependencies,writes:[...files.keys()].sort()}});
+}
+
+export function reviewedDisplayPeriod(bindings,versions,{displayValidFrom,previousDisplayThrough}){
+ if(displayValidFrom===undefined){
+  const {validFrom,validTo}=bindings[0];
+  if(previousDisplayThrough!==undefined||bindings.some((row,i)=>row.validFrom!==validFrom||row.validFrom!==versions[i].validFrom))
+   fail('an explicit common display period is required');
+  return {validFrom,validTo};
+ }
+ const start=parseTemporal(displayValidFrom),end=parseTemporal(previousDisplayThrough);
+ if(start?.precision!=='date'||end?.precision!=='date'||start.canonical!==displayValidFrom||end.canonical!==previousDisplayThrough
+   ||!equal(temporalFollowingDay(end.endKey),start.startKey)||bindings.some(row=>compareTemporal(row.validFrom,start)>0))
+  fail('the display period must begin within both current bindings and immediately follow the retained period');
+ return {validFrom:displayValidFrom,validTo:null,previousDisplayThrough};
+}
+
+export function replaceReviewedDisplayBinding(rows,before,geometryRef,binding,previousDisplayThrough){
+ let replaced=0;
+ const next=rows.flatMap(row=>{
+  if(!equal(row.geometryRef,before.geometryRef)||row.validFrom!==before.validFrom||row.validTo!==before.validTo)return [row];
+  replaced++;
+  const revised={...row,...binding,geometryRef};
+  if(row.validFrom===binding.validFrom)return [revised];
+  if(row.id)revised.id=row.id+':reviewed:'+binding.validFrom;
+  return [{...row,validTo:previousDisplayThrough},revised];
+ });
+ if(replaced!==1)fail('a unique current display binding is required');
+ return next;
+}
+
+export function buildReviewedBorderBatch({entityIds,receipts,readBaseline,...options}){
+ const expected=[...entityIds].sort(),selected=new Set(),plans=[],files=new Map(),reports={};
+ for(const receipt of receipts){
+  const ids=JSON.parse(options.readEvidence(receipt.reference)).entities.map(row=>row.entityId);
+  for(const id of ids){
+   if(!expected.includes(id)||selected.has(id))fail('batch countries must be explicitly selected and disjoint: '+id);
+   selected.add(id);
+  }
+  const edition=buildReviewedBorderEdition({...options,entityIds:ids,receipt,readBaseline:path=>files.get(path)??readBaseline(path)});
+  for(const [path,bytes] of edition.files)files.set(path,bytes);
+  Object.assign(reports,edition.reports);
+  plans.push(edition.plan);
+ }
+ if(!equal([...selected].sort(),expected))fail('batch review scope differs from the selected countries');
+ return issue({baseline:options.baseline,files,reports,plan:{entities:expected,borders:plans,writes:[...files.keys()].sort()}});
+}
+
+function issue(result){
+ const {baseline,files}=result;
  issued.set(result,{baseline,files:new Map([...files].map(([p,b])=>[p,digest(b)])),reports:{...result.reports}});
  return result;
 }
