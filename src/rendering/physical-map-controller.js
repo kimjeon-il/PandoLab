@@ -3,7 +3,7 @@ import {timelineObjectKey} from '../document/timeline-records.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {projectResourceOverlay} from '../document/project-resource-overlay.js';
 import {createPhysicalAssetReader} from '../data/physical-asset-reader.js';
-import {loadPhysicalLandGeometry} from '../data/physical-land-patch.js';
+import {loadPhysicalLandGeometry,selectPhysicalLandAsset} from '../data/physical-land-patch.js';
 import {mapProjectResourcePath} from '../data/map-project-manifest.js';
 import {resolvePhysicalWaterObjects,physicalWaterContextKey,physicalWaterReferenceView,composePhysicalWaterGeometry} from '../data/physical-water-model.js';
 import {createPhysicalWaterPresentation} from './physical-water-presentation.js';
@@ -40,20 +40,24 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     const rows=resolvePhysicalWaterObjects(catalog,date)
       .sort((a,b)=>timelineObjectKey(a.objectRef).localeCompare(timelineObjectKey(b.objectRef)));
     if(rows.some(row=>row.assets.land.sha256!==rows[0].assets.land.sha256))throw new Error('Selected water objects require one coherent physical land derivative.');
-    return {catalog,date,rows,key:physicalWaterContextKey(rows)};
+    const historicalLand=rows[0]?.assets.land??buildMeta.physicalLand;
+    const landAsset=selectPhysicalLandAsset(buildMeta.physicalLand,buildMeta.modernCoast,historicalLand,date);
+    const modern=landAsset!==historicalLand;
+    const waterKey=physicalWaterContextKey(rows);
+    return {catalog,date,rows,landAsset,useDistinctContext:modern||rows.length>0,
+      key:modern?JSON.stringify([waterKey,landAsset.sha256]):waterKey};
   }
   function selectedPhysicalWater() {
     if(activeSource!=='builtin')
-      return {catalog:null,date:null,rows:[],key:'inactive-project-water'};
+      return {catalog:null,date:null,rows:[],landAsset:buildMeta.physicalLand,key:'inactive-project-water'};
     const catalog=buildMeta.physicalWaterObjects,date=dependencies.projectState.state.timelineCursor;
     if(!physicalSelection||physicalSelection.catalog!==catalog||physicalSelection.date!==date){
       physicalSelection=physicalSelectionFor(date);
     }
     return physicalSelection;
   }
-  function ensurePhysicalContext({rows:selected,key}) {
+  function ensurePhysicalContext({rows:selected,key,landAsset}) {
     if(waterContexts.has(key))return waterContexts.get(key);
-    const landAsset=selected[0].assets.land;
     assetReader.loadPhysicalLandDisplay(landAsset.sha256).catch(()=>{});
     const entry={status:'loading',value:null,promise:null,activation:null,presentation:null,presentationKey:null};
     waterContexts.set(key,entry);
@@ -81,7 +85,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     assertCurrent();
     const selection=physicalSelectionFor(month),entry=waterContexts.get(selection.key);
     if(entry?.status==='error')waterContexts.delete(selection.key);
-    const result=selection.rows.length?await ensurePhysicalContext(selection).promise:await loadPhysicalLandMask({notify:false});
+    const result=selection.useDistinctContext?await ensurePhysicalContext(selection).promise:await loadPhysicalLandMask({notify:false});
     assertCurrent();return result;
   }
   function activatePhysicalContext(entry,key) {
@@ -105,8 +109,8 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
   }
   const presentPhysicalWater=createPhysicalWaterPresentation();
   function currentPhysicalContext() {
-    const {rows:selected,key}=selectedPhysicalWater();
-    if(!selected.length){requestedWaterKey=null;return assetReader.physicalLand;}
+    const selection=selectedPhysicalWater(),{rows:selected,key}=selection;
+    if(!selection.useDistinctContext){requestedWaterKey=null;return assetReader.physicalLand;}
     if(key!==requestedWaterKey){
       requestedWaterKey=key;
       if(waterContexts.get(key)?.status==='error')waterContexts.delete(key);
@@ -114,7 +118,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
       // An old version cannot remain selectable while its successor loads.
       for(const row of selected)dependencies.projectState.state.hydroFeatureCache?.delete(row.objectRef.id);
     }
-    const entry=ensurePhysicalContext({rows:selected,key}),state=dependencies.projectState.state;
+    const entry=ensurePhysicalContext(selection),state=dependencies.projectState.state;
     activatePhysicalContext(entry,key);
     // Core catalog admission can be queued behind the current project
     // replacement. Immutable mask readiness cannot wait for that queue.
@@ -312,7 +316,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     get physicalLandSourceRevision() { return buildMeta.physicalLand?.sha256 || null; },
     get physicalContextState() {
       const context=currentPhysicalContext(),selection=selectedPhysicalWater(),entry=waterContexts.get(selection.key);
-      const ready=selection.rows.length?entry?.status==='ready':!!assetReader.physicalLand;
+      const ready=selection.useDistinctContext?entry?.status==='ready':!!assetReader.physicalLand;
       return {ready,error:entry?.error||null,
         landRevision:ready?context.revision:null,waterRevision:ready&&context.water?context.waterRevision:null};
     },

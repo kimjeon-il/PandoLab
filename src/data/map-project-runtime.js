@@ -1,5 +1,7 @@
 import {validateMapProjectManifest,mapProjectResourcePath} from './map-project-manifest.js';
 import {createStoredAssetLoader} from './stored-asset-loader.js';
+import {parseTemporal} from '../document/temporal.js';
+import {regionalLandLayout} from './physical-land-patch.js';
 
 const HEX=/^[a-f0-9]{64}$/;
 const WATER_EMPTY=Object.freeze({
@@ -72,7 +74,12 @@ export function createMapProjectRuntime({meta,assetBaseUrl,fetchFn=globalThis.fe
     if(catalog.schema!=='pando-physical-land-v3'
       ||!HEX.test(catalog.sourceSha256||'')||!HEX.test(catalog.asset?.sha256||''))
       throw new TypeError('Invalid selected project physical land catalog');
-    return Object.freeze({physicalLand:catalog.asset,
+    const modern=catalog.modernCoast;
+    if(modern&&(parseTemporal(modern.validFrom)?.precision!=='date'
+      ||!HEX.test(modern.asset?.sha256||'')||modern.asset.sha256===catalog.asset.sha256
+      ||modern.asset.storageLayout!==regionalLandLayout||modern.asset.base?.sha256!==catalog.asset.sha256))
+      throw new TypeError('Invalid modern coastline asset');
+    return Object.freeze({physicalLand:catalog.asset,...(modern?{modernCoast:modern}:{}),
       physicalWaterObjects:catalog.waterObjects||WATER_EMPTY});
   }
   return Object.freeze({get project(){return activeProject;},verifyManifest,

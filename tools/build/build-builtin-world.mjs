@@ -20,6 +20,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {readProjectGenerationContext} from './project-generation-context.mjs';
 import {assertTerritorialRetirement,assertBuiltinRetirement,readRetirementReceipt,planTerritorialRetirement,mixedRetirementPublicationPlan,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
 import {buildReviewedBorderBatch,buildReviewedBorderEdition} from './reviewed-border-edition.mjs';
+import {buildReviewedCoastEdition} from './reviewed-coast-edition.mjs';
 export {finalizeBuiltinWorldFiles};
 
 const output=fileURLToPath(new URL("../../assets/data/builtin-world/generated/v1/",import.meta.url));
@@ -191,11 +192,12 @@ async function main(){
  const root=fileURLToPath(new URL('../../',import.meta.url));
  const generation=readProjectGenerationContext({root,projectId});
  const arg=name=>process.argv.find(value=>value.startsWith(name+'='))?.slice(name.length+1);
- const selected=arg('--entities'),retirementFile=arg('--retirement-manifest');
+ const selected=arg('--entities'),retirementFile=arg('--retirement-manifest'),coastline=process.argv.includes('--coastline');
  const namesOnly=process.argv.includes('--names-only'),planOnly=process.argv.includes('--plan'),check=process.argv.includes('--check');
  if(process.argv.includes('--pack-existing'))throw Error('--pack-existing is retired; use reviewed country-scoped generation');
  if(projectId!=='default-world'&&retirementFile)throw Error('Territorial retirement requires a project-paired archive and source retirement manifest');
  if(namesOnly&&!selected)throw Error('--names-only requires --entities');
+ if(coastline&&(!selected||namesOnly||projectId!=='default-world'))throw Error('--coastline requires a reviewed default world geometry scope');
  if(retirementFile&&(namesOnly||selected||planOnly))throw Error('Use the dedicated retirement manifest without partial geometry or naming options');
  if(planOnly&&(!selected||namesOnly||check))throw Error('--plan requires a reviewed geometry scope');
  if(selected&&!namesOnly){
@@ -229,7 +231,9 @@ async function main(){
    readBaseline:reader(old,baseline),readEvidence,
    sourceRoot:generation.source('territorialSourceRoot'),sourceIndexPath:generation.source('territorialSourceIndex'),
    builtinIndexPath:generation.catalogs.territorial,policyPath:generation.source('historicalPolicy')};
-  const result=receipts.length===1?buildReviewedBorderEdition({...inputs,receipt:receipts[0]}):buildReviewedBorderBatch({...inputs,receipts});
+  if(coastline&&receipts.length!==1)throw Error('A coastline batch requires one reviewed receipt');
+  const result=coastline?buildReviewedCoastEdition({...inputs,physicalPath:generation.catalogs.physicalLand,receipt:receipts[0]}):
+   receipts.length===1?buildReviewedBorderEdition({...inputs,receipt:receipts[0]}):buildReviewedBorderBatch({...inputs,receipts});
   if(planOnly){console.log(JSON.stringify(result.plan,null,2));return;}
   if(check){
    const actual=archive(pinned);
@@ -239,7 +243,7 @@ async function main(){
    console.log('Verified reviewed Viewer edition '+pinned);return;
   }
   const {storeReviewedBorderEdition}=await import('../data/library-store.mjs');
-  console.log(JSON.stringify(await storeReviewedBorderEdition({root,result,evidenceRevision,sourceRevision,workingReports}),null,2));
+  console.log(JSON.stringify(await storeReviewedBorderEdition({root,result,evidenceRevision,sourceRevision,workingReports,coastline}),null,2));
   return;
  }
  const sourceRoot=path.resolve(root,generation.source('territorialSourceRoot'));

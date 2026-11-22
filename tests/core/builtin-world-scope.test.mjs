@@ -5,6 +5,29 @@ import {gzipSync} from 'node:zlib';
 import {applyReviewedSharedArcs,coordinateDigest,proveUnchangedMergedMembers,replaceReviewedDisplayBinding,replaceReviewedViewerBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateDisplayedBorderAuthority,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
+import * as reviewedBorder from '../../tools/build/reviewed-border-edition.mjs';
+import * as physicalLand from '../../src/data/physical-land-patch.js';
+
+test('one coastline correction can replay the same source arc in differently ordered land rings',()=>{
+  const start=[0,0],end=[1,0],corner=[1,1],other=[0,1];
+  const old=[start,[.5,0],end],after=[start,[.5,-.1],end];
+  const change={before:old,after,beforeSha256:coordinateDigest(old)};
+  const coast={type:'Polygon',coordinates:[[old[1],end,corner,other,start,old[1]]]};
+  assert.deepEqual(reviewedBorder.applyReviewedExteriorArcs(coast,[change]).coordinates[0],
+    [start,after[1],end,corner,other,start]);
+  assert.throws(()=>reviewedBorder.applyReviewedExteriorArcs(coast,[{...change,after:[[0,.1],after[1],end]}]),/fixed section endpoints/);
+});
+
+test('the reviewed modern coast is selected without replacing historical land masks',()=>{
+  const base={sha256:'a'.repeat(64)},historical={sha256:'b'.repeat(64)},asset={sha256:'c'.repeat(64)};
+  const modern={validFrom:'2026-11-01',asset};
+  const select=physicalLand.selectPhysicalLandAsset;
+  assert.equal(select(base,modern,base,'2026-10'),base);
+  assert.equal(select(base,modern,historical,'1922-06'),historical);
+  assert.equal(select(base,modern,base,'2026-11'),asset);
+  assert.equal(select(base,modern,base,null),base);
+  assert.throws(()=>select(base,modern,historical,'2026-11'),/land derivative/);
+});
 
 test('a reviewed waterway uses the exact midpoint of each surveyed cross section',()=>{
   const baseline='a'.repeat(40),entities=['state:AAA','state:BBB'];

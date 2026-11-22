@@ -11,7 +11,8 @@ export const physicalLandDisplayAlgorithmVersion='physical-display-union-v1';
 export async function buildPhysicalLandDisplayAssets({catalog,readPinnedData,algorithmSha256,union}){
  if(!shaPattern.test(algorithmSha256||'')||typeof readPinnedData!=='function'||typeof union!=='function')
   throw new TypeError('Invalid physical display build dependencies');
- const sources=[catalog?.asset,...(catalog?.waterObjects?.geometries||[]).map(row=>row.land).filter(Boolean)];
+ const sources=[catalog?.asset,...(catalog?.modernCoast?[catalog.modernCoast.asset]:[]),
+  ...(catalog?.waterObjects?.geometries||[]).map(row=>row.land).filter(Boolean)];
  const selected=new Map(),decoded=new Map(),assets=new Map(),specs={};
  for(const spec of sources){
   if(!shaPattern.test(spec?.sha256||''))throw new TypeError('Invalid physical land source identity');

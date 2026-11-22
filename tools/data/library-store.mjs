@@ -49,12 +49,13 @@ function directRuntimeDirectories(index){
 }
 
 /** Create the application's scoped edition while retaining the authoring tree. */
-export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map()}){
+export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map(),coastline=false}){
   validateExpectedLibraryRevision(evidenceRevision);validateExpectedLibraryRevision(sourceRevision);
   if(!evidenceRevision||!sourceRevision)throw Error('Reviewed edition requires explicit revisions');
-  const {assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
+  const assertEdition=coastline?(await import('../build/reviewed-coast-edition.mjs')).assertReviewedCoastEdition:
+    (await import('../build/reviewed-border-edition.mjs')).assertReviewedBorderEdition;
   return withLibraryLock(root,()=>{
-    assertReviewedBorderEdition(result);
+    assertEdition(result);
     if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active')
       throw Error('Application revision changed before storing the reviewed edition');
     const shared=librarySharedCheckout(root),head=git(shared,['rev-parse','HEAD']);
@@ -85,6 +86,7 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
     };
     const put=(path,bytes)=>mapObject(path,run(['hash-object','-w','--stdin'],bytes));
     const ident=['-c','user.name=Pando library publisher','-c','user.email=library-publisher@users.noreply.github.com'];
+    const kind=coastline?'reviewed coastline':'reviewed shared border';
     try{
       run(['read-tree',result.baseline]);
       for(const [logical,bytes] of result.files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
@@ -115,7 +117,7 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
       put('archive/index.json',Buffer.from(JSON.stringify(archived)+'\n'));
       run(['update-index','-z','--index-info'],[...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`).join(''));
       const tree=run(['write-tree']);
-      const revision=run([...ident,'commit-tree',tree,'-p',result.baseline,'-m','Store reviewed shared border Viewer edition']);
+      const revision=run([...ident,'commit-tree',tree,'-p',result.baseline,'-m','Store '+kind+' Viewer edition']);
       for(const [p,bytes] of result.files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
       for(const [p,sha256] of Object.entries(result.reports))
         if(contentHash(decodeArchiveEntry(shared,archived.files[p],revision))!==sha256)throw Error('Edition evidence readback differs: '+p);
@@ -124,7 +126,7 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
       // Reachability keeps the edition pinned without moving the authoring tree
       // back to the application's older data or publishing unrelated history.
       const retained=run([...ident,'commit-tree',git(shared,['rev-parse',head+'^{tree}']),'-p',head,'-p',revision,
-        '-m','Retain local reviewed Viewer edition '+revision]);
+        '-m','Retain local '+kind+' Viewer edition '+revision]);
       git(shared,['update-ref','refs/heads/main',retained,head]);
       return {revision,retained,files:[...selected].sort()};
     }finally{

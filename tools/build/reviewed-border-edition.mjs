@@ -29,7 +29,7 @@ const overlaps=(a,b)=>a[0]<=b[2]&&b[0]<=a[2]&&a[1]<=b[3]&&b[1]<=a[3];
 const dateOverlap=(a,b)=>temporalIntervalsOverlap(a,b);
 const issued=new WeakMap();
 
-function locate(geometry,coordinates){
+export function locateReviewedExteriorArc(geometry,coordinates){
  const matches=[];
  for(const [polygonIndex,[ring]] of parts(geometry).entries()){
   const period=ring.length-1;
@@ -44,6 +44,47 @@ function locate(geometry,coordinates){
  return matches;
 }
 
+function verifySplice({before,after,beforeSha256}){
+ if(!chain(before)||coordinateDigest(before)!==beforeSha256)fail('stale section preimage');
+ if(!chain(after)||equal(before,after)||!equal(before[0],after[0])||!equal(before.at(-1),after.at(-1)))
+  fail('invalid fixed section endpoints');
+}
+
+function spliceExteriorRanges(geometry,targets){
+ for(const [polygonIndex,ranges] of Map.groupBy(targets,target=>target.polygonIndex)){
+  const polygon=parts(geometry)[polygonIndex],ring=polygon[0],period=ring.length-1;
+  const wrapped=ranges.find(range=>range.endIndex>period);
+  if(wrapped){
+   // Cut at the fixed endpoint so any section crossing the old closure becomes contiguous.
+   const cut=wrapped.startIndex;
+   polygon[0]=[...ring.slice(cut,period),...ring.slice(0,cut+1)];
+   for(const range of ranges){
+    const length=range.endIndex-range.startIndex;
+    range.startIndex=(range.startIndex-cut+period)%period;
+    range.endIndex=range.startIndex+length;
+   }
+  }
+  ranges.sort((a,b)=>b.startIndex-a.startIndex);
+  for(const [j,target] of ranges.entries()){
+   if(target.endIndex>period||(j&&target.endIndex>ranges[j-1].startIndex))fail('overlapping section preimages');
+   polygon[0].splice(target.startIndex,target.endIndex-target.startIndex+1,...target.coordinates);
+  }
+ }
+}
+
+export function applyReviewedExteriorArcs(geometry,changes){
+ if(!Array.isArray(changes)||!changes.length)fail('reviewed sections required');
+ const targets=changes.map(change=>{
+  verifySplice(change);
+  const forward=locateReviewedExteriorArc(geometry,change.before),reverse=locateReviewedExteriorArc(geometry,change.before.toReversed());
+  if(forward.length+reverse.length!==1)fail('unique exterior section preimage required');
+  return {...(forward[0]??reverse[0]),coordinates:forward.length?change.after:change.after.toReversed()};
+ });
+ const result=structuredClone(geometry);
+ spliceExteriorRanges(result,targets);
+ return result;
+}
+
 /** The receipt supplies the untouched published endpoints, including any bridge
  * to the archived line. Both countries must contain the same old reciprocal arc. */
 export function applyReviewedSharedArcs(before,changes){
@@ -51,36 +92,15 @@ export function applyReviewedSharedArcs(before,changes){
  const [left,right]=before.map(g=>structuredClone(g)),targets=[[],[]];
  for(const change of changes){
   const old=change.before,next=change.after;
-  if(!chain(old)||coordinateDigest(old)!==change.beforeSha256)fail('stale section preimage');
-  if(!chain(next)||equal(old,next)||!equal(old[0],next[0])||!equal(old.at(-1),next.at(-1)))fail('invalid fixed section endpoints');
-  const forward=locate(left,old),reverse=locate(left,old.toReversed());
-  const peerForward=locate(right,old),peerReverse=locate(right,old.toReversed());
+  verifySplice(change);
+  const forward=locateReviewedExteriorArc(left,old),reverse=locateReviewedExteriorArc(left,old.toReversed());
+  const peerForward=locateReviewedExteriorArc(right,old),peerReverse=locateReviewedExteriorArc(right,old.toReversed());
   if(forward.length+reverse.length!==1||peerForward.length+peerReverse.length!==1||forward.length!==peerReverse.length)
    fail('unique reciprocal section preimages required');
   targets[0].push({...(forward[0]??reverse[0]),coordinates:forward.length?next:next.toReversed()});
   targets[1].push({...(peerReverse[0]??peerForward[0]),coordinates:peerForward.length?next:next.toReversed()});
  }
- for(const [i,geometry] of [left,right].entries()){
-  for(const [polygonIndex,ranges] of Map.groupBy(targets[i],target=>target.polygonIndex)){
-   const polygon=parts(geometry)[polygonIndex],ring=polygon[0],period=ring.length-1;
-   const wrapped=ranges.find(range=>range.endIndex>period);
-   if(wrapped){
-    // Cut at the fixed endpoint so any section crossing the old closure becomes contiguous.
-    const cut=wrapped.startIndex;
-    polygon[0]=[...ring.slice(cut,period),...ring.slice(0,cut+1)];
-    for(const range of ranges){
-     const length=range.endIndex-range.startIndex;
-     range.startIndex=(range.startIndex-cut+period)%period;
-     range.endIndex=range.startIndex+length;
-    }
-   }
-   ranges.sort((a,b)=>b.startIndex-a.startIndex);
-   for(const [j,target] of ranges.entries()){
-    if(target.endIndex>period||(j&&target.endIndex>ranges[j-1].startIndex))fail('overlapping section preimages');
-    polygon[0].splice(target.startIndex,target.endIndex-target.startIndex+1,...target.coordinates);
-   }
-  }
- }
+ for(const [i,geometry] of [left,right].entries())spliceExteriorRanges(geometry,targets[i]);
  return [left,right];
 }
 
@@ -131,7 +151,7 @@ function liesOnEdge([x,y],[ax,ay],[bx,by]){
  return Math.abs(px*dy-py*dx)<=1e-12&&progress>=-1e-12&&progress<=extent+1e-12;
 }
 
-function carriesArc(section,arc){
+export function carriesArc(section,arc){
  const {before,after}=section;
  if(!chain(before)||!chain(after)||!chain(arc))return false;
  const at=after.findIndex(p=>equal(p,arc[0])),end=at+arc.length;

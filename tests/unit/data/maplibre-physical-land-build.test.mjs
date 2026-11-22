@@ -58,7 +58,7 @@ test('regional physical display reconstructs its exact patch and shares the deco
  const replacement=f.store(patch,'replacement.json.gz');
  const regional={...base,url:'assets/data/physical-land/v1/unmaterialized-regional.json.gz',sha256:'b'.repeat(64),
   storageLayout:'regional-land-v1',base,replacement,contentSha256:patch.resultContentSha256};
- const catalog={asset:base,waterObjects:{geometries:[{land:regional},{land:{...regional}}]}};
+ const catalog={asset:base,modernCoast:{validFrom:'2026-11-01',asset:regional},waterObjects:{geometries:[{land:base}]}};
  const before=JSON.stringify(catalog),originals=[...f.files].map(([path,bytes])=>[path,Buffer.from(bytes)]);
  const result=await buildPhysicalLandDisplayAssets({catalog,readPinnedData:f.readPinnedData,algorithmSha256,union});
  assert.deepEqual(unpack(result,regional),regionalGeometry);assert.deepEqual(unpack(result,base),baseGeometry);
