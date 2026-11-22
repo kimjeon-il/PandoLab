@@ -332,6 +332,10 @@ function assertStoredSharedArcDisplayReview(next,previous,{prefixes,readEvidence
  if(copy.historicalProvenance){
   if(priorReview===undefined)delete copy.historicalProvenance.displayDetailReview;
   else copy.historicalProvenance.displayDetailReview=priorReview;
+  if(prior.historicalProvenance==null&&Object.keys(copy.historicalProvenance).length===0){
+   if(Object.hasOwn(prior,'historicalProvenance'))copy.historicalProvenance=prior.historicalProvenance;
+   else delete copy.historicalProvenance;
+  }
  }
  if(!isDeepStrictEqual(restored,previous))fail('only the display review may change');
  const verified=new Map();
@@ -410,7 +414,11 @@ function assertOriginalSharedArcs(next,previous,review,{prefixes,archivedReview,
  // Keep the prepared provenance immutable. Successive receipts form a digest
  // chain back to that exact archived prepared-current adoption, never to a new
  // claim that the old historical/display evidence approved this source delta.
- const current=old.historicalProvenance?.currentGeometrySource;
+ let prepared=old.modernBoundarySupplement;
+ // The ordinary undated donor records its approval directly in the source
+ // supplement. Later arc receipts preserve that supplement at the root.
+ if(!dated)while(prepared?.adoptionMode===method)prepared=prepared.priorPreparedAttribution;
+ const current=old.historicalProvenance?.currentGeometrySource??(!dated?prepared:null);
  if(current?.status!=='approved-prepared-current-source-adoption'||!requiredHash(current.geometrySha256)||!evidence(current.sourceReview)||!evidence(review.priorPreparedSourceReview)||current.sourceReview.sha256!==review.priorPreparedSourceReview.sha256||previous.metadata?.representativeGeometryVersionId!==v.versionId||previous.sourceInfo?.geometryVersionId!==v.versionId||next.sourceInfo?.geometryVersionId!==v.versionId)fail('explicit prepared-current source anchor required');
  let cursor=review,expected=digest(old.geometry),receipt=review.previousSharedArcReview;
  if(old.modernBoundarySupplement?.adoptionMode===method){if(!sameReceipt(receipt,old.modernBoundarySupplement.sourceAdoptionReview))fail('previous shared-arc receipt required');}

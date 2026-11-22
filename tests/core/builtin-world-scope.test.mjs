@@ -74,6 +74,10 @@ test('a verified display review can follow a stored shared-arc correction',()=>{
   review.compiledDerivatives=[{...review,entityId:'AAA'}];
   const input={prefixes:['assets/data/territorial-entities/source/countries/state-AAA.json'],readEvidence:p=>archive.get(p)};
   assert.equal(assertHistoricalSourceStorageChanges(next,before,input),1);
+  const withoutProvenance=structuredClone(before),withFirstReview=structuredClone(next);
+  delete withoutProvenance.geometryVersions[0].historicalProvenance;
+  delete withFirstReview.geometryVersions[0].historicalProvenance.status;
+  assert.equal(assertHistoricalSourceStorageChanges(withFirstReview,withoutProvenance,input),1);
   assert.equal(assertHistoricalCompiledChanges({entityId:'AAA',
     identity:{properties:{metadata:{historicalTimeline:{geometryVersions:[version]}}}},
     sourceBindings:[{sourceVersionId:binding.versionId,validFrom:binding.validFrom,validTo:null,geometryRef:{id:'g',version:1}}],

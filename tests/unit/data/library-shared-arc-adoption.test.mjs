@@ -27,6 +27,24 @@ function fixture(previous){
  const f={before,next,proof,raw,evidence,readEvidence:n=>evidence.get(n),refresh(){proof.geometrySha256=digest(v.geometry);proof.sourceScope=[{entityId:next.entityId,versionId:v.versionId,geometrySha256:digest(v.geometry),geometryResourceSha256:resource(v.geometry)},...proof.topology.counterpartVersions];f.prefixes=proof.sourceScope.flatMap(r=>[base+'countries/'+r.entityId.replace(':','-')+'.json',base+'geometries/sha256-'+r.geometryResourceSha256+'.json']);v.modernBoundarySupplement.sourceAdoptionReview=put('reports/borders/arc-'+(previous?'second':'first')+'.json',proof);}};f.refresh();return f;
 }
 test('explicit undated shared-arc receipt admits exact first and consecutive second splice only',()=>{const f=fixture(),snapshot=structuredClone(f.next);assert.equal(validate(f.next,f.before,f),1);assert.deepEqual(f.next,snapshot);const second=fixture(f);assert.equal(validate(second.next,second.before,second),1);assert.deepEqual(second.next.geometryVersions[0].historicalProvenance,f.before.geometryVersions[0].historicalProvenance);});
+test('the approved undated source supplement anchors consecutive shared arcs',()=>{
+ const f=fixture();
+ const [before]=f.before.geometryVersions,[next]=f.next.geometryVersions;
+ const approval=before.historicalProvenance.currentGeometrySource;
+ delete before.historicalProvenance.currentGeometrySource;
+ delete next.historicalProvenance.currentGeometrySource;
+ Object.assign(before.modernBoundarySupplement,approval);
+ Object.assign(next.modernBoundarySupplement,{
+  sourceReview:approval.sourceReview,priorPreparedAttribution:structuredClone(before.modernBoundarySupplement),
+ });
+ assert.equal(validate(f.next,f.before,f),1);
+ const second=fixture(f);
+ assert.equal(validate(second.next,second.before,second),1);
+ const retained=second.before.geometryVersions[0].modernBoundarySupplement;
+ retained.priorPreparedAttribution.geometrySha256=hash('different prepared source');
+ second.next.geometryVersions[0].modernBoundarySupplement.priorPreparedAttribution=structuredClone(retained);
+ assert.throws(()=>validate(second.next,second.before,second),/does not reach prepared source/);
+});
 test('shared-arc source receipt never approves historical display or compiled derivatives',()=>{const f=fixture(),v=f.next.geometryVersions[0];assert.throws(()=>assertHistoricalDisplayChanges(f.next,f.before));const compiled={entityId:f.next.entityId,identity:{properties:{metadata:{historicalTimeline:{geometryVersions:[v]}}}},geometries:[{id:'g',version:1,geojson:v.geometry}],sourceBindings:[{sourceVersionId:v.versionId,geometryRef:{id:'g',version:1},validFrom:null,validTo:null}]};assert.throws(()=>assertHistoricalCompiledChanges(compiled,null));});
 const mutations={
  'missing receipt':f=>f.evidence.delete(f.next.geometryVersions[0].modernBoundarySupplement.sourceAdoptionReview.reference),
