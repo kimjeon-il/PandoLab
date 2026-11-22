@@ -10,6 +10,7 @@ import {packLibraryGzip} from '../data/library-archive.mjs';
 import {createPhysicalLandPatch} from '../data/physical-land-storage.mjs';
 import {assertHistoricalCompiledChanges} from '../gis/historical-display-review.mjs';
 import {historicalWorldClipper as clip} from '../gis/historical-world-territories.mjs';
+import {territorialLifetimeIntervals} from '../gis/territorial-library.js';
 import {applyReviewedExteriorArcs,carriesArc,coordinateDigest,locateReviewedExteriorArc,proveUnchangedMergedMembers,
  replaceReviewedDisplayBinding,replaceReviewedViewerBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod} from './reviewed-border-edition.mjs';
 
@@ -191,7 +192,8 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  for(const {source,geometry} of owners)if(reviewedBorderTouchesNeighbor(geometry.geojson,affected.filter(row=>row.entityId!==source.entityId)))
   fail('another selected country intersects the changed area '+source.entityId);
  for(const row of sourceIndex.entities){
-  if(selected.includes(row.entityId)||!affected.some(({bounds})=>overlaps(bounds,row.bbox)))continue;
+  if(selected.includes(row.entityId)||!affected.some(({bounds})=>overlaps(bounds,row.bbox))
+   ||!territorialLifetimeIntervals(row.lifetime).some(related))continue;
   const identity=index.sourceIdentities.find(entry=>entry.sourceEntityIds.includes(row.entityId));
   if(!identity||ids.includes(identity.projectEntityId))continue;
   const country=readCountry(identity.projectEntityId);
