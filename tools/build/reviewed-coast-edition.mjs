@@ -128,7 +128,12 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   ||input.sections.some(row=>!selected.includes(row.entityId))||!selected.every(id=>input.sections.some(row=>row.entityId===id))
   ||input.displayValidFrom!=='2026-11-01')fail('reviewed revision, date or country scope differs');
  archived(input.visual);
- if(input.screening)archived(input.screening);
+ if(input.screening){
+  archived(input.screening);
+  const {attachments=[]}=input.screening;
+  if(!Array.isArray(attachments))fail('invalid screening attachments');
+  for(const attachment of attachments)archived(attachment);
+ }
  const donor=JSON.parse(archived(input.source));
  if(donor.type!=='FeatureCollection'||!Array.isArray(donor.features)||typeof donor.provenance?.publication!=='string'
   ||!/^https:\/\//.test(donor.provenance.publication)||!/^\w/.test(donor.provenance.layer||'')
