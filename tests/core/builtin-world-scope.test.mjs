@@ -75,13 +75,17 @@ test('a display splice preserves the other archived members of a merged country'
   const polygon=(west,east)=>({type:'Polygon',coordinates:[[[west,0],[east,0],[east,1],[west,1],[west,0]]]});
   const before=[[1,0],[1,1]],after=[[1,0],[1.1,.5],[1,1]];
   const sections=[{before,after}];
-  const readMember=geometryVersions=>()=>({entityId:member,geometryVersions});
-  const check=proveUnchangedMergedMembers;
-  assert.deepEqual(check([member],current,sections,readMember([
+  const selected={entityId:'state:AAA',sourceInfo:{featureId:'AAA'}};
+  const identity={sourceEntityIds:[selected.entityId,member],sourceFeatureIds:['AAA','CCC']};
+  const readMember=geometryVersions=>()=>({entityId:member,sourceInfo:{featureId:'CCC'},geometryVersions});
+  const check=(read,owner=identity)=>proveUnchangedMergedMembers(owner,selected,current,sections,read);
+  assert.deepEqual(check(readMember([
     {...expired,geometry:polygon(1,1.05)},{...current,geometry:polygon(4,5)},
   ])),[{id:member,reason:'merged source disjoint from every display section'}]);
-  assert.throws(()=>check([member],current,sections,readMember([{...current,geometry:polygon(1.03,1.06)}])),/merged source intersects.*CCC/);
-  assert.throws(()=>check([member],current,sections,readMember([{...expired,geometry:polygon(4,5)}])),/merged source geometry missing.*CCC/);
+  assert.throws(()=>check(readMember([{...current,geometry:polygon(1.03,1.06)}])),/merged source intersects.*CCC/);
+  assert.throws(()=>check(readMember([{...expired,geometry:polygon(4,5)}])),/merged source geometry missing.*CCC/);
+  assert.throws(()=>check(readMember([{...current,geometry:polygon(4,5)}]),
+    {...identity,sourceFeatureIds:['AAA','CCC','DDD']}),/merged source identity is incomplete.*AAA/);
 });
 
 test('a modern border review preserves the historical geometry on both sides',()=>{

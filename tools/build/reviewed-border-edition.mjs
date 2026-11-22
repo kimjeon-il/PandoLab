@@ -154,16 +154,20 @@ export function validateDisplayedBorderAuthority(authority,sections,{baseline,en
  }
 }
 
-export function proveUnchangedMergedMembers(ids,binding,sections,readRaw){
+export function proveUnchangedMergedMembers(identity,selected,binding,sections,readRaw){
  const footprints=sections.map(sectionBounds);
- return ids.map(id=>{
-  const member=readRaw(id);
+ const members=identity.sourceEntityIds.filter(id=>id!==selected.entityId).map(id=>({id,source:readRaw(id)}));
+ const features=new Set([selected.sourceInfo.featureId,...members.map(({source})=>source.sourceInfo.featureId)]);
+ if(!equal([...features].sort(),[...identity.sourceFeatureIds].sort()))
+  fail('merged source identity is incomplete '+selected.entityId);
+ return members.map(({id,source:member})=>{
   const versions=member.geometryVersions.filter(version=>dateOverlap(version,binding));
   if(member.entityId!==id||!versions.length)fail('merged source geometry missing '+id);
   for(const {geometry} of versions){
-   const polygons=parts(geometry);
-   if(!polygons.length)fail('merged source geometry missing '+id);
-   if(polygons.some(polygon=>footprints.some(bounds=>overlaps(bounds,coordinateBounds(polygon)))))
+   const components=parts(geometry).map(polygon=>coordinateBounds(polygon));
+   if(!components.length||components.some(bounds=>!bounds.every(Number.isFinite)))
+    fail('merged source geometry missing '+id);
+   if(components.some(component=>footprints.some(bounds=>overlaps(bounds,component))))
     fail('merged source intersects a display section '+id);
   }
   return {id,reason:'merged source disjoint from every display section'};
@@ -273,8 +277,8 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
  const binding={validFrom,validTo};
  if(countries.some(country=>country.timelineRecords.parentRelations.some(row=>row.parentId&&dateOverlap(row,binding))))
   fail('selected country has a current parent dependency');
- const mergedMembers=identities.flatMap((identity,i)=>identity.sourceEntityIds.filter(id=>id!==selected[i]));
- const preservedMembers=proveUnchangedMergedMembers(mergedMembers,binding,input.sections,id=>source(id,readBaseline));
+ const preservedMembers=identities.flatMap((identity,i)=>
+  proveUnchangedMergedMembers(identity,old[i],binding,input.sections,id=>source(id,readBaseline)));
  const reviewed=authority?[]:input.entities.map(row=>{
   const origin=JSON.parse(archived(row.origin));
   const rawReview=JSON.parse(archived(row.rebased));
@@ -302,7 +306,8 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
  const afterDisplay=applyReviewedSharedArcs(beforeDisplay,input.sections);
  const rawSections=authority?[]:validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
  const displaySections=validateReviewedPair(beforeDisplay,afterDisplay,input.sections,'display');
- const neighbors=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawSections,displaySections,mergedMembers,
+ const neighbors=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawSections,displaySections,
+  mergedMembers:preservedMembers.map(member=>member.id),
   readRaw:id=>source(id,readBaseline),readCountry});
 
  const files=new Map(),nativeRows=new Map(),outCountries=[];
