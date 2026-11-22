@@ -68,6 +68,27 @@ test('a reciprocal border with collinear bridges passes topology verification',(
   assert.doesNotThrow(()=>validateReviewedPair(before,after,[change],'display'));
 });
 
+test('a shared border can cross the exterior ring closure on one side',()=>{
+  const lower=[1,0],middle=[1,.5],upper=[1,1],bend=[1.1,.5];
+  const polygon=(...ring)=>({type:'Polygon',coordinates:[[...ring,ring[0]]]});
+  const before=[
+    polygon([0,0],lower,middle,upper,[0,1]),
+    polygon(middle,lower,[2,0],[2,1],upper),
+  ];
+  const old=[lower,middle,upper];
+  const change={before:old,beforeSha256:coordinateDigest(old),after:[lower,bend,upper]};
+  const updated=applyReviewedSharedArcs(before,[change]);
+  assert.deepEqual(updated,[
+    polygon([0,0],lower,bend,upper,[0,1]),
+    polygon(upper,bend,lower,[2,0],[2,1]),
+  ]);
+  assert.doesNotThrow(()=>validateReviewedPair(before,updated,[change],'display'));
+  const overlapping=[middle,upper];
+  assert.throws(()=>applyReviewedSharedArcs(before,[change,{
+    before:overlapping,beforeSha256:coordinateDigest(overlapping),after:[middle,[1.2,.75],upper],
+  }]),/overlapping section preimages/);
+});
+
 test('a display splice preserves the other archived members of a merged country',()=>{
   const current={validFrom:'2026-11-01',validTo:null};
   const expired={validFrom:null,validTo:'2026-10-31'};

@@ -32,10 +32,13 @@ const issued=new WeakMap();
 function locate(geometry,coordinates){
  const matches=[];
  for(const [polygonIndex,[ring]] of parts(geometry).entries()){
-  for(let startIndex=0;startIndex+coordinates.length<=ring.length;startIndex++){
+  const period=ring.length-1;
+  if(!equal(ring[0],ring[period]))fail('review requires closed exterior rings');
+  if(coordinates.length>period)continue;
+  for(let startIndex=0;startIndex<period;startIndex++){
    if(!equal(ring[startIndex],coordinates[0]))continue;
-   if(coordinates.every((p,i)=>equal(p,ring[startIndex+i])))
-    matches.push({polygonIndex,ringIndex:0,startIndex,endIndex:startIndex+coordinates.length-1});
+   if(coordinates.every((p,i)=>equal(p,ring[(startIndex+i)%period])))
+    matches.push({polygonIndex,startIndex,endIndex:startIndex+coordinates.length-1});
   }
  }
  return matches;
@@ -58,11 +61,24 @@ export function applyReviewedSharedArcs(before,changes){
   targets[1].push({...(peerReverse[0]??peerForward[0]),coordinates:peerForward.length?next:next.toReversed()});
  }
  for(const [i,geometry] of [left,right].entries()){
-  const ranges=targets[i].sort((a,b)=>a.polygonIndex-b.polygonIndex||b.startIndex-a.startIndex);
-  for(const [j,t] of ranges.entries()){
-   const preceding=ranges[j-1];
-   if(preceding?.polygonIndex===t.polygonIndex&&t.endIndex>preceding.startIndex)fail('overlapping section preimages');
-   parts(geometry)[t.polygonIndex][0].splice(t.startIndex,t.endIndex-t.startIndex+1,...t.coordinates);
+  for(const [polygonIndex,ranges] of Map.groupBy(targets[i],target=>target.polygonIndex)){
+   const polygon=parts(geometry)[polygonIndex],ring=polygon[0],period=ring.length-1;
+   const wrapped=ranges.find(range=>range.endIndex>period);
+   if(wrapped){
+    // Cut at the fixed endpoint so any section crossing the old closure becomes contiguous.
+    const cut=wrapped.startIndex;
+    polygon[0]=[...ring.slice(cut,period),...ring.slice(0,cut+1)];
+    for(const range of ranges){
+     const length=range.endIndex-range.startIndex;
+     range.startIndex=(range.startIndex-cut+period)%period;
+     range.endIndex=range.startIndex+length;
+    }
+   }
+   ranges.sort((a,b)=>b.startIndex-a.startIndex);
+   for(const [j,target] of ranges.entries()){
+    if(target.endIndex>period||(j&&target.endIndex>ranges[j-1].startIndex))fail('overlapping section preimages');
+    polygon[0].splice(target.startIndex,target.endIndex-target.startIndex+1,...target.coordinates);
+   }
   }
  }
  return [left,right];
