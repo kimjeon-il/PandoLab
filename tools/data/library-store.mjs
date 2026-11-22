@@ -28,6 +28,96 @@ function validateExpectedBranch(expectedBranch) {
   if (expectedBranch !== undefined && !['main', 'work/active'].includes(expectedBranch)) throw Error('Invalid expected library branch.');
 }
 
+function archiveFile(path,bytes,direct,put){
+  const sha256=contentHash(bytes);
+  const sourceGeometry=path.startsWith('assets/data/territorial-entities/source/geometries/');
+  const packed=direct?bytes:(sourceGeometry?packLibraryGzip(bytes):gzipSync(bytes,{level:9}));
+  const chunked=!direct&&planSourceGeometryArchive(path,packed,{sha256,bytes:bytes.length});
+  if(chunked){
+    for(const [stored,part] of chunked.outputs)put(stored,part);
+    return chunked.entry;
+  }
+  const identity=direct||packed.length>=bytes.length;
+  const encoding=identity?'identity':'gzip';
+  const stored=libraryStoragePath(path,{sha256,encoding,direct});
+  put(stored,identity?bytes:packed);
+  return {stored,encoding,sha256,bytes:bytes.length};
+}
+
+function directRuntimeDirectories(index){
+  return new Set(Object.entries(index.files).filter(([path,entry])=>path.startsWith('assets/data/')&&path===entry.stored).map(([path])=>dirname(path)));
+}
+
+/** Create the application's scoped edition while retaining the authoring tree. */
+export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision}){
+  validateExpectedLibraryRevision(evidenceRevision);validateExpectedLibraryRevision(sourceRevision);
+  if(!evidenceRevision||!sourceRevision)throw Error('Reviewed edition requires explicit revisions');
+  const {assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
+  return withLibraryLock(root,()=>{
+    assertReviewedBorderEdition(result);
+    if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active')
+      throw Error('Application revision changed before storing the reviewed edition');
+    const shared=librarySharedCheckout(root),head=git(shared,['rev-parse','HEAD']);
+    if(git(shared,['symbolic-ref','--short','HEAD'])!=='main'||git(shared,['status','--porcelain']))
+      throw Error('Preserve the library checkout edits before storing the reviewed edition');
+    git(shared,['merge-base','--is-ancestor',result.baseline,head]);
+    git(shared,['merge-base','--is-ancestor',evidenceRevision,head]);
+    const baseline=JSON.parse(git(shared,['show',result.baseline+':archive/index.json']));
+    const evidence=JSON.parse(git(shared,['show',evidenceRevision+':archive/index.json']));
+    const archived=structuredClone(baseline),directories=directRuntimeDirectories(archived);
+    const selected=new Set([...result.files.keys(),...Object.keys(result.reports)]);
+    if(libraryWriteLeases(shared).some(lease=>lease.alive&&lease.prefixes.some(p=>[...result.files.keys()].some(q=>scopesOverlap(p,q)))))
+      throw Error('A library writer overlaps the reviewed edition');
+    const protectedPaths=new Set(Object.entries(baseline.files).filter(([p])=>!selected.has(p))
+      .flatMap(([,spec])=>archiveStoredResources(spec).map(r=>r.stored)));
+    const scratch=resolve(shared,'.pando-store','reviewed-border-'+randomUUID()+'.index');
+    mkdirSync(dirname(scratch),{recursive:true});
+    const date=git(root,['show','-s','--format=%aI',sourceRevision]);
+    const env={...process.env,GIT_INDEX_FILE:scratch,GIT_NO_LAZY_FETCH:'1',GIT_OPTIONAL_LOCKS:'0',
+      GIT_AUTHOR_DATE:date,GIT_COMMITTER_DATE:date};
+    const run=(args,input)=>execFileSync('git',[...gitOptions,...args],{cwd:shared,env,input,encoding:'utf8',maxBuffer:32*1024*1024}).trim();
+    const objects=new Map();
+    const mapObject=(path,oid)=>{
+      if(protectedPaths.has(path)&&git(shared,['rev-parse',result.baseline+':'+path])!==oid)
+        throw Error('Reviewed edition collides with a retained object: '+path);
+      if(objects.has(path)&&objects.get(path)!==oid)throw Error('Conflicting reviewed edition object: '+path);
+      objects.set(path,oid);
+    };
+    const put=(path,bytes)=>mapObject(path,run(['hash-object','-w','--stdin'],bytes));
+    const ident=['-c','user.name=Pando library publisher','-c','user.email=library-publisher@users.noreply.github.com'];
+    try{
+      run(['read-tree',result.baseline]);
+      for(const [logical,bytes] of result.files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
+      for(const [logical,sha256] of Object.entries(result.reports)){
+        const entry=evidence.files[logical];
+        if(entry?.sha256!==sha256)throw Error('Reviewed evidence is not archived with the verified hash: '+logical);
+        const bytes=decodeArchiveEntry(shared,entry,evidenceRevision);
+        const prior=baseline.files[logical];
+        if(prior&&prior.sha256!==contentHash(bytes))throw Error('Reviewed evidence differs from a retained report: '+logical);
+        if(prior)continue;
+        archived.files[logical]=entry;
+        for(const spec of archiveStoredResources(entry))mapObject(spec.stored,git(shared,['rev-parse',evidenceRevision+':'+spec.stored]));
+      }
+      archived.sourceRevision=sourceRevision;
+      put('archive/index.json',Buffer.from(JSON.stringify(archived)+'\n'));
+      run(['update-index','-z','--index-info'],[...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`).join(''));
+      const tree=run(['write-tree']);
+      const revision=run([...ident,'commit-tree',tree,'-p',result.baseline,'-m','Store reviewed shared border Viewer edition']);
+      for(const [p,bytes] of result.files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
+      for(const [p,entry] of Object.entries(baseline.files))if(!selected.has(p)&&!isDeepStrictEqual(entry,archived.files[p]))
+        throw Error('Reviewed edition changed an unselected file: '+p);
+      // Reachability keeps the edition pinned without moving the authoring tree
+      // back to the application's older data or publishing unrelated history.
+      const retained=run([...ident,'commit-tree',git(shared,['rev-parse',head+'^{tree}']),'-p',head,'-p',revision,
+        '-m','Retain local reviewed Viewer edition '+revision]);
+      git(shared,['update-ref','refs/heads/main',retained,head]);
+      return {revision,retained,files:[...selected].sort()};
+    }finally{
+      for(const p of [scratch+'.lock',scratch])if(existsSync(p))unlinkSync(p);
+    }
+  });
+}
+
 export function libraryPublicationRef(branch) {
   // A new work branch must use a fully qualified refs/heads destination.
   // Refuse unexpected names rather than relying on Git's destination guessing.
@@ -417,8 +507,7 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
   const currentIndex = JSON.parse(readFileSync(indexPath,'utf8'));
   const index = reportData || reportOnly ? currentIndex : runtimeStoreIndex(JSON.parse(git(data.checkout,['show',`${libraryConfig(root).revision}:archive/index.json`],{allowFetch:true})), currentIndex);
   index.branch=dataBranch;
-  const runtimeDirectories = new Set(Object.entries(index.files).filter(([path, entry]) => path.startsWith('assets/data/') && path === entry.stored).map(([path]) => dirname(path)));
-  const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+  const runtimeDirectories = directRuntimeDirectories(index);
   const changed = new Set();
   const put = (path, bytes) => {
     const output = safeChild(data.checkout, path);
@@ -429,7 +518,7 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
     changed.add(path);
   };
   const store = (path, bytes) => {
-    const sha256 = digest(bytes);
+    const sha256 = contentHash(bytes);
     const isReport = path.startsWith('reports/');
     // Pages overlays these public paths with git archive, independently of a
     // branch's runtime pin. They must remain present in the Git tree.
@@ -439,22 +528,7 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
     if (previous?.sha256 === sha256 && (direct || ['identity', 'gzip'].includes(previous.encoding)) && previous.stored === libraryStoragePath(path, {
       sha256, encoding: previous.encoding, direct,
     })) return;
-    let packed=bytes;
-    if(!direct){
-      const sourceGeometry=path.startsWith('assets/data/territorial-entities/source/geometries/');
-      packed=sourceGeometry?packLibraryGzip(bytes):gzipSync(bytes,{level:9});
-    }
-    // Chunk only immutable editable source geometry archives, never public
-    // runtime URLs or directly published reports. Logical file/hash are unchanged.
-    const chunked=!direct&&planSourceGeometryArchive(path,packed,{sha256,bytes:bytes.length});
-    if(chunked){
-      for(const [stored,part]of chunked.outputs)put(stored,part);
-      index.files[path]=chunked.entry;return;
-    }
-    const identity = direct || packed.length >= bytes.length;
-    const stored = libraryStoragePath(path, { sha256, encoding: identity ? 'identity' : 'gzip', direct });
-    put(stored, identity ? bytes : packed);
-    index.files[path] = { stored, encoding: identity ? 'identity' : 'gzip', sha256, bytes: bytes.length };
+    index.files[path]=archiveFile(path,bytes,direct,put);
   };
   if (removePaths.some(path => !included(path) || !/^[\w.-]+(?:\/[\w.-]+)*$/.test(path) || path.split('/').some(part => part === '..' || part === '.'))) throw Error('Invalid explicit library deletion.');
   const editRoot = resolve(libraryReportRoot(root), '.edits', libraryOwnerId(root));

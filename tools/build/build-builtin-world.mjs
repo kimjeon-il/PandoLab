@@ -6,20 +6,19 @@ import {createHash} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
 import {execFileSync} from 'node:child_process';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";
-import {libraryConfig,libraryCheckout,decodeArchiveEntry,readLibraryDataFile} from "../data/library-context.mjs";
+import {libraryConfig,libraryCheckout,decodeArchiveEntry,git,readLibraryDataFile} from "../data/library-context.mjs";
 import {readTerritorialSources,readTerritorialSource,entityFileName,territorialSourceRoot,territorialDataRoot} from "../data/territorial-entity-sources.mjs";
 import {normalizeTerritorialLibraryEntity} from "../gis/territorial-library.js";
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {buildCurrentWorld} from "../data/territorial-current-world.mjs";
-import {addBuiltinWorldFormalName,compileBuiltinWorldCatalog,coalesceCoverageAdjustments,readBuiltinWorldFormalNames,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
+import {addBuiltinWorldFormalName,compileBuiltinWorldCatalog,readBuiltinWorldFormalNames,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
 import {builtinSubunitId} from "../../src/document/territorial-display-identity.js";
-import {compareTemporal,normalizeTemporalInterval,temporalIntervalsOverlap} from "../../src/document/temporal.js";
-import {territorialLifetimeIntervals} from "../gis/territorial-library.js";
 import {loadBuiltinDisplayPolicy} from "../gis/builtin-display-policy.mjs";
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountryStoredBytes,readBuiltinCountry} from "../data/builtin-country-bytes.mjs";
 import {isDeepStrictEqual} from 'node:util';
 import {readProjectGenerationContext} from './project-generation-context.mjs';
 import {assertTerritorialRetirement,assertBuiltinRetirement,readRetirementReceipt,planTerritorialRetirement,mixedRetirementPublicationPlan,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
+import {buildReviewedBorderEdition} from './reviewed-border-edition.mjs';
 export {finalizeBuiltinWorldFiles};
 
 const output=fileURLToPath(new URL("../../assets/data/builtin-world/generated/v1/",import.meta.url));
@@ -123,133 +122,6 @@ export function buildBuiltinWorldRetirementPublication({retirement,sourceIndex,p
  return rememberRetirementPublication(files,{retirement,sourceIndex,previousSourceIndex,view,policy,displayPolicy});
 }
 
-/** The retirement baseline stays internal until all requested changes compile. */
-export function buildBuiltinWorldRetiredPartialPublication(input){
- if(input.planOnly)throw Error('Retirement publication requires an executed source-paired compilation');
- if(input.retirement?.kind==='mixed-current-identity-retirement')throw Error('Mixed retirement forbids source-wide partial recompilation; use verified minimal runtime producer');
- input={...input,displayPolicy:input.displayPolicy||loadBuiltinDisplayPolicy()};
- const baseline=buildBuiltinWorldRetirementPublication(input);
- const files=buildBuiltinWorldPartialPublication({...input,previousIndex:JSON.parse(baseline.get('index.json')),
-  previousCoverage:JSON.parse(baseline.get('coverage-report.json'))});
- return rememberRetirementPublication(files,input);
-}
-
-function activeGeometryWindows(entity, currentVersionId) {
- const lifetimes=territorialLifetimeIntervals(entity.lifetime)
-   .map(({validFrom,validTo})=>normalizeTemporalInterval(validFrom,validTo));
- return entity.geometryVersions.flatMap(version=>{
-  const period=normalizeTemporalInterval(version.validFrom,version.validTo);
-  const currentSnapshot=version.versionId===currentVersionId;
-  return lifetimes.filter(lifetime=>temporalIntervalsOverlap(lifetime,period)).map(lifetime=>{
-   const {start,end}=lifetime;
-   const startsLater=period.start&&(!start||compareTemporal(period.start,start)>0);
-   const endsEarlier=period.end&&(!end||compareTemporal(period.end,end,{leftBoundary:'end',rightBoundary:'end'})<0);
-   return {start:startsLater?period.start:start,end:endsEarlier?period.end:end,currentSnapshot};
-  });
- });
-}
-
-/** Recompile only connected spatial/hierarchy components. Unrelated payloads
- * are neither read nor returned: their verified descriptors stay in the index. */
-export function buildBuiltinWorldPartialPublication({entityIds,sourceIndex,previousSourceIndex,view,policy,
- previousIndex,previousCoverage,readSource=null,currentWorld=null,onScope=()=>{},planOnly=false,displayPolicy=loadBuiltinDisplayPolicy(),formalNames}){
- if(!entityIds?.length||new Set(entityIds).size!==entityIds.length)throw new Error('Explicit unique entity scope required');
- if(previousIndex.inputHashes.view!==sha(JSON.stringify(view))||previousIndex.inputHashes.policy!==sha(JSON.stringify(policy)))throw new Error('World view or policy changed; partial country scope is insufficient');
- const sources=new Map(sourceIndex.entities.map(row=>[row.entityId,row])),oldSources=new Map(previousSourceIndex.entities.map(row=>[row.entityId,row]));
- const mapping=new Map(previousIndex.sourceIdentities.flatMap(row=>row.sourceEntityIds.map(id=>[id,row.projectEntityId])));
- readSource??=id=>readTerritorialSource(id,territorialSourceRoot,{sourceIndex});
- const loadedSources=new Map(),loadSource=id=>{
-  if(!loadedSources.has(id))loadedSources.set(id,readSource(id));
-  return loadedSources.get(id);
- };
- // Reject stale selected metadata/bounds before trusting it for dependency scope.
- // A plan is metadata-only; execution must repeat this verified preflight.
- if(!planOnly)for(const id of entityIds){if(!mapping.has(id))throw new Error(`Unknown scoped source: ${id}`);loadSource(id);}
- const current=new Map(view.selections.map(row=>[row.entityId,row.geometryVersionId]));
- const subunits=new Map(displayPolicy.subunits.map(row=>[builtinSubunitId(row.sourceCountryId),row.parentId]));
- const nodes=previousIndex.sourceIdentities.map(row=>{
-  const versions=[...new Set(row.sourceEntityIds.flatMap(id=>[sources.get(id),oldSources.get(id)]).filter(Boolean))];
-  const first=sources.get(row.sourceEntityIds[0])||oldSources.get(row.sourceEntityIds[0]);
-  if(!first)throw new Error(`Missing catalog metadata: ${row.projectEntityId}`);
-  const parents=new Set(versions.map(value=>subunits.get(row.projectEntityId)||mapping.get(value.parentEntityId)||value.parentEntityId));
-  const bbox=[Math.min(...versions.map(v=>v.bbox[0])),Math.min(...versions.map(v=>v.bbox[1])),Math.max(...versions.map(v=>v.bbox[2])),Math.max(...versions.map(v=>v.bbox[3]))];
-  if(bbox[0]<-180||bbox[2]>180||bbox[2]-bbox[0]>180){bbox[0]=-180;bbox[2]=180;}
-  const windows=versions.flatMap(entity=>activeGeometryWindows(entity,current.get(entity.entityId)));
-  return {...row,parents,windows,bbox};
- });
- const edges=new Map(nodes.map(row=>[row.projectEntityId,new Set()]));
- const connect=(a,b)=>{edges.get(a).add(b);edges.get(b).add(a);};
- for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
-  const a=nodes[i],b=nodes[j];
-  const overlap=a.bbox[0]<=b.bbox[2]&&b.bbox[0]<=a.bbox[2]&&a.bbox[1]<=b.bbox[3]&&b.bbox[1]<=a.bbox[3];
-  const parentDependency=a.parents.has(b.projectEntityId)||b.parents.has(a.projectEntityId);
-  const potentialPeerOverlap=overlap&&[...a.parents].some(parent=>b.parents.has(parent))
-   &&a.windows.some(left=>b.windows.some(right=>
-    (!left.currentSnapshot||!right.currentSnapshot)&&temporalIntervalsOverlap(left,right)));
-  if(parentDependency||potentialPeerOverlap)connect(a.projectEntityId,b.projectEntityId);
- }
- for (const row of policy.parentRelations || []) {
-  const child=mapping.get(row.entityId)||row.entityId,parent=mapping.get(row.parentEntityId)||row.parentEntityId;
-  if(edges.has(child)&&edges.has(parent))connect(child,parent);
- }
- for(const row of [...policy.replacements,...previousCoverage.adjustments]){
-  const a=mapping.get(row.targetEntityId)||row.entityId||row.targetEntityId;
-  for(const raw of row.relatedIds||[row.priorityEntityId]){const b=mapping.get(raw)||raw;if(edges.has(a)&&edges.has(b))connect(a,b);}
- }
- const pending=new Set(entityIds.map(id=>{if(!mapping.has(id))throw new Error(`Unknown scoped source: ${id}`);return mapping.get(id);}));
- const components=[],affected=new Set();
- for(const id of pending){
-  if(affected.has(id))continue;
-  const component=[id];affected.add(id);
-  for(let i=0;i<component.length;i++)for(const peer of edges.get(component[i]))if(!affected.has(peer)){affected.add(peer);component.push(peer);}
-  components.push(new Set(component));
- }
- const sourceIds=new Set(nodes.filter(row=>affected.has(row.projectEntityId)).flatMap(row=>row.sourceEntityIds));
- const revisions={...(previousIndex.inputHashes.sourceRevisions||Object.fromEntries(previousSourceIndex.entities.map(row=>[row.entityId,row.sha256])))};
- const requested=new Set(entityIds);
- for(const id of sourceIds){
-  if(!sources.has(id))throw new Error(`Missing scoped source: ${id}`);
-  if(!requested.has(id)&&revisions[id]!==sources.get(id).sha256)throw new Error(`Unselected modified dependency: ${id}`);
-  revisions[id]=sources.get(id).sha256;
- }
- const scope={requested:entityIds.length,sourceIds:[...sourceIds],projectEntityIds:[...affected],components:components.map(component=>[...component])};
- onScope(scope);
- if(planOnly)return scope;
- const files=new Map(),replacements=new Map(),coverage=new Map(),adjustments=[];
- const geometryAssets=new Map((previousIndex.geometryAssets||[]).map(asset=>[JSON.stringify([asset.id,asset.version]),asset]));
- const availableSourceIds=new Set(previousIndex.sourceIdentities.flatMap(row=>row.sourceFeatureIds));
- if(currentWorld!==null){
-  if(currentWorld.type!=='FeatureCollection'||!Array.isArray(currentWorld.features)
-   ||new Set(currentWorld.features.map(row=>row.id)).size!==currentWorld.features.length
-   ||currentWorld.features.some(row=>!availableSourceIds.has(row.id)))throw new Error('Current world source identity: invalid, duplicate or unknown supplied feature');
- }
- for(const component of components){
-  const ids=new Set(nodes.filter(row=>component.has(row.projectEntityId)).flatMap(row=>row.sourceEntityIds));
-  const entities=[...ids].map(loadSource);
-  const scopedView={...view,selections:view.selections.filter(row=>ids.has(row.entityId))};
-  const scopedPolicy={...policy,replacements:policy.replacements.filter(row=>ids.has(row.targetEntityId)&&ids.has(row.priorityEntityId)),
-   ...(policy.parentRelations ? {parentRelations:policy.parentRelations.filter(row=>ids.has(row.entityId)&&ids.has(row.parentEntityId))} : {})};
-  const selectedFeatureIds=new Set(scopedView.selections.map(row=>loadedSources.get(row.entityId).sourceInfo.featureId));
-  const world=currentWorld?{...currentWorld,features:currentWorld.features.filter(row=>selectedFeatureIds.has(row.id))}:null;
-  const compiled=compileBuiltinWorldCatalog({entities,view:scopedView,currentWorld:world,policy:scopedPolicy,availableSourceIds,displayPolicy,formalNames});
-  compiled.index.geometryAssets=previousIndex.geometryAssets;
-  for(const [file,bytes] of encodeBuiltinCountries(compiled.index,compiled.countries,new Map()))files.set(file,bytes);
-  for(const asset of compiled.index.geometryAssets)geometryAssets.set(JSON.stringify([asset.id,asset.version]),asset);
-  for(const row of compiled.index.entities)replacements.set(row.entityId,row);
-  for(const row of compiled.coverageReport.entities)coverage.set(row.entityId,row);
-  adjustments.push(...compiled.coverageReport.adjustments);
- }
- const index=structuredClone(previousIndex);
- index.entities=[...index.entities.filter(row=>!affected.has(row.entityId)),...replacements.values()].sort((a,b)=>a.entityId.localeCompare(b.entityId,'en'));
- const used=new Set(index.entities.flatMap(entry=>(entry.geometryRefs||[]).map(ref=>JSON.stringify([ref.id,ref.version]))));
- index.geometryAssets=[...geometryAssets].filter(([key])=>used.has(key)).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([,value])=>value);
- recordBuiltinWorldInputs(index,revisions,view,policy);
- finalizeBuiltinWorldFiles(index,files,{previousIndex});
- files.set('coverage-report.json',Buffer.from(JSON.stringify({schemaVersion:2,
-  adjustments:coalesceCoverageAdjustments([...previousCoverage.adjustments.filter(row=>!affected.has(row.entityId)),...adjustments]),
-  entities:[...previousCoverage.entities.filter(row=>!affected.has(row.entityId)),...coverage.values()].sort((a,b)=>a.entityId.localeCompare(b.entityId,'en'))})+'\n'));
- return files;
-}
 export function writeBuiltinWorldPublication(files,directory=output,{check=false,readPreviousCountry,retirementInputs=null,
  currentWorldTarget=path.join(territorialDataRoot,'generated/current-world.geojson'),
  displayPolicyTarget=fileURLToPath(new URL('../../assets/data/builtin-world/display-policy-v1.json',import.meta.url))}={}){
@@ -313,15 +185,54 @@ export function writeBuiltinWorldPublication(files,directory=output,{check=false
   }
  });
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+async function main(){
  const projectId=process.argv.find(arg=>arg.startsWith('--project='))?.slice(10)||'default-world';
  const root=fileURLToPath(new URL('../../',import.meta.url));
  const generation=readProjectGenerationContext({root,projectId});
+ const arg=name=>process.argv.find(value=>value.startsWith(name+'='))?.slice(name.length+1);
+ const selected=arg('--entities'),retirementFile=arg('--retirement-manifest');
+ const namesOnly=process.argv.includes('--names-only'),planOnly=process.argv.includes('--plan'),check=process.argv.includes('--check');
+ if(process.argv.includes('--pack-existing'))throw Error('--pack-existing is retired; use reviewed country-scoped generation');
+ if(projectId!=='default-world'&&retirementFile)throw Error('Territorial retirement requires a project-paired archive and source retirement manifest');
+ if(namesOnly&&!selected)throw Error('--names-only requires --entities');
+ if(retirementFile&&(namesOnly||selected||planOnly))throw Error('Use the dedicated retirement manifest without partial geometry or naming options');
+ if(planOnly&&(!selected||namesOnly||check))throw Error('--plan requires a reviewed geometry scope');
+ if(selected&&!namesOnly){
+  const checkout=libraryCheckout(root),sourceRevision=git(root,['rev-parse','HEAD']);
+  const pinned=JSON.parse(git(root,['show',sourceRevision+':config/library-data.json'])).revision;
+  const baseline=arg('--baseline')||pinned,evidenceRevision=arg('--evidence-revision')||git(checkout,['rev-parse','HEAD']);
+  const reviewPath=arg('--review');
+  if(!/^[a-f0-9]{40}$/.test(baseline)||!/^[a-f0-9]{40}$/.test(evidenceRevision)||!reviewPath)
+   throw Error('Scoped geometry requires --review=<archived review path> and immutable data revisions');
+  if(!planOnly&&!check&&baseline!==pinned)throw Error('Reviewed edition baseline differs from the committed application pin');
+  const archive=revision=>JSON.parse(git(checkout,['show',revision+':archive/index.json']));
+  const old=archive(baseline),evidence=archive(evidenceRevision);
+  const reader=(index,revision)=>p=>{
+   const entry=index.files[p];
+   if(!entry)throw Error('Missing archived reviewed input: '+p);
+   return decodeArchiveEntry(checkout,entry,revision);
+  };
+  const result=buildReviewedBorderEdition({baseline,entityIds:selected.split(','),
+   receipt:{reference:reviewPath,sha256:evidence.files[reviewPath]?.sha256},
+   readBaseline:reader(old,baseline),readEvidence:reader(evidence,evidenceRevision),
+   sourceRoot:generation.source('territorialSourceRoot'),sourceIndexPath:generation.source('territorialSourceIndex'),
+   builtinIndexPath:generation.catalogs.territorial,policyPath:generation.source('historicalPolicy')});
+  if(planOnly){console.log(JSON.stringify(result.plan,null,2));return;}
+  if(check){
+   const actual=archive(pinned);
+   for(const [p,bytes] of result.files)if(actual.files[p]?.sha256!==sha(bytes)||actual.files[p].bytes!==bytes.length)
+     throw Error('Stale scoped Viewer asset: '+p);
+   for(const [p,hash] of Object.entries(result.reports))if(actual.files[p]?.sha256!==hash)throw Error('Missing paired review: '+p);
+   console.log('Verified reviewed Viewer edition '+pinned);return;
+  }
+  const {storeReviewedBorderEdition}=await import('../data/library-store.mjs');
+  console.log(JSON.stringify(await storeReviewedBorderEdition({root,result,evidenceRevision,sourceRevision}),null,2));
+  return;
+ }
  const sourceRoot=path.resolve(root,generation.source('territorialSourceRoot'));
  const sourceIndexPath=generation.source('territorialSourceIndex');
  const sourceIndexAbsolute=path.resolve(root,sourceIndexPath);
  const output=path.dirname(path.resolve(root,generation.catalogs.territorial));
- const namesOnly=process.argv.includes('--names-only');
  const readInput=role=>JSON.parse(readLibraryDataFile(generation.source(role),{root}));
  const selectedView=namesOnly?null:readInput('worldView');
  const selectedPolicy=namesOnly?null:readInput('historicalPolicy');
@@ -329,47 +240,28 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  const formalNames=loadFormalNamesForProject(generation);
  const selectedRead=id=>readTerritorialSource(id,sourceRoot,{sourceIndex,
   chunkRoot:path.dirname(sourceIndexAbsolute)});
- if(process.argv.includes('--pack-existing'))throw Error('--pack-existing is retired; use country-scoped --entities=<ids> generation');
- const selected=process.argv.find(arg=>arg.startsWith('--entities='));
- const retirementFile=process.argv.find(arg=>arg.startsWith('--retirement-manifest='));
- if(projectId!=='default-world'&&retirementFile)throw Error('Territorial retirement requires a project-paired archive and source retirement manifest');
- if(namesOnly&&!selected)throw Error('--names-only requires --entities');
- if(namesOnly&&process.argv.includes('--plan'))throw Error('--plan is only supported for geometry generation');
- if(process.argv.includes('--plan')&&!selected)throw new Error('--plan requires --entities');
  const sourceIndex=readInput('territorialSourceIndex');
  const priorCatalogPath=path.join(output,'index.json');
  const index=(selected||retirementFile||fs.existsSync(priorCatalogPath))
    ?JSON.parse(fs.readFileSync(priorCatalogPath)):null;
  let files,retirementInputs=null;
  if(retirementFile){
-  if(namesOnly||process.argv.includes('--plan'))throw Error('Retirement publication requires source-paired geometry generation');
-  const retirement=JSON.parse(fs.readFileSync(retirementFile.slice('--retirement-manifest='.length)));
+  const retirement=JSON.parse(fs.readFileSync(retirementFile));
   retirementInputs={retirement,sourceIndex,previousSourceIndex:JSON.parse(fs.readFileSync(retirement.previousIndex.path)),
    view:JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json'))),
    policy:JSON.parse(fs.readFileSync(new URL('../../assets/data/historical-world/policy.json',import.meta.url))),displayPolicy:planTerritorialRetirement(retirement,JSON.parse(readRetirementReceipt(retirement.previousIndex))).displayPolicy};
   const input={...retirementInputs,formalNames,previousIndex:JSON.parse(readRetirementReceipt(retirement.previousBuiltinIndex)),previousCoverage:JSON.parse(readRetirementReceipt(retirement.previousCoverage))};
-  files=selected?buildBuiltinWorldRetiredPartialPublication({...input,entityIds:selected.slice('--entities='.length).split(',').filter(Boolean)}):buildBuiltinWorldRetirementPublication(input);
- }else if(selected){
-  if(namesOnly){
-   const ids=selected.slice('--entities='.length).split(',').filter(Boolean);
+  files=buildBuiltinWorldRetirementPublication(input);
+ }else if(namesOnly){
+   const ids=selected.split(',').filter(Boolean);
    const root=fileURLToPath(new URL("../../",import.meta.url)),config=libraryConfig(root),checkout=libraryCheckout(root);
    const archive=JSON.parse(execFileSync('git',['-c','maintenance.auto=false','-c','gc.auto=0','show',`${config.revision}:archive/index.json`],{cwd:checkout,maxBuffer:16*1024*1024}));
    files=buildBuiltinWorldNamePublication({entityIds:ids,sourceIndex,previousIndex:index,readSource:selectedRead,formalNames,readCountry:file=>fs.readFileSync(path.join(output,file)),
     readPreviousSource:id=>normalizeTerritorialLibraryEntity(decodeTerritorialSource(JSON.parse(decodeArchiveEntry(checkout,archive.files[`${generation.source('territorialSourceRoot')}/countries/${entityFileName(id)}`],config.revision)),file=>decodeArchiveEntry(checkout,archive.files[generation.source('territorialSourceRoot')+'/'+file],config.revision)))});
    console.log(`Name-only generation: ${ids.length} selected source; geometry and coverage reused without recomputation.`);
-  }else{
-  const root=fileURLToPath(new URL("../../",import.meta.url)),config=libraryConfig(root),checkout=libraryCheckout(root);
-  const archive=JSON.parse(execFileSync('git',['-c','maintenance.auto=false','-c','gc.auto=0','show',`${config.revision}:archive/index.json`],{cwd:checkout,maxBuffer:16*1024*1024}));
-  const previousSourceIndex=JSON.parse(decodeArchiveEntry(checkout,archive.files[sourceIndexPath],config.revision));
-  files=buildBuiltinWorldPartialPublication({entityIds:selected.slice('--entities='.length).split(',').filter(Boolean),sourceIndex,previousSourceIndex,
-   view:selectedView,policy:selectedPolicy,displayPolicy:selectedDisplayPolicy,formalNames,readSource:selectedRead,
-   previousIndex:index,previousCoverage:JSON.parse(fs.readFileSync(path.join(output,'coverage-report.json'))),
-   planOnly:process.argv.includes('--plan'),
-   onScope:planned=>{console.log(`Scoped generation: ${planned.requested} requested; ${planned.sourceIds.length} connected source inputs in ${planned.components.length} components; other source and country payload files are not read.`);}});
-  if(process.argv.includes('--plan')){console.log(JSON.stringify(files,null,2));process.exit(0);}
-  }
  }else files=buildBuiltinWorldPublication({previousIndex:index,input:{sourceIndex,entities:readTerritorialSources(sourceRoot,{sourceIndex,chunkRoot:path.dirname(sourceIndexAbsolute)}),
    view:selectedView,policy:selectedPolicy,displayPolicy:selectedDisplayPolicy,formalNames}});
- writeBuiltinWorldPublication(files,output,{check:process.argv.includes('--check'),retirementInputs});
+ writeBuiltinWorldPublication(files,output,{check,retirementInputs});
  console.log(`Builtin world: ${JSON.parse(files.get('index.json')).entities.length} country references; ${[...files.keys()].filter(file=>file.startsWith('countries/')||file.startsWith('country-parts/')).length} bounded files emitted; ${[...files.values()].reduce((n,b)=>n+b.length,0)} output bytes; no aggregate transport`);
 }
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))await main();

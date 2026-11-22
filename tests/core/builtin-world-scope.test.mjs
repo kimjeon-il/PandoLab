@@ -1,38 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {recordBuiltinWorldInputs,buildBuiltinWorldPartialPublication} from '../../tools/build/build-builtin-world.mjs';
+import {applyReviewedSharedArcs,coordinateDigest} from '../../tools/build/reviewed-border-edition.mjs';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 
-test('scoped country generation follows simultaneous versions and explicit parent dependencies',()=>{
-  const source=(entityId,validFrom,validTo,periods=[{validFrom,validTo}])=>({
-    entityId,sha256:entityId,parentEntityId:'',lifetime:periods.length===1?periods[0]:periods,
-    bbox:[0,0,2,2],geometryVersions:[{versionId:entityId+':geometry',validFrom,validTo}],
-  });
-  const entities=[
-    source('state:NEW','2000-01-01',null),
-    source('state:EXPIRED','1900','1999'),
-    source('state:OVERLAP','2000','2000-01'),
-    source('state:GAP','1990','2010',[{validFrom:'1990',validTo:'1999'}, {validFrom:'2001',validTo:'2010'}]),
-    source('state:PARENT','1900','2010'),
-  ];
-  entities[0].geometryVersions[0].validTo='2000-12-31';
-  entities[4].bbox=[10,10,12,12];
-  const view={schemaVersion:1,selections:[{entityId:'state:NEW',geometryVersionId:'state:NEW:geometry'}]};
-  const policy={schemaVersion:1,replacements:[],parentRelations:[{
-    entityId:'state:NEW',parentEntityId:'state:PARENT',validFrom:'2000-03',validTo:'2000-04',
-  }]};
-  const sourceIndex={entities};
-  const previousIndex={sourceIdentities:entities.map(({entityId})=>({
-    projectEntityId:entityId,sourceEntityIds:[entityId],sourceFeatureIds:[],
-  }))};
-  recordBuiltinWorldInputs(previousIndex,Object.fromEntries(entities.map(e=>[e.entityId,e.sha256])),view,policy);
-  const plan=buildBuiltinWorldPartialPublication({
-    entityIds:['state:NEW'],sourceIndex,previousSourceIndex:sourceIndex,view,policy,previousIndex,
-    previousCoverage:{adjustments:[]},displayPolicy:{subunits:[]},planOnly:true,
-    readSource(){assert.fail('metadata-only plan read a coordinate payload');},
-  });
-  assert.deepEqual(plan.sourceIds.sort(),['state:NEW','state:OVERLAP','state:PARENT']);
+test('a reviewed shared arc updates only its reciprocal sections',()=>{
+  const polygon=ring=>({type:'Polygon',coordinates:[ring]});
+  const before=[polygon([[0,0],[1,0],[1,1],[0,1],[0,0]]),polygon([[1,0],[2,0],[2,1],[1,1],[1,0]])];
+  const section=[[1,0],[1,1]],replacement=[[1,0],[1.1,.5],[1,1]];
+  const change={before:section,beforeSha256:coordinateDigest(section),after:replacement};
+  const expected=[polygon([[0,0],[1,0],[1.1,.5],[1,1],[0,1],[0,0]]),
+    polygon([[1,0],[2,0],[2,1],[1,1],[1.1,.5],[1,0]])];
+  assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
+  assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
+  assert.throws(()=>applyReviewedSharedArcs(before,[{...change,beforeSha256:'stale'}]),/preimage/);
+  assert.throws(()=>applyReviewedSharedArcs([before[0],before[0]],[change]),/reciprocal/);
 });
 
 test('a verified display review can follow a stored shared-arc correction',()=>{
