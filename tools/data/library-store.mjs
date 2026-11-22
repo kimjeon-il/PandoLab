@@ -1,4 +1,4 @@
-import {planSourceGeometryArchive,archiveStoredResources} from './library-archive.mjs';
+import {planSourceGeometryArchive,archiveStoredResources,packLibraryGzip} from './library-archive.mjs';
 import {assertVerifiedScopedWorldRetirement} from '../build/build-scoped-world-retirement.mjs';
 import {assertTerritorialRetirement,assertBuiltinRetirement,retirementDisplayPath,retirementWorldPath,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
 import {isDeepStrictEqual} from 'node:util';
@@ -439,7 +439,11 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
     if (previous?.sha256 === sha256 && (direct || ['identity', 'gzip'].includes(previous.encoding)) && previous.stored === libraryStoragePath(path, {
       sha256, encoding: previous.encoding, direct,
     })) return;
-    const packed = isReport ? bytes : gzipSync(bytes, { level: 9 });
+    let packed=bytes;
+    if(!direct){
+      const sourceGeometry=path.startsWith('assets/data/territorial-entities/source/geometries/');
+      packed=sourceGeometry?packLibraryGzip(bytes):gzipSync(bytes,{level:9});
+    }
     // Chunk only immutable editable source geometry archives, never public
     // runtime URLs or directly published reports. Logical file/hash are unchanged.
     const chunked=!direct&&planSourceGeometryArchive(path,packed,{sha256,bytes:bytes.length});
