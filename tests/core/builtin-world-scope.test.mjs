@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {gzipSync} from 'node:zlib';
-import {applyReviewedSharedArcs,coordinateDigest,proveUnchangedMergedMembers,replaceReviewedDisplayBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateDisplayedBorderAuthority,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
+import {applyReviewedSharedArcs,coordinateDigest,proveUnchangedMergedMembers,replaceReviewedDisplayBinding,replaceReviewedViewerBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateDisplayedBorderAuthority,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 
@@ -108,6 +108,21 @@ test('a modern border review preserves the historical geometry on both sides',()
   }
   assert.throws(()=>reviewedDisplayPeriod(rows,versions,{...input,previousDisplayThrough:'2026-11-01'}),/immediately follow/);
   assert.throws(()=>reviewedDisplayPeriod(rows,versions,{}),/explicit common/);
+});
+
+test('a modern border review splits the current Viewer binding at the reviewed date',()=>{
+  const objectRef={domain:'territorial',id:'AAA'};
+  const oldRef={id:'existing',version:1},nextRef={id:'reviewed',version:1};
+  const reviewed={validFrom:'2026-11-01',validTo:null};
+  const source={objectRef,geometryRef:oldRef,validFrom:'1995-09-25',validTo:null};
+  const viewer={id:'active',objectRef,geometryRef:oldRef,validFrom:'1991-12-16',validTo:null};
+  const earlier={...viewer,id:'earlier',validFrom:'1980-01-01',validTo:'1991-12-15'};
+  const replace=replaceReviewedViewerBinding;
+  const updated=replace([earlier,viewer],source,nextRef,reviewed,'2026-10-31');
+  assert.equal(updated[0],earlier);
+  assert.deepEqual(updated[1],{...viewer,validTo:'2026-10-31'});
+  assert.deepEqual(updated[2],{...viewer,...reviewed,id:'active:reviewed:2026-11-01',geometryRef:nextRef});
+  assert.throws(()=>replace([viewer,{...viewer,id:'duplicate'}],source,nextRef,reviewed,'2026-10-31'),/unique active Viewer binding/);
 });
 
 test('a verified display review can follow a stored shared-arc correction',()=>{

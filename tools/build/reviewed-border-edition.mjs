@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {coordinateBounds} from '../../src/geometry/coordinate-bounds.js';
-import {temporalIntervalsOverlap,compareTemporal,parseTemporal,temporalFollowingDay} from '../../src/document/temporal.js';
+import {temporalContains,temporalIntervalsOverlap,compareTemporal,parseTemporal,temporalFollowingDay} from '../../src/document/temporal.js';
 import {decodeTerritorialSource,encodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {selectTerritorialChunkBytes} from '../data/territorial-chunk-compression.mjs';
 import {assertIndexedTerritorialChunk} from '../data/territorial-metadata-projection.mjs';
@@ -361,10 +361,10 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
   const country=structuredClone(countries[i]),oldRef=bindings[i].geometryRef,display=afterDisplay[i];
   const shapeId='historical-world:'+coordinateDigest(display),next={id:shapeId,version:1};
   country.sourceBindings=replaceReviewedDisplayBinding(country.sourceBindings,bindings[i],next,binding,previousDisplayThrough);
-  country.timelineRecords.geometryBindings=replaceReviewedDisplayBinding(country.timelineRecords.geometryBindings,bindings[i],next,binding,previousDisplayThrough);
+  country.timelineRecords.geometryBindings=replaceReviewedViewerBinding(country.timelineRecords.geometryBindings,bindings[i],next,binding,previousDisplayThrough);
   if(!country.sourceBindings.some(r=>equal(r.geometryRef,next))||!country.timelineRecords.geometryBindings.some(r=>equal(r.geometryRef,next)))
    fail('paired Viewer binding missing '+country.entityId);
-  const stillUses=country.timelineRecords.geometryBindings.some(r=>equal(r.geometryRef,oldRef));
+  const stillUses=[...country.sourceBindings,...country.timelineRecords.geometryBindings].some(r=>equal(r.geometryRef,oldRef));
   country.geometries=country.geometries.flatMap(g=>g.id===oldRef.id&&g.version===oldRef.version
    ?[...(stillUses?[g]:[]),{...next,geojson:display}]:[g]);
   const entry=country.identity.properties.metadata.historicalTimeline.geometryVersions.find(v=>v.versionId===version.versionId);
@@ -431,6 +431,16 @@ export function replaceReviewedDisplayBinding(rows,before,geometryRef,binding,pr
  });
  if(replaced!==1)fail('a unique current display binding is required');
  return next;
+}
+
+export function replaceReviewedViewerBinding(rows,source,geometryRef,binding,previousDisplayThrough){
+ if(previousDisplayThrough===undefined)return replaceReviewedDisplayBinding(rows,source,geometryRef,binding,previousDisplayThrough);
+ // The Viewer can coalesce identical geometries across source-version boundaries.
+ // Split its active interval at the review date while keeping its original start.
+ const active=rows.filter(row=>row.validTo===binding.validTo&&equal(row.objectRef,source.objectRef)
+  &&equal(row.geometryRef,source.geometryRef)&&temporalContains(row,binding.validFrom));
+ if(active.length!==1)fail('a unique active Viewer binding is required');
+ return replaceReviewedDisplayBinding(rows,active[0],geometryRef,binding,previousDisplayThrough);
 }
 
 export function buildReviewedBorderBatch({entityIds,receipts,readBaseline,...options}){
