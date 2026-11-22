@@ -77,8 +77,9 @@ export function validateReviewedPair(before,after,changes,label){
  // contribution is unchanged outside the bounds of the old and new chains.
  // Clip each edition before comparing so untouched coastlines do not enter
  // the same polygon operation twice.
- return changes.flatMap(change=>{
-  const [west,south,east,north]=sectionBounds(change);
+ return changes.map(change=>{
+  const bounds=sectionBounds(change);
+  const [west,south,east,north]=bounds;
   const padding=.001;
   const left=Math.max(-180,west-padding),right=Math.min(180,east+padding);
   const bottom=Math.max(-90,south-padding),top=Math.min(90,north+padding);
@@ -86,8 +87,26 @@ export function validateReviewedPair(before,after,changes,label){
   const withinWindow=geometry=>clip.intersection(parts(geometry),window);
   const original=before.map(withinWindow),updated=after.map(withinWindow);
   if(clip.xor(clip.union(...original),clip.union(...updated)).length)fail(label+' pair exterior changed');
-  return original.flatMap((polygons,i)=>clip.xor(polygons,updated[i]));
+  return {bounds,before:original,after:updated};
  });
+}
+
+export function reviewedBorderTouchesNeighbor(geometry,sections){
+ // A neighbor intersects a changed area exactly when its intersections with
+ // a country's old and new territory differ. Clip to the neighbor first to
+ // avoid computing a symmetric difference along the entire shared arc.
+ for(const polygon of parts(geometry)){
+  const bounds=coordinateBounds(polygon);
+  for(const {bounds:footprint,before,after} of sections){
+   if(!overlaps(bounds,footprint))continue;
+   for(const [i,oldSide] of before.entries()){
+    const previous=clip.intersection([polygon],oldSide);
+    const current=clip.intersection([polygon],after[i]);
+    if(!equal(previous,current)&&(!previous.length||!current.length||clip.xor(previous,current).length))return true;
+   }
+  }
+ }
+ return false;
 }
 
 function liesOnEdge([x,y],[ax,ay],[bx,by]){
@@ -96,7 +115,7 @@ function liesOnEdge([x,y],[ax,ay],[bx,by]){
  return Math.abs(px*dy-py*dx)<=1e-12&&progress>=-1e-12&&progress<=extent+1e-12;
 }
 
-function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawDelta,displayDelta,readRaw,readCountry,changes}){
+function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawSections,displaySections,readRaw,readCountry}){
  // Two simultaneous priority cutters subtract their union. This remains true
  // during a dated replacement and for its descendants if the union is equal.
  const cutters=new Map();
@@ -114,18 +133,8 @@ function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawDelta,display
  }
  if((policy.parentRelations||[]).some(r=>dateOverlap(r,binding)&&[r.entityId,r.parentEntityId].some(id=>ids.includes(id))))
   fail('selected country has a dated parent dependency');
- const footprints=changes.map(sectionBounds);
+ const footprints=[...rawSections,...displaySections].map(section=>section.bounds);
  const readOnly=[];
- const masks=(polygons)=>polygons.map(p=>[p,coordinateBounds(p)]);
- const touches=(geometry,difference)=>{
-  for(const polygon of parts(geometry)){
-   const box=coordinateBounds(polygon);
-   const nearby=difference.filter(([,bounds])=>overlaps(box,bounds)).map(([p])=>p);
-   if(nearby.length&&clip.intersection([polygon],nearby).length)return true;
-  }
-  return false;
- };
- const rawMasks=masks(rawDelta),displayMasks=masks(displayDelta);
  for(const source of sourceIndex.entities){
   const id=source.entityId;
   if(ids.includes(id)||!footprints.some(bounds=>overlaps(bounds,source.bbox))
@@ -142,11 +151,11 @@ function proveNeighbors({sourceIndex,builtin,policy,ids,binding,rawDelta,display
   if(ids.some(selected=>source.parentEntityId===selected))fail('selected country has a child dependency '+id);
   const rawPeer=readRaw(id);
   const historical=readCountry(owner.projectEntityId);
-  for(const version of rawPeer.geometryVersions)if(dateOverlap(version,binding)&&touches(version.geometry,rawMasks))
+  for(const version of rawPeer.geometryVersions)if(dateOverlap(version,binding)&&reviewedBorderTouchesNeighbor(version.geometry,rawSections))
    fail('raw neighbor affected '+id+' '+version.versionId);
   for(const entry of historical.sourceBindings)if(dateOverlap(entry,binding)){
    const geometry=historical.geometries.find(g=>equal(entry.geometryRef,{id:g.id,version:g.version}));
-   if(!geometry||touches(geometry.geojson,displayMasks))fail('display neighbor affected '+id+' '+entry.validFrom);
+   if(!geometry||reviewedBorderTouchesNeighbor(geometry.geojson,displaySections))fail('display neighbor affected '+id+' '+entry.validFrom);
   }
   readOnly.push({id,reason:'disjoint from the changed area'});
  }
@@ -233,10 +242,10 @@ export function buildReviewedBorderEdition({baseline,entityIds,receipt,readBasel
    ||(after.length-end===2&&!liesOnEdge(after[end],before.at(-2),before.at(-1)));
  }))fail('display sections must carry the archived arcs in order');
  const afterDisplay=applyReviewedSharedArcs(beforeDisplay,input.sections);
- const rawDelta=validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
- const displayDelta=validateReviewedPair(beforeDisplay,afterDisplay,input.sections,'display');
- const dependencies=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawDelta,displayDelta,
-  readRaw:id=>source(id,readBaseline),readCountry,changes:[...rawChanges,...input.sections]});
+ const rawSections=validateReviewedPair(beforeRaw,afterRaw,rawChanges,'raw');
+ const displaySections=validateReviewedPair(beforeDisplay,afterDisplay,input.sections,'display');
+ const dependencies=proveNeighbors({sourceIndex:v2,builtin:index,policy,ids:selected,binding,rawSections,displaySections,
+  readRaw:id=>source(id,readBaseline),readCountry});
 
  const files=new Map(),nativeRows=new Map(),outCountries=[];
  const rawScope=selected.flatMap((id,i)=>[rawPath(id),sourceRoot+'/geometries/sha256-'+digest(geometryBytes(afterRaw[i]))+'.json']);

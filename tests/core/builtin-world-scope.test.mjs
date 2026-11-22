@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedDisplayPeriod,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
+import {applyReviewedSharedArcs,coordinateDigest,replaceReviewedDisplayBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod,validateReviewedPair} from '../../tools/build/reviewed-border-edition.mjs';
 import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 
@@ -14,13 +14,34 @@ test('a reviewed shared arc updates only its reciprocal sections',()=>{
     polygon([[1,0],[2,0],[2,1],[1,1],[1.1,.5],[1,0]])];
   assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
   assert.deepEqual(applyReviewedSharedArcs(before,[change]),expected);
-  assert.equal(validateReviewedPair(before,expected,[change],'source').length,2);
+  const sections=validateReviewedPair(before,expected,[change],'source');
+  const neighbor=(west,south,east,north)=>polygon([[west,south],[east,south],[east,north],[west,north],[west,south]]);
+  assert.equal(reviewedBorderTouchesNeighbor(neighbor(1.02,.48,1.04,.52),sections),true);
+  assert.equal(reviewedBorderTouchesNeighbor(neighbor(1.08,.08,1.09,.09),sections),false);
   assert.throws(()=>validateReviewedPair(before,[expected[0],before[1]],[change],'source'),/pair overlaps/);
   const gapChange={...change,after:[[1,0],[.9,.5],[1,1]]};
   const gap=[polygon([[0,0],[1,0],[.9,.5],[1,1],[0,1],[0,0]]),before[1]];
   assert.throws(()=>validateReviewedPair(before,gap,[gapChange],'source'),/pair exterior changed/);
   assert.throws(()=>applyReviewedSharedArcs(before,[{...change,beforeSha256:'stale'}]),/preimage/);
   assert.throws(()=>applyReviewedSharedArcs([before[0],before[0]],[change]),/reciprocal/);
+});
+
+test('a reciprocal border with collinear bridges passes topology verification',()=>{
+  const north=[29.588147,64.991435],south=[29.633622,64.90715];
+  const southEdge=[29.634573371937773,64.90615],northEdge=[29.58838526933377,64.992435];
+  const west=29.587146999999998,east=29.634622,bottom=64.90615,top=64.992435;
+  const polygon=(...ring)=>({type:'Polygon',coordinates:[[...ring,ring[0]]]});
+  const before=[
+    polygon([west,bottom],southEdge,south,north,northEdge,[west,top]),
+    polygon(north,south,southEdge,[east,bottom],[east,top],northEdge),
+  ];
+  const old=[north,south];
+  const change={before:old,beforeSha256:coordinateDigest(old),after:[north,
+    [29.60598098219588,64.95838085619836],[29.619184800000028,64.95965900000004],
+    [29.610994900000037,64.92731090000007],[29.615221100000042,64.91745700000007],
+    [29.627422000770384,64.91864130148583],south]};
+  const after=applyReviewedSharedArcs(before,[change]);
+  assert.doesNotThrow(()=>validateReviewedPair(before,after,[change],'display'));
 });
 
 test('a modern border review preserves the historical geometry on both sides',()=>{
