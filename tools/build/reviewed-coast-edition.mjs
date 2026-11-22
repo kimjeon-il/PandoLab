@@ -152,7 +152,10 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
  const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
- for(const section of sections)validateExterior(physicalAfter,section.after);
+ for(const [index,section] of sections.entries()){
+  try{validateExterior(physicalAfter,section.after);}
+  catch(cause){throw new Error(`Reviewed coastline section ${index} (${section.entityId}) physical exterior failed`,{cause});}
+ }
  const affected=[],dependencies=[];
 
  const countries=owners.map(({source,identity,country,version,entry,geometry})=>{
@@ -160,8 +163,10 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));
   const display=applyReviewedExteriorArcs(geometry.geojson,changes);
   for(const change of changes){
-   validateExterior(display,change.after);
-   affected.push({entityId:source.entityId,...coastlineChanges([geometry.geojson,display],[physicalBefore,physicalAfter],change)});
+   try{
+    validateExterior(display,change.after);
+    affected.push({entityId:source.entityId,...coastlineChanges([geometry.geojson,display],[physicalBefore,physicalAfter],change)});
+   }catch(cause){throw new Error(`Reviewed coastline section ${sections.indexOf(change)} (${source.entityId}) display validation failed`,{cause});}
   }
   const next=structuredClone(country),ref={id:'historical-world:'+coordinateDigest(display),version:1};
   next.sourceBindings=replaceReviewedDisplayBinding(next.sourceBindings,entry,ref,binding,previousDisplayThrough);
