@@ -7,16 +7,27 @@ import {temporalContains} from '../../src/document/temporal.js';
 import {assertHistoricalCompiledChanges,assertHistoricalSourceStorageChanges} from '../../tools/gis/historical-display-review.mjs';
 import * as reviewedBorder from '../../tools/build/reviewed-border-edition.mjs';
 import {validateReviewedPhysicalCoast} from '../../tools/build/reviewed-coast-edition.mjs';
+import * as reviewedCoast from '../../tools/build/reviewed-coast-edition.mjs';
 import * as physicalLand from '../../src/data/physical-land-patch.js';
 
-test('one coastline correction can replay the same source arc in differently ordered land rings',()=>{
+test('a coastline move keeps vertex slots when the section crosses a ring closure',()=>{
   const start=[0,0],end=[1,0],corner=[1,1],other=[0,1];
   const old=[start,[.5,0],end],after=[start,[.5,-.1],end];
   const change={before:old,after,beforeSha256:coordinateDigest(old)};
   const coast={type:'Polygon',coordinates:[[old[1],end,corner,other,start,old[1]]]};
   assert.deepEqual(reviewedBorder.applyReviewedExteriorArcs(coast,[change]).coordinates[0],
-    [start,after[1],end,corner,other,start]);
+    [after[1],end,corner,other,start,after[1]]);
   assert.throws(()=>reviewedBorder.applyReviewedExteriorArcs(coast,[{...change,after:[[0,.1],after[1],end]}]),/fixed section endpoints/);
+  assert.throws(()=>reviewedBorder.applyReviewedExteriorArcs(coast,[{...change,after:[start,[.25,-.1],after[1],end]}]),/vertex count/);
+});
+
+test('matched coastal vertices move onto the donor at their closest ordered positions',()=>{
+  const before=[[0,0],[.3,.1],[.7,.2],[1,0]];
+  const donor=[[0,-.1],[.12,-.1],[.83,-.1],[1,-.1]];
+  const after=reviewedCoast.moveReviewedCoastVertices(before,donor);
+  assert.deepEqual(after,[[0,0],[.3,-.1],[.7,-.1],[1,0]]);
+  assert.equal(after.length,before.length);
+  assert.throws(()=>reviewedCoast.moveReviewedCoastVertices([[0,0],[.7,.3],[.3,.1],[1,-.1]],donor),/vertex order/);
 });
 
 test('a coastline batch reports each independently invalid land arc in one pass',()=>{

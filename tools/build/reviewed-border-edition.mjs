@@ -89,7 +89,10 @@ function spliceExteriorRanges(geometry,targets){
 
 export function applyReviewedExteriorArcs(geometry,changes){
  if(!Array.isArray(changes)||!changes.length)fail('reviewed sections required');
- for(const change of changes)verifySplice(change);
+ for(const change of changes){
+  if(change.before.length!==change.after.length)fail('coastline vertex count differs');
+  verifySplice(change);
+ }
  const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({before})=>[before[0],before.at(-1)]));
  const targets=changes.map(change=>{
   const forward=locate(change.before),reverse=locate(change.before.toReversed());
@@ -97,7 +100,18 @@ export function applyReviewedExteriorArcs(geometry,changes){
   return {...(forward[0]??reverse[0]),coordinates:forward.length?change.after:change.after.toReversed()};
  });
  const result=structuredClone(geometry);
- spliceExteriorRanges(result,targets);
+ for(const [polygonIndex,ranges] of Map.groupBy(targets,range=>range.polygonIndex)){
+  const ring=parts(result)[polygonIndex][0],period=ring.length-1,usedEdges=new Set();
+  for(const {startIndex,coordinates} of ranges){
+   for(let i=0;i<coordinates.length-1;i++){
+    const slot=(startIndex+i)%period;
+    if(usedEdges.has(slot))fail('overlapping section preimages');
+    usedEdges.add(slot);
+    if(i)ring[slot]=coordinates[i];
+   }
+  }
+  ring[period]=ring[0];
+ }
  return result;
 }
 

@@ -12,7 +12,7 @@ import {createPhysicalLandPatch} from '../data/physical-land-storage.mjs';
 import {assertHistoricalCompiledChanges} from '../gis/historical-display-review.mjs';
 import {historicalWorldClipper as clip} from '../gis/historical-world-territories.mjs';
 import {territorialLifetimeIntervals} from '../gis/territorial-library.js';
-import {applyReviewedExteriorArcs,carriesArc,coordinateDigest,createReviewedExteriorLookup,proveUnchangedMergedMembers,
+import {applyReviewedExteriorArcs,coordinateDigest,createReviewedExteriorLookup,proveUnchangedMergedMembers,
  replaceReviewedDisplayBinding,replaceReviewedViewerBinding,reviewedBorderTouchesNeighbor,reviewedDisplayPeriod} from './reviewed-border-edition.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -22,6 +22,39 @@ const parts=g=>g.type==='Polygon'?[g.coordinates]:g.coordinates;
 const overlaps=(a,b)=>a[0]<=b[2]&&b[0]<=a[2]&&a[1]<=b[3]&&b[1]<=a[3];
 const fail=reason=>{throw Error('Reviewed coastline: '+reason);};
 const issued=new WeakMap();
+
+export function moveReviewedCoastVertices(before,source){
+ const isPoint=point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)
+  &&Math.abs(point[0])<=180&&Math.abs(point[1])<=90;
+ if(!Array.isArray(before)||before.length<3||!before.every(isPoint))fail('no movable coastline vertices');
+ if(!Array.isArray(source)||source.length<2||!source.every(isPoint))fail('invalid shoreline source coordinates');
+ const latitude=(before[0][1]+before.at(-1)[1])/2;
+ const longitudeScale=Math.cos(latitude*Math.PI/180);
+ const segments=source.slice(0,-1).map(([x,y],index)=>{
+  const [nextX,nextY]=source[index+1],dx=(nextX-x)*longitudeScale,dy=nextY-y;
+  if(Math.abs(nextX-x)>=180)fail('shoreline source crosses a projection seam');
+  return {index,x,y,dx,dy,lengthSquared:dx*dx+dy*dy};
+ }).filter(segment=>segment.lengthSquared>0);
+ if(!segments.length)fail('empty shoreline source');
+ let previous=-1;
+ const interior=before.slice(1,-1).map(([lon,lat])=>{
+  let bestDistance=Infinity,bestPosition=-1,bestPoint;
+  for(const {index,x,y,dx,dy,lengthSquared} of segments){
+   const px=(lon-x)*longitudeScale,py=lat-y;
+   const fraction=Math.max(0,Math.min(1,(px*dx+py*dy)/lengthSquared));
+   const distance=(px-fraction*dx)**2+(py-fraction*dy)**2;
+   if(distance>=bestDistance)continue;
+   bestDistance=distance;
+   bestPosition=index+fraction;
+   bestPoint=fraction===0?source[index]:fraction===1?source[index+1]:[x+fraction*(source[index+1][0]-x),y+fraction*dy];
+  }
+  if(bestPosition<=previous||equal(bestPoint,before[0])||equal(bestPoint,before.at(-1)))
+   fail('shoreline projections do not preserve vertex order');
+  previous=bestPosition;
+  return bestPoint;
+ });
+ return [before[0],...interior,before.at(-1)];
+}
 
 const exteriorBounds=new WeakMap();
 function polygonBounds(polygon){
@@ -122,7 +155,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  };
  const input=JSON.parse(archived(receipt));
  const selected=[...entityIds].sort();
- if(input.schemaVersion!==1||input.kind!=='reviewed-coastline'||input.baseline!==baseline
+ if(input.schemaVersion!==2||input.kind!=='reviewed-coastline'||input.baseline!==baseline
   ||!selected.length||new Set(selected).size!==selected.length||!selected.every(id=>/^state:[A-Z]{3}$/.test(id))
   ||!equal(input.entities.map(row=>row.entityId),selected)||!input.sections?.length
   ||input.sections.some(row=>!selected.includes(row.entityId))||!selected.every(id=>input.sections.some(row=>row.entityId===id))
@@ -140,13 +173,13 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   ||!/^[a-f0-9]{64}$/.test(donor.provenance.originalSha256||''))fail('genuine source edition and lineage required');
  const lines=new Map(donor.features.map(row=>[row.id,row.geometry]));
  if(lines.size!==donor.features.length)fail('duplicate shoreline source ID');
- const sections=input.sections.map(({entityId,before,beforeSha256,after,lineId,part,indexes})=>{
+ const sections=input.sections.map(({entityId,before,beforeSha256,after,lineId,part,sourceStart,sourceEnd})=>{
   const geometry=lines.get(lineId),raw=geometry?.type==='LineString'&&part===0?geometry.coordinates:
    geometry?.type==='MultiLineString'?geometry.coordinates[part]:null;
-  if(!raw||!Array.isArray(indexes)||indexes.length<2||indexes.some(i=>!Number.isInteger(i)||i<0||i>=raw.length))fail('archived source line or vertex missing');
-  const direction=Math.sign(indexes[1]-indexes[0]);
-  if(!direction||indexes.some((i,j)=>j&&Math.sign(i-indexes[j-1])!==direction)
-    ||!carriesArc({before,after},indexes.map(i=>raw[i])))fail('corrected arc differs from the reviewed source');
+  if(!raw||sourceStart===sourceEnd||![sourceStart,sourceEnd].every(i=>Number.isInteger(i)&&i>=0&&i<raw.length))
+   fail('archived shoreline range missing');
+  const source=sourceStart<sourceEnd?raw.slice(sourceStart,sourceEnd+1):raw.slice(sourceEnd,sourceStart+1).reverse();
+  if(!equal(after,moveReviewedCoastVertices(before,source)))fail('reviewed vertex positions differ from shoreline projections');
   return {entityId,before,beforeSha256,after};
  });
 
@@ -224,7 +257,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
    geometrySha256:geometryHash(display),master,source:input.source,visual:input.visual,
    comparison:{reference:receipt,arcSha256:coordinateDigest(changes.map(c=>c.after)),extent:coordinateBounds(changes.map(c=>c.after)),
     scaleDenominator:10000000,projection:{definition:'+proj=aeqd +ellps=WGS84 +units=m',units:'metre',evidence:input.visual}},
-   method:'reviewed-display-generalization',reason:'Matched route between fixed coastal anchors in both Viewer layers.',
+   method:'reviewed-display-generalization',reason:'Moved the existing interior vertices onto the matched shoreline in both Viewer layers.',
    parameters:{reviewedSectionCount:changes.length},topology:{status:'passed',evidence:receipt,
     checks:['validity','shared-boundary','union','gaps-overlaps','connectivity','holes-islands','dates']},
    counterpartVersions:[],noSharedBoundaryReason:'Only a common exterior land and sea interface changed.',
