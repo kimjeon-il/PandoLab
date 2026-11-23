@@ -29,7 +29,7 @@ export function moveReviewedCoastVertices(before,source,stationing){
   &&Math.abs(point[0])<=180&&Math.abs(point[1])<=90;
  if(!Array.isArray(before)||before.length<3||!before.every(isPoint))fail('no movable coastline vertices');
  if(!Array.isArray(source)||source.length<2||!source.every(isPoint))fail('invalid shoreline source coordinates');
- if(stationing!==undefined&&!['between-projections','ordered-projections'].includes(stationing))fail('unknown shoreline stationing');
+ if(stationing!==undefined&&!['between-projections','ordered-projections','ordered-ring-projections'].includes(stationing))fail('unknown shoreline stationing');
  const latitude=(before[0][1]+before.at(-1)[1])/2;
  const longitudeScale=Math.cos(latitude*Math.PI/180);
  const segments=source.slice(0,-1).map(([x,y],index)=>{
@@ -43,7 +43,8 @@ export function moveReviewedCoastVertices(before,source,stationing){
   return fraction===0?source[index]:fraction===1?next:[x+fraction*(next[0]-x),y+fraction*(next[1]-y)];
  };
  const closed=equal(before[0],before.at(-1));
- if(closed&&(!equal(source[0],source.at(-1))||stationing!==undefined))fail('full exterior requires a closed shoreline source');
+ if(closed&&(!equal(source[0],source.at(-1))||(stationing!==undefined&&stationing!=='ordered-ring-projections')))fail('full exterior requires a closed shoreline source');
+ if(!closed&&stationing==='ordered-ring-projections')fail('ordered ring projections require a complete exterior');
  if(stationing==='ordered-projections')return orderedSourceProjections(before,segments,longitudeScale,pointOnSegment);
  // A source endpoint bounds the nearest possible distance. All segments
  // closer than that endpoint must intersect this projected search box.
@@ -76,6 +77,12 @@ export function moveReviewedCoastVertices(before,source,stationing){
   const locations=interior.map(({position})=>position%period);
   const moved=interior.map(({point})=>point);
   const descents=locations.filter((value,i)=>value<locations[(i+locations.length-1)%locations.length]).length;
+  if(stationing==='ordered-ring-projections'){
+   const winding=ring=>Math.sign(ring.slice(1).reduce((sum,p,i)=>sum+(ring[i][0]-ring[0][0])*(p[1]-ring[0][1])-(ring[i][1]-ring[0][1])*(p[0]-ring[0][0]),0));
+   if(!winding(before)||winding(before)!==winding(source))fail('surveyed and existing ring directions differ');
+   if(descents!==1||new Set(moved.map(p=>p.join(','))).size!==moved.length)
+    return orderRingStations(before,source,locations,longitudeScale,pointOnSegment);
+  }
   if(moved.length<3||new Set(moved.map(p=>p.join(','))).size!==moved.length||descents!==1)
    fail('closed shoreline projections do not preserve vertex order');
   return [...moved,moved[0]];
@@ -87,6 +94,45 @@ export function moveReviewedCoastVertices(before,source,stationing){
  }
  if(stationing)spreadCoincidentProjections(interior,before,source,longitudeScale,pointOnSegment);
  return [before[0],...interior.map(row=>row.point),before.at(-1)];
+}
+
+function orderRingStations(before,source,positions,longitudeScale,pointOnSegment){
+ const distances=ring=>{
+  const stations=[0];
+  for(let i=1;i<ring.length;i++)stations.push(stations[i-1]+Math.hypot((ring[i][0]-ring[i-1][0])*longitudeScale,ring[i][1]-ring[i-1][1]));
+  return stations;
+ };
+ const donor=distances(source),old=distances(before),total=donor.at(-1);
+ const station=position=>{
+  const i=Math.floor(position);
+  return donor[i]+(position-i)*(donor[i+1]-donor[i]);
+ };
+ const origin=station(positions[0]),gaps=old.map(s=>total*.025*s/old.at(-1)),slack=total-gaps.at(-1);
+ // Isotonic least squares keeps station changes local to inversions. Reserving
+ // a fraction of each original edge length keeps separate vertices distinct.
+ const groups=[];
+ for(let i=1;i<positions.length;i++){
+  let at=(station(positions[i])-origin+total)%total;
+  const expected=old[i]/old.at(-1)*total;
+  if(at-expected>total/2)at-=total;
+  if(expected-at>total/2)at+=total;
+  let sum=Math.max(0,Math.min(slack,at-gaps[i])),count=1;
+  while(groups.length&&groups.at(-1).mean>sum/count){
+   const previous=groups.pop();sum+=previous.sum;count+=previous.count;
+  }
+  groups.push({sum,count,mean:sum/count});
+ }
+ const result=[];
+ const interpolate=unwrapped=>{
+  const target=(origin+unwrapped)%total;
+  let lo=0,hi=donor.length-1;
+  while(lo+1<hi){const mid=(lo+hi)>>>1;if(donor[mid]<=target)lo=mid;else hi=mid;}
+  return pointOnSegment(lo,(target-donor[lo])/(donor[lo+1]-donor[lo]));
+ };
+ result.push(interpolate(0));
+ for(const group of groups)for(let j=0;j<group.count;j++)result.push(interpolate(group.mean+gaps[result.length]));
+ if(new Set(result.map(p=>p.join(','))).size!==positions.length)fail('ordered ring collapsed a vertex');
+ return [...result,result[0]];
 }
 
 function orderedSourceProjections(before,segments,longitudeScale,pointOnSegment){
@@ -511,11 +557,11 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
    geometrySha256:geometryHash(display),master,source:input.source,visual:input.visual,
    comparison:{reference:receipt,arcSha256:coordinateDigest(changes.map(c=>c.after)),extent:coordinateBounds(changes.map(c=>c.after)),
     scaleDenominator:10000000,projection:{definition:'+proj=aeqd +ellps=WGS84 +units=m',units:'metre',evidence:input.visual}},
-   method:'reviewed-display-generalization',reason:'Moved the existing interior vertices onto the matched shoreline in both Viewer layers.',
+   method:'reviewed-display-generalization',reason:'Projected existing polygon vertices onto the matched shoreline in both Viewer layers.',
    parameters:{reviewedSectionCount:changes.length},topology:{status:'passed',evidence:receipt,
     checks:['validity','shared-boundary','union','gaps-overlaps','connectivity','holes-islands','dates']},
    counterpartVersions:[],noSharedBoundaryReason:'Only a common exterior land and sea interface changed.',
-   fixedAnchors:changes.flatMap(({before})=>[before[0],before.at(-1)])};
+   fixedAnchors:changes.flatMap(({before})=>equal(before[0],before.at(-1))?[]:[before[0],before.at(-1)])};
   meta.historicalProvenance={...meta.historicalProvenance,displayDetailReview:existing?
    {...existing,compiledDerivatives:[...(existing.compiledDerivatives||[]),review]}:review};
   assertHistoricalCompiledChanges(next,country);

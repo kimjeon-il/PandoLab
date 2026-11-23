@@ -26,6 +26,18 @@ test('a full island move projects every slot on a closed shoreline and shares th
   assert.throws(()=>reviewedCoast.moveReviewedCoastVertices(ring,donor.slice(0,-1)),/closed shoreline/);
 });
 
+test('ordered island projections keep distinct vertices on the surveyed perimeter around a local inversion',()=>{
+  const old=[[0,0],[.7,.08],[.55,.16],[.9,.25],[2,0],[2,2],[0,2],[0,0]];
+  const route=[[0,0],[2,0],[2,2],[0,2],[0,0]];
+  assert.throws(()=>reviewedCoast.moveReviewedCoastVertices(old,route),/vertex order/);
+  const moved=reviewedCoast.moveReviewedCoastVertices(old,route,'ordered-ring-projections');
+  assert.equal(moved.length,old.length);
+  assert.deepEqual(moved[0],moved.at(-1));
+  assert.ok(moved[1][0]<moved[2][0]&&moved[2][0]<moved[3][0]);
+  assert.deepEqual(moved.slice(1,4).map(p=>p[1]),[0,0,0]);
+  assert.throws(()=>reviewedCoast.moveReviewedCoastVertices(old,route.toReversed(),'ordered-ring-projections'),/directions differ/);
+});
+
 test('a coastline move keeps vertex slots when the section crosses a ring closure',()=>{
   const start=[0,0],end=[1,0],corner=[1,1],other=[0,1];
   const old=[start,[.5,0],end],after=[start,[.5,-.1],end];
