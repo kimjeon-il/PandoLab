@@ -52,7 +52,7 @@ export function createReviewedExteriorLookup(geometry,anchors){
   const [x,y]=coordinates[0];
   const matches=[];
   for(const {polygonIndex,startIndex,ring,period} of positions.get(x)?.get(y)??[]){
-   if(coordinates.length<=period&&coordinates.every((p,i)=>equal(p,ring[(startIndex+i)%period])))
+   if(coordinates.length<=period+1&&coordinates.every((p,i)=>equal(p,ring[(startIndex+i)%period])))
     matches.push({polygonIndex,startIndex,endIndex:startIndex+coordinates.length-1});
   }
   return matches;
@@ -91,7 +91,12 @@ export function applyReviewedExteriorArcs(geometry,changes){
  if(!Array.isArray(changes)||!changes.length)fail('reviewed sections required');
  for(const change of changes){
   if(change.before.length!==change.after.length)fail('coastline vertex count differs');
-  verifySplice(change);
+  if(equal(change.before[0],change.before.at(-1))){
+   const ring=c=>c.length>=4&&c.every(point)&&equal(c[0],c.at(-1))&&
+    new Set(c.slice(0,-1).map(p=>p.join(','))).size===c.length-1;
+   if(!ring(change.before)||!ring(change.after)||coordinateDigest(change.before)!==change.beforeSha256||
+    equal(change.before,change.after))fail('invalid closed exterior preimage or replacement');
+  }else verifySplice(change);
  }
  const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({before})=>[before[0],before.at(-1)]));
  const targets=changes.map(change=>{
@@ -107,7 +112,7 @@ export function applyReviewedExteriorArcs(geometry,changes){
     const slot=(startIndex+i)%period;
     if(usedEdges.has(slot))fail('overlapping section preimages');
     usedEdges.add(slot);
-    if(i)ring[slot]=coordinates[i];
+    if(i||coordinates.length===period+1)ring[slot]=coordinates[i];
    }
   }
   ring[period]=ring[0];

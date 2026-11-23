@@ -42,8 +42,10 @@ export function moveReviewedCoastVertices(before,source,stationing){
   const [x,y]=source[index],next=source[index+1];
   return fraction===0?source[index]:fraction===1?next:[x+fraction*(next[0]-x),y+fraction*(next[1]-y)];
  };
+ const closed=equal(before[0],before.at(-1));
+ if(closed&&(!equal(source[0],source.at(-1))||stationing!==undefined))fail('full exterior requires a closed shoreline source');
  if(stationing==='ordered-projections')return orderedSourceProjections(before,segments,longitudeScale,pointOnSegment);
- const interior=before.slice(1,-1).map(([lon,lat])=>{
+ const interior=(closed?before.slice(0,-1):before.slice(1,-1)).map(([lon,lat])=>{
   let bestDistance=Infinity,bestPosition=-1,bestPoint;
   for(const {index,x,y,dx,dy,lengthSquared} of segments){
    const px=(lon-x)*longitudeScale,py=lat-y;
@@ -56,6 +58,15 @@ export function moveReviewedCoastVertices(before,source,stationing){
   }
   return {position:bestPosition,point:bestPoint};
  });
+ if(closed){
+  const period=source.length-1;
+  const locations=interior.map(({position})=>position%period);
+  const moved=interior.map(({point})=>point);
+  const descents=locations.filter((value,i)=>value<locations[(i+locations.length-1)%locations.length]).length;
+  if(moved.length<3||new Set(moved.map(p=>p.join(','))).size!==moved.length||descents!==1)
+   fail('closed shoreline projections do not preserve vertex order');
+  return [...moved,moved[0]];
+ }
  for(const [i,{position,point}] of interior.entries()){
   const previous=i?interior[i-1].position:-1;
   if(position<previous||(!stationing&&(position===previous||equal(point,before[0])||equal(point,before.at(-1)))))

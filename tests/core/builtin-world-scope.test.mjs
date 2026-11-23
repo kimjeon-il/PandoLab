@@ -10,6 +10,22 @@ import {validateReviewedPhysicalCoast} from '../../tools/build/reviewed-coast-ed
 import * as reviewedCoast from '../../tools/build/reviewed-coast-edition.mjs';
 import * as physicalLand from '../../src/data/physical-land-patch.js';
 
+test('a full island move projects every slot on a closed shoreline and shares the result across reversed rings',()=>{
+  const ring=[[0,0],[2,0],[2,2],[0,2],[0,0]];
+  const donor=[[.1,.1],[1.9,.1],[1.9,1.9],[.1,1.9],[.1,.1]];
+  const moved=reviewedCoast.moveReviewedCoastVertices(ring,donor);
+  assert.deepEqual(moved,donor);
+  const change={before:ring,after:moved,beforeSha256:coordinateDigest(ring)};
+  for(const reversed of [false,true]){
+    const source={type:'Polygon',coordinates:[reversed?ring.toReversed():ring]};
+    const result=reviewedBorder.applyReviewedExteriorArcs(source,[change]);
+    assert.deepEqual(result.coordinates,[reversed?moved.toReversed():moved]);
+    validateReviewedPhysicalCoast(result,[change],source);
+  }
+  assert.throws(()=>reviewedCoast.moveReviewedCoastVertices(ring,donor.toReversed()),/vertex order/);
+  assert.throws(()=>reviewedCoast.moveReviewedCoastVertices(ring,donor.slice(0,-1)),/closed shoreline/);
+});
+
 test('a coastline move keeps vertex slots when the section crosses a ring closure',()=>{
   const start=[0,0],end=[1,0],corner=[1,1],other=[0,1];
   const old=[start,[.5,0],end],after=[start,[.5,-.1],end];
