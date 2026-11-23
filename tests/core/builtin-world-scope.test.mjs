@@ -61,6 +61,25 @@ test('a coastline batch reports each independently invalid land arc in one pass'
   });
 });
 
+test('coastline moves can preserve a fixed point shared by two existing polygons',()=>{
+  const start=[0,0],end=[2,2],before=[start,[2,0],end];
+  const base={type:'MultiPolygon',coordinates:[
+    [[...before,[0,2],start]],
+    [[[-1,-1],start,[-1,1],[-2,0],[-1,-1]]],
+  ]};
+  const change=after=>({entityId:'state:AAA',before,after,beforeSha256:coordinateDigest(before)});
+  const carried=change([start,[2,.2],end]);
+  const shifted=reviewedBorder.applyReviewedExteriorArcs(base,[carried]);
+  assert.doesNotThrow(()=>validateReviewedPhysicalCoast(shifted,[carried],base));
+  const sharedEdge={type:'MultiPolygon',coordinates:[base.coordinates[0],
+    [[start,[0,2],[-2,2],[-2,0],start]],
+  ]};
+  assert.doesNotThrow(()=>validateReviewedPhysicalCoast(
+    reviewedBorder.applyReviewedExteriorArcs(sharedEdge,[carried]),[carried],sharedEdge));
+  const crossing=change([start,[-1,0],end]);
+  assert.throws(()=>validateReviewedPhysicalCoast(reviewedBorder.applyReviewedExteriorArcs(base,[crossing]),[crossing],base),/physical exterior validation/);
+});
+
 test('the reviewed modern coast is selected without replacing historical land masks',()=>{
   const base={sha256:'a'.repeat(64)},historical={sha256:'b'.repeat(64)},asset={sha256:'c'.repeat(64)};
   const modern={validFrom:'2026-11-01',asset};

@@ -103,23 +103,50 @@ function polygonBounds(polygon){
  return bounds;
 }
 
-function indexExterior(geometry,changes){
+function indexExterior(geometry,changes,baseline){
  const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({after})=>[after[0],after.at(-1)]));
  const footprints=changes.map(({after})=>coordinateBounds(after));
  const blocks=[],boxes=[];
- for(const polygon of parts(geometry)){
+ for(const [polygonIndex,polygon] of parts(geometry).entries()){
   const bounds=polygonBounds(polygon);
   if(!footprints.some(footprint=>overlaps(footprint,bounds)))continue;
-  for(const ring of polygon)for(let start=0;start<ring.length-1;start+=32){
+  for(const [ringIndex,ring] of polygon.entries())for(let start=0;start<ring.length-1;start+=32){
    const end=Math.min(start+32,ring.length-1);
    const box=coordinateBounds(ring.slice(start,end+1));
    if(!footprints.some(footprint=>overlaps(footprint,box)))continue;
-   blocks.push({ring,start,end,bounds});boxes.push(box);
+   blocks.push({polygonIndex,ringIndex,ring,start,end,bounds});boxes.push(box);
   }
  }
  const index=createBoundarySpatialIndex();
  index.loadPacked(blocks,boxes);
- return {locate,query:footprint=>index.query(footprint)};
+ return {locate,baseline:baseline&&parts(baseline),query:footprint=>index.query(footprint)};
+}
+
+function preservesExteriorJunction(target,edge,peer,i,oldTarget,oldPeer){
+ const at=equal(target[edge],peer[i])||equal(target[edge],peer[i+1])?edge:edge+1;
+ const point=target[at];
+ const other=equal(point,peer[i])?i:i+1;
+ if(!equal(point,peer[other])||!equal(point,oldTarget[at])||!equal(point,oldPeer[other]))return false;
+ const rays=(ring,slot)=>{
+  const period=ring.length-1;
+  return [ring[(slot+period-1)%period],ring[(slot+1)%period]];
+ };
+ // Preserve the cyclic order of the four incident edges at the existing point.
+ const oldRays=[...rays(oldTarget,at),...rays(oldPeer,other)];
+ const newRays=[...rays(target,at),...rays(peer,other)];
+ const order=incident=>{
+  const angles=incident.map(([x,y])=>{
+   const angle=Math.atan2(y-point[1],x-point[0]);
+   return angle<0?angle+2*Math.PI:angle;
+  });
+  const groups=[...Map.groupBy(angles.map((_,i)=>i),i=>angles[i]).entries()]
+   .sort(([a],[b])=>a-b).map(([,group])=>group);
+  const start=groups.findIndex(group=>group.includes(0));
+  return [...groups.slice(start),...groups.slice(0,start)];
+ };
+ const before=order(oldRays);
+ return equal(before,order(newRays))&&before.every(group=>group.length===1||
+  group.every(i=>equal(oldRays[i],newRays[i])));
 }
 
 function validateExterior(geometry,index,arc){
@@ -129,17 +156,17 @@ function validateExterior(geometry,index,arc){
  const edges=new Set(Array.from({length:arc.length-1},(_,i)=>(match.startIndex+i)%period));
  const footprint=coordinateBounds(arc);
  const pairs=[];
- for(const {ring,start,end,bounds:polygonExtent} of index.query(footprint)){
+ for(const {polygonIndex,ringIndex,ring,start,end,bounds:polygonExtent} of index.query(footprint)){
   if(!overlaps(footprint,polygonExtent))continue;
   for(let i=start;i<end;i++){
    const ends=[ring[i],ring[i+1]],bounds=coordinateBounds(ends);
-   if(overlaps(footprint,bounds))pairs.push({ring,i,ends,bounds});
+   if(overlaps(footprint,bounds))pairs.push({polygonIndex,ringIndex,ring,i,ends,bounds});
   }
  }
  const side=([ax,ay],[bx,by],[x,y])=>Math.sign((bx-ax)*(y-ay)-(by-ay)*(x-ax));
  for(const edge of edges){
   const a=target[edge],b=target[edge+1],bounds=coordinateBounds([a,b]);
-  for(const {ring,i,ends:[c,d],bounds:peerBounds} of pairs){
+  for(const {polygonIndex,ringIndex,ring,i,ends:[c,d],bounds:peerBounds} of pairs){
    if(ring===target&&i===edge||!overlaps(bounds,peerBounds))continue;
    const x=side(a,b,c),y=side(a,b,d),z=side(c,d,a),w=side(c,d,b);
    if(x*y>0||z*w>0)continue;
@@ -148,13 +175,15 @@ function validateExterior(geometry,index,arc){
     // Consecutive collinear segments are allowed only in the same direction.
     if((b[0]-a[0])*(d[0]-c[0])+(b[1]-a[1])*(d[1]-c[1])>0)continue;
    }
+   if((x||y||z||w)&&index.baseline&&ringIndex===0&&polygonIndex!==match.polygonIndex&&
+    preservesExteriorJunction(target,edge,ring,i,index.baseline[match.polygonIndex][0],index.baseline[polygonIndex][0]))continue;
    fail('corrected exterior crosses or contacts another edge');
   }
  }
 }
 
-export function validateReviewedPhysicalCoast(geometry,sections){
- const index=indexExterior(geometry,sections),failures=[];
+export function validateReviewedPhysicalCoast(geometry,sections,baseline){
+ const index=indexExterior(geometry,sections,baseline),failures=[];
  for(const [position,section] of sections.entries()){
   try{validateExterior(geometry,index,section.after);}
   catch(cause){failures.push(new Error(`Reviewed coastline section ${position} (${section.entityId}) physical exterior failed`,{cause}));}
@@ -295,14 +324,14 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
  const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
- validateReviewedPhysicalCoast(physicalAfter,sections);
+ validateReviewedPhysicalCoast(physicalAfter,sections,physicalBefore);
  const affected=[],dependencies=[];
 
  const countries=owners.map(({source,identity,country,version,entry,geometry})=>{
   const changes=sections.filter(row=>row.entityId===source.entityId);
   dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));
   const display=applyReviewedExteriorArcs(geometry.geojson,changes);
-  const displayIndex=indexExterior(display,changes);
+  const displayIndex=indexExterior(display,changes,geometry.geojson);
   for(const change of changes){
    try{
     validateExterior(display,displayIndex,change.after);
