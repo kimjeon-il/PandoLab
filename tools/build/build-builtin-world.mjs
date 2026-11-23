@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
 import {execFileSync} from 'node:child_process';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";
-import {libraryConfig,libraryCheckout,libraryReportEditRoot,decodeArchiveEntry,git,readLibraryDataFile} from "../data/library-context.mjs";
+import {libraryConfig,libraryCheckout,libraryReportEditRoot,decodeArchiveEntry,decodeArchiveEntries,git,readLibraryDataFile} from "../data/library-context.mjs";
 import {checkedReportPath} from '../data/library-reports.mjs';
 import {readTerritorialSources,readTerritorialSource,entityFileName,territorialSourceRoot,territorialDataRoot} from "../data/territorial-entity-sources.mjs";
 import {normalizeTerritorialLibraryEntity} from "../gis/territorial-library.js";
@@ -232,7 +232,19 @@ async function main(){
    sourceRoot:generation.source('territorialSourceRoot'),sourceIndexPath:generation.source('territorialSourceIndex'),
    builtinIndexPath:generation.catalogs.territorial,policyPath:generation.source('historicalPolicy')};
   if(coastline&&receipts.length!==1)throw Error('A coastline batch requires one reviewed receipt');
-  const result=coastline?buildReviewedCoastEdition({...inputs,physicalPath:generation.catalogs.physicalLand,receipt:receipts[0]}):
+  const coastInputs=new Map();
+  const prefetchBaseline=paths=>{
+   const entries=new Map();
+   for(const p of paths){
+    if(coastInputs.has(p))continue;
+    if(!old.files[p])throw Error('Missing archived reviewed input: '+p);
+    entries.set(p,old.files[p]);
+   }
+   for(const [p,bytes] of decodeArchiveEntries(checkout,entries,baseline))coastInputs.set(p,bytes);
+  };
+  const result=coastline?buildReviewedCoastEdition({...inputs,prefetchBaseline,
+   readBaseline:p=>coastInputs.get(p)??inputs.readBaseline(p),
+   physicalPath:generation.catalogs.physicalLand,receipt:receipts[0]}):
    receipts.length===1?buildReviewedBorderEdition({...inputs,receipt:receipts[0]}):buildReviewedBorderBatch({...inputs,receipts});
   if(planOnly){console.log(JSON.stringify(result.plan,null,2));return;}
   if(check){

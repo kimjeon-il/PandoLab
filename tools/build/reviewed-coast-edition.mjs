@@ -4,6 +4,7 @@ import {gunzipSync} from 'node:zlib';
 import {coordinateBounds} from '../../src/geometry/coordinate-bounds.js';
 import {createBoundarySpatialIndex} from '../../src/geometry/boundary-spatial-index.js';
 import {temporalIntervalsOverlap} from '../../src/document/temporal.js';
+import {builtinCountryFileSpecs,builtinGeometryAssets} from '../../src/data/builtin-country-files.js';
 import {applyPhysicalLandPatch,regionalLandLayout} from '../../src/data/physical-land-patch.js';
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountry} from '../data/builtin-country-bytes.mjs';
@@ -182,7 +183,7 @@ function coastlineChanges(territory,land,section){
  return {bounds,before:[before],after:[after]};
 }
 
-export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseline,readEvidence,sourceRoot,sourceIndexPath,builtinIndexPath,physicalPath,policyPath}){
+export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseline,prefetchBaseline=()=>{},readEvidence,sourceRoot,sourceIndexPath,builtinIndexPath,physicalPath,policyPath}){
  const reports={};
  const archived=ref=>{
   if(!ref||!/^reports\/borders\/validation\/(?:[\w.-]+\/)*[\w.-]+$/.test(ref.reference)
@@ -223,14 +224,42 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  });
 
  const json=p=>JSON.parse(readBaseline(p));
+ prefetchBaseline([sourceIndexPath,builtinIndexPath,policyPath,physicalPath]);
  const sourceIndex=json(sourceIndexPath),index=json(builtinIndexPath),policy=json(policyPath),physical=json(physicalPath);
  if(index.inputHashes.policy!==coordinateDigest(policy))fail('reviewed historical policy differs');
  const root=builtinIndexPath.slice(0,builtinIndexPath.lastIndexOf('/')+1);
- const readRaw=id=>decodeTerritorialSource(json(sourceRoot+'/countries/'+id.replace(':','-')+'.json'),p=>readBaseline(sourceRoot+'/'+p));
- const readCountry=id=>{
-  const row=index.entities.find(entry=>entry.entityId===id);
+ const descriptorPath=id=>sourceRoot+'/countries/'+id.replace(':','-')+'.json';
+ const descriptors=new Map(),countriesById=new Map(index.entities.map(row=>[row.entityId,row]));
+ const descriptorFor=id=>{
+  if(!descriptors.has(id))descriptors.set(id,json(descriptorPath(id)));
+  return descriptors.get(id);
+ };
+ const identities=new Map(index.sourceIdentities.flatMap(row=>row.sourceEntityIds.map(id=>[id,row])));
+ const memberIds=[...new Set(selected.flatMap(id=>[id,...(identities.get(id)?.sourceEntityIds??[])]))];
+ prefetchBaseline(memberIds.map(descriptorPath));
+ const countryGeometry=new Map(builtinGeometryAssets(index).map(row=>[JSON.stringify([row.id,row.version]),row.file]));
+ const countryPaths=ids=>[...new Set(ids)].flatMap(id=>{
+  const row=countriesById.get(id);
   if(!row)fail('missing Viewer country '+id);
-  return readBuiltinCountry(row,index,p=>readBaseline(root+p));
+  return [...builtinCountryFileSpecs(row).map(item=>item.file),...row.geometryRefs.map(ref=>{
+   const file=countryGeometry.get(JSON.stringify([ref.id,ref.version]));
+   if(!file)fail('missing Viewer country geometry '+id);
+   return file;
+  })].map(file=>root+file);
+ });
+ const prior=physical.modernCoast;
+ prefetchBaseline([...memberIds.flatMap(id=>descriptorFor(id).geometryVersions.map(row=>sourceRoot+'/'+row.geometryResource.file)),
+  ...countryPaths(selected.map(id=>descriptorFor(id).sourceInfo.featureId)),physical.asset.url,
+  ...(prior?[prior.asset.replacement.url]:[])]);
+ const readRaw=id=>decodeTerritorialSource(descriptorFor(id),p=>readBaseline(sourceRoot+'/'+p));
+ const readCountries=new Map();
+ const readCountry=id=>{
+  if(readCountries.has(id))return readCountries.get(id);
+  const row=countriesById.get(id);
+  if(!row)fail('missing Viewer country '+id);
+  const country=readBuiltinCountry(row,index,p=>readBaseline(root+p));
+  readCountries.set(id,country);
+  return country;
  };
  const owners=input.entities.map(({entityId,displayBefore})=>{
   const source=readRaw(entityId),owner=source.sourceInfo.featureId;
@@ -260,7 +289,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   if(decoded.length!==spec.decodedBytes)fail('decoded land size differs');
   return JSON.parse(decoded);
  };
- const base=readLand(physical.asset),prior=physical.modernCoast;
+ const base=readLand(physical.asset);
  if(prior&&(prior.validFrom!==validFrom||prior.asset.storageLayout!==regionalLandLayout||!equal(prior.asset.base,physical.asset)))
   fail('prior physical coastline has a different baseline or date');
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
@@ -286,7 +315,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   next.geometries.push({...ref,geojson:display});
   if(![...next.sourceBindings,...next.timelineRecords.geometryBindings].some(row=>equal(row.geometryRef,entry.geometryRef)))
    next.geometries=next.geometries.filter(row=>row.id!==entry.geometryRef.id||row.version!==entry.geometryRef.version);
-  const descriptor=json(sourceRoot+'/countries/'+source.entityId.replace(':','-')+'.json');
+  const descriptor=descriptorFor(source.entityId);
   const raw=descriptor.geometryVersions.find(row=>row.versionId===version.versionId).geometryResource;
   const master={reference:sourceRoot+'/'+raw.file,sha256:raw.sha256};
   if(hash(readBaseline(master.reference))!==master.sha256)fail('raw territorial source differs '+source.entityId);
@@ -308,10 +337,12 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  });
  for(const {source,geometry} of owners)if(reviewedBorderTouchesNeighbor(geometry.geojson,affected.filter(row=>row.entityId!==source.entityId)))
   fail('another selected country intersects the changed area '+source.entityId);
- for(const row of sourceIndex.entities){
-  if(selected.includes(row.entityId)||!affected.some(({bounds})=>overlaps(bounds,row.bbox))
-   ||!territorialLifetimeIntervals(row.lifetime).some(related))continue;
-  const identity=index.sourceIdentities.find(entry=>entry.sourceEntityIds.includes(row.entityId));
+ const neighbors=sourceIndex.entities.filter(row=>!selected.includes(row.entityId)
+  &&affected.some(({bounds})=>overlaps(bounds,row.bbox))&&territorialLifetimeIntervals(row.lifetime).some(related));
+ const neighborOwners=neighbors.map(({entityId})=>identities.get(entityId)?.projectEntityId).filter(id=>id&&!ids.includes(id));
+ prefetchBaseline(countryPaths(neighborOwners));
+ for(const row of neighbors){
+  const identity=identities.get(row.entityId);
   if(!identity||ids.includes(identity.projectEntityId))continue;
   const country=readCountry(identity.projectEntityId);
   for(const entry of country.sourceBindings.filter(related)){
