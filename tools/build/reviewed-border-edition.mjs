@@ -29,11 +29,7 @@ const overlaps=(a,b)=>a[0]<=b[2]&&b[0]<=a[2]&&a[1]<=b[3]&&b[1]<=a[3];
 const dateOverlap=(a,b)=>temporalIntervalsOverlap(a,b);
 const issued=new WeakMap();
 
-export function locateReviewedExteriorArc(geometry,coordinates){
- return createReviewedExteriorLookup(geometry,[coordinates[0]])(coordinates);
-}
-
-export function createReviewedExteriorLookup(geometry,anchors){
+function createReviewedExteriorLookup(geometry,anchors){
  const positions=new Map();
  for(const [x,y] of anchors){
   if(!positions.has(x))positions.set(x,new Map());
@@ -85,39 +81,6 @@ function spliceExteriorRanges(geometry,targets){
    polygon[0].splice(target.startIndex,target.endIndex-target.startIndex+1,...target.coordinates);
   }
  }
-}
-
-export function applyReviewedExteriorArcs(geometry,changes){
- if(!Array.isArray(changes)||!changes.length)fail('reviewed sections required');
- for(const change of changes){
-  if(change.before.length!==change.after.length)fail('coastline vertex count differs');
-  if(equal(change.before[0],change.before.at(-1))){
-   const ring=c=>c.length>=4&&c.every(point)&&equal(c[0],c.at(-1))&&
-    new Set(c.slice(0,-1).map(p=>p.join(','))).size===c.length-1;
-   if(!ring(change.before)||!ring(change.after)||coordinateDigest(change.before)!==change.beforeSha256||
-    equal(change.before,change.after))fail('invalid closed exterior preimage or replacement');
-  }else verifySplice(change);
- }
- const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({before})=>[before[0],before.at(-1)]));
- const targets=changes.map(change=>{
-  const forward=locate(change.before),reverse=locate(change.before.toReversed());
-  if(forward.length+reverse.length!==1)fail('unique exterior section preimage required');
-  return {...(forward[0]??reverse[0]),coordinates:forward.length?change.after:change.after.toReversed()};
- });
- const result=structuredClone(geometry);
- for(const [polygonIndex,ranges] of Map.groupBy(targets,range=>range.polygonIndex)){
-  const ring=parts(result)[polygonIndex][0],period=ring.length-1,usedEdges=new Set();
-  for(const {startIndex,coordinates} of ranges){
-   for(let i=0;i<coordinates.length-1;i++){
-    const slot=(startIndex+i)%period;
-    if(usedEdges.has(slot))fail('overlapping section preimages');
-    usedEdges.add(slot);
-    if(i||coordinates.length===period+1)ring[slot]=coordinates[i];
-   }
-  }
-  ring[period]=ring[0];
- }
- return result;
 }
 
 /** The receipt supplies the untouched published endpoints, including any bridge
