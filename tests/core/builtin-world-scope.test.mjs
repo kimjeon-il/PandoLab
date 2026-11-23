@@ -41,6 +41,16 @@ test('a reviewed group of coincident projections can use the surrounding donor i
   assert.throws(()=>reviewedCoast.moveReviewedCoastVertices([[0,0],[.7,.3],[.3,.1],[1,0]],donor,'between-projections'),/vertex order/);
 });
 
+test('ordered shoreline projection fits adjacent vertices together when nearest positions reverse',()=>{
+  const before=[[0,0],[.6,.03],[.4,.05],[1,0]],donor=[[0,0],[.45,0],[.5,0],[.55,0],[1,0]];
+  assert.throws(()=>reviewedCoast.moveReviewedCoastVertices(before,donor),/vertex order/);
+  const after=reviewedCoast.moveReviewedCoastVertices(before,donor,'ordered-projections');
+  assert.deepEqual([after[0],after.at(-1)],[before[0],before.at(-1)]);
+  assert.equal(after.length,before.length);
+  assert.ok(after.every(([x,y],i)=>y===0&&(!i||x>after[i-1][0])));
+  assert.ok(after[1][0]>.35&&after[2][0]<.65);
+});
+
 test('a coastline batch reports each independently invalid land arc in one pass',()=>{
   const touchingRing=offset=>[[offset,0],[offset+2,1],[offset+2,0],[offset,2],[offset,0]];
   const first=touchingRing(0),second=touchingRing(3),intact=[[8,0],[9,0],[9,1],[8,1],[8,0]];

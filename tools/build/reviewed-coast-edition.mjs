@@ -29,7 +29,7 @@ export function moveReviewedCoastVertices(before,source,stationing){
   &&Math.abs(point[0])<=180&&Math.abs(point[1])<=90;
  if(!Array.isArray(before)||before.length<3||!before.every(isPoint))fail('no movable coastline vertices');
  if(!Array.isArray(source)||source.length<2||!source.every(isPoint))fail('invalid shoreline source coordinates');
- if(stationing!==undefined&&stationing!=='between-projections')fail('unknown shoreline stationing');
+ if(stationing!==undefined&&!['between-projections','ordered-projections'].includes(stationing))fail('unknown shoreline stationing');
  const latitude=(before[0][1]+before.at(-1)[1])/2;
  const longitudeScale=Math.cos(latitude*Math.PI/180);
  const segments=source.slice(0,-1).map(([x,y],index)=>{
@@ -42,6 +42,7 @@ export function moveReviewedCoastVertices(before,source,stationing){
   const [x,y]=source[index],next=source[index+1];
   return fraction===0?source[index]:fraction===1?next:[x+fraction*(next[0]-x),y+fraction*(next[1]-y)];
  };
+ if(stationing==='ordered-projections')return orderedSourceProjections(before,segments,longitudeScale,pointOnSegment);
  const interior=before.slice(1,-1).map(([lon,lat])=>{
   let bestDistance=Infinity,bestPosition=-1,bestPoint;
   for(const {index,x,y,dx,dy,lengthSquared} of segments){
@@ -62,6 +63,52 @@ export function moveReviewedCoastVertices(before,source,stationing){
  }
  if(stationing)spreadCoincidentProjections(interior,before,source,longitudeScale,pointOnSegment);
  return [before[0],...interior.map(row=>row.point),before.at(-1)];
+}
+
+function orderedSourceProjections(before,segments,longitudeScale,pointOnSegment){
+ let total=0;
+ const source=segments.map(segment=>{
+  const length=Math.sqrt(segment.lengthSquared),start=total;
+  total+=length;
+  return {...segment,start,length};
+ });
+ const intervals=before.length-1,divisions=Math.max(24,intervals*16);
+ const gap=total/divisions;
+ // Include positions between surveyed vertices so rounding to source nodes
+ // cannot force two existing vertices onto the same position.
+ let at=0;
+ const grid=Array.from({length:divisions-1},(_,i)=>{
+  const station=total*(i+1)/divisions;
+  while(source[at].start+source[at].length<station)at++;
+  const segment=source[at];
+  return {station,point:pointOnSegment(segment.index,(station-segment.start)/segment.length)};
+ });
+ let previous=[{station:0,cost:0}];
+ for(const [lon,lat] of before.slice(1,-1)){
+  const projected=source.map(({index,x,y,dx,dy,lengthSquared,start,length})=>{
+   const fraction=Math.max(0,Math.min(1,((lon-x)*longitudeScale*dx+(lat-y)*dy)/lengthSquared));
+   return {station:start+fraction*length,point:pointOnSegment(index,fraction)};
+  });
+  const options=[...grid,...projected].sort((a,b)=>a.station-b.station),next=[];
+  let cursor=0,best=null;
+  for(const {station,point} of options){
+   if(station>total-gap*.999999)break;
+   while(cursor<previous.length&&previous[cursor].station<=station-gap*.999999){
+    const candidate=previous[cursor++];
+    if(!best||candidate.cost<best.cost)best=candidate;
+   }
+   if(!best||equal(point,before[0])||equal(point,before.at(-1)))continue;
+   const offset=((point[0]-lon)*longitudeScale)**2+(point[1]-lat)**2;
+   next.push({station,point,cost:best.cost+offset,previous:best});
+  }
+  if(!next.length)fail('no ordered shoreline projections for existing vertices');
+  previous=next;
+ }
+ let result=previous.reduce((best,row)=>row.cost<best.cost?row:best);
+ const after=before.slice();
+ for(let i=after.length-2;i>0;i--){after[i]=result.point;result=result.previous;}
+ if(new Set(after.map(point=>point.join(','))).size!==after.length)fail('shoreline projections do not preserve vertex order');
+ return after;
 }
 
 function spreadCoincidentProjections(interior,before,source,longitudeScale,pointOnSegment){
