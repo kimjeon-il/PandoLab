@@ -70,8 +70,15 @@ test('interacting shoreline moves are checked together with their final neighbor
   const change=(entityId,before,middle)=>({entityId,before,beforeSha256:coordinateDigest(before),after:[before[0],middle,before.at(-1)]});
   const a=change('state:AAA',north,[1,-.75]),b=change('state:BBB',south,[1,-1.25]);
   assert.deepEqual(reviewedCoast.reviewedCoastComponents([a,b]),[[0,1]]);
-  assert.throws(()=>validateReviewedPhysicalCoast(reviewedBorder.applyReviewedExteriorArcs(land,[a]),[a],land));
-  assert.doesNotThrow(()=>validateReviewedPhysicalCoast(reviewedBorder.applyReviewedExteriorArcs(land,[a,b]),[a,b],land));
+  const territories=new Map([['state:AAA',{type:'Polygon',coordinates:land.coordinates[0]}],
+    ['state:BBB',{type:'Polygon',coordinates:land.coordinates[1]}]]);
+  const draft=reviewedCoast.inspectReviewedCoastExteriors(land,territories,[a]);
+  assert.equal(draft.failures[0].cause.contact.peerPolygon,1);
+  const complete=reviewedCoast.inspectReviewedCoastExteriors(land,territories,[a,b]);
+  assert.deepEqual(complete.failures,[]);
+  assert.deepEqual(complete.physicalAfter.coordinates.map(p=>p[0][1]),[a.after[1],b.after[1]]);
+  const crossing=change('state:BBB',south,[1,-.65]);
+  assert.ok(reviewedCoast.inspectReviewedCoastExteriors(land,territories,[a,crossing]).failures.length);
 });
 
 test('coastline moves can preserve a fixed point shared by two existing polygons',()=>{

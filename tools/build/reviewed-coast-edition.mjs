@@ -229,6 +229,27 @@ export function validateReviewedPhysicalCoast(geometry,sections,baseline){
  if(failures.length)throw new AggregateError(failures,'Reviewed coastline physical exterior validation failed');
 }
 
+export function inspectReviewedCoastExteriors(physicalBefore,territories,sections){
+ const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
+ const positions=new Map(sections.map((change,i)=>[change,i]));
+ const displays=new Map([...Map.groupBy(sections,change=>change.entityId)].map(([id,changes])=>{
+  const before=territories.get(id);
+  if(!before)fail('missing territorial preimage '+id);
+  return [id,{before,after:applyReviewedExteriorArcs(before,changes),changes}];
+ }));
+ const failures=[];
+ try{validateReviewedPhysicalCoast(physicalAfter,sections,physicalBefore);}
+ catch(error){if(!(error instanceof AggregateError))throw error;failures.push(...error.errors);}
+ for(const {before,after,changes} of displays.values()){
+  const displayIndex=indexExterior(after,changes,before);
+  for(const change of changes){
+   try{validateExterior(after,displayIndex,change.after);}
+   catch(cause){failures.push(geometryFailure(positions.get(change),change,'display validation',cause));}
+  }
+ }
+ return {physicalAfter,displays,failures};
+}
+
 function windowed(geometry,bounds,window){
  const candidates=parts(geometry).filter(polygon=>overlaps(bounds,polygonBounds(polygon)));
  return candidates.length?clip.intersection(candidates,window):[];
@@ -363,12 +384,10 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const {validFrom,validTo,previousDisplayThrough}=reviewedDisplayPeriod(owners.map(o=>o.entry),owners.map(o=>o.version),input);
  const binding={validFrom,validTo};
  const related=rule=>temporalIntervalsOverlap(rule,binding);
- for(const {source,country} of owners){
+ for(const {source} of owners){
   const id=source.entityId;
-  const dependency=policy.replacements.some(row=>related(row)&&[row.targetEntityId,row.priorityEntityId].includes(id))
-   ||(policy.parentRelations||[]).some(row=>related(row)&&[row.entityId,row.parentEntityId].includes(id))
-   ||country.timelineRecords.parentRelations.some(row=>row.parentId&&related(row));
-  if(dependency)deferOwner(id,'ownership validation',new Error('Reviewed coastline: selected entity has a current territorial dependency '+id));
+  if(policy.replacements.some(row=>related(row)&&[row.targetEntityId,row.priorityEntityId].includes(id)))
+   deferOwner(id,'ownership validation',new Error('Reviewed coastline: selected entity has a current display replacement '+id));
  }
  raiseGeometryFailures(failures,components);
 
@@ -384,20 +403,9 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   fail('prior physical coastline has a different baseline or date');
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
- const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
- const displays=new Map(owners.map(({source,geometry})=>{
-  const before=geometry.geojson,changes=changesById.get(source.entityId);
-  return [source.entityId,{before,after:applyReviewedExteriorArcs(before,changes),changes}];
- }));
- try{validateReviewedPhysicalCoast(physicalAfter,sections,physicalBefore);}
- catch(error){if(!(error instanceof AggregateError))throw error;failures.push(...error.errors);}
- for(const {before,after,changes} of displays.values()){
-  const displayIndex=indexExterior(after,changes,before);
-  for(const change of changes){
-   try{validateExterior(after,displayIndex,change.after);}
-   catch(cause){failures.push(geometryFailure(positions.get(change),change,'display validation',cause));}
-  }
- }
+ const beforeByOwner=new Map(owners.map(({source,geometry})=>[source.entityId,geometry.geojson]));
+ const {physicalAfter,displays,failures:exteriorFailures}=inspectReviewedCoastExteriors(physicalBefore,beforeByOwner,sections);
+ failures.push(...exteriorFailures);
  const invalidComponents=new Set(failures.map(error=>componentBySection.get(error.sectionIndex)));
  const affected=[],dependencies=[];
  for(const component of components){
@@ -471,6 +479,8 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
 
  const catalog=structuredClone(index),encoded=encodeBuiltinCountries(catalog,countries,new Map());
  finalizeBuiltinWorldFiles(catalog,encoded,{previousIndex:index});
+ if(!equal(catalog.readIndex.records.parentRelations,index.readIndex.records.parentRelations))
+  fail('a Viewer territorial parent relation changed');
  const other=rows=>rows.filter(row=>!ids.includes(row.entityId));
  if(!equal(other(catalog.entities),other(index.entities)))fail('an unselected Viewer descriptor changed');
  for(const [table,rows] of Object.entries(index.readIndex.records)){
