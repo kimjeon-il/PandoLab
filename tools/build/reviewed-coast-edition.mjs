@@ -45,17 +45,30 @@ export function moveReviewedCoastVertices(before,source,stationing){
  const closed=equal(before[0],before.at(-1));
  if(closed&&(!equal(source[0],source.at(-1))||stationing!==undefined))fail('full exterior requires a closed shoreline source');
  if(stationing==='ordered-projections')return orderedSourceProjections(before,segments,longitudeScale,pointOnSegment);
+ // A source endpoint bounds the nearest possible distance. All segments
+ // closer than that endpoint must intersect this projected search box.
+ const spatial=segments.length*before.length>250000?createBoundarySpatialIndex():null;
+ if(spatial)spatial.loadPacked(segments,segments.map(({index})=>coordinateBounds([source[index],source[index+1]])));
+ let lastNearest=segments[0].index;
  const interior=(closed?before.slice(0,-1):before.slice(1,-1)).map(([lon,lat])=>{
-  let bestDistance=Infinity,bestPosition=-1,bestPoint;
-  for(const {index,x,y,dx,dy,lengthSquared} of segments){
+  let candidates=segments;
+  if(spatial&&Math.abs(longitudeScale)>1e-8){
+   const [x,y]=source[lastNearest];
+   const radius=Math.hypot((lon-x)*longitudeScale,lat-y)+1e-10,rx=radius/Math.abs(longitudeScale);
+   candidates=spatial.query([lon-rx,lat-radius,lon+rx,lat+radius]);
+  }
+  let bestDistance=Infinity,bestPosition=-1,bestPoint,bestSegment=Infinity;
+  for(const {index,x,y,dx,dy,lengthSquared} of candidates){
    const px=(lon-x)*longitudeScale,py=lat-y;
    const fraction=Math.max(0,Math.min(1,(px*dx+py*dy)/lengthSquared));
    const distance=(px-fraction*dx)**2+(py-fraction*dy)**2;
-   if(distance>=bestDistance)continue;
+   if(distance>bestDistance||(distance===bestDistance&&index>=bestSegment))continue;
+   bestSegment=index;
    bestDistance=distance;
    bestPosition=index+fraction;
    bestPoint=pointOnSegment(index,fraction);
   }
+  lastNearest=bestSegment;
   return {position:bestPosition,point:bestPoint};
  });
  if(closed){
