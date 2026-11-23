@@ -347,13 +347,30 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   return {source,identity,country,version,entry,geometry};
  });
  const ids=owners.map(({country})=>country.entityId);
- if(new Set(ids).size!==owners.length)fail('each selected entity needs a distinct Viewer owner');
+ const components=reviewedCoastComponents(sections);
+ const positions=new Map(sections.map((change,i)=>[change,i]));
+ const componentBySection=new Map(components.flatMap(group=>group.map(i=>[i,group])));
+ const changesById=Map.groupBy(sections,change=>change.entityId);
+ const failures=[];
+ const deferOwner=(id,phase,cause)=>{
+  for(const change of changesById.get(id))failures.push(geometryFailure(positions.get(change),change,phase,cause));
+ };
+ for(const group of Map.groupBy(owners,row=>row.country.entityId).values()){
+  if(group.length>1)for(const {source} of group)deferOwner(source.entityId,'ownership validation',
+   new Error('Reviewed coastline: selected source entities share one Viewer owner'));
+ }
+ raiseGeometryFailures(failures,components);
  const {validFrom,validTo,previousDisplayThrough}=reviewedDisplayPeriod(owners.map(o=>o.entry),owners.map(o=>o.version),input);
  const binding={validFrom,validTo};
  const related=rule=>temporalIntervalsOverlap(rule,binding);
- if(policy.replacements.some(row=>related(row)&&[row.targetEntityId,row.priorityEntityId].some(id=>selected.includes(id)))
-   ||(policy.parentRelations||[]).some(row=>related(row)&&[row.entityId,row.parentEntityId].some(id=>selected.includes(id)))
-   ||owners.some(({country})=>country.timelineRecords.parentRelations.some(row=>row.parentId&&related(row))))fail('selected entity has a current territorial dependency');
+ for(const {source,country} of owners){
+  const id=source.entityId;
+  const dependency=policy.replacements.some(row=>related(row)&&[row.targetEntityId,row.priorityEntityId].includes(id))
+   ||(policy.parentRelations||[]).some(row=>related(row)&&[row.entityId,row.parentEntityId].includes(id))
+   ||country.timelineRecords.parentRelations.some(row=>row.parentId&&related(row));
+  if(dependency)deferOwner(id,'ownership validation',new Error('Reviewed coastline: selected entity has a current territorial dependency '+id));
+ }
+ raiseGeometryFailures(failures,components);
 
  const readLand=spec=>{
   const bytes=readBaseline(spec.url);
@@ -368,15 +385,10 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
  const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
- const components=reviewedCoastComponents(sections);
- const positions=new Map(sections.map((change,i)=>[change,i]));
- const componentBySection=new Map(components.flatMap(group=>group.map(i=>[i,group])));
- const changesById=Map.groupBy(sections,change=>change.entityId);
  const displays=new Map(owners.map(({source,geometry})=>{
   const before=geometry.geojson,changes=changesById.get(source.entityId);
   return [source.entityId,{before,after:applyReviewedExteriorArcs(before,changes),changes}];
  }));
- const failures=[];
  try{validateReviewedPhysicalCoast(physicalAfter,sections,physicalBefore);}
  catch(error){if(!(error instanceof AggregateError))throw error;failures.push(...error.errors);}
  for(const {before,after,changes} of displays.values()){
@@ -402,7 +414,8 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
 
  const countries=owners.map(({source,identity,country,version,entry})=>{
   const {after:display,changes}=displays.get(source.entityId);
-  dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));
+  try{dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));}
+  catch(cause){deferOwner(source.entityId,'merged member validation',cause);}
   const next=structuredClone(country),ref={id:'historical-world:'+coordinateDigest(display),version:1};
   next.sourceBindings=replaceReviewedDisplayBinding(next.sourceBindings,entry,ref,binding,previousDisplayThrough);
   next.timelineRecords.geometryBindings=replaceReviewedViewerBinding(next.timelineRecords.geometryBindings,entry,ref,binding,previousDisplayThrough);
@@ -429,6 +442,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   assertHistoricalCompiledChanges(next,country);
   return next;
  });
+ raiseGeometryFailures(failures,components);
  const checkNeighbor=(id,geometry,changes)=>{
   if(!reviewedBorderTouchesNeighbor(geometry,changes))return;
   for(const row of changes)if(reviewedBorderTouchesNeighbor(geometry,[row])){
