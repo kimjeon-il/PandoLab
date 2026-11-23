@@ -6,8 +6,7 @@ import {createHash} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
 import {execFileSync} from 'node:child_process';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";
-import {libraryConfig,libraryCheckout,libraryReportEditRoot,decodeArchiveEntry,git,readLibraryDataFile} from "../data/library-context.mjs";
-import {checkedReportPath} from '../data/library-reports.mjs';
+import {libraryConfig,libraryCheckout,decodeArchiveEntry,readLibraryDataFile} from "../data/library-context.mjs";
 import {readTerritorialSources,readTerritorialSource,entityFileName,territorialSourceRoot,territorialDataRoot} from "../data/territorial-entity-sources.mjs";
 import {normalizeTerritorialLibraryEntity} from "../gis/territorial-library.js";
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
@@ -19,7 +18,6 @@ import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountryStore
 import {isDeepStrictEqual} from 'node:util';
 import {readProjectGenerationContext} from './project-generation-context.mjs';
 import {assertTerritorialRetirement,assertBuiltinRetirement,readRetirementReceipt,planTerritorialRetirement,mixedRetirementPublicationPlan,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
-import {buildReviewedBorderBatch,buildReviewedBorderEdition} from './reviewed-border-edition.mjs';
 export {finalizeBuiltinWorldFiles};
 
 const output=fileURLToPath(new URL("../../assets/data/builtin-world/generated/v1/",import.meta.url));
@@ -189,63 +187,19 @@ export function writeBuiltinWorldPublication(files,directory=output,{check=false
 async function main(){
  const projectId=process.argv.find(arg=>arg.startsWith('--project='))?.slice(10)||'default-world';
  const root=fileURLToPath(new URL('../../',import.meta.url));
- const generation=readProjectGenerationContext({root,projectId});
  const arg=name=>process.argv.find(value=>value.startsWith(name+'='))?.slice(name.length+1);
  const selected=arg('--entities'),retirementFile=arg('--retirement-manifest');
- const namesOnly=process.argv.includes('--names-only'),planOnly=process.argv.includes('--plan'),check=process.argv.includes('--check');
- const flags=new Set(['--names-only','--plan','--check','--review-working']);
- const options=new Set(['--project','--entities','--retirement-manifest','--baseline','--evidence-revision','--review']);
+ const namesOnly=process.argv.includes('--names-only'),check=process.argv.includes('--check');
+ const flags=new Set(['--names-only','--check']);
+ const options=new Set(['--project','--entities','--retirement-manifest']);
  for(const value of process.argv.slice(2)){
   if(!flags.has(value)&&!(value.includes('=')&&options.has(value.split('=',1)[0])))throw Error('Unknown builtin world option '+value);
  }
  if(projectId!=='default-world'&&retirementFile)throw Error('Territorial retirement requires a project-paired archive and source retirement manifest');
  if(namesOnly&&!selected)throw Error('--names-only requires --entities');
- if(retirementFile&&(namesOnly||selected||planOnly))throw Error('Use the dedicated retirement manifest without partial geometry or naming options');
- if(planOnly&&(!selected||namesOnly||check))throw Error('--plan requires a reviewed geometry scope');
- if(selected&&!namesOnly){
-  const checkout=libraryCheckout(root),sourceRevision=git(root,['rev-parse','HEAD']);
-  const pinned=JSON.parse(git(root,['show',sourceRevision+':config/library-data.json'])).revision;
-  const baseline=arg('--baseline')||pinned,evidenceRevision=arg('--evidence-revision')||git(checkout,['rev-parse','HEAD']);
-  const reviewPaths=process.argv.filter(value=>value.startsWith('--review=')).map(value=>value.slice('--review='.length));
-  if(!/^[a-f0-9]{40}$/.test(baseline)||!/^[a-f0-9]{40}$/.test(evidenceRevision)||!reviewPaths.length||reviewPaths.some(p=>!p))
-   throw Error('Scoped geometry requires --review=<archived review path> and immutable data revisions');
-  if(!planOnly&&!check&&baseline!==pinned)throw Error('Reviewed edition baseline differs from the committed application pin');
-  const archive=revision=>JSON.parse(git(checkout,['show',revision+':archive/index.json']));
-  const old=archive(baseline),evidence=archive(evidenceRevision);
-  const reader=(index,revision)=>p=>{
-   const entry=index.files[p];
-   if(!entry)throw Error('Missing archived reviewed input: '+p);
-   return decodeArchiveEntry(checkout,entry,revision);
-  };
-  const editRoot=process.argv.includes('--review-working')?libraryReportEditRoot(root):null;
-  const reviewFolders=reviewPaths.map(p=>p.slice(0,p.lastIndexOf('/')+1));
-  const workingReports=new Map();
-  const readEvidence=p=>{
-   if(evidence.files[p])return reader(evidence,evidenceRevision)(p);
-   if(old.files[p])return reader(old,baseline)(p);
-   if(!editRoot||!p.startsWith('reports/borders/validation/')||!reviewFolders.includes(p.slice(0,p.lastIndexOf('/')+1)))
-    throw Error('Missing archived reviewed input: '+p);
-   if(!workingReports.has(p))workingReports.set(p,fs.readFileSync(checkedReportPath(editRoot,p.slice('reports/'.length))));
-   return workingReports.get(p);
-  };
-  const receipts=reviewPaths.map(reference=>({reference,sha256:sha(readEvidence(reference))}));
-  const inputs={baseline,entityIds:selected.split(','),
-   readBaseline:reader(old,baseline),readEvidence,
-   sourceRoot:generation.source('territorialSourceRoot'),sourceIndexPath:generation.source('territorialSourceIndex'),
-   builtinIndexPath:generation.catalogs.territorial,policyPath:generation.source('historicalPolicy')};
-  const result=receipts.length===1?buildReviewedBorderEdition({...inputs,receipt:receipts[0]}):buildReviewedBorderBatch({...inputs,receipts});
-  if(planOnly){console.log(JSON.stringify(result.plan,null,2));return;}
-  if(check){
-   const actual=archive(pinned);
-   for(const [p,bytes] of result.files)if(actual.files[p]?.sha256!==sha(bytes)||actual.files[p].bytes!==bytes.length)
-     throw Error('Stale scoped Viewer asset: '+p);
-   for(const [p,hash] of Object.entries(result.reports))if(actual.files[p]?.sha256!==hash)throw Error('Missing paired review: '+p);
-   console.log('Verified reviewed Viewer edition '+pinned);return;
-  }
-  const {storeReviewedBorderEdition}=await import('../data/library-store.mjs');
-  console.log(JSON.stringify(await storeReviewedBorderEdition({root,result,evidenceRevision,sourceRevision,workingReports}),null,2));
-  return;
- }
+ if(retirementFile&&(namesOnly||selected))throw Error('Use the dedicated retirement manifest without partial geometry or naming options');
+ if(selected&&!namesOnly)throw Error('--entities requires --names-only');
+ const generation=readProjectGenerationContext({root,projectId});
  const sourceRoot=path.resolve(root,generation.source('territorialSourceRoot'));
  const sourceIndexPath=generation.source('territorialSourceIndex');
  const sourceIndexAbsolute=path.resolve(root,sourceIndexPath);
