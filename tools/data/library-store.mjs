@@ -49,10 +49,11 @@ function directRuntimeDirectories(index){
 }
 
 /** Create the application's scoped edition while retaining the authoring tree. */
-export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map(),coastline=false}){
+export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map(),coastline=false,directCoordinates=false}){
   validateExpectedLibraryRevision(evidenceRevision);validateExpectedLibraryRevision(sourceRevision);
   if(!evidenceRevision||!sourceRevision)throw Error('Reviewed edition requires explicit revisions');
-  const assertEdition=coastline?(await import('../build/reviewed-coast-edition.mjs')).assertReviewedCoastEdition:
+  const assertEdition=directCoordinates?(await import('./edited-polygon-files.mjs')).assertEditedPolygonFiles:
+    coastline?(await import('../build/reviewed-coast-edition.mjs')).assertReviewedCoastEdition:
     (await import('../build/reviewed-border-edition.mjs')).assertReviewedBorderEdition;
   return withLibraryLock(root,()=>{
     assertEdition(result);
@@ -86,7 +87,7 @@ export async function storeReviewedBorderEdition({root=defaultRoot,result,eviden
     };
     const put=(path,bytes)=>mapObject(path,run(['hash-object','-w','--stdin'],bytes));
     const ident=['-c','user.name=Pando library publisher','-c','user.email=library-publisher@users.noreply.github.com'];
-    const kind=coastline?'reviewed coastline':'reviewed shared border';
+    const kind=directCoordinates?'direct polygon coordinate edits':coastline?'reviewed coastline':'reviewed shared border';
     try{
       run(['read-tree',result.baseline]);
       for(const [logical,bytes] of result.files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
