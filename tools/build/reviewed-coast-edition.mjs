@@ -23,11 +23,12 @@ const overlaps=(a,b)=>a[0]<=b[2]&&b[0]<=a[2]&&a[1]<=b[3]&&b[1]<=a[3];
 const fail=reason=>{throw Error('Reviewed coastline: '+reason);};
 const issued=new WeakMap();
 
-export function moveReviewedCoastVertices(before,source){
+export function moveReviewedCoastVertices(before,source,stationing){
  const isPoint=point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)
   &&Math.abs(point[0])<=180&&Math.abs(point[1])<=90;
  if(!Array.isArray(before)||before.length<3||!before.every(isPoint))fail('no movable coastline vertices');
  if(!Array.isArray(source)||source.length<2||!source.every(isPoint))fail('invalid shoreline source coordinates');
+ if(stationing!==undefined&&stationing!=='between-projections')fail('unknown shoreline stationing');
  const latitude=(before[0][1]+before.at(-1)[1])/2;
  const longitudeScale=Math.cos(latitude*Math.PI/180);
  const segments=source.slice(0,-1).map(([x,y],index)=>{
@@ -36,7 +37,10 @@ export function moveReviewedCoastVertices(before,source){
   return {index,x,y,dx,dy,lengthSquared:dx*dx+dy*dy};
  }).filter(segment=>segment.lengthSquared>0);
  if(!segments.length)fail('empty shoreline source');
- let previous=-1;
+ const pointOnSegment=(index,fraction)=>{
+  const [x,y]=source[index],next=source[index+1];
+  return fraction===0?source[index]:fraction===1?next:[x+fraction*(next[0]-x),y+fraction*(next[1]-y)];
+ };
  const interior=before.slice(1,-1).map(([lon,lat])=>{
   let bestDistance=Infinity,bestPosition=-1,bestPoint;
   for(const {index,x,y,dx,dy,lengthSquared} of segments){
@@ -46,14 +50,49 @@ export function moveReviewedCoastVertices(before,source){
    if(distance>=bestDistance)continue;
    bestDistance=distance;
    bestPosition=index+fraction;
-   bestPoint=fraction===0?source[index]:fraction===1?source[index+1]:[x+fraction*(source[index+1][0]-x),y+fraction*dy];
+   bestPoint=pointOnSegment(index,fraction);
   }
-  if(bestPosition<=previous||equal(bestPoint,before[0])||equal(bestPoint,before.at(-1)))
-   fail('shoreline projections do not preserve vertex order');
-  previous=bestPosition;
-  return bestPoint;
+  return {position:bestPosition,point:bestPoint};
  });
- return [before[0],...interior,before.at(-1)];
+ for(const [i,{position,point}] of interior.entries()){
+  const previous=i?interior[i-1].position:-1;
+  if(position<previous||(!stationing&&(position===previous||equal(point,before[0])||equal(point,before.at(-1)))))
+   fail('shoreline projections do not preserve vertex order');
+ }
+ if(stationing)spreadCoincidentProjections(interior,before,source,longitudeScale,pointOnSegment);
+ return [before[0],...interior.map(row=>row.point),before.at(-1)];
+}
+
+function spreadCoincidentProjections(interior,before,source,longitudeScale,pointOnSegment){
+ const distances=points=>points.reduce((result,[x,y],i)=>{
+  if(i)result.push(result[i-1]+Math.hypot((x-points[i-1][0])*longitudeScale,y-points[i-1][1]));
+  return result;
+ },[0]);
+ const donor=distances(source),original=distances(before);
+ const stations=interior.map(({position})=>{
+  const index=Math.floor(position);
+  return position===index?donor[index]:donor[index]+(position-index)*(donor[index+1]-donor[index]);
+ });
+ for(let first=0;first<interior.length;){
+  let past=first+1;
+  while(stations[past]===stations[first])past++;
+  const station=stations[first];
+  if(past-first>1||equal(interior[first].point,before[0])||equal(interior[first].point,before.at(-1))){
+   const low=first?(stations[first-1]+station)/2:0;
+   const high=past<stations.length?(station+stations[past])/2:donor.at(-1);
+   const originalSpan=original[past+1]-original[first];
+   if(!(high>low&&originalSpan>0))fail('shoreline projections do not preserve vertex order');
+   for(let i=first;i<past;i++){
+    const length=low+(high-low)*(original[i+1]-original[first])/originalSpan;
+    const stop=donor.findIndex(value=>value>length);
+    if(stop<1||length<=low||length>=high)fail('shoreline projections do not preserve vertex order');
+    interior[i].point=pointOnSegment(stop-1,(length-donor[stop-1])/(donor[stop]-donor[stop-1]));
+   }
+  }
+  first=past;
+ }
+ const result=[before[0],...interior.map(row=>row.point),before.at(-1)];
+ if(new Set(result.map(point=>point.join(','))).size!==result.length)fail('shoreline projections do not preserve vertex order');
 }
 
 const exteriorBounds=new WeakMap();
@@ -173,13 +212,13 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   ||!/^[a-f0-9]{64}$/.test(donor.provenance.originalSha256||''))fail('genuine source edition and lineage required');
  const lines=new Map(donor.features.map(row=>[row.id,row.geometry]));
  if(lines.size!==donor.features.length)fail('duplicate shoreline source ID');
- const sections=input.sections.map(({entityId,before,beforeSha256,after,lineId,part,sourceStart,sourceEnd})=>{
+ const sections=input.sections.map(({entityId,before,beforeSha256,after,lineId,part,sourceStart,sourceEnd,stationing})=>{
   const geometry=lines.get(lineId),raw=geometry?.type==='LineString'&&part===0?geometry.coordinates:
    geometry?.type==='MultiLineString'?geometry.coordinates[part]:null;
   if(!raw||sourceStart===sourceEnd||![sourceStart,sourceEnd].every(i=>Number.isInteger(i)&&i>=0&&i<raw.length))
    fail('archived shoreline range missing');
   const source=sourceStart<sourceEnd?raw.slice(sourceStart,sourceEnd+1):raw.slice(sourceEnd,sourceStart+1).reverse();
-  if(!equal(after,moveReviewedCoastVertices(before,source)))fail('reviewed vertex positions differ from shoreline projections');
+  if(!equal(after,moveReviewedCoastVertices(before,source,stationing)))fail('reviewed vertex positions differ from shoreline projections');
   return {entityId,before,beforeSha256,after};
  });
 
