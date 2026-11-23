@@ -305,6 +305,12 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const identities=new Map(index.sourceIdentities.flatMap(row=>row.sourceEntityIds.map(id=>[id,row])));
  const memberIds=[...new Set(selected.flatMap(id=>[id,...(identities.get(id)?.sourceEntityIds??[])]))];
  prefetchBaseline(memberIds.map(descriptorPath));
+ const selectedIdentities=new Map(selected.map(id=>{
+  const identity=identities.get(id);
+  if(!identity||!identity.sourceFeatureIds.includes(descriptorFor(id).sourceInfo.featureId))
+   fail('missing reviewed Viewer identity '+id);
+  return [id,identity];
+ }));
  const countryGeometry=new Map(builtinGeometryAssets(index).map(row=>[JSON.stringify([row.id,row.version]),row.file]));
  const countryPaths=ids=>[...new Set(ids)].flatMap(id=>{
   const row=countriesById.get(id);
@@ -317,7 +323,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  });
  const prior=physical.modernCoast;
  prefetchBaseline([...memberIds.flatMap(id=>descriptorFor(id).geometryVersions.map(row=>sourceRoot+'/'+row.geometryResource.file)),
-  ...countryPaths(selected.map(id=>descriptorFor(id).sourceInfo.featureId)),physical.asset.url,
+  ...countryPaths([...selectedIdentities.values()].map(row=>row.projectEntityId)),physical.asset.url,
   ...(prior?[prior.asset.replacement.url]:[])]);
  const readRaw=id=>decodeTerritorialSource(descriptorFor(id),p=>readBaseline(sourceRoot+'/'+p));
  const readCountries=new Map();
@@ -330,9 +336,8 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   return country;
  };
  const owners=input.entities.map(({entityId,displayBefore})=>{
-  const source=readRaw(entityId),owner=source.sourceInfo.featureId;
-  const identity=index.sourceIdentities.find(row=>row.projectEntityId===owner&&row.sourceEntityIds.includes(entityId));
-  const country=readCountry(owner),selection=sourceIndex.views[0].selections.find(row=>row.entityId===entityId);
+  const source=readRaw(entityId),identity=selectedIdentities.get(entityId);
+  const country=readCountry(identity.projectEntityId),selection=sourceIndex.views[0].selections.find(row=>row.entityId===entityId);
   const version=source.geometryVersions.find(row=>row.versionId===selection?.geometryVersionId&&row.validTo===null);
   const bindings=country.sourceBindings.filter(row=>row.sourceVersionId===version?.versionId&&row.validTo===null);
   const [entry]=bindings;
