@@ -57,8 +57,21 @@ test('a coastline batch reports each independently invalid land arc in one pass'
       'Reviewed coastline section 2 (state:CCC) physical exterior failed',
     ]);
     assert.ok(error.errors.every(failure=>failure.cause.message.includes('crosses or contacts')));
+    assert.deepEqual(error.errors.map(failure=>failure.sectionIndex),[0,2]);
+    assert.ok(error.errors.every(failure=>failure.cause.contact.peer.length===2));
     return true;
   });
+});
+
+test('interacting shoreline moves are checked together with their final neighbors',()=>{
+  const north=[[0,0],[1,0],[2,0]],south=[[0,-.5],[1,-.5],[2,-.5]];
+  const land={type:'MultiPolygon',coordinates:[[[...north,[2,1],[0,1],north[0]]],
+    [[...south,[2,-2],[0,-2],south[0]]]]};
+  const change=(entityId,before,middle)=>({entityId,before,beforeSha256:coordinateDigest(before),after:[before[0],middle,before.at(-1)]});
+  const a=change('state:AAA',north,[1,-.75]),b=change('state:BBB',south,[1,-1.25]);
+  assert.deepEqual(reviewedCoast.reviewedCoastComponents([a,b]),[[0,1]]);
+  assert.throws(()=>validateReviewedPhysicalCoast(reviewedBorder.applyReviewedExteriorArcs(land,[a]),[a],land));
+  assert.doesNotThrow(()=>validateReviewedPhysicalCoast(reviewedBorder.applyReviewedExteriorArcs(land,[a,b]),[a,b],land));
 });
 
 test('coastline moves can preserve a fixed point shared by two existing polygons',()=>{

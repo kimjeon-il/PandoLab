@@ -103,6 +103,28 @@ function polygonBounds(polygon){
  return bounds;
 }
 
+export function reviewedCoastComponents(sections){
+ const bounds=sections.map(({before,after})=>{
+  const [w,s,e,n]=coordinateBounds([before,after]);
+  return [w-.001,s-.001,e+.001,n+.001];
+ });
+ const index=createBoundarySpatialIndex();
+ index.loadPacked(sections.map((_,i)=>i),bounds);
+ const visited=new Set(),groups=[];
+ for(const i of sections.keys()){
+  if(visited.has(i))continue;
+  const component=[i];
+  visited.add(i);
+  for(const j of component)for(const peer of index.query(bounds[j])){
+   if(visited.has(peer))continue;
+   visited.add(peer);
+   component.push(peer);
+  }
+  groups.push(component.sort((a,b)=>a-b));
+ }
+ return groups;
+}
+
 function indexExterior(geometry,changes,baseline){
  const locate=createReviewedExteriorLookup(geometry,changes.flatMap(({after})=>[after[0],after.at(-1)]));
  const footprints=changes.map(({after})=>coordinateBounds(after));
@@ -177,16 +199,32 @@ function validateExterior(geometry,index,arc){
    }
    if((x||y||z||w)&&index.baseline&&ringIndex===0&&polygonIndex!==match.polygonIndex&&
     preservesExteriorJunction(target,edge,ring,i,index.baseline[match.polygonIndex][0],index.baseline[polygonIndex][0]))continue;
-   fail('corrected exterior crosses or contacts another edge');
+   const error=new Error('Reviewed coastline: corrected exterior crosses or contacts another edge');
+   error.contact={edge:[a,b],peer:[c,d],polygon:match.polygonIndex,edgeIndex:edge,peerPolygon:polygonIndex,peerRing:ringIndex,peerEdge:i};
+   throw error;
   }
  }
+}
+
+function geometryFailure(position,section,phase,cause){
+ const error=new Error(`Reviewed coastline section ${position} (${section.entityId}) ${phase} failed`,{cause});
+ Object.assign(error,{sectionIndex:position,sectionId:section.originalSection,entityId:section.entityId,phase});
+ return error;
+}
+
+function raiseGeometryFailures(failures,components){
+ if(!failures.length)return;
+ const error=new AggregateError(failures,'Reviewed coastline batch geometry validation failed');
+ error.code='REVIEWED_COAST_GEOMETRY';
+ error.components=components;
+ throw error;
 }
 
 export function validateReviewedPhysicalCoast(geometry,sections,baseline){
  const index=indexExterior(geometry,sections,baseline),failures=[];
  for(const [position,section] of sections.entries()){
   try{validateExterior(geometry,index,section.after);}
-  catch(cause){failures.push(new Error(`Reviewed coastline section ${position} (${section.entityId}) physical exterior failed`,{cause}));}
+  catch(cause){failures.push(geometryFailure(position,section,'physical exterior',cause));}
  }
  if(failures.length)throw new AggregateError(failures,'Reviewed coastline physical exterior validation failed');
 }
@@ -196,15 +234,16 @@ function windowed(geometry,bounds,window){
  return candidates.length?clip.intersection(candidates,window):[];
 }
 
-function coastlineChanges(territory,land,section){
+function coastlineChanges(territory,land,section,pairedTerritories){
  const [w,s,e,n]=coordinateBounds([section.before,section.after]);
  const bounds=[w,s,e,n];
  if(w===-180||e===180||e-w>=180||s===-90||n===90)fail('section touches a projection seam');
  const window=[[[[w-.001,s-.001],[e+.001,s-.001],[e+.001,n+.001],[w-.001,n+.001],[w-.001,s-.001]]]];
  const padded=coordinateBounds(window);
  const [before,after]=territory.map(g=>windowed(g,padded,window));
+ const [allBefore,allAfter]=pairedTerritories.map(g=>windowed(g,padded,window));
  const [landBefore,landAfter]=land.map(g=>windowed(g,padded,window));
- for(const [oldSide,newSide,oldLand,newLand] of [[before,after,landBefore,landAfter],[after,before,landAfter,landBefore]]){
+ for(const [oldSide,newSide,oldLand,newLand] of [[allBefore,allAfter,landBefore,landAfter],[allAfter,allBefore,landAfter,landBefore]]){
   const a=clip.difference(oldSide,newSide),b=clip.difference(oldLand,newLand);
   if((a.length||b.length)&&(!a.length||!b.length||clip.xor(a,b).length))fail('territorial and physical land deltas differ');
  }
@@ -242,14 +281,14 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   ||!/^[a-f0-9]{64}$/.test(donor.provenance.originalSha256||''))fail('genuine source edition and lineage required');
  const lines=new Map(donor.features.map(row=>[row.id,row.geometry]));
  if(lines.size!==donor.features.length)fail('duplicate shoreline source ID');
- const sections=input.sections.map(({entityId,before,beforeSha256,after,lineId,part,sourceStart,sourceEnd,stationing})=>{
+ const sections=input.sections.map(({entityId,before,beforeSha256,after,lineId,part,sourceStart,sourceEnd,stationing,originalSection})=>{
   const geometry=lines.get(lineId),raw=geometry?.type==='LineString'&&part===0?geometry.coordinates:
    geometry?.type==='MultiLineString'?geometry.coordinates[part]:null;
   if(!raw||sourceStart===sourceEnd||![sourceStart,sourceEnd].every(i=>Number.isInteger(i)&&i>=0&&i<raw.length))
    fail('archived shoreline range missing');
   const source=sourceStart<sourceEnd?raw.slice(sourceStart,sourceEnd+1):raw.slice(sourceEnd,sourceStart+1).reverse();
   if(!equal(after,moveReviewedCoastVertices(before,source,stationing)))fail('reviewed vertex positions differ from shoreline projections');
-  return {entityId,before,beforeSha256,after};
+  return {entityId,before,beforeSha256,after,originalSection};
  });
 
  const json=p=>JSON.parse(readBaseline(p));
@@ -324,20 +363,41 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
  const physicalBefore=prior?applyPhysicalLandPatch(base,readLand(prior.asset.replacement)):base;
  if(geometryHash(physicalBefore)!==input.physicalBefore)fail('physical land preimage differs');
  const physicalAfter=applyReviewedExteriorArcs(physicalBefore,sections);
- validateReviewedPhysicalCoast(physicalAfter,sections,physicalBefore);
- const affected=[],dependencies=[];
-
- const countries=owners.map(({source,identity,country,version,entry,geometry})=>{
-  const changes=sections.filter(row=>row.entityId===source.entityId);
-  dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));
-  const display=applyReviewedExteriorArcs(geometry.geojson,changes);
-  const displayIndex=indexExterior(display,changes,geometry.geojson);
+ const components=reviewedCoastComponents(sections);
+ const positions=new Map(sections.map((change,i)=>[change,i]));
+ const componentBySection=new Map(components.flatMap(group=>group.map(i=>[i,group])));
+ const changesById=Map.groupBy(sections,change=>change.entityId);
+ const displays=new Map(owners.map(({source,geometry})=>{
+  const before=geometry.geojson,changes=changesById.get(source.entityId);
+  return [source.entityId,{before,after:applyReviewedExteriorArcs(before,changes),changes}];
+ }));
+ const failures=[];
+ try{validateReviewedPhysicalCoast(physicalAfter,sections,physicalBefore);}
+ catch(error){if(!(error instanceof AggregateError))throw error;failures.push(...error.errors);}
+ for(const {before,after,changes} of displays.values()){
+  const displayIndex=indexExterior(after,changes,before);
   for(const change of changes){
-   try{
-    validateExterior(display,displayIndex,change.after);
-    affected.push({entityId:source.entityId,...coastlineChanges([geometry.geojson,display],[physicalBefore,physicalAfter],change)});
-   }catch(cause){throw new Error(`Reviewed coastline section ${sections.indexOf(change)} (${source.entityId}) display validation failed`,{cause});}
+   try{validateExterior(after,displayIndex,change.after);}
+   catch(cause){failures.push(geometryFailure(positions.get(change),change,'display validation',cause));}
   }
+ }
+ const invalidComponents=new Set(failures.map(error=>componentBySection.get(error.sectionIndex)));
+ const affected=[],dependencies=[];
+ for(const component of components){
+  if(invalidComponents.has(component))continue;
+  const pair=[...new Set(component.map(i=>sections[i].entityId))].map(id=>displays.get(id));
+  const coverage=['before','after'].map(side=>({type:'MultiPolygon',coordinates:pair.flatMap(row=>parts(row[side]))}));
+  for(const i of component){
+   const change=sections[i],{before,after}=displays.get(change.entityId);
+   try{affected.push({entityId:change.entityId,sectionIndex:i,...coastlineChanges([before,after],[physicalBefore,physicalAfter],change,coverage)});}
+   catch(cause){failures.push(geometryFailure(i,change,'paired land delta',cause));}
+  }
+ }
+ raiseGeometryFailures(failures,components);
+
+ const countries=owners.map(({source,identity,country,version,entry})=>{
+  const {after:display,changes}=displays.get(source.entityId);
+  dependencies.push(...proveUnchangedMergedMembers(identity,source,binding,changes,readRaw));
   const next=structuredClone(country),ref={id:'historical-world:'+coordinateDigest(display),version:1};
   next.sourceBindings=replaceReviewedDisplayBinding(next.sourceBindings,entry,ref,binding,previousDisplayThrough);
   next.timelineRecords.geometryBindings=replaceReviewedViewerBinding(next.timelineRecords.geometryBindings,entry,ref,binding,previousDisplayThrough);
@@ -364,8 +424,15 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   assertHistoricalCompiledChanges(next,country);
   return next;
  });
- for(const {source,geometry} of owners)if(reviewedBorderTouchesNeighbor(geometry.geojson,affected.filter(row=>row.entityId!==source.entityId)))
-  fail('another selected country intersects the changed area '+source.entityId);
+ const checkNeighbor=(id,geometry,changes)=>{
+  if(!reviewedBorderTouchesNeighbor(geometry,changes))return;
+  for(const row of changes)if(reviewedBorderTouchesNeighbor(geometry,[row])){
+   const cause=new Error('Reviewed coastline: neighbor intersects the changed area '+id);
+   cause.contact={entityId:id,bounds:row.bounds};
+   failures.push(geometryFailure(row.sectionIndex,sections[row.sectionIndex],'neighbor validation',cause));
+  }
+ };
+ for(const {source} of owners)checkNeighbor(source.entityId,displays.get(source.entityId).after,affected.filter(row=>row.entityId!==source.entityId));
  const neighbors=sourceIndex.entities.filter(row=>!selected.includes(row.entityId)
   &&affected.some(({bounds})=>overlaps(bounds,row.bbox))&&territorialLifetimeIntervals(row.lifetime).some(related));
  const neighborOwners=neighbors.map(({entityId})=>identities.get(entityId)?.projectEntityId).filter(id=>id&&!ids.includes(id));
@@ -376,10 +443,12 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   const country=readCountry(identity.projectEntityId);
   for(const entry of country.sourceBindings.filter(related)){
    const geometry=country.geometries.find(g=>equal({id:g.id,version:g.version},entry.geometryRef));
-   if(!geometry||reviewedBorderTouchesNeighbor(geometry.geojson,affected))fail('display neighbor affected '+row.entityId);
+   if(!geometry)fail('missing display neighbor geometry '+row.entityId);
+   checkNeighbor(row.entityId,geometry.geojson,affected);
   }
   dependencies.push({id:row.entityId,reason:'disjoint from the changed area'});
  }
+ raiseGeometryFailures(failures,components);
 
  const catalog=structuredClone(index),encoded=encodeBuiltinCountries(catalog,countries,new Map());
  finalizeBuiltinWorldFiles(catalog,encoded,{previousIndex:index});
@@ -399,7 +468,7 @@ export function buildReviewedCoastEdition({baseline,entityIds,receipt,readBaseli
   contentSha256:patch.resultContentSha256}};
  files.set(url,stored);
  files.set(physicalPath,jsonBytes(physical));
- const result={baseline,files,reports,plan:{entities:selected,binding,dependencies,sections:sections.length,writes:[...files.keys()].sort()}};
+ const result={baseline,files,reports,plan:{entities:selected,binding,dependencies,sections:sections.length,components,writes:[...files.keys()].sort()}};
  issued.set(result,{baseline,reports:{...reports},files:new Map([...files].map(([p,b])=>[p,hash(b)]))});
  return result;
 }
