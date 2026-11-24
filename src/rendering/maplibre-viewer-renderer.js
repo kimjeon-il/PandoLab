@@ -63,7 +63,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let hydroStateKey='',hydroEditsKey='',physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null,selectionSnapshot=null;
  const countryDisplay=createMapLibreCountryDisplay();
  const physicalPending=new Map();
- let countrySequence=0,countryTail=Promise.resolve(),countrySourceSerial=0,countrySourceNeedsSwap=false;
+ let countrySequence=0,countryTail=Promise.resolve();
  const activeCountryTasks=new Set();
  let sceneVectors=[];
  let countryGeometryAbort=null;
@@ -616,14 +616,14 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     &&row.properties.style?.color===next.properties.style?.color
     &&countryDefaultColor(row)===countryDefaultColor(next);
   });
-  if(accepted&&styleReady()&&!error&&countryGeneration===generation&&!activeCountryTasks.size&&!countrySourceNeedsSwap
+  if(accepted&&styleReady()&&!error&&countryGeneration===generation&&!activeCountryTasks.size&&!countryDisplay.needsSwap
     &&accepted.generation===inputs.generation&&accepted.source===inputs.source&&accepted.stroke===inputs.stroke
     &&accepted.presentation===inputs.presentation&&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible
     &&immutable(accepted.entities)&&immutable(entities)&&immutable(accepted.features)&&immutable(features)
     &&equivalent(accepted.entities,entities)&&equivalent(accepted.features,features)){
    territories=features;acceptedCountryInputs=inputs;return Promise.resolve(true);
   }
-  if(activeCountryTasks.size){countrySourceNeedsSwap=true;countryTail=Promise.resolve();}
+  if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}
   countryGeometryAbort?.abort();
   const controller=new AbortController();countryGeometryAbort=controller;
   territories=features;const sequence=++countrySequence,requestedGeneration=generation;countryGeneration=-1;
@@ -645,24 +645,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   }).catch(cause=>{if(disposed||sequence!==countrySequence||requestedGeneration!==generation)return false;throw cause;});
   countryTail=task.catch(()=>{});return task;
  }
- function replaceObsoleteCountrySource(){
-  if(!countrySourceNeedsSwap)return;
-  const oldId=datedSources.active('territories'),newId='territories-generation-'+(++countrySourceSerial),layers=map.getStyle().layers;
-  const affected=layers.map((layer,index)=>({layer,index})).filter(({layer})=>layer.source===oldId);
-  const mandatory=new Set(SOURCE_LAYERS.territories.map(id=>sourceLayer(id,oldId)));
-  map.addSource(newId,countryTileSource());
-  for(const {layer}of affected)map.removeLayer(layer.id);
-  for(const {layer,index}of affected.reverse()){
-   if(!mandatory.has(layer.id))continue;
-   const before=layers.slice(index+1).find(candidate=>map.getLayer(candidate.id));
-   const base=layer.id.split('--',1)[0];
-   map.addLayer({...layer,id:map.getLayer(base)?base+'--'+newId:base,source:newId},before?.id);
-  }
-  if(map.getSource(oldId))map.removeSource(oldId);
-  indexedStyle=null;
-  datedSources.replaceActive('territories',newId);countryFillGroups.delete(oldId);
-  countryDisplay.clearSource();countrySourceNeedsSwap=false;dirty();
- }
  async function applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal){
   if(basemapRecovery)await basemapRecovery;
   await initialize();
@@ -680,19 +662,19 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const active=datedSources.get(datedSources.active('territories'));
   // A paint-only transition shares the already tiled source. Keep the actual
   // tile rows for the next native diff and update its paint through feature state.
-  const paintOnly=!cached&&!countrySourceNeedsSwap&&active?.source===map.getSource(datedSources.active('territories'))
+  const paintOnly=!cached&&!countryDisplay.needsSwap&&active?.source===map.getSource(datedSources.active('territories'))
    &&countryPaintOnly(active,presented);
   if(paintOnly){
    const record={...active,key,rows:new Map(presented.map(row=>[row.id,row]))};
    datedSources.set(datedSources.active('territories'),record);publish(datedSources.active('territories'),record);dirty();
   }else if(cached){
    if(cached[0]!==datedSources.active('territories'))stats.retainedSourceHits++;
-   countrySourceNeedsSwap=false;
+   countryDisplay.clearSwap();
    publish(...cached);
   }else{
    const preserve=presentation.temporalPending()&&datedSources.get(datedSources.active('territories'))?.key!=null;
-   if(!preserve)replaceObsoleteCountrySource();
-   else countrySourceNeedsSwap=false;
+   if(!preserve)countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,countryFillGroups,onStyleInvalidated:()=>{indexedStyle=null;},dirty});
+   else countryDisplay.clearSwap();
    const requestedSource=preserve?datedSources.reserve('territories'):datedSources.active('territories');
    const source=map.getSource(requestedSource);
    const previousTileRows=datedSources.get(requestedSource)?.tiles
@@ -1110,7 +1092,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   resetProjectRenderState(options){if(options.presentation!=='temporal'){
    if(!initialMapLoading&&!initialFrameStaging&&lastPresentedZoom!==null){preserveDisplayedFrame();projectFrameHeld=true;}
    zoomFramePending=false;lastPresentedZoom=null;releaseTemporalFrame();hydroPresentation?.suspend();cancelHydroStartup();
-  }countryGeometryAbort?.abort();borders.reset();geometryClient.reset();polarInputs=[];highlight?.reset();generation=options.generation;pendingSceneDomains=null;sourceWrites.reset();if(activeCountryTasks.size){countrySourceNeedsSwap=true;countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
+  }countryGeometryAbort?.abort();borders.reset();geometryClient.reset();polarInputs=[];highlight?.reset();generation=options.generation;pendingSceneDomains=null;sourceWrites.reset();if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
   labelZoomVisibility,
   getRuntimeState:()=>({...stats,projectRenderBlocked:!!error,mapReady:ready,webglContextLost:contextLost,temporalPresentationPending:presentation.temporalPending(),temporalViewPending:presentation.temporalPending()&&presentation.ticket?.kind==='view',temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false,physicalContextRevision:landRevision}),
   getStats:()=>({...stats,datedSources:{territories:datedSources.active('territories'),land:datedSources.active('physical-land'),water:datedSources.active('physical-water')},performance:metrics.snapshot(),polar:polarLayer?.stats(),highlight:highlight?.stats(),hydro:hydroLoader?.stats(),errorMessage:error?.message||null,generation,projectReplacing:!!state.projectReplacing,webglContextLost:contextLost,projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},hydroFeatureCount:hydroFeatures.length,sourceRevision,certifiedRevision,labelLayout:deps.countryLabelModel.labelLayoutMetrics,mapMoving:state.mapMoving}),
