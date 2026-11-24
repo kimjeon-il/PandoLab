@@ -1,7 +1,5 @@
 name: Post-optimization verification
 on:
-  push:
-    branches: ['verify/optimization-20261124']
   workflow_dispatch:
 permissions:
   contents: read

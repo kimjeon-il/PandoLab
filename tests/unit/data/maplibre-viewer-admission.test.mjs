@@ -466,24 +466,39 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const noLegacySvg=overlay.querySelector('svg')===null;
    renderer.admitTemporalViewTransition(ticket);
    const beforePrepared=renderer.renderFrame(frame()).deferred;
+   // Exercise a genuinely new dated geometry, not a warm standby hit.
+   // A collinear bottom-edge vertex preserves the exact square coverage.
+   after.geometry={type:'Polygon',coordinates:[[[18,-5],[22,-5],[26,-5],[26,5],[18,5],[18,-5]]]};
    await renderer.prepareTemporalCountrySource([after]);
    const beforeSourceApplied=renderer.renderFrame(frame()).deferred;
    let presented=false;const waiting=renderer.waitForTemporalPresentation().then(()=>{presented=true;});
    await new Promise(resolve=>setTimeout(resolve,50));const premature=presented;
    const map=renderer.map,addSource=map.addSource.bind(map);let releaseCountry;
+   const patchedSources=new Set(),restoreWrites=[];
+   const delayCountryWrites=id=>{
+    if(!id.startsWith('territories'))return;
+    const source=map.getSource(id);
+    if(!source||patchedSources.has(source))return;
+    patchedSources.add(source);
+    for(const method of ['setData','updateData']){
+     const original=source[method];
+     if(typeof original!=='function')continue;
+     restoreWrites.push(()=>{source[method]=original;});
+     source[method]=(...args)=>new Promise((resolve,reject)=>{
+      releaseCountry=()=>Promise.resolve(original.apply(source,args)).then(resolve,reject);
+     });
+    }
+   };
+   for(const id of Object.keys(map.getStyle().sources))delayCountryWrites(id);
    map.addSource=(id,...args)=>{
     const result=addSource(id,...args);
-    if(id.startsWith('territories')){
-     const source=map.getSource(id),setData=source.setData.bind(source);
-     source.setData=(...data)=>new Promise((resolve,reject)=>{releaseCountry=()=>{source.setData=setData;return setData(...data).then(resolve,reject);};});
-    }
-    return result;
+    delayCountryWrites(id);return result;
    };
    const countryPreparing=renderer.setTerritorialFeatures([after]);
    for(let i=0;i<100&&!releaseCountry;i++)await new Promise(resolve=>setTimeout(resolve,10));
    if(!releaseCountry)throw new Error('Country update was not requested');
    const requiredBlocked=renderer.renderFrame(frame()).deferred&&overlay.isConnected&&!presented;
-   map.addSource=addSource;releaseCountry();await countryPreparing;
+   map.addSource=addSource;for(const restore of restoreWrites)restore();releaseCountry();await countryPreparing;
    const activeTerritories=()=>renderer.map.getSource(renderer.getStats().datedSources.territories);
    const nextPixels=snapshot.getContext('2d').getImageData(0,0,snapshot.width,snapshot.height).data;
    const frozenBeforeAdmission=overlay.isConnected&&noLegacySvg&&oldPixels.some((value,index)=>index%4===3&&value>0)&&oldPixels.every((value,index)=>value===nextPixels[index]);

@@ -1,0 +1,40 @@
+name: Optimization regression recheck
+on:
+  push:
+    branches: ['verify/optimization-20261124']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: optimization-recheck
+  cancel-in-progress: false
+jobs:
+  recheck:
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [lint, maplibre]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - if: matrix.group == 'maplibre'
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Check unchanged assertions with updated test fixtures
+        env:
+          CHECK_GROUP: ${{ matrix.group }}
+        run: node scripts/run-application-checks.mjs --group="$CHECK_GROUP"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recheck-${{ matrix.group }}
+          path: test-results/
+          if-no-files-found: ignore

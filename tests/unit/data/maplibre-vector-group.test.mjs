@@ -102,16 +102,18 @@ test('territorial fill layers reuse the admitted country source without duplicat
 
 test('polar preparation retries the same revision after a transient failure',async()=>{
  const layers=new Map(),errors=[],changes=[];let attempts=0;
- const gl={createVertexArray:()=>({}),deleteVertexArray(){}};
+ const gl={createVertexArray:()=>({}),deleteVertexArray(){},isContextLost:()=>false,
+  getParameter:()=>null,bindVertexArray(){},createBuffer:()=>({}),bindBuffer(){},bufferData(){},deleteBuffer(){}};
  const map={getLayer:id=>layers.get(id),addLayer(layer){layers.set(layer.id,layer);layer.onAdd(map,gl);},removeLayer(id){layers.get(id).onRemove();layers.delete(id);}};
  const owner=createPolarLayer({map,prepare:async()=>{if(++attempts===1)throw Error('temporary');return {positions:new Float32Array([0,-90,1,-86,-1,-86]),indices:new Uint32Array([0,1,2])};},onChange:()=>changes.push(1),onError:error=>errors.push(error)});
  owner.ensure();const geometry={type:'Polygon',coordinates:[[[0,-90],[1,-86],[-1,-86],[0,-90]]]};const items=[{geometry,color:[1,1,1,1]}];owner.update('same',items,[1,1,1,1]);await new Promise(resolve=>setTimeout(resolve,0));assert.equal(errors.length,1);owner.retry();owner.update('same',items,[1,1,1,1]);await new Promise(resolve=>setTimeout(resolve,0));assert.equal(attempts,2);assert.equal(changes.length,1);assert.equal(owner.pending,false);owner.dispose();
 });
 
 test('polar drawing uses MapLibre custom-layer state restoration without synchronous GL readbacks',async()=>{
- let layer,lastVao;const errors=[],colors=[];
- const gl=new Proxy({createVertexArray:()=>({}),getShaderParameter:()=>true,getProgramParameter:()=>true,
-  getParameter(){throw Error('synchronous GL readback');},isEnabled(){throw Error('synchronous GL readback');},
+ let layer,lastVao,drawing=false;const errors=[],colors=[];
+ const gl=new Proxy({createVertexArray:()=>({}),getShaderParameter:()=>true,getProgramParameter:()=>true,isContextLost:()=>false,
+  getParameter(){if(drawing)throw Error('synchronous GL readback during render');return null;},
+  isEnabled(){if(drawing)throw Error('synchronous GL readback during render');return false;},
   getUniformLocation:(_program,name)=>name,
   uniform4fv:(name,value)=>{if(name==='u_color')colors.push(value);},
   bindVertexArray:value=>{lastVao=value;}},
@@ -121,7 +123,7 @@ test('polar drawing uses MapLibre custom-layer state restoration without synchro
  const packet={positions:new Float32Array([0,-90,1,-86,-1,-86]),indices:new Uint32Array([0,1,2])};
  const ocean=[1,1,1,1],land=[.9,.9,.9,1],grid=[.5,.5,.5,.15],border=[0,0,0,1];
  const loadingOcean=[.99,.99,.99,1],loadingLand=[.95,.95,.95,1];
- const render=()=>layer.render(gl,{shaderData:{variantName:'fixture',vertexShaderPrelude:'',define:''},defaultProjectionData:{mainMatrix:new Float32Array(16),fallbackMatrix:new Float32Array(16),clippingPlane:[0,0,0,1],tileMercatorCoords:[0,0,1,1],projectionTransition:0}});
+ const render=()=>{drawing=true;try{layer.render(gl,{shaderData:{variantName:'fixture',vertexShaderPrelude:'',define:''},defaultProjectionData:{mainMatrix:new Float32Array(16),fallbackMatrix:new Float32Array(16),clippingPlane:[0,0,0,1],tileMercatorCoords:[0,0,1,1],projectionTransition:0}});}finally{drawing=false;}};
  try{owner.ensure();owner.update('scene',[
    {packet,color:land,loadingRole:'land'},{packet,color:border},{packet,color:grid,loadingRole:'grid'},
   ],ocean);await new Promise(resolve=>setImmediate(resolve));
@@ -135,8 +137,8 @@ test('polar drawing uses MapLibre custom-layer state restoration without synchro
 
 test('a staged polar highlight uploads before commit and cannot survive context replacement',async()=>{
  let layer,uploads=0;const colors=[],errors=[];
- const gl=new Proxy({createVertexArray:()=>({}),getShaderParameter:()=>true,getProgramParameter:()=>true,
-  getUniformLocation:(_program,name)=>name,
+ const gl=new Proxy({createVertexArray:()=>({}),getShaderParameter:()=>true,getProgramParameter:()=>true,isContextLost:()=>false,
+  getParameter:()=>null,getUniformLocation:(_program,name)=>name,
   uniform4fv:(name,value)=>{if(name==='u_color')colors.push(value);},bufferData(){uploads++;}},
   {get:(target,key)=>key in target?target[key]:key===String(key).toUpperCase()?key:()=>({})});
  const map={getCanvas:()=>({clientWidth:800,clientHeight:600}),getZoom:()=>3,getLayer:()=>layer,
