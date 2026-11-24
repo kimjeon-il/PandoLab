@@ -63,6 +63,7 @@ async function consumeStoredResponse(response, spec, phase, key, label, source, 
   if (response.body && typeof TransformStream === 'function') {
     const stream = countedStream(response.body, length => {
       storedBytes += length;
+      if(expectedStored>0&&storedBytes>expectedStored)throw Error(`${label} 저장 크기가 올바르지 않습니다.`);
       touch();
       report(phase, key, `${label}: ${source === 'cache' ? '저장된 데이터를 읽는' : '다운로드하는'} 중입니다.`, storedBytes, expectedStored);
     }, signal);
@@ -193,18 +194,23 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
         report(phase,`${key}-cache-write`,`${label}: 저장을 마쳤습니다.`,1,1,true,{cached});
         return {cached,cacheWriteMs};
       });
-      const [written,unpacked]=await Promise.allSettled([writing,decode(read.storedBuffer)]);
+      // Format validation (including independent content digest) can also
+      // run before persistent-cache I/O finishes. Await both on failure.
+      const decoding=decode(read.storedBuffer).then(async decoded=>{
+        if(representation==='decoded')validateAssetLength(decoded,spec,label);
+        const value=await validate(decoded.buffer,label);
+        signal?.throwIfAborted();return {decoded,value};
+      });
+      const [written,unpacked]=await Promise.allSettled([writing,decoding]);
       if(written.status==='rejected')throw written.reason;
       if(unpacked.status==='rejected')throw unpacked.reason;
-      const {cached,cacheWriteMs}=written.value,decoded=unpacked.value;
+      const {cached,cacheWriteMs}=written.value,{decoded,value}=unpacked.value;
       const result = {
         ...read,
         ...decoded,
         cacheWriteMs,
         milliseconds: read.readMs + cacheWriteMs + decoded.decompressMs,
       };
-      if(representation==='decoded')validateAssetLength(result, spec, label);
-      const value = await validate(result.buffer, label);
       signal?.throwIfAborted();
       report(phase, key, `${label}: 다운로드를 완료했습니다.`, Number(spec.compressedBytes || result.storedBytes), Number(spec.compressedBytes || result.storedBytes), true, { source: 'network', cached, attempt });
       return { ...result, value, cacheHit: false };

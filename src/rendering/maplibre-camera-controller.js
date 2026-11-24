@@ -7,6 +7,8 @@ export const WORLD_VIEW_BOUNDS=[[-89.999,-85.0511287798066],[89.999,85.051128779
 export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,readSafeInsets,onWorldFitChange,onFarJump=()=>{},onMove=()=>{},onMoveStart=()=>{},onMoveEnd=()=>{}}){
  let pendingCameraFit=null,worldFit=null,nativeMinZoom;
  let lastCameraZoom=null,lastPresentedZoom=null,attachedMap=null;
+ let keyMap=null,keyValues=null,cachedKey='';
+ const geometryBounds=new WeakMap();
  function fitMapBounds(bounds,safeInsets={}){
   pendingCameraFit={bounds,safeInsets};
   return applyCameraFit();
@@ -89,10 +91,20 @@ export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,read
  }
 
  function fitGeometry(feature,padding){
-   const geometries=[];
-   const collect=value=>{if(value?.type==='FeatureCollection'){value.features.forEach(collect);return;}if(value?.type==='Feature'){collect(value.geometry);return;}if(value?.type==='GeometryCollection'){value.geometries.forEach(collect);return;}if(value?.coordinates)geometries.push(value);};collect(feature);
-   const boxes=geometries.map(geometry=>coordinateBounds(geometry.coordinates)).filter(box=>box.every(Number.isFinite));if(!boxes.length)return false;
-   const bounds=[[Math.min(...boxes.map(box=>box[0])),Math.min(...boxes.map(box=>box[1]))],[Math.max(...boxes.map(box=>box[2])),Math.max(...boxes.map(box=>box[3]))]];
+   let west=Infinity,south=Infinity,east=-Infinity,north=-Infinity;
+   const collect=value=>{
+    if(value?.type==='FeatureCollection'){value.features.forEach(collect);return;}
+    if(value?.type==='Feature'){collect(value.geometry);return;}
+    if(value?.type==='GeometryCollection'){value.geometries.forEach(collect);return;}
+    if(!value?.coordinates)return;
+    let box=geometryBounds.get(value);
+    if(!box){box=coordinateBounds(value.coordinates);if(Object.isFrozen(value)&&Object.isFrozen(value.coordinates))geometryBounds.set(value,box);}
+    if(!box.every(Number.isFinite))return;
+    west=Math.min(west,box[0]);south=Math.min(south,box[1]);east=Math.max(east,box[2]);north=Math.max(north,box[3]);
+   };
+   collect(feature);
+   if(!Number.isFinite(west))return false;
+   const bounds=[[west,south],[east,north]];
    if(bounds[0][0]===bounds[1][0]&&bounds[0][1]===bounds[1][1]){
     jumpCamera({center:bounds[0],zoom:getMap().getZoom()});return true;
    }
@@ -101,7 +113,13 @@ export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,read
  function cameraSnapshot(){const map=getMap();return map&&isLoaded()?readMapLibreCamera(map):null;}
  function cameraKey(){
   const map=getMap();
-  return map?JSON.stringify([map.getCenter().lng,map.getCenter().lat,map.getZoom(),map.getBearing(),map.getPitch(),map.getRoll(),map.getCanvas().width,map.getCanvas().height]):'';
+  if(!map)return '';
+  // Read actual camera and drawing-buffer values, not event order. Several
+  // readiness checks on one rendered camera can share the exact certificate.
+  const center=map.getCenter(),canvas=map.getCanvas();
+  const values=[center.lng,center.lat,map.getZoom(),map.getBearing(),map.getPitch(),map.getRoll(),canvas.width,canvas.height];
+  if(map===keyMap&&keyValues&&values.every((value,i)=>Object.is(value,keyValues[i])))return cachedKey;
+  keyMap=map;keyValues=values;cachedKey=JSON.stringify(values);return cachedKey;
  }
  function handleMove(event={}){
   const zoom=getMap().getZoom();
@@ -132,7 +150,7 @@ export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,read
   hasPresented:()=>lastPresentedZoom!==null,
   markPresented(){lastPresentedZoom=getMap().getZoom();},
   resetPresented(){lastPresentedZoom=null;},
-  dispose(){detachMovement();pendingCameraFit=null;worldFit=null;lastPresentedZoom=null;},
+  dispose(){detachMovement();pendingCameraFit=null;worldFit=null;lastPresentedZoom=null;keyMap=null;keyValues=null;cachedKey='';},
   fitMapBounds,refreshWorldFit,applyCameraFit,isAtWorldView,labelZoomVisibility,jumpCamera,syncCameraFromState,
   captureNativeMinZoom(){nativeMinZoom=getMap().getMinZoom();worldFit=null;},
   hasPendingFit:()=>!!pendingCameraFit,isApplying:()=>applyingCamera});

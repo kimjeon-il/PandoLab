@@ -19,8 +19,10 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
  const records=[],candidates=new Map(),candidateCounts=new Uint8Array(1024);let points=0,checks=0;
  const point=(p,i)=>[p[i],p[i+1]],key=p=>p[0]+','+p[1],same=(a,b)=>a[0]===b[0]&&a[1]===b[1];
  const ends=(a,c,u,v)=>same(a,u)&&same(c,v)||same(a,v)&&same(c,u);
- const safe=p=>p[0]>Math.max(4*px,west+4*px)&&p[0]<Math.min(1-4*px,east-4*px)
-  &&p[1]>Math.max(polar,north+4*px)&&p[1]<Math.min(1-polar,south-4*px);
+ const safeWest=Math.max(4*px,west+4*px),safeEast=Math.min(1-4*px,east-4*px),
+  safeNorth=Math.max(polar,north+4*px),safeSouth=Math.min(1-polar,south-4*px);
+ const safeXY=(x,y)=>x>safeWest&&x<safeEast&&y>safeNorth&&y<safeSouth;
+ const safe=p=>safeXY(p[0],p[1]);
  function eachRing(feature,visit){
   const g=feature.geometry;
   switch(feature.type){
@@ -48,22 +50,22 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
  function propose(ring){
   const p=ring.points;
   for(let i=3;i+3<p.length;i+=3){
-   const b=point(p,i);
-   if(!safe(b))continue;
-   const id=key(b),slot=Math.floor((b[1]-north)/cell)*32+Math.floor((b[0]-west)/cell);
-   if(candidates.has(id)||candidates.size>=MAX_CANDIDATES||overview&&candidateCounts[slot]>=MAX_CANDIDATES_PER_CELL)continue;
+   if(!safeXY(p[i],p[i+1]))continue;
+   const b=point(p,i),slot=Math.floor((b[1]-north)/cell)*32+Math.floor((b[0]-west)/cell);
+   if(candidates.size>=MAX_CANDIDATES||overview&&candidateCounts[slot]>=MAX_CANDIDATES_PER_CELL)continue;
+   const id=key(b);
+   if(candidates.has(id))continue;
    const a=point(p,i-3),c=point(p,i+3);
    if(!safe(a)||!safe(c)||same(a,b)||same(b,c)||same(a,c))continue;
    const dx=c[0]-a[0],dy=c[1]-a[1],length=dx*dx+dy*dy;
+   const collinear=(b[0]-a[0])*dy===(b[1]-a[1])*dx;
+   if(physical&&!collinear)continue;
    const t=((b[0]-a[0])*dx+(b[1]-a[1])*dy)/length;
    if(!(t>0&&t<1))continue;
    const error=(b[0]-a[0]-t*dx)**2+(b[1]-a[1]-t*dy)**2;
    const minX=Math.min(a[0],b[0],c[0]),maxX=Math.max(a[0],b[0],c[0]),minY=Math.min(a[1],b[1],c[1]),maxY=Math.max(a[1],b[1],c[1]);
    if(error>tol2||maxX-minX>maxSpan||maxY-minY>maxSpan)continue;
-   const collinear=(b[0]-a[0])*dy===(b[1]-a[1])*dx;
-   // Independent physical/territorial sources may share a coastline.
-   // A single-owner shortcut must preserve the exact projected segment.
-   if(physical&&!collinear)continue;
+   // A single-owner shortcut preserves the exact projected segment.
    candidates.set(id,{id,a,b,c,error,collinear,minX,minY,maxX,maxY,invalid:false,fills:[],borders:0,occurrences:[]});
    if(overview)candidateCounts[slot]++;
   }
@@ -77,7 +79,8 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
  for(const {ring,hole,role,id} of records){
   const p=ring.points;
   for(let i=0;i<p.length;i+=3){
-   const candidate=candidates.get(key(point(p,i)));
+   if(!safeXY(p[i],p[i+1]))continue;
+   const candidate=candidates.get(p[i]+','+p[i+1]);
    if(!candidate||candidate.invalid)continue;
    if(i===0||i+3===p.length){candidate.invalid=true;continue;}
    const a=point(p,i-3),c=point(p,i+3);

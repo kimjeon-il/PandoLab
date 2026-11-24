@@ -85,3 +85,16 @@ test('selection owner queues style-blocked updates and suppresses hover during t
  owner.dispose();
  assert.equal(disposed,true);
 });
+
+
+test('camera certificates use live dimensions and reuse an unchanged key',()=>{
+ const center={lng:1,lat:2},canvas={width:800,height:600};let zoom=3,reads=0;
+ const map={getCenter(){reads++;return center;},getCanvas:()=>canvas,getZoom:()=>zoom,getBearing:()=>0,getPitch:()=>0,getRoll:()=>0};
+ const owner=createMapLibreCamera({getMap:()=>map,isLoaded:()=>true});
+ const key=owner.cameraKey();
+ assert.equal(owner.cameraKey(),key);assert.equal(reads,2);
+ canvas.width++;assert.notEqual(owner.cameraKey(),key);
+ canvas.width--;assert.equal(owner.cameraKey(),key);
+ zoom++;assert.notEqual(owner.cameraKey(),key);
+ owner.dispose();
+});
