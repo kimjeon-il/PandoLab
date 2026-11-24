@@ -86,10 +86,10 @@ void Project::admitPresentation(ProjectDocument document,bool advanceRevision) {
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_
         &&sameTimelineRecords(state_->document.timelineRecords,next->document.timelineRecords)
         &&sameTimelineCatalog(state_->document,next->document);
-    std::optional<ResolvedWorld> resolved;
+    const ResolvedWorld* resolved=nullptr;
     if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(next->document))
-        resolved.emplace(preparedTimeline_->resolve(timelineCursor_));
-    auto view=projectedState(next->document,timelineCursor_,resolved?&*resolved:nullptr);
+        resolved=&resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(next->document,timelineCursor_,resolved);
     state_=std::move(next);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
     if(advanceRevision)++presentationRevision_;
@@ -106,10 +106,10 @@ void Project::admitTerritorialDirtyIds(const std::function<std::vector<std::stri
     // This path changes only the dirty-territory marker list. Both timeline
     // records and entity catalog remain unchanged, even when state_ is copied.
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
-    std::optional<ResolvedWorld> resolved;
+    const ResolvedWorld* resolved=nullptr;
     if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))
-        resolved.emplace(preparedTimeline_->resolve(timelineCursor_));
-    auto view=projectedState(state->document,timelineCursor_,resolved?&*resolved:nullptr);
+        resolved=&resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(state->document,timelineCursor_,resolved);
     state_=std::move(state);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
 }
@@ -199,8 +199,8 @@ void Project::admitGeometryResources(const GeometryStore& resources) {
     };
     auto state=rebase(state_);
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
-    std::optional<ResolvedWorld> resolved;if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))resolved.emplace(preparedTimeline_->resolve(timelineCursor_));
-    auto view=projectedState(state->document,timelineCursor_,resolved?&*resolved:nullptr);
+    const ResolvedWorld* resolved=nullptr;if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))resolved=&resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(state->document,timelineCursor_,resolved);
     state_=std::move(state);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
 }

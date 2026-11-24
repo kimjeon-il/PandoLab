@@ -1,4 +1,5 @@
 import {createProductModePolicy} from '../../src/app/product-mode-policy.js';
+import {createCoreDocumentReadModel} from '../../src/document/core-document-read-model.js';
 
 
 
@@ -197,6 +198,8 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
     const before=session.projectState(),stored=session.storageSnapshot();
     const replacement=session.captureReplacement(before.epoch);
     const prior=session.resolveWorld(before.timelineCursor,before.epoch);
+    const model=createCoreDocumentReadModel(session.documentSnapshot());
+    model.acceptWorld(prior,before.epoch);
     session.geometryRequirements('1916-01',before.epoch);
     const result=session.setTimelineCursor('1916-01',before.epoch),delta=result.worldDelta;
     const next=session.resolveWorld('1916-01',result.state.epoch);
@@ -207,6 +210,17 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
     assert.equal(delta.baseEpoch,before.epoch);
     assert.equal(delta.sourceEpoch,result.state.epoch);
     assert.deepEqual(Array.from({length:delta.entityCount},(_,i)=>changed.get(i)??retained.next().value),next.entities);
+    const expected=model.projectWorld(next,result.state.epoch);
+    model.acceptTransition(result,'core.document-timeline-cursor');
+    assert.deepEqual(model.world().entities,expected.entities);
+    assert.equal(model.world().month,'1916-01');
+    assert.throws(()=>model.acceptTransition(result,'core.document-timeline-cursor'),{code:'PL-CORE-RESPONSE'});
+    const rows=model.world().entities;
+    const unchanged=session.setTimelineCursor('1916-01',result.state.epoch);
+    assert.deepEqual(unchanged.worldDelta.upserts,[]);
+    assert.deepEqual(unchanged.worldDelta.removed,[]);
+    model.acceptTransition(unchanged,'core.document-timeline-cursor');
+    assert.ok(model.world().entities.every((row,i)=>row===rows[i]));
     assert.equal(session.projectState().timelineCursor,'1916-01');
     const restored=session.rollbackReplacement(replacement,session.projectState().epoch);
     assert.equal(restored.timelineCursor,before.timelineCursor);

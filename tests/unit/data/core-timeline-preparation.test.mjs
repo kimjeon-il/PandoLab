@@ -37,7 +37,8 @@ test('timeline geometry can be prepared without changing the displayed cursor',a
   const result=message.operation==='core.document-load'?{state}:
    message.operation==='core.document-geometry-requirements'?{sourceEpoch:1,resources:[{id:'fixture'}]}:
    message.operation==='core.document-geometry-admit'?{state}:
-   message.operation==='core.document-timeline-cursor'?{state:{epoch:2,timelineCursor:message.payload.month}}:null;
+   message.operation==='core.document-timeline-cursor'?{state:{epoch:2,timelineCursor:message.payload.month},
+    worldDelta:{baseEpoch:message.payload.expectedEpoch,sourceEpoch:2,month:message.payload.month,entityCount:0,upserts:[],removed:[]}}:null;
   queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
    type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
  },terminate(){}};

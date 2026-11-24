@@ -51,7 +51,6 @@ val worldEntity(const ResolvedEntity& row) {
     auto ancestors=val::array();unsigned j=0;for(const auto& id:row.ancestors)ancestors.set(j++,webString(id));
     auto properties=val::object();for(const auto& [name,json]:row.properties)properties.set(name,val::global("JSON").call<val>("parse",json));
     v.set("properties",properties);v.set("ancestors",ancestors);return v;
-
 }
 val world(const ResolvedWorld& result) {
     auto value=val::object(),entities=val::array();value.set("month",result.month);
