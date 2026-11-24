@@ -13,5 +13,5 @@ export function rememberWorldViewChange(previous,next,indices){
 export function worldViewChange(previous,next){
  if(previous===next)return [];
  const record=changes.get(next);
- return record?.base===tokens.get(previous)?record.indices:null;
+ return record&&record.base===tokens.get(previous)?record.indices:null;
 }

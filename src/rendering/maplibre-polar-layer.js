@@ -238,7 +238,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
     presentBatch(staticBatch,capsVisible,undefined,drawState);
     if(!loadingSurface)presentBatch(overlayBatch,capsVisible,map.getZoom(),drawState);
     presentBatch(gridBatch,capsVisible,undefined,drawState);
-    if(!loadingSurface)presentBatch(highlightBatch,capsVisible,undefined,drawState);
+    if(!loadingSurface)presentBatch(highlightBatch,capsVisible,map.getZoom(),drawState);
    }catch(error){failed=true;onError(error);}finally{
     gl.bindVertexArray(null);
    }

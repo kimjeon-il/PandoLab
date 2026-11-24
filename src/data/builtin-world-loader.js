@@ -196,8 +196,8 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     }
    }catch(error){failed=true;throw error;}
   });
-  const completed=await Promise.allSettled(workers),failure=completed.find(row=>row.status==='rejected');
-  if(failure)throw failure.reason;
+  try{await Promise.all(workers);}
+  catch(error){if(error?.name!=='AbortError')await Promise.allSettled(workers);throw error;}
   if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
   return rows;
  }

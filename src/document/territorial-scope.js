@@ -24,7 +24,9 @@ export function createTerritorialScopeResolver({ entityRepository, clipper }) {
   function refresh() {
     const entities = entityRepository.list();
     if (sourceEntities === entities) return;
+    const changes=sourceEntities&&worldViewChange(sourceEntities,entities);
     sourceEntities = entities;
+    if(changes)return; // stable membership certificate
     const ids = new Set(entities.map(entity => String(entity.id)));
     for (const id of scopes.keys()) if (!ids.has(id)) scopes.delete(id);
   }

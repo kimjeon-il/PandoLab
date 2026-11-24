@@ -1,5 +1,6 @@
 import {geometryRevision} from "../geometry/geometry-versions.js";
 import {immutableCountryRows} from './country-content-identity.js';
+import {worldViewChange,rememberWorldViewChange} from '../document/world-view-change.js';
 import {territorialSceneDisplayId} from "../document/territorial-display-identity.js";
 import {territorialRootId} from "../document/territorial-units.js";
 
@@ -7,6 +8,31 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
   if(typeof getDependencies!=='function')
     throw new TypeError('Territorial scene requires an admitted project read-port accessor');
   let builtinRenderCache;
+  const rootOffsets=new WeakMap();
+  const isRoot=entity=>entity.properties.entityKind==='general'&&!entity.properties.parentId;
+  function rootFeatures(entities,immutable){
+    const prior=builtinRenderCache,previous=prior?.collection.features;
+    const changes=immutable&&previous&&worldViewChange(prior.entities,entities);
+    if(changes&&changes.every(i=>isRoot(prior.entities[i])===isRoot(entities[i]))){
+      const offsets=rootOffsets.get(previous);
+      if(offsets){
+        const patches=[];
+        for(const i of changes)if(isRoot(entities[i]))patches.push([offsets.get(String(entities[i].id)),entities[i]]);
+        if(!patches.length)return previous;
+        if(patches.every(([i])=>Number.isInteger(i))){
+          const rows=previous.slice();
+          for(const [i,row]of patches)rows[i]=row;
+          Object.freeze(rows);rootOffsets.set(rows,offsets);
+          rememberWorldViewChange(previous,rows,patches.map(([i])=>i));return rows;
+        }
+      }
+    }
+    const rows=entities.filter(isRoot);
+    if(!immutable)return rows;
+    if(previous?.length===rows.length&&rows.every((row,i)=>row===previous[i]))return previous;
+    Object.freeze(rows);rootOffsets.set(rows,new Map(rows.map((row,i)=>[String(row.id),i])));
+    return rows;
+  }
   let builtinPaletteKey;
   let builtinPaletteVisibility;
 
@@ -23,11 +49,7 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
         ? dependencies.territorialModel.entityRepository.get(entity.id).geometry : entity.geometry), 0);
     if (builtinRenderCache?.entities === entities && builtinRenderCache.nativeGeometryRevision === nativeGeometryRevision
       && builtinRenderCache.presentation === dependencies.projectState.state.layerPresentation) return builtinRenderCache;
-    let features = entities.filter(entity => entity.properties.entityKind === 'general' && !entity.properties.parentId);
-    if(immutable){
-      const prior=builtinRenderCache?.collection.features;
-      features=prior?.length===features.length&&features.every((row,i)=>row===prior[i])?prior:Object.freeze(features);
-    }
+    const features=rootFeatures(entities,immutable);
     const boundaryFeatures = [...features];
     const byId = new Map(features.map(feature => [String(feature.id), feature]));
     const countryIds = new Set(byId.keys());
