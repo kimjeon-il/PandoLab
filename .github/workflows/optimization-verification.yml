@@ -1,0 +1,113 @@
+name: Post-optimization verification
+on:
+  push:
+    branches: ['verify/optimization-20261124']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: optimization-verification
+  cancel-in-progress: false
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [lint, node, maplibre, browser, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: '95b2b974648d93180a44503832e471771767d296'
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify committed C++ and WASM source identity
+        run: node tools/build/package-shared-core-assets.mjs --build-dir assets/wasm --check
+      - if: matrix.group == 'browser' || matrix.group == 'build'
+        run: node tools/data/library-data.mjs --prepare-metadata
+      - if: matrix.group == 'browser' || matrix.group == 'maplibre'
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run selected validation
+        env:
+          CHECK_GROUP: ${{ matrix.group }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$CHECK_GROUP" == "build" ]]; then
+            node scripts/generate-build-metadata.mjs --check
+          else
+            node scripts/run-application-checks.mjs --group="$CHECK_GROUP"
+          fi
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ matrix.group }}
+          path: test-results/
+          if-no-files-found: ignore
+  comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: '95b2b974648d93180a44503832e471771767d296'
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node tools/data/library-data.mjs --prepare-metadata
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Capture baseline and candidate on the same runner and data pin
+        shell: bash
+        env:
+          PANDO_PERF_CAPTURE: '1'
+        run: |
+          set +e
+          PANDO_PERF_SOURCE_COMMIT=53a997927a70258085a17fb5a98d8e623bf5eba5 PANDO_PERF_LABEL=baseline pnpm exec playwright test tests/browser/performance.spec.mjs --grep 'startup and dates|globe performance zoom'
+          before=$?
+          PANDO_PERF_LABEL=candidate pnpm exec playwright test tests/browser/performance.spec.mjs --grep 'startup and dates|globe performance zoom'
+          after=$?
+          if [[ "$before" != 0 || "$after" != 0 ]]; then exit 1; fi
+          set -o pipefail
+          node scripts/compare-maplibre-performance.mjs --allow-wasm-change | tee test-results/performance/comparison.json
+      - name: Upload raw performance observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-candidate-performance
+          path: test-results/performance/
+          if-no-files-found: ignore
+  stability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node tools/data/library-data.mjs --prepare-metadata
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Repeated date transitions and 30-minute stability
+        env:
+          PANDO_STABILITY_CAPTURE: '1'
+        run: pnpm exec playwright test tests/browser/optimization-stability.spec.mjs
+      - name: Upload heap and stability observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability-observations
+          path: test-results/
+          if-no-files-found: ignore
