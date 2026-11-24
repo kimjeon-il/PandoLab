@@ -7,6 +7,7 @@
 #include <vector>
 #include <utility>
 #include <set>
+#include <array>
 
 namespace pandoeditor {
 
@@ -76,7 +77,7 @@ private:
     void admitTerritorialSource(ProjectDocument,const std::string& month,bool activateEdits);
     void admitPresentation(ProjectDocument,bool advanceRevision=true);
     void admitGeometryResources(const GeometryStore&);
-    ResolvedWorld resolveTimelineMetadata(const std::string&) const;
+    const ResolvedWorld& resolveTimelineMetadata(const std::string&) const;
     void admitTerritorialDirtyIds(const std::function<std::vector<std::string>(const ProjectDocument&)>&);
     // Capture snapshots and mutate Project only on the owner thread.
     // Workers may prepare against ProjectSnapshot, never against live Project.
@@ -85,6 +86,8 @@ private:
     // for a cursor-only transition. The source pin prevents address reuse.
     mutable std::weak_ptr<const detail::DocumentState> preparedTimelineSource_;
     mutable std::shared_ptr<const PreparedTimelineWorld> preparedTimeline_;
+    // Two immutable resolved months, invalidated with the prepared source.
+    mutable std::array<std::shared_ptr<const ResolvedWorld>,2> resolvedTimeline_{};
     std::string instanceId_;
     std::uint64_t revision_ = 0;
     std::uint64_t presentationRevision_ = 0;

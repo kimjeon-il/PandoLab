@@ -151,7 +151,7 @@ ProjectSnapshot Project::snapshotForView() const {
     }
     return snapshot();
 }
-ResolvedWorld Project::resolveTimelineMetadata(const std::string& month) const {
+const ResolvedWorld& Project::resolveTimelineMetadata(const std::string& month) const {
     // Viewer/session time queries admit only canonical months. Source records
     // retain their original year/date precision within their validity fields.
     const auto requested=parseTemporal(month);
@@ -164,8 +164,18 @@ ResolvedWorld Project::resolveTimelineMetadata(const std::string& month) const {
                 [&](const ObjectRef&,const GeometryRef& ref){return d.geometries.contains(ref);}});
         preparedTimeline_=std::move(prepared);
         preparedTimelineSource_=state_;
+        resolvedTimeline_={};
     }
-    return preparedTimeline_->resolve(month);
+    for(std::size_t i=0;i<resolvedTimeline_.size();++i) {
+        if(resolvedTimeline_[i]&&resolvedTimeline_[i]->month==month) {
+            if(i!=0)std::swap(resolvedTimeline_[0],resolvedTimeline_[i]);
+            return *resolvedTimeline_[0];
+        }
+    }
+    auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month));
+    resolvedTimeline_[1]=std::move(resolvedTimeline_[0]);
+    resolvedTimeline_[0]=std::move(resolved);
+    return *resolvedTimeline_[0];
 }
 ResolvedWorld Project::resolveWorld(const std::string& month) const {
     auto world=resolveTimelineMetadata(month);std::vector<GeometryRef> required;

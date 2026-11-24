@@ -145,6 +145,35 @@ export function createCoreDocumentReadModel(initialProject) {
     territorialViews=nextViews;hydroViews=nextHydroViews;
     return nextWorld;
   }
+  function acceptWorldDelta(delta,state) {
+    if (!world || delta.baseEpoch!==world.sourceEpoch || delta.sourceEpoch!==state.epoch
+      || delta.month!==state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
+      || !Number.isSafeInteger(delta.entityCount) || delta.entityCount<0
+      || delta.entityCount>world.entities.length+delta.upserts.length)
+      invalid('A world delta requires its accepted base epoch and target cursor.');
+    const key=ref=>{
+      if (!ref || typeof ref.domain!=='string' || typeof ref.id!=='string')
+        invalid('A world delta requires a valid object reference.');
+      return timelineObjectKey(ref);
+    };
+    const prior=new Map(world.entities.map(row=>[key(row.objectRef),row]));
+    const touched=new Set(), positions=new Map();
+    for(const ref of delta.removed){
+      const id=key(ref);
+      if(touched.has(id)||!prior.delete(id))invalid('Invalid world delta removal.');
+      touched.add(id);
+    }
+    for(const {index,entity} of delta.upserts){
+      const id=key(entity?.objectRef);
+      if(touched.has(id)||!Number.isSafeInteger(index)||index<0||index>=delta.entityCount||positions.has(index))
+        invalid('Invalid world delta upsert.');
+      touched.add(id);prior.delete(id);positions.set(index,entity);
+    }
+    if(prior.size+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
+    const unchanged=prior.values();
+    const entities=Array.from({length:delta.entityCount},(_,index)=>positions.get(index)??unchanged.next().value);
+    return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities},state.epoch);
+  }
   function rebaseWorld(epoch) {
     if (!world) invalid('A current C++ world must be admitted before rebasing an unchanged timeline.');
     const entities=world.entities.map(({ objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties }) => ({
@@ -162,7 +191,11 @@ export function createCoreDocumentReadModel(initialProject) {
       'core.document-replacement-rollback'].includes(operation))
       acceptLoadedProject(result.project);
     if (result?.delta) apply(result.delta,verifiedResources);
-    if (result?.world) acceptWorld(result.world,result.state.epoch);
+    if(operation==='core.document-timeline-cursor') {
+      if(!result?.worldDelta)invalid('A cursor transition requires a Core world delta.');
+      acceptWorldDelta(result.worldDelta,result.state);
+    }
+    else if (result?.world) acceptWorld(result.world,result.state.epoch);
     else if (result?.state && world && result.state.epoch!==world.sourceEpoch) {
       if (result.delta && result.delta.timelineRecords!==null)
         invalid('A changed C++ timeline requires its authoritative resolved world acknowledgement.');

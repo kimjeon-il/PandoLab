@@ -74,9 +74,11 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
     admitGeometryResources:(payload,context)=>call('admitGeometryResources',[payload.resources,payload.expectedEpoch],context),
     setTimelineCursor: (payload, context) => call('setTimelineCursor', [payload.month, payload.expectedEpoch], context,
       result => {
-        if (!result?.state || !result?.world || result.world.sourceEpoch !== result.state.epoch
-          || result.world.month !== result.state.timelineCursor || !Array.isArray(result.world.entities))
-          fail('PL-CORE-DOCUMENT-ABI', 'The C++ cursor transition must return its own epoch-pinned resolved world.');
+        const delta=result?.worldDelta;
+        if (!result?.state || !delta || delta.baseEpoch!==payload.expectedEpoch || delta.sourceEpoch!==result.state.epoch
+          || delta.month!==result.state.timelineCursor || !Number.isSafeInteger(delta.entityCount) || delta.entityCount<0
+          || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed))
+          fail('PL-CORE-DOCUMENT-ABI', 'The C++ cursor transition must return its own epoch-pinned world delta.');
         return result;
       }).catch(error => {
         // The Core world resolver rejects invalid precision before the cursor

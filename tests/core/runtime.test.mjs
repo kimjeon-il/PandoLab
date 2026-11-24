@@ -196,7 +196,17 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
   try {
     const before=session.projectState(),stored=session.storageSnapshot();
     const replacement=session.captureReplacement(before.epoch);
-    session.setTimelineCursor('1916-01',before.epoch);
+    const prior=session.resolveWorld(before.timelineCursor,before.epoch);
+    session.geometryRequirements('1916-01',before.epoch);
+    const result=session.setTimelineCursor('1916-01',before.epoch),delta=result.worldDelta;
+    const next=session.resolveWorld('1916-01',result.state.epoch);
+    const removed=new Set(delta.removed.map(ref=>JSON.stringify(ref)));
+    const changed=new Map(delta.upserts.map(({index,entity})=>[index,entity]));
+    const touched=new Set(delta.upserts.map(({entity})=>JSON.stringify(entity.objectRef)));
+    const retained=prior.entities.filter(row=>!removed.has(JSON.stringify(row.objectRef))&&!touched.has(JSON.stringify(row.objectRef)))[Symbol.iterator]();
+    assert.equal(delta.baseEpoch,before.epoch);
+    assert.equal(delta.sourceEpoch,result.state.epoch);
+    assert.deepEqual(Array.from({length:delta.entityCount},(_,i)=>changed.get(i)??retained.next().value),next.entities);
     assert.equal(session.projectState().timelineCursor,'1916-01');
     const restored=session.rollbackReplacement(replacement,session.projectState().epoch);
     assert.equal(restored.timelineCursor,before.timelineCursor);

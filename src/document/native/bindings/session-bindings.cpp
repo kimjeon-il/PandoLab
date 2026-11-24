@@ -44,17 +44,39 @@ val webString(const std::string& value) {return val::global("JSON").call<val>("p
 val optional(const std::optional<std::string>& value) { return value?webString(*value):val::null(); }
 val geometry(const GeometryRef& ref) { auto value=val::object();value.set("id",webString(ref.id));value.set("version",ref.version);return value; }
 val object(const ObjectRef& ref) { auto value=val::object();value.set("domain",webString(ref.domain));value.set("id",webString(ref.id));return value; }
+val worldEntity(const ResolvedEntity& row) {
+    auto v=val::object();v.set("objectRef",object(row.objectRef));v.set("geometryRef",geometry(row.geometryRef));v.set("rendering",val::global("JSON").call<val>("parse",row.rendering));
+    v.set("parentId",webString(row.parentId));v.set("coverageMode",webString(row.coverageMode));v.set("rootId",webString(row.rootId));
+    v.set("validFrom",optional(row.validity.from));v.set("validTo",optional(row.validity.to));
+    auto ancestors=val::array();unsigned j=0;for(const auto& id:row.ancestors)ancestors.set(j++,webString(id));
+    auto properties=val::object();for(const auto& [name,json]:row.properties)properties.set(name,val::global("JSON").call<val>("parse",json));
+    v.set("properties",properties);v.set("ancestors",ancestors);return v;
+
+}
 val world(const ResolvedWorld& result) {
     auto value=val::object(),entities=val::array();value.set("month",result.month);
-    unsigned i=0;for(const auto& row:result.entities) {
-        auto v=val::object();v.set("objectRef",object(row.objectRef));v.set("geometryRef",geometry(row.geometryRef));v.set("rendering",val::global("JSON").call<val>("parse",row.rendering));
-        v.set("parentId",webString(row.parentId));v.set("coverageMode",webString(row.coverageMode));v.set("rootId",webString(row.rootId));
-        v.set("validFrom",optional(row.validity.from));v.set("validTo",optional(row.validity.to));
-        auto ancestors=val::array();unsigned j=0;for(const auto& id:row.ancestors)ancestors.set(j++,webString(id));
-        auto properties=val::object();for(const auto& [name,json]:row.properties)properties.set(name,val::global("JSON").call<val>("parse",json));
-        v.set("properties",properties);v.set("ancestors",ancestors);entities.set(i++,v);
-    }
+    unsigned i=0;for(const auto& row:result.entities)entities.set(i++,worldEntity(row));
     value.set("entities",entities);return value;
+}
+bool sameWorldEntity(const ResolvedEntity& a,const ResolvedEntity& b) {
+    return a.objectRef==b.objectRef&&a.geometryRef==b.geometryRef&&a.rendering==b.rendering
+        &&a.parentId==b.parentId&&a.coverageMode==b.coverageMode&&a.rootId==b.rootId
+        &&a.ancestors==b.ancestors&&a.validity.from==b.validity.from&&a.validity.to==b.validity.to
+        &&a.properties==b.properties;
+}
+// Cursor transitions keep catalog order; transmit changed rows only.
+val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint32_t baseEpoch,std::uint32_t sourceEpoch) {
+    auto value=val::object(),upserts=val::array(),removed=val::array();
+    unsigned u=0,r=0;
+    for(unsigned i=0;i<after.entities.size();++i) {
+        const auto& row=after.entities[i];const auto* previous=before.find(row.objectRef);
+        if(previous&&sameWorldEntity(*previous,row))continue;
+        auto update=val::object();update.set("index",i);update.set("entity",worldEntity(row));upserts.set(u++,update);
+    }
+    for(const auto& row:before.entities)if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
+    value.set("month",after.month);value.set("baseEpoch",baseEpoch);value.set("sourceEpoch",sourceEpoch);
+    value.set("entityCount",double(after.entities.size()));value.set("upserts",upserts);value.set("removed",removed);
+    return value;
 }
 template<class Function> auto boundary(Function function)->decltype(function()) {
     try { return function(); }
@@ -671,14 +693,15 @@ public:
     }
     val setTimelineCursor(const std::string& month,std::uint32_t epoch) {
         return boundary([&]{
+            session_.requireEpoch(epoch);
+            const auto before=session_.resolveWorld(session_.project().timelineCursor());
             ResolvedWorld resolved;
             session_.setTimelineCursor(month,epoch,&resolved);
             const auto state=session_.projectState();
-            auto result=val::object(),projected=world(resolved);
-            projected.set("sourceEpoch",state.epoch);
+            auto result=val::object();
             result.set("state",documentState(state));
             result.set("selection",::selectionSnapshot(session_.selection()));
-            result.set("world",projected);
+            result.set("worldDelta",worldDelta(before,resolved,epoch,state.epoch));
             return result;
         });
     }
