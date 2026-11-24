@@ -1,3 +1,4 @@
+import {patchMapLibreTopologyLod} from './maplibre-topology-lod.mjs';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createLabelGlyphMasks,createLabelGlyphCollision,createLabelGlyphPreparation} from './maplibre-label-glyphs.mjs';
@@ -121,6 +122,13 @@ export function mapLibreVendorAssets(root){
  if(project.dependencies?.['maplibre-gl']!==dependency.version)throw Error('Installed MapLibre version differs from the pinned Viewer dependency');
  const files=['maplibre-gl.mjs','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs','maplibre-gl.css'];
  const output=new Map(files.map(name=>['assets/vendor/maplibre-gl/'+name,readFileSync(resolve(root,'node_modules/maplibre-gl/dist',name))]));
+ // Require exactly one native tile constructor across the pinned chunks.
+ let lodHooks=0;
+ for(const name of ['maplibre-gl-worker.mjs','maplibre-gl-shared.mjs','maplibre-gl.mjs']){
+  const path='assets/vendor/maplibre-gl/'+name,patched=patchMapLibreTopologyLod(output.get(path).toString('utf8'));
+  lodHooks+=patched.matches;if(patched.matches===1)output.set(path,Buffer.from(patched.source));
+ }
+ if(lodHooks!==1)throw Error('Pinned MapLibre topology LOD hook changed: '+lodHooks);
  const modulePath='assets/vendor/maplibre-gl/maplibre-gl.mjs';
  const workerPath='assets/vendor/maplibre-gl/maplibre-gl-worker.mjs';
  output.set(modulePath,Buffer.from(scheduleViewerGlyphRasterization(addLabelZoomDrawing(addLabelGlyphCollision(retainUnaffectedTiles(addHardLineEdges(output.get(modulePath).toString('utf8'))))))));
