@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
 import {createMapLibreHighlight,partitionHighlightLines} from '../../../src/rendering/maplibre-highlight.js';
-import {createMapLibreSourceWrites} from '../../../src/rendering/maplibre-source-lifecycle.js';
+import {createMapLibreSourceWrites,createMapLibreDatedSources} from '../../../src/rendering/maplibre-source-lifecycle.js';
 
 test('long highlights share their split endpoints and preserve every original segment',()=>{
  const long=Array.from({length:18000},(_,index)=>[index/1000,(index%3)/1000]);
@@ -410,4 +410,42 @@ test('shared binary geometry rejects malformed offsets and inconsistent width pr
  assert.throws(()=>unpackHydroFeatures({...packed,widthOffsets:Uint32Array.of(0,1,2)}),/width sample count/);
  assert.throws(()=>unpackHydroFeatures({...packed,metadata:[]}),/Unused geometry packet parts/);
  assert.deepEqual(unpackHydroFeatures(packHydroFeatures([])),[]);
+});
+
+test('dated country standby is initialized without tiles and only the published slot is visible',async()=>{
+ const active='territories',standby='territories-retained';
+ const sources=new Map([[active,{}]]),layers=new Map([
+  ['territories',{id:'territories',type:'fill',source:active}],
+  ['borders',{id:'borders',type:'line',source:active}]
+ ]);
+ let created=0,temporal=false;
+ const map={
+  getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+  getStyle:()=>({layers:[...layers.values()]}),
+  addSource(id,spec){created++;sources.set(id,spec);},
+  removeSource:id=>sources.delete(id),
+  addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),
+  setLayoutProperty(id,name,value){const layer=layers.get(id);layer.layout={...layer.layout,[name]:value};},
+  setPaintProperty(id,name,value){const layer=layers.get(id);layer.paint={...layer.paint,[name]:value};}
+ };
+ const sourceLayer=(id,source)=>source===active?id:id+'--'+source;
+ const visible=id=>[...layers.values()].filter(layer=>layer.source===id&&layer.layout?.visibility!=='none').length;
+ const owner=createMapLibreDatedSources({getMap:()=>map,sourceLayers:{territories:['territories','borders']},sourceLayer,
+  mapSourceLayers:()=>[...layers.values()].map(layer=>({...layer,visible:layer.layout?.visibility!=='none'})),
+  createCountrySource:()=>({type:'geojson',promoteId:'objectKey'}),createEmptySource:()=>({type:'geojson'}),
+  invalidateLayerIndex(){},dirty(){},canRetire:()=>!temporal,temporalPending:()=>temporal,graceMs:0});
+ try{
+  owner.set(active,{kind:'territories',source:sources.get(active),key:'old'});
+  owner.scheduleRetirement();await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(created,1);assert.equal(visible(standby),0);
+  temporal=true;
+  assert.equal(owner.reserve('territories'),standby);assert.equal(created,1);
+  assert.equal(visible(active),2);assert.equal(visible(standby),0);
+  owner.set(standby,{kind:'territories',source:sources.get(standby),key:'new'});
+  owner.activate('territories',standby);
+  assert.equal(visible(active),0);assert.equal(visible(standby),2);
+  assert.equal(owner.reuse('territories','old')[0],active);
+  owner.activate('territories',active);
+  assert.equal(visible(active),2);assert.equal(visible(standby),0);
+ }finally{owner.dispose();}
 });

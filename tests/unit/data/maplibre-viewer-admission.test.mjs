@@ -471,13 +471,18 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    let presented=false;const waiting=renderer.waitForTemporalPresentation().then(()=>{presented=true;});
    await new Promise(resolve=>setTimeout(resolve,50));const premature=presented;
    const map=renderer.map,addSource=map.addSource.bind(map);let releaseCountry;
+   const interceptCountryWrite=id=>{
+    if(!id.startsWith('territories')||id===inactiveCountry)return;
+    const source=map.getSource(id);
+    const setData=source.setData.bind(source),updateData=source.updateData.bind(source);
+    const delay=write=>(...data)=>new Promise((resolve,reject)=>{releaseCountry=()=>{
+     source.setData=setData;source.updateData=updateData;return write(...data).then(resolve,reject);
+    };});
+    source.setData=delay(setData);source.updateData=delay(updateData);
+   };
+   for(const id of Object.keys(map.getStyle().sources))interceptCountryWrite(id);
    map.addSource=(id,...args)=>{
-    const result=addSource(id,...args);
-    if(id.startsWith('territories')){
-     const source=map.getSource(id),setData=source.setData.bind(source);
-     source.setData=(...data)=>new Promise((resolve,reject)=>{releaseCountry=()=>{source.setData=setData;return setData(...data).then(resolve,reject);};});
-    }
-    return result;
+    const result=addSource(id,...args);interceptCountryWrite(id);return result;
    };
    const countryPreparing=renderer.setTerritorialFeatures([after]);
    for(let i=0;i<100&&!releaseCountry;i++)await new Promise(resolve=>setTimeout(resolve,10));
@@ -488,23 +493,16 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const nextPixels=snapshot.getContext('2d').getImageData(0,0,snapshot.width,snapshot.height).data;
    const frozenBeforeAdmission=overlay.isConnected&&noLegacySvg&&oldPixels.some((value,index)=>index%4===3&&value>0)&&oldPixels.every((value,index)=>value===nextPixels[index]);
    await settle();await waiting;const releasedAfterAdmission=!overlay.isConnected;const lateRestored=renderer.map.getLayoutProperty('late','visibility')!=='none';removeLate();
-   if(!renderer.map.style.tileManagers[inactiveCountry]?.used)
-    throw new Error('A just-displayed dated slot must remain tiled for an immediate revisit');
-   renderer.map.fire('movestart');renderer.map.fire('move');renderer.map.fire('moveend');
-   await settle();
-   if(!renderer.map.style.tileManagers[inactiveCountry]?.used)
-    throw new Error('A stationary resize event must not retire the warm dated slot');
-   renderer.map.panBy([1,0],{animate:false});await settle();
    const isInactiveSourceRetained=()=>{
     const layers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
-    return layers.length&&layers.every(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')==='none')&&
+    return !!renderer.map.getSource(inactiveCountry)&&layers.length&&layers.every(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')==='none')&&
      !renderer.map.style.tileManagers[inactiveCountry]?.used;
    };
-   const retirementDeadline=performance.now()+8000;
-   while(!isInactiveSourceRetained()&&performance.now()<retirementDeadline)
-    await new Promise(resolve=>setTimeout(resolve,50));
    if(!isInactiveSourceRetained())
-    throw new Error('The inactive dated slot is still used for native tiling');
+    throw new Error('The old dated slot is still used for native tiling after publication');
+   renderer.map.panBy([1,0],{animate:false});await settle();
+   if(!isInactiveSourceRetained())
+    throw new Error('A camera move reactivated the inactive dated slot');
    await new Promise(resolve=>setTimeout(resolve,100));const optionalStillLoading=!renderer.map.areTilesLoaded();renderer.map.removeLayer('optional-fixture');renderer.map.removeSource('optional-fixture');
    const first=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();const retained=globalThis.document.querySelector('#map > div:last-child');
    const second=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();

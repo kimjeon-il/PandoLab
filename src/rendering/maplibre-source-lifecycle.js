@@ -118,63 +118,79 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
   return matches;
  }
  function reuse(kind,key,equals=(a,b)=>a===b){return slots(kind).find(([,record])=>equals(record.key,key));}
- function show(id){
-  const map=getMap();retiring.delete(id);
+ function setVisibility(id,visible){
+  const map=getMap();let changed=false;
   for(const layer of mapSourceLayers()){
-   if(layer.source===id&&!layer.visible){map.setLayoutProperty(layer.id,'visibility','visible');invalidateLayerIndex();}
+   if(layer.source===id&&layer.visible!==visible&&!layer.id.startsWith('initial-map-')&&map.getLayer(layer.id)){
+    map.setLayoutProperty(layer.id,'visibility',visible?'visible':'none');changed=true;
+   }
   }
+  if(changed)invalidateLayerIndex();
+ }
+ const standbySlot=kind=>slots(kind).find(([id])=>id!==active(kind));
+ const sourceSpec=kind=>kind==='territories'?createCountrySource():createEmptySource(kind);
+ function ensureStandby(kind){
+  const existing=standbySlot(kind);
+  if(existing)return existing;
+  const map=getMap(),id=active(kind)===kind?kind+'-retained':kind;
+  if(!map.getSource(id))map.addSource(id,sourceSpec(kind));
+  const record={kind,source:map.getSource(id)};
+  set(id,record);return [id,record];
+ }
+ function needsCountryStandby(){
+  const kind='territories',id=active(kind),record=retained.get(id);
+  return standbyBudget>0&&record?.key!=null&&record.source===getMap().getSource(id)&&!standbySlot(kind);
  }
  function reserve(kind,hasPendingWrite=sourcePending){
   const map=getMap(),current=active(kind);
-  const standby=slots(kind).find(([id])=>id!==current);
-  if(standby){
-   const [id,record]=standby;
-   if(hasPendingWrite(record.source)){
-    // The obsolete write belongs to the old native source instance. Rebuild
-    // only the standby slot, preserving the active layer and the draw order.
-    const layers=map.getStyle().layers;
-    const owned=layers.filter(layer=>layer.source===id);
-    for(const layer of owned)map.removeLayer(layer.id);
-    map.removeSource(id);map.addSource(id,createEmptySource(kind));
-    for(const layer of owned.reverse()){
-     const before=layers.slice(layers.indexOf(layer)+1).find(next=>map.getLayer(next.id));
-     map.addLayer(layer,before?.id);
-    }
-    retained.set(id,{kind,source:map.getSource(id)});invalidateLayerIndex();
+  const [id,record]=ensureStandby(kind);
+  retiring.delete(id);
+  // An opacity-zero visible layer still requests tiles. Keep the standby
+  // unused while native data is written, and activate only its new content.
+  setVisibility(id,false);
+  if(hasPendingWrite(record.source)){
+   const layers=map.getStyle().layers,owned=layers.filter(layer=>layer.source===id);
+   for(const layer of owned)map.removeLayer(layer.id);
+   map.removeSource(id);map.addSource(id,sourceSpec(kind));
+   for(const layer of owned.reverse()){
+    const before=layers.slice(layers.indexOf(layer)+1).find(next=>map.getLayer(next.id));
+    map.addLayer({...layer,layout:{...layer.layout,visibility:'none'}},before?.id);
    }
-   show(id);return id;
+   set(id,{kind,source:map.getSource(id)});invalidateLayerIndex();
   }
-  const id=current===kind?kind+'-retained':kind;
-  if(!map.getSource(id))map.addSource(id,kind==='territories'?createCountrySource():createEmptySource(kind));
-  const layers=map.getStyle().layers;
+  const layers=map.getStyle().layers;let changed=false;
   for(const base of sourceLayers[kind]){
    const spec=layers.find(layer=>layer.id===sourceLayer(base,current));
    const layerId=sourceLayer(base,id);
-   if(!map.getLayer(layerId))map.addLayer({...spec,id:layerId,source:id,layout:{...spec.layout,visibility:'visible'},
-    paint:{...spec.paint,[slotOpacity(spec.type)]:0,[slotOpacity(spec.type)+'-transition']:{duration:0}}},spec.id);
+   if(!map.getLayer(layerId)){
+    map.addLayer({...spec,id:layerId,source:id,layout:{...spec.layout,visibility:'none'},
+     paint:{...spec.paint,[slotOpacity(spec.type)]:0,[slotOpacity(spec.type)+'-transition']:{duration:0}}},spec.id);changed=true;
+   }
   }
-  retained.set(id,{kind,source:map.getSource(id)});invalidateLayerIndex();
+  if(changed)invalidateLayerIndex();
   return id;
  }
  function cancelRetirement(){clearTimeout(timer);timer=null;}
  function retire(){
   cancelRetirement();
-  if(!retiring.size||!canRetire())return;
-  const map=getMap();
-  for(const layer of mapSourceLayers()){
-   if(retiring.has(layer.source)&&layer.visible&&!layer.id.startsWith('initial-map-')&&map.getLayer(layer.id)){
-    map.setLayoutProperty(layer.id,'visibility','none');invalidateLayerIndex();
-   }
-  }
+  if(!canRetire())return;
   retiring.clear();trimStandby();
+  // Initialize only the empty country worker source, without visible layers
+  // or a duplicate world geometry upload, after a canonical frame.
+  if(needsCountryStandby())ensureStandby('territories');
  }
  function scheduleRetirement(){
-  if(timer===null&&retiring.size&&!temporalPending())timer=setTimeout(retire,graceMs);
+  if(timer!==null||temporalPending()||!canRetire())return;
+  if(needsCountryStandby())timer=setTimeout(retire,0);
+  else if(retiring.size)timer=setTimeout(retire,graceMs);
  }
  function activate(kind,id){
   const previous=active(kind);
   if(previous===id)return;
-  const map=getMap();show(id);
+  const map=getMap();
+  // The acknowledged source becomes the only visible slot for this kind.
+  // Retain the old data for revisit, not a second active tile workload.
+  setVisibility(previous,false);retiring.delete(id);setVisibility(id,true);
   for(const layer of map.getStyle().layers){
    if(layer.source!==previous&&layer.source!==id)continue;
    if(layer.id.startsWith('initial-map-')||!['fill','line'].includes(layer.type))continue;
