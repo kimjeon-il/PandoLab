@@ -1,16 +1,13 @@
 import {createMapLibrePolarDisplay} from './maplibre-polar-display.js';
 import {createMapLibreSceneController} from './maplibre-scene-controller.js';
-import {createTerritorialEntityRepository} from '../document/territorial-entity-repository.js';
 import {createMapLibreProjection} from './maplibre-projection.js';
 import {installManagedMapLibreFeature} from './maplibre-feature-lifecycle.js';
 import {createExternalBasemap} from './maplibre-external-style.js';
 import {createMapLibreFrameController} from './maplibre-frame-controller.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
-import {admittedGeometryKey as geometryKey,geometryReferenceFor} from '../geometry/geometry-version-store.js';
-import {countryDefaultColor} from '../ui/color-adapter.js';
 import {createMapLibreGeometryClient} from './maplibre-geometry-client.js';
 import {createMapLibreCountryBorders} from './maplibre-country-borders.js';
-import {prepareCountryPresentation,countryPaintOnly,countryTileDiff} from './maplibre-country-presentation.js';
+import {createMapLibreCountryController} from './maplibre-country-controller.js';
 import {createMapLibreCountryDisplay} from './maplibre-country-display.js';
 import {createMapLibrePhysicalBase} from './maplibre-physical-base.js';
 import {createMapLibreHydroDisplay} from './maplibre-hydro-display.js';
@@ -40,13 +37,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  const {fitMapBounds,refreshWorldFit,applyCameraFit,isAtWorldView,labelZoomVisibility,syncCameraFromState}=camera;
  let map,api,projection,container,stylesheet,initialization,loadedStyle=null,disposed=false,loaded=false;
 
- let countryGeneration=-1,countryContentKey='';
- let territories=[];
   let quality=null;
- let acceptedCountryInputs=null;
  const countryDisplay=createMapLibreCountryDisplay();
- let countrySequence=0,countryTail=Promise.resolve();
- const activeCountryTasks=new Set();
  const geometryClient=createMapLibreGeometryClient({runtimeAssetUrl:path=>deps.platform.runtimeAssetUrl(path),isDisposed:()=>disposed,getGeneration:()=>frame.generation,onRestart:()=>{borders.reset();},getStats:()=>stats,metrics});
  const {preparePhysicalDisplay,prepareRenderGeometry}=geometryClient;
  const borders=createMapLibreCountryBorders({getBoundaryGeometry:()=>countryDisplay.borders,prepareRenderGeometry,metrics,getStats:()=>stats});
@@ -103,7 +95,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  function requiredSource(id){return scene.requiredSource(id);}
  function syncVectorGroups(){return scene.syncVectorGroups();}
  function orderSceneLayers(){return scene.orderSceneLayers();}
- function syncTerritorialFills(source,batches){return scene.syncTerritorialFills(source,batches);}
  function syncCountryPaint(id,rows){return scene.syncCountryPaint(id,rows);}
  function syncBaseLayer(){return scene.syncBaseLayer();}
  function strokeDomain(...args){return scene.strokeDomain(...args);}
@@ -227,115 +218,17 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   })();
   initialization.catch(failMapPreparation);return initialization;
  }
- function setTerritorialFeatures(features){
-  const entities=deps.territorialModel.entityRepository.list?.()??features;
-  const countryStyle=currentMapStyle();
-  const inputs={entities,features,generation:frame.generation,source:map?.getSource(datedSources.active('territories')),
-   presentation:state.layerPresentation,visibility:state.itemVisibility?.objects,
-   visible:state.layerVisibility.objects,stroke:JSON.stringify([countryStyle.countryStroke,countryStyle.borderAlpha])};
-  const accepted=acceptedCountryInputs;
-  const immutable=rows=>rows.every(row=>Object.isFrozen(row)&&Object.isFrozen(row.properties)&&geometryReferenceFor(row.geometry));
-  // The country tiles consume geometry, hierarchy and fill inputs. Dated
-  // names, flags and other metadata belong to the separate label scene.
-  const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>{
-   const next=after[index];
-   return row===next||row.id===next.id&&row.geometry===next.geometry
-    &&row.properties.parentId===next.properties.parentId
-    &&row.properties.entityKind===next.properties.entityKind
-    &&row.properties.style?.color===next.properties.style?.color
-    &&countryDefaultColor(row)===countryDefaultColor(next);
-  });
-  if(accepted&&styleReady()&&!frame.blocked&&countryGeneration===frame.generation&&!activeCountryTasks.size&&!countryDisplay.needsSwap
-    &&accepted.generation===inputs.generation&&accepted.source===inputs.source&&accepted.stroke===inputs.stroke
-    &&accepted.presentation===inputs.presentation&&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible
-    &&immutable(accepted.entities)&&immutable(entities)&&immutable(accepted.features)&&immutable(features)
-    &&equivalent(accepted.entities,entities)&&equivalent(accepted.features,features)){
-   territories=features;acceptedCountryInputs=inputs;return Promise.resolve(true);
-  }
-  if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}
-  const signal=geometryClient.startCountryRequest();
-  territories=features;const sequence=++countrySequence,requestedGeneration=frame.generation;countryGeneration=-1;
-  const task=countryTail.then(async()=>{
-   if(sequence!==countrySequence||requestedGeneration!==frame.generation||disposed)return false;
-   const entityRepository=metrics.run('territorial.payload',()=>{
-    const rows=[...new Map([...entities,...features].map(feature=>[String(feature.id),feature])).values()]
-     .map(feature=>({...feature,properties:structuredClone(feature.properties)}));
-    return createTerritorialEntityRepository({getEntities:()=>rows});
-   });
-   activeCountryTasks.add(sequence);
-   try{
-    const applied=await applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal);
-    if(applied&&sequence===countrySequence&&requestedGeneration===frame.generation)
-     acceptedCountryInputs={...inputs,source:map.getSource(datedSources.active('territories'))};
-    return applied;
-   }
-   finally{activeCountryTasks.delete(sequence);}
-  }).catch(cause=>{if(disposed||sequence!==countrySequence||requestedGeneration!==frame.generation)return false;throw cause;});
-  countryTail=task.catch(()=>{});return task;
- }
- async function applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal){
-  if(frame.basemapRecovery)await frame.basemapRecovery;
-  await initialize();
-  await frame.waitForStyle(signal);
-  if(disposed)return false;
-  if(requestedGeneration!==frame.generation||sequence!==countrySequence)return false;
-  const {presented,nextBatches,key}=prepareCountryPresentation(features,{state,entityRepository,style:currentMapStyle(),layerPresentation:deps.layerPresentation});
-  const cached=datedSources.reuse('territories',key);
-  const current=()=>!disposed&&requestedGeneration===frame.generation&&sequence===countrySequence;
-  const publish=(id,record)=>{
-   datedSources.activate('territories',id);
-   countryDisplay.publish(record,key);
-   syncCountryPaint(id,record.rows);orderSceneLayers();
-  };
-  const active=datedSources.get(datedSources.active('territories'));
-  // A paint-only transition shares the already tiled source. Keep the actual
-  // tile rows for the next native diff and update its paint through feature state.
-  const paintOnly=!cached&&!countryDisplay.needsSwap&&active?.source===map.getSource(datedSources.active('territories'))
-   &&countryPaintOnly(active,presented);
-  if(paintOnly){
-   const record={...active,key,rows:new Map(presented.map(row=>[row.id,row]))};
-   datedSources.set(datedSources.active('territories'),record);publish(datedSources.active('territories'),record);dirty();
-  }else if(cached){
-   if(cached[0]!==datedSources.active('territories'))stats.retainedSourceHits++;
-   countryDisplay.clearSwap();
-   publish(...cached);
-  }else{
-   const preserve=frame.temporalPending()&&datedSources.get(datedSources.active('territories'))?.key!=null;
-   if(!preserve)countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,onCountrySourceRemoved:id=>scene.removeCountryFillSource(id),onStyleInvalidated:()=>{scene.invalidateLayerIndex();},dirty});
-   else countryDisplay.clearSwap();
-   const requestedSource=preserve?datedSources.reserve('territories'):datedSources.active('territories');
-   const source=map.getSource(requestedSource);
-   const previousTileRows=datedSources.get(requestedSource)?.tiles
-    ??(requestedSource===datedSources.active('territories')?countryDisplay.tiles:new Map());
-   const borders=await prepareCountryBorders(presented,requestedGeneration,signal);
-   const ownsSource=()=>current()&&map.getSource(requestedSource)===source;
-   if(!ownsSource())return false;
-   const tileFeatures=[...presented,...borders.map(row=>row.feature).filter(feature=>feature.geometry.coordinates.length)];
-   const {next,remove,add,update}=countryTileDiff(previousTileRows,tileFeatures);
-   const dirtyEntry={kind:'territories',source};datedSources.set(requestedSource,dirtyEntry);
-   try{
-    let applied=true;
-    if(!previousTileRows.size)applied=await setData(requestedSource,collection(tileFeatures),ownsSource);
-    else if(remove.length||add.length||update.length)applied=await sourceWrites.update(source=>source.updateData({remove,add,update}),requestedSource,ownsSource);
-    if(!applied)return false;
-   }catch(cause){if(current()){countryDisplay.clearTiles();}throw cause;}
-   if(!ownsSource())return false;
-   syncTerritorialFills(requestedSource,nextBatches);
-   const record={kind:'territories',source,key,rows:new Map(presented.map(feature=>[feature.id,feature])),
-    tiles:next,borders:new Map(borders.map(row=>[row.key,row]))};
-   datedSources.set(requestedSource,record);
-   publish(requestedSource,record);
-  }
-  if(sequence!==countrySequence||requestedGeneration!==frame.generation)return false;
-  if(requestedGeneration===frame.generation&&sequence===countrySequence){countryGeneration=frame.generation;countryContentKey=features.map(feature=>String(feature.id)+':'+geometryKey(feature.geometry)).join('|');}
-  map.triggerRepaint();
-  return true;
- }
+ const country=createMapLibreCountryController({getMap:()=>map,getGeneration:()=>frame.generation,isDisposed:()=>disposed,
+  styleReady,isFrameBlocked:()=>frame.blocked,getBasemapRecovery:()=>frame.basemapRecovery,waitForStyle:signal=>frame.waitForStyle(signal),
+  isTemporalPending:()=>frame.temporalPending(),initialize,getEntityRepository:()=>deps.territorialModel.entityRepository,
+  state,layerPresentation:deps.layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
+  sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders});
+ function setTerritorialFeatures(features){return country.setTerritorialFeatures(features);}
  const selection=createMapLibreSelection({getMap:()=>map,state,styleReady,ensurePolar,setData,orderSceneLayers,metrics,invalidate,
  feedback:deps.feedback,suppressHover:frameSuppressHover,objectRefVisible:ref=>deps.objectRefVisible(ref),
  getTerritory:id=>deps.territorialModel.entityRepository.get(id),getHydroFeature:id=>deps.hydroModel.hydroFeatureById(id),
  getInteractionStyle:()=>scene.interactionStyle,rgba,pickingPorts:{
- getMap:()=>map,getProjection:()=>projection,getTerritories:()=>territories,
+ getMap:()=>map,getProjection:()=>projection,getTerritories:()=>country.features,
  getHydroFeatures:()=>state.hydroFeatureCache.values(),getPolarLines:()=>polarDisplay.visibleLines,getVectorRole:source=>scene.vectorRole(source),
  canPick:()=>loaded&&!frame.isFramePreserved(),canPickHydro:(...args)=>hydroDisplay.canPick(...args),
  containsGeometry:(...args)=>deps.containsGeometry(...args),isHydroFeatureVisible:feature=>deps.physicalServices.isHydroFeatureVisible(feature),
@@ -347,14 +240,14 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   isStyleReady:styleReady,isStyleCurrent:()=>loadedStyle===map.style,state,metrics,stats,invalidate,
   presentMapPreparation,onMapPreparationStatus,camera,scene,selection,physicalBase,polarDisplay,physicalResources:deps.physicalResources,
   sourceWrites,datedSources,getExternalBasemap:()=>externalBasemap,flushStyleChanges,feedback:deps.feedback,renderQuality:deps.renderQuality,rgba,
-  getCountryStatus:()=>({generation:countryGeneration,contentKey:countryContentKey})});
+  getCountryStatus:country.status});
  function invalidateCountryColors(){
   if(!styleReady()){pendingCountryPaint=true;return;}
   syncCountryPaint(datedSources.active('territories'),countryDisplay.rows);
   dirty();invalidate('country-paint');
  }
  function invalidateStyle(){if(loaded&&!styleReady()){pendingStyleRefresh=true;return;}if(loaded){
-  setTerritorialFeatures(territories).catch(failMapPreparation);
+  setTerritorialFeatures(country.features).catch(failMapPreparation);
   hydroDisplay.invalidateVisibility();syncHydroState();syncBaseLayer();
   if(frame.initialMapLoading)frame.syncInitialMapSkeleton();
   dirty();
@@ -374,8 +267,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    if(options.presentation!=='temporal')hydroDisplay.resetProject();
    borders.reset();geometryClient.reset();physicalBase.resetProject();polarDisplay.resetProject();selection.reset();
    scene.resetPendingDomains();sourceWrites.reset();
-   if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}
-   countrySequence++;countryGeneration=-1;frame.resetForProject(options);
+   country.reset();frame.resetForProject(options);
   },
   labelZoomVisibility,
   getRuntimeState:()=>({...stats,...frame.runtimeState(),physicalContextRevision:physicalBase.revision}),
@@ -389,6 +281,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   setInteractionStyle,
   getRenderPixelRatio:()=>quality?.dprCap||window.devicePixelRatio||1,
   verifyLayout:()=>camera.verifyLayout(syncBaseLayer),failMapPreparation,retryMapPreparation,
-  dispose(){if(disposed)return;disposed=true;frame.dispose();camera.dispose();datedSources.cancelRetirement();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
+  dispose(){if(disposed)return;disposed=true;frame.dispose();camera.dispose();datedSources.cancelRetirement();country.dispose();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
  });
 }
