@@ -1,3 +1,4 @@
+import {sameStructuredValue} from '../runtime/structured-value.js';
 import { timelineObjectKey } from "./timeline-records.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
 import { projectTimelineIdentity } from "./timeline-resolver.js";
@@ -15,18 +16,8 @@ const invalid = message => { throw Object.assign(new Error(message), { code: 'PL
 const sameCoordinates = (left,right) => Array.isArray(left) && Array.isArray(right)
   ? left.length===right.length && left.every((value,index) => sameCoordinates(value,right[index]))
   : Object.is(left,right);
-// Compare immutable display values without allocating a JSON string for every
-// country on every month transition. Property insertion order is irrelevant.
-function sameDisplayValue(left, right) {
-  if (Object.is(left, right)) return true;
-  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
-  if (Array.isArray(left) !== Array.isArray(right)) return false;
-  if (Array.isArray(left)) return left.length === right.length
-    && left.every((item, index) => sameDisplayValue(item, right[index]));
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length
-    && keys.every(key => Object.hasOwn(right, key) && sameDisplayValue(left[key], right[key]));
-}
+// Preserve the document admission path's Object.is semantics.
+const sameDisplayValue = (left, right) => sameStructuredValue(left, right, Object.is);
 function freeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freeze(child);

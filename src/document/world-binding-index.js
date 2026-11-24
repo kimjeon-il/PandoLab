@@ -1,67 +1,122 @@
-import {compareTemporalKeys,temporalFollowingDay} from './temporal.js';
+import {compareTemporalKeys, temporalFollowingDay} from './temporal.js';
 
-// Exact Core calendar keys, inclusive lower and exclusive upper bounds.
-// Every source-binding boundary is conservative: even overlapping or
-// absent bindings retain their existing first-match precedence.
-export function sourceBindingCertificate(candidates,date,intervalFor){
- const key=date.endKey;
- let selected=null,start=null,end=null;
- function boundary(value){
-  if(!value)return;
-  if(compareTemporalKeys(value,key)<=0){
-   if(!start||compareTemporalKeys(start,value)<0)start=value;
-  }else if(!end||compareTemporalKeys(value,end)<0)end=value;
- }
- for(const row of candidates){
-  const interval=intervalFor(row),low=interval.start?.startKey??null,high=interval.end?.endKey??null;
-  boundary(low);
-  if(high){
-   row.followingEnd??=temporalFollowingDay(high);
-   boundary(row.followingEnd);
+// Exact Core calendar keys. Inclusive start, exclusive end.
+// Overlapping or absent bindings retain the original first-match rule.
+export function sourceBindingCertificate(candidates, date, intervalFor) {
+  const dateKey = date.endKey;
+  let selected = null;
+  let start = null;
+  let end = null;
+
+  function includeBoundary(boundary) {
+    if (!boundary) return;
+    if (compareTemporalKeys(boundary, dateKey) <= 0) {
+      if (!start || compareTemporalKeys(start, boundary) < 0) start = boundary;
+    } else if (!end || compareTemporalKeys(boundary, end) < 0) {
+      end = boundary;
+    }
   }
-  if(!selected&&(!low||compareTemporalKeys(low,key)<=0)&&(!high||compareTemporalKeys(key,high)<=0))selected=row;
- }
- return {selected,range:{start,end}};
-}
-const later=(a,b)=>!a?b:!b?a:compareTemporalKeys(a,b)<0?b:a;
-const earlier=(a,b)=>!a?b:!b?a:compareTemporalKeys(a,b)<0?a:b;
-const valid=(node,key)=>(!node.start||compareTemporalKeys(node.start,key)<=0)&&(!node.end||compareTemporalKeys(key,node.end)<0);
-function combine(left,right){
- return {start:later(left.start,right.start),end:earlier(left.end,right.end),left,right};
-}
-function build(ranges,lo,hi){
- if(hi-lo===1)return ranges[lo];
- const middle=lo+Math.floor((hi-lo)/2);
- return combine(build(ranges,lo,middle),build(ranges,middle,hi));
-}
-// Immutable balanced tree. Unchanged subtrees share their certificates;
-// queries prune a whole range of rows when its intersection still holds.
-function view(root,size){
- function changed(date,limit=Infinity){
-  const result=[],key=date.endKey;
-  function visit(node,lo,hi){
-   if(!node||valid(node,key)||result.length>limit)return;
-   if(hi-lo===1){result.push(lo);return;}
-   const middle=lo+Math.floor((hi-lo)/2);
-   visit(node.left,lo,middle);visit(node.right,middle,hi);
+
+  for (const row of candidates) {
+    const interval = intervalFor(row);
+    const firstDay = interval.start?.startKey ?? null;
+    const lastDay = interval.end?.endKey ?? null;
+    includeBoundary(firstDay);
+    if (lastDay) {
+      row.followingEnd ??= temporalFollowingDay(lastDay);
+      includeBoundary(row.followingEnd);
+    }
+    if (!selected) {
+      const hasStarted = !firstDay || compareTemporalKeys(firstDay, dateKey) <= 0;
+      if (hasStarted && (!lastDay || compareTemporalKeys(dateKey, lastDay) <= 0)) selected = row;
+    }
   }
-  visit(root,0,size);return result;
- }
- function fork(updates){
-  if(!updates.size)return view(root,size);
-  const rows=[...updates].sort(([a],[b])=>a-b);
-  function patch(node,lo,hi,from,to){
-   if(from===to)return node;
-   if(hi-lo===1)return rows[from][1];
-   const middle=lo+Math.floor((hi-lo)/2);
-   let a=from,b=to;
-   while(a<b){const m=a+Math.floor((b-a)/2);if(rows[m][0]<middle)a=m+1;else b=m;}
-   return combine(patch(node.left,lo,middle,from,a),patch(node.right,middle,hi,a,to));
-  }
-  return view(patch(root,0,size,0,rows.length),size);
- }
- return Object.freeze({allows:date=>!root||valid(root,date.endKey),changed,fork});
+  return {selected, range: {start, end}};
 }
-export function createWorldBindingIndex(ranges){
- return view(ranges.length?build(ranges,0,ranges.length):null,ranges.length);
+
+function intersectStart(left, right) {
+  if (!left) return right;
+  if (!right) return left;
+  return compareTemporalKeys(left, right) < 0 ? right : left;
+}
+
+function intersectEnd(left, right) {
+  if (!left) return right;
+  if (!right) return left;
+  return compareTemporalKeys(left, right) < 0 ? left : right;
+}
+
+function containsDate(node, dateKey) {
+  return (!node.start || compareTemporalKeys(node.start, dateKey) <= 0)
+    && (!node.end || compareTemporalKeys(dateKey, node.end) < 0);
+}
+
+const midpoint = (start, end) => start + Math.floor((end - start) / 2);
+
+function combine(left, right) {
+  return {start: intersectStart(left.start, right.start),
+    end: intersectEnd(left.end, right.end), left, right};
+}
+
+function build(ranges, start, end) {
+  if (end - start === 1) return ranges[start];
+  const middle = midpoint(start, end);
+  return combine(build(ranges, start, middle), build(ranges, middle, end));
+}
+
+// Immutable balanced tree. Valid subtrees are skipped as a group.
+function bindingView(root, size) {
+  function changed(date, limit = Infinity) {
+    const indices = [];
+    const dateKey = date.endKey;
+    function visit(node, start, end) {
+      if (!node || containsDate(node, dateKey) || indices.length > limit) return;
+      if (end - start === 1) {
+        indices.push(start);
+        return;
+      }
+      const middle = midpoint(start, end);
+      visit(node.left, start, middle);
+      visit(node.right, middle, end);
+    }
+    visit(root, 0, size);
+    return indices;
+  }
+
+  function fork(updates) {
+    if (!updates.size) return bindingView(root, size);
+    const sortedUpdates = [...updates].sort(([left], [right]) => left - right);
+
+    function splitUpdates(first, last, middle) {
+      while (first < last) {
+        const index = midpoint(first, last);
+        if (sortedUpdates[index][0] < middle) first = index + 1;
+        else last = index;
+      }
+      return first;
+    }
+
+    function patch(node, start, end, first, last) {
+      if (first === last) return node;
+      if (end - start === 1) return sortedUpdates[first][1];
+      const middle = midpoint(start, end);
+      const split = splitUpdates(first, last, middle);
+      return combine(
+        patch(node.left, start, middle, first, split),
+        patch(node.right, middle, end, split, last),
+      );
+    }
+
+    return bindingView(patch(root, 0, size, 0, sortedUpdates.length), size);
+  }
+
+  return Object.freeze({
+    allows: date => !root || containsDate(root, date.endKey),
+    changed,
+    fork,
+  });
+}
+
+export function createWorldBindingIndex(ranges) {
+  return bindingView(ranges.length ? build(ranges, 0, ranges.length) : null, ranges.length);
 }

@@ -14,12 +14,12 @@ export function createSceneRowPreparation(){
   return value;
  });
  function prepareRow(item,kind){
-  let cached=preparedRows.get(item);
+  const cached=preparedRows.get(item);
   if(cached?.kind===kind)return cached.row;
   const point=item.geometry?.type==='Point'||item.geometry?.type==='MultiPoint';
   const native=kind==='line'||item.blendMode==='multiply'||item.style?.blendMode==='multiply';
   const row={...item,kind:point?(native?'point':'circle'):kind};
-  const value={row:Object.isFrozen(item)?Object.freeze(row):row,kind,native};
+  const value={row:Object.isFrozen(item)?Object.freeze(row):row,kind};
   if(Object.isFrozen(item))preparedRows.set(item,value);
   return value.row;
  }

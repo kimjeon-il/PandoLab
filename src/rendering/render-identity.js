@@ -1,13 +1,7 @@
-// Exact structured render identities. Compare bounded rows, not a joined
-// whole-world string or an unchecked hash; delimiters inside IDs are harmless.
-export function sameRenderIdentity(a,b){
- if(a===b)return true;
- if(a==null||b==null||typeof a!=='object'||typeof b!=='object')return false;
- if(Array.isArray(a)||Array.isArray(b))
-  return Array.isArray(a)&&Array.isArray(b)&&a.length===b.length&&a.every((value,index)=>sameRenderIdentity(value,b[index]));
- const keys=Object.keys(a),other=Object.keys(b);
- return keys.length===other.length&&keys.every(key=>Object.hasOwn(b,key)&&sameRenderIdentity(a[key],b[key]));
-}
+import {sameStructuredValue} from '../runtime/structured-value.js';
+
+// Exact identities, not joined whole-world strings or unchecked hashes.
+export const sameRenderIdentity = sameStructuredValue;
 
 // GeoJSON updates contain only changed properties. All callers own the same
 // fixed property schema, so removal of an absent key is not inferred here.
