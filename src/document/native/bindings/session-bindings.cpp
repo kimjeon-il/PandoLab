@@ -70,10 +70,11 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
     auto value=val::object(),upserts=val::array(),removed=val::array();
     unsigned u=0,r=0;
     std::vector<const ObjectRef*> retained;
-    if(allowReorder && &before!=&after)retained.reserve(after.entities.size());
+    const bool changed=&before!=&after&&(!before.projectionIdentity||before.projectionIdentity!=after.projectionIdentity);
+    if(allowReorder&&changed)retained.reserve(after.entities.size());
     std::size_t previousIndex=0;
     bool havePrevious=false,reordered=false;
-    if(&before!=&after)for(unsigned i=0;i<after.entities.size();++i) {
+    if(changed)for(unsigned i=0;i<after.entities.size();++i) {
         const auto& row=after.entities[i];const auto* previous=before.find(row.objectRef);
         if(previous&&sameWorldEntity(*previous,row)){
             if(allowReorder){
@@ -85,7 +86,7 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
         }
         auto update=val::object();update.set("index",i);update.set("entity",worldEntity(row));upserts.set(u++,update);
     }
-    if(&before!=&after)for(const auto& row:before.entities)if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
+    if(changed)for(const auto& row:before.entities)if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
     if(reordered){
         auto order=val::array();unsigned i=0;
         for(const auto* ref:retained)order.set(i++,object(*ref));

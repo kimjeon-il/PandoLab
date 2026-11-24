@@ -173,3 +173,22 @@ test('geometry Worker transfers compact cap rows and complete full-extent highli
  assert.deepEqual(full.packets[0].packet.indices,indices);
  assert.equal(full.stats.transferBytes,108);
 });
+
+
+test('mesh aliases are evicted with the payload and return fresh detached arrays',async()=>{
+ const {createPreparedPolygonMeshStore}=await import('../../../src/rendering/prepared-polygon-mesh.js');
+ const {encodePolygonMesh}=await import('../../../src/rendering/polygon-mesh-codec.js');
+ const packet={algorithmVersion:6,maxEdgeDegrees:.4,positions:new Float32Array([0,-88,1,-88,0,-87]),indices:new Uint32Array([0,1,2]),
+  featureIds:new Uint32Array([0,0,0]),boundaryIndices:new Uint32Array([0,1,1,2,2,0]),ringCoordinates:new Float64Array(),ringOffsets:new Uint32Array(),polygonOffsets:new Uint32Array()};
+ let builds=0;
+ const store=createPreparedPolygonMeshStore({engine:{MESH_ALGORITHM_REVISION:6,buildPolygonGeometryPacket(){builds++;return packet;}},
+  byteBudget:encodePolygonMesh(packet).byteLength});
+ const context={throwIfCancelled(){}},first={cacheKey:'a',geometry:{type:'Polygon',coordinates:square(0,-88)}};
+ await store.prepare(first,context);
+ await store.prepare({...first,cacheKey:'alias'},context);
+ assert.equal(builds,1);
+ await store.prepare({cacheKey:'b',geometry:{type:'Polygon',coordinates:square(2,-88)}},context);
+ assert.equal(builds,2);
+ await store.prepare({...first,cacheKey:'alias'},context);
+ assert.equal(builds,3);
+});

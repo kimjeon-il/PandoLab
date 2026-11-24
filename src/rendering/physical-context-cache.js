@@ -4,16 +4,19 @@ export function createPhysicalContextCache({byteBudget=128*1024*1024,entryLimit=
   throw new RangeError('Invalid physical context cache budget');
  const entries=new Map(),sizes=new WeakMap();
  let evictions=0;
- // Conservative heap estimate: coordinate arrays, child references and
- // numeric components. Memoize shared immutable coordinate subtrees.
+ // Conservative heap estimate. Cache only geometry roots, not millions of
+ // individual coordinate arrays, which would itself inflate the heap.
  function sizeOf(value){
   if(!Array.isArray(value))return 8;
-  if(sizes.has(value))return sizes.get(value);
   let bytes=32+value.length*8;
-  for(const child of value)if(Array.isArray(child))bytes+=sizeOf(child);
-  sizes.set(value,bytes);return bytes;
+  if(Array.isArray(value[0]))for(const child of value)bytes+=sizeOf(child);
+  return bytes;
  }
- const geometryBytes=geometry=>geometry?sizeOf(geometry.coordinates):0;
+ function geometryBytes(geometry){
+  if(!geometry)return 0;
+  if(!sizes.has(geometry))sizes.set(geometry,sizeOf(geometry.coordinates));
+  return sizes.get(geometry);
+ }
  function measure(entry){
   const geometries=new Set();
   if(entry.value){geometries.add(entry.value.geometry);for(const row of entry.value.waters)geometries.add(row.water);}

@@ -35,9 +35,11 @@ export function createPhysicalAssetReader({
     if(!spec)throw new Error('Missing pinned physical land asset.');
     const key=spec.sha256;
     if(preparedLand.has(key)){
-      const existing=preparedLand.get(key);preparedLand.delete(key);preparedLand.set(key,existing);return existing;
+      const existing=preparedLand.get(key);preparedLand.delete(key);preparedLand.set(key,existing);return existing.task;
     }
-    if(!preparedLand.has(key))preparedLand.set(key,(async()=>{
+    const entry={ready:false,task:null};
+    preparedLand.set(key,entry);
+    entry.task=(async()=>{
       // Both render paths use the same verified coverage. Canonical patches
       // still read their original base when the display asset is unavailable.
       const display=await loadPhysicalLandDisplay(key).catch(()=>null);
@@ -49,15 +51,15 @@ export function createPhysicalAssetReader({
       const context=Object.freeze({geometry,revision:key,displayPrepared:display!==null});
       if(key===buildMeta.physicalLand.sha256){physicalLand=context;onLandReady();}
       return context;
-    })().catch(error=>{preparedLand.delete(key);throw error;}));
-    const task=preparedLand.get(key);
-    task.then(()=>{
-      for(const [id] of preparedLand){
+    })().then(context=>{
+      entry.ready=true;
+      for(const [id,cached] of preparedLand){
         if(preparedLand.size<=2)break;
-        if(id!==key&&id!==buildMeta?.physicalLand?.sha256)preparedLand.delete(id);
+        if(cached.ready&&id!==key&&id!==buildMeta?.physicalLand?.sha256)preparedLand.delete(id);
       }
-    },()=>{});
-    return task;
+      return context;
+    },error=>{if(preparedLand.get(key)===entry)preparedLand.delete(key);throw error;});
+    return entry.task;
   }
   return Object.freeze({storedPhysicalAssets,loadPhysicalLand,
     get physicalLand(){return physicalLand;}});

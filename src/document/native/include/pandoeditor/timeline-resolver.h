@@ -24,6 +24,9 @@ struct ResolvedWorld {
     const ResolvedEntity* find(const ObjectRef&) const;
     // Populated by the resolver once, reused by admission and projection.
     std::vector<GeometryRef> requiredGeometries;
+    // An immutable projection certificate is shared only by exact
+    // event-free cursor copies of one prepared timeline source.
+    std::shared_ptr<const bool> projectionIdentity;
 };
 
 // One inclusive as-of-boundary rule for project and library object histories.

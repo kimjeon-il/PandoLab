@@ -155,6 +155,7 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         }
     }
     ResolvedWorld result;result.month=cursor.canonical;
+    result.projectionIdentity=std::make_shared<const bool>(true);
     result.entities.reserve(index.entities.size());
     const auto propertiesFor=[&](const ObjectRef& ref,const auto& properties){
         for(const auto& property:properties)if(active(property.validity,atEnd))
