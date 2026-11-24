@@ -366,3 +366,34 @@ test('country paint-only detection and tile delta preserve unchanged geometry',(
  const removed=countryTileDiff(new Map([[previous.id,previous]]),[]);
  assert.deepEqual(removed.remove,[previous.id]);
 });
+
+test('country source replacement preserves mandatory layers and resets owned state',()=>{
+ const display=createMapLibreCountryDisplay();
+ const sources=new Map([['territories',{}]]),layers=new Map([
+  ['territories',{id:'territories',source:'territories',type:'fill'}],
+  ['borders',{id:'borders',source:'territories',type:'line'}],
+ ]);
+ let active='territories',invalidated=0;
+ const map={
+  getStyle:()=>({layers:[...layers.values()]}),
+  getLayer:id=>layers.get(id),
+  getSource:id=>sources.get(id),
+  addSource:(id,source)=>sources.set(id,source),
+  removeSource:id=>sources.delete(id),
+  addLayer:layer=>layers.set(layer.id,layer),
+  removeLayer:id=>layers.delete(id),
+ };
+ const datedSources={active:()=>active,replaceActive:(_,id)=>{active=id;}};
+ display.publish({rows:new Map(),tiles:new Map(),borders:new Map([['cached',{}]])},'before');
+ display.markSourceStale();
+ display.replaceObsoleteCountrySource({map,datedSources,sourceLayer:(id,source)=>id,sourceLayers:['territories','borders'],
+  countryTileSource:()=>({type:'geojson'}),countryFillGroups:new Map(),
+  onStyleInvalidated:()=>{invalidated++;},dirty:()=>{}});
+ assert.equal(active,'territories-generation-1');
+ assert.equal(layers.get('territories').source,active);
+ assert.equal(layers.get('borders').source,active);
+ assert.equal(sources.has('territories'),false);
+ assert.equal(display.needsSwap,false);
+ assert.equal(display.borders.size,0);
+ assert.equal(invalidated,1);
+});
