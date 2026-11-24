@@ -40,7 +40,7 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
  for(const {ring,role} of records){
   if(role!=='country-border')continue;
   const p=ring.points;
-  for(let i=3;i+3<p.length&&candidates.size<MAX_CANDIDATES;i+=3){
+  for(let i=3;i+3<p.length;i+=3){
    const a=point(p,i-3),b=point(p,i),c=point(p,i+3);
    if(!safe(a)||!safe(b)||!safe(c)||same(a,b)||same(b,c)||same(a,c))continue;
    const dx=c[0]-a[0],dy=c[1]-a[1],length=dx*dx+dy*dy;
@@ -51,6 +51,7 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
    if(error>tol2||maxX-minX>8*px||maxY-minY>8*px)continue;
    const id=key(b),old=candidates.get(id);
    if(old){if(!ends(old.a,old.c,a,c))old.invalid=true;continue;}
+   if(candidates.size>=MAX_CANDIDATES)return features;
    candidates.set(id,{id,a,b,c,error,minX,minY,maxX,maxY,invalid:false,fills:[],borders:0,occurrences:[]});
   }
  }
@@ -152,7 +153,7 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
   if(feature.type==='LineString')geometry=line(g);
   else if(feature.type==='Polygon'||feature.type==='MultiLineString')geometry=lines(g);
   else if(feature.type==='MultiPolygon'&&g.some(poly=>poly.some(ring=>derived.has(ring))))geometry=g.map(lines);
-  return geometry===g?feature:{...feature,geometry};
+  return geometry===g?feature:{...feature,geometry,tags:{...feature.tags,pandoDisplayLod:1}};
  });
 }
 

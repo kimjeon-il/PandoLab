@@ -228,7 +228,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  feedback:deps.feedback,suppressHover:frameSuppressHover,objectRefVisible:ref=>deps.objectRefVisible(ref),
  getTerritory:id=>deps.territorialModel.entityRepository.get(id),getHydroFeature:id=>deps.hydroModel.hydroFeatureById(id),
  getInteractionStyle:()=>scene.interactionStyle,rgba,pickingPorts:{
- getMap:()=>map,getProjection:()=>projection,getTerritories:()=>country.features,
+ getMap:()=>map,getProjection:()=>projection,getTerritories:()=>country.features,getPresentedCountryRows:()=>countryDisplay.rows,
  getHydroFeatures:()=>state.hydroFeatureCache.values(),getPolarLines:()=>polarDisplay.visibleLines,getVectorRole:source=>scene.vectorRole(source),
  canPick:()=>loaded&&!frame.isFramePreserved(),canPickHydro:(...args)=>hydroDisplay.canPick(...args),
  containsGeometry:(...args)=>deps.containsGeometry(...args),isHydroFeatureVisible:feature=>deps.physicalServices.isHydroFeatureVisible(feature),

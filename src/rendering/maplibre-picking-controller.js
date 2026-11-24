@@ -5,7 +5,7 @@ import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {POLAR_LATITUDE} from './maplibre-polar-layer.js';
 import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
 const layerVisibleAtZoom=(layer,zoom)=>layer.visible&&isWithinDisplayZoom(zoom,layer.minzoom,layer.maxzoom);
-export function createMapLibrePicking({getMap,getProjection,getTerritories,getHydroFeatures,getPolarLines,getVectorRole,ownsHighlight,canPick,canPickHydro,objectRefVisible,containsGeometry,isHydroFeatureVisible,mapSourceLayers,sourceLayer,datedSources,requiredSource,objectKeyRef}){
+export function createMapLibrePicking({getMap,getProjection,getTerritories,getPresentedCountryRows,getHydroFeatures,getPolarLines,getVectorRole,ownsHighlight,canPick,canPickHydro,objectRefVisible,containsGeometry,isHydroFeatureVisible,mapSourceLayers,sourceLayer,datedSources,requiredSource,objectKeyRef}){
  const polarPicking=createMapObjectSpatialIndex(),polarFeatureBounds=new WeakMap();
  let indexedTerritories=null,pickLayerCache=null;
  const polarTerritories=new Map();
@@ -85,15 +85,36 @@ export function createMapLibrePicking({getMap,getProjection,getTerritories,getHy
   const refs=new Map();
   const layers=pickingLayers(zoom,includeHydro,includeLabels);
   if(!layers.length)return [];
-  for(const feature of getMap().queryRenderedFeatures(point,{layers})){
+  const map=getMap(),hits=map.queryRenderedFeatures(point,{layers});
+  // A generalized tile can exchange a subpixel sliver between two countries.
+  // Recover its canonical owner only from live, visible country fill layers.
+  const presented=getPresentedCountryRows?.();
+  const corrected=new Map();
+  const needsCorrection=presented&&hits.some(hit=>hit.properties?.displayRole==='country-fill'&&hit.properties.pandoDisplayLod===1);
+  if(needsCorrection){
+   const active=datedSources.active('territories');
+   const countryLayers=layers.filter(id=>map.getLayer(id)?.source===active&&map.getLayer(id)?.type==='fill');
+   if(countryLayers.length){
+    const nearby=map.queryRenderedFeatures([[point[0]-2,point[1]-2],[point[0]+2,point[1]+2]],{layers:countryLayers});
+    for(const hit of nearby){
+     const p=hit.properties,ref=p?.displayRole==='country-fill'&&p.objectKey?objectKeyRef(p.objectKey):null;
+     const row=ref&&presented.get(ref.key);
+     if(row&&objectRefVisible(ref)&&!corrected.has(ref.key))
+      corrected.set(ref.key,containsGeometry(coordinate,row.geometry)?ref:null);
+    }
+   }
+  }
+  for(const feature of hits){
    const p=feature.properties||{};if(p.displayRole==='country-border')continue;
    if(feature.source==='hydro'&&(!isWithinDisplayZoom(zoom,p.viewerMinZoom)||!canPickHydro(p.featureId,p.logicalId)))continue;
    if(feature.source==='viewer-labels'&&p.kind==='label'&&!isWithinDisplayZoom(zoom,p.viewerMinZoom))continue;
    let ref;
    if(p.objectKey)ref=objectKeyRef(p.objectKey);
    else if(p.logicalId&&p.category)ref=normalizeObjectRef({domain:'hydro',type:p.category,id:String(p.logicalId)});
+   if(p.displayRole==='country-fill'&&ref&&corrected.has(ref.key)&&!corrected.get(ref.key))continue;
    if(ref&&(includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))refs.set(ref.key,ref);
   }
+  for(const [key,ref] of corrected)if(ref&&!refs.has(key))refs.set(key,ref);
   return [...refs.values()];
  }
 
