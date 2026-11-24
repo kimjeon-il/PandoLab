@@ -188,7 +188,7 @@ export function createMapLibreFrameController({
   if(!initialMapLoading)camera.markPresented();
   if(initialFrameStaging)initialFrameStaging='certified';
   projectFrameHeld=false;zoomFramePending=false;discardUnusedPreservedFrame();
-  metrics.publish();pendingFrame=null;ready=true;notify('ready','지도 준비 완료');datedSources.scheduleRetirement();
+  metrics.publish();pendingFrame=null;approvedFrame=null;ready=true;notify('ready','지도 준비 완료');datedSources.scheduleRetirement();
   return true;
  }
  function failMapPreparation(cause){

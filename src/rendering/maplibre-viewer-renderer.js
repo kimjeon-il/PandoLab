@@ -101,7 +101,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  }
  function mapSourceLayers(){return scene.mapSourceLayers();}
  function requiredSource(id){return scene.requiredSource(id);}
- function requiredSourcesReady(){return scene.requiredSourcesReady();}
  function syncVectorGroups(){return scene.syncVectorGroups();}
  function orderSceneLayers(){return scene.orderSceneLayers();}
  function syncTerritorialFills(source,batches){return scene.syncTerritorialFills(source,batches);}
@@ -142,7 +141,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  const {setHydroManifest,syncHydroState,refreshHydroDetail}=hydroDisplay;
  const polarDisplay=createMapLibrePolarDisplay({getMap:()=>map,isStyleReady:styleReady,prepareRenderGeometry,getGeneration:()=>frame.generation,
  dirty,invalidate,failMapPreparation,getMapStyle:currentMapStyle,physicalResources:deps.physicalResources,countryDisplay,state,
- isColorsEnabled:colorsEnabled,isInitialMapLoading:()=>initialMapLoading,getPalette:()=>deps.preferences.mapPalette(),
+ isColorsEnabled:colorsEnabled,isInitialMapLoading:()=>frame.initialMapLoading,getPalette:()=>deps.preferences.mapPalette(),
  hydro:hydroDisplay,getSceneKey:()=>scene.key,getSceneVectors:()=>scene.vectors,getPickBounds:geometry=>selection.pickBounds(geometry),
  resolveObjectKey:objectKeyRef,isHydroFeatureVisible:feature=>deps.physicalServices.isHydroFeatureVisible(feature),rgba});
  const {ensurePolar}=polarDisplay;
@@ -390,6 +389,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   setInteractionStyle,
   getRenderPixelRatio:()=>quality?.dprCap||window.devicePixelRatio||1,
   verifyLayout:()=>camera.verifyLayout(syncBaseLayer),failMapPreparation,retryMapPreparation,
-  dispose(){disposed=true;camera.dispose();datedSources.cancelRetirement();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();frame.dispose();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
+  dispose(){if(disposed)return;disposed=true;frame.dispose();camera.dispose();datedSources.cancelRetirement();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
  });
 }
