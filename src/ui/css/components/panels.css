@@ -133,7 +133,6 @@
   background: var(--ui-search-result-hover, var(--ui-hover-fill, var(--surface-hover)));
 }
 
-/* The details disclosure and flag grid use shared panel and button tokens. */
 .surface-details .object-details-groups {
   align-content: start;
 }
@@ -143,29 +142,10 @@
 }
 
 .surface-details .object-details-group-heading {
+  margin: 0;
   padding-block: var(--ui-space-2);
-  cursor: pointer;
-  list-style: none;
-}
-
-.surface-details .object-details-group-heading::-webkit-details-marker {
-  display: none;
-}
-
-.surface-details .object-details-group-heading::before {
-  content: "›";
-  display: inline-block;
-  color: var(--muted);
-  transform: rotate(0deg);
-  transition: transform 140ms ease;
-}
-
-.surface-details .object-details-group[open] > .object-details-group-heading::before {
-  transform: rotate(90deg);
-}
-
-.surface-details .object-details-group-count {
-  margin-inline-start: auto;
+  font-size: var(--ui-font-body);
+  font-weight: var(--design-weight-bold);
 }
 
 .surface-details .object-details-group-list {
@@ -194,10 +174,4 @@
 
 .surface-details .object-details-flag-fallback {
   color: var(--muted);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .surface-details .object-details-group-heading::before {
-    transition: none;
-  }
 }

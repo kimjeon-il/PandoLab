@@ -148,8 +148,8 @@
   margin-block: var(--ui-space-1);
 }
 
-.surface-details > .surface-header .surface-header-actions {
-  grid-column: 2;
+.viewer-root:not([data-layout="mobile"], [data-layout="phone-landscape"]) .surface-details > .surface-header {
+  display: none;
 }
 
 .object-details-context {

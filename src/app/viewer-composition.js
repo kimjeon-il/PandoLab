@@ -176,7 +176,10 @@ export async function composeViewer({ productMode, meta }) {
         }),
       };
     },
-    selectObject:id=>selectionUiController.applyIntent({domain:'territorial',type:'entity',id}),
+    selectObject:async id=>{
+      const ref={domain:'territorial',type:'entity',id};
+      if(await selectionUiController.applyIntent(ref))map.objectQuery.focusObjectRef(ref,{announce:false});
+    },
     hoverObject:(id,entered,isCurrent)=>{
       const ref=normalizeObjectRef({domain:'territorial',type:'entity',id});
       return selectionDomain.setHover(entered?ref:null,{source:'details',expectedKey:entered?'':ref.key,isCurrent});

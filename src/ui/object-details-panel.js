@@ -28,8 +28,7 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
   };
   const title=get('objectDetailObjectName'),affiliation=get('objectDetailAffiliation'),
     flag=get('objectDetailFlag'),
-    groupHost=get('objectDetailGroups'),infoEmpty=get('objectDetailInfoEmpty'),
-    closeButton=get('objectDetailCloseBtn'),tablist=get('objectDetailTabs');
+    groupHost=get('objectDetailGroups'),infoEmpty=get('objectDetailInfoEmpty'),tablist=get('objectDetailTabs');
   const tabs=[
     {name:'info',button:get('objectDetailTabInfo'),pane:get('objectDetailInfoPane')},
     {name:'history',button:get('objectDetailTabHistory'),pane:get('objectDetailHistoryPane')},
@@ -63,8 +62,6 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     event.preventDefault();
     selectTab(tabs[next].name,{focus:true});
   });
-  listen(closeButton,'click',()=>surfaces.closeSurface('details',{restoreFocus:true}));
-
   const node=(tag,className,text)=>{
     const element=document.createElement(tag);
     if(className)element.className=className;
@@ -85,12 +82,12 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     preview=null;
     sendHover(tile,false);
   }
-  function createTile(id,disclosure) {
+  function createTile(id) {
     const button=node('button','ui-button ui-selectable-row object-details-child');
     button.type='button';
-    const tile={id,button,disclosure,flagUrl:undefined};
+    const tile={id,button,flagUrl:undefined};
     function enter(input) {
-      if(disposed||!disclosure.open)return;
+      if(disposed)return;
       const changed=preview?.tile!==tile;
       preview={tile,input};
       if(changed)sendHover(tile,true);
@@ -148,7 +145,7 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     const groups=groupObjectDetailChildren(view.children);
     infoEmpty.hidden=groups.length>0;
 
-    // Preserve the actual disclosure and button nodes for an unchanged object.
+    // Preserve the group and button nodes for an unchanged object.
     // A new selection/project generation starts a fresh UI tree.
     const previous=reset?new Map():renderedGroups;
     const next=new Map();
@@ -157,23 +154,15 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     const elements=groups.map(group=>{
       let entry=previous.get(group.label);
       if(!entry){
-        const disclosure=node('details','object-details-group');
-        disclosure.open=true;
-        const heading=node('summary','ui-choice-row object-details-group-heading');
-        const count=node('span','ui-status object-details-group-count');
-        heading.append(node('strong','object-details-group-title',group.label),count);
+        const section=node('section','object-details-group');
+        const heading=node('h3','object-details-group-heading',group.label);
         const list=node('div','object-details-group-list');
-        disclosure.append(heading,list);
-        disclosure.addEventListener('toggle',()=>{
-          if(!disclosure.open&&preview?.tile.disclosure===disclosure)clearHover();
-        });
-        entry={disclosure,heading,count,list,buttons:new Map()};
+        section.append(heading,list);
+        entry={section,list,buttons:new Map()};
       }
-      entry.count.textContent=group.items.length+'개';
-      if(focused===entry.disclosure||focused===entry.heading)focusedRetained=true;
       const buttons=new Map();
       const rows=group.items.map(child=>{
-        const tile=entry.buttons.get(child.id)||createTile(child.id,entry.disclosure);
+        const tile=entry.buttons.get(child.id)||createTile(child.id);
         updateTile(tile,child);
         const {button}=tile;
         if(focused===button)focusedRetained=true;
@@ -187,7 +176,7 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
         entry.list.replaceChildren(...rows);
       entry.buttons=buttons;
       next.set(group.label,entry);
-      return entry.disclosure;
+      return entry.section;
     });
     const oldElements=Array.from(groupHost.children);
     if(oldElements.length!==elements.length||elements.some((item,index)=>item!==oldElements[index]))

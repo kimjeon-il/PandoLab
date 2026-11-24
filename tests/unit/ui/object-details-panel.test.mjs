@@ -25,7 +25,7 @@ const ref=(id)=>({domain:'territorial',type:'entity',key:'territorial:entity:'+i
 
 test('child-authored types group under their parent, child buttons navigate, and roots have an empty subtitle',()=>{
   const ids=['objectDetailObjectName','objectDetailAffiliation','objectDetailFlag','objectDetailGroups','objectDetailInfoEmpty',
-    'objectDetailCloseBtn','objectDetailTabs','objectDetailTabInfo','objectDetailInfoPane',
+    'objectDetailTabs','objectDetailTabInfo','objectDetailInfoPane',
     'objectDetailTabHistory','objectDetailHistoryPane'];
   const nodes=new Map(ids.map(id=>[id,fakeElement(id)])),operations=[],selected=[],hovered=[];
   const document={getElementById:id=>nodes.get(id),createElement:tag=>fakeElement(tag),createElementNS:(_ns,tag)=>fakeElement(tag)};
@@ -46,10 +46,9 @@ test('child-authored types group under their parent, child buttons navigate, and
   assert.equal(nodes.get('objectDetailAffiliation').hidden,true);
   assert.equal(nodes.get('objectDetailInfoEmpty').hidden,true);
   const groups=nodes.get('objectDetailGroups').children;
-  assert.equal(groups[0].children[0].className,'ui-choice-row object-details-group-heading');
-  assert.equal(groups[0].children[0].children[1].className,'ui-status object-details-group-count');
-  assert.deepEqual(groups.map(group=>group.children[0].children[0].textContent),['구성국','미분류']);
-  assert.equal(groups[0].children[0].children[1].textContent,'2개');
+  assert.deepEqual(groups.map(group=>[group.id,group.children[0].id,group.children[0].textContent]),
+    [['section','h3','구성국'],['section','h3','미분류']]);
+  assert.ok(groups.every(group=>group.children.length===2&&group.children[0].children.length===0));
   const [russia,ukraine]=groups[0].children[1].children;
   const other=groups[1].children[1].firstElementChild;
   assert.equal(russia.getAttribute('aria-label'),'러시아');
@@ -64,15 +63,13 @@ test('child-authored types group under their parent, child buttons navigate, and
   russia.fire('pointerenter',{pointerType:'mouse'});
   ukraine.fire('pointerenter',{pointerType:'mouse'});
   russia.fire('pointerleave',{pointerType:'mouse'});
-  groups[0].open=false;
-  groups[0].fire('toggle');
+  ukraine.fire('pointerleave',{pointerType:'mouse'});
   assert.deepEqual(hovered,[['RUS',true],['UKR',true],['UKR',false]]);
 
   const oldImage=ukraine.firstElementChild;
   view.children[1]={...view.children[1],flagUrl:'flags/dated.svg'};
   ui.syncSelection(snapshot);
   assert.strictEqual(groups[0].children[1].children[1],ukraine);
-  assert.equal(groups[0].open,false);
   oldImage.fire('error');
   assert.equal(ukraine.firstElementChild.getAttribute('src'),'flags/dated.svg');
   ukraine.firstElementChild.fire('error');
@@ -103,8 +100,6 @@ test('child-authored types group under their parent, child buttons navigate, and
   nodes.get('objectDetailTabs').fire('keydown',{key:'Home'});
   assert.equal(nodes.get('objectDetailInfoPane').hidden,false);
   assert.equal(nodes.get('objectDetailTabInfo').focused,true);
-  nodes.get('objectDetailCloseBtn').fire('click');
-  assert.equal(operations.at(-1),'close:details');
   assert.equal(ui.reveal(first),true);
   assert.equal(operations.at(-1),'open:details');
   assert.equal(ui.syncSelection({projectGeneration:1,selection:{items:[]}}),false);
@@ -144,9 +139,9 @@ test('details and search share one mutually exclusive responsive surface owner',
   assert.equal(nodes.get('objectSearchSurface').getAttribute('role'),null);
 });
 
-test('repeated selection refresh reuses disclosure and buttons, preserving collapse, focus and live name changes',()=>{
+test('repeated selection refresh reuses groups and buttons, preserving focus and live name changes',()=>{
   const ids=['objectDetailObjectName','objectDetailAffiliation','objectDetailFlag','objectDetailGroups','objectDetailInfoEmpty',
-    'objectDetailCloseBtn','objectDetailTabs','objectDetailTabInfo','objectDetailInfoPane',
+    'objectDetailTabs','objectDetailTabInfo','objectDetailInfoPane',
     'objectDetailTabHistory','objectDetailHistoryPane'];
   const nodes=new Map(ids.map(id=>[id,fakeElement(id)]));
   const selected=[],document={activeElement:null,getElementById:id=>nodes.get(id),createElement:tag=>fakeElement(tag),
@@ -161,11 +156,10 @@ test('repeated selection refresh reuses disclosure and buttons, preserving colla
     ui.syncSelection(snapshot);
     const host=nodes.get('objectDetailGroups'),group=host.children[0],list=group.children[1];
     const first=list.children[0],second=list.children[1];
-    group.open=false;document.activeElement=second;
+    document.activeElement=second;
     ui.syncSelection(snapshot);
     assert.equal(host.children[0],group,'Unchanged relation group preserves DOM identity');
     assert.equal(list.children[1],second,'Unchanged children preserve button identity');
-    assert.equal(group.open,false,'A manually collapsed group stays collapsed');
 
     // Simulate focus being lost when a reordered DOM list detaches its children.
     const replace=list.replaceChildren;
@@ -179,18 +173,16 @@ test('repeated selection refresh reuses disclosure and buttons, preserving colla
     ui.syncSelection(snapshot);
     // Sorted display still reuses the original buttons, even after a name change.
     assert.equal(host.children[0],group);
-    assert.equal(group.open,false);
     assert.equal(list.children[0],first);
     assert.equal(list.children[1],second);
     assert.equal(second.getAttribute('aria-label'),'나 개명');
     assert.equal(document.activeElement,second);
     second.fire('click');assert.deepEqual(selected,['B']);
 
-    // A different entity must not inherit the previous entity's disclosure state.
     ui.syncSelection({projectGeneration:1,selection:{items:[ref('Q')]}});
-    assert.notEqual(host.children[0],group);
-    assert.equal(host.children[0].open,true);
+    const newGroup=host.children[0];
+    assert.notEqual(newGroup,group);
     ui.syncSelection({projectGeneration:2,selection:{items:[ref('Q')]}});
-    assert.equal(host.children[0].open,true,'New project generations build a clean relation tree');
+    assert.notEqual(host.children[0],newGroup,'New project generations build a clean relation tree');
   }finally{ui.dispose();}
 });

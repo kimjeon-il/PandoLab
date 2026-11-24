@@ -904,7 +904,7 @@ async function search(page,touch=false){
   await ready(page);
 }
 
-test('France details flag grid previews and opens its child territories',async({browser,baseURL})=>{
+test('France details flag grid previews and navigates to its child territories',async({browser,baseURL})=>{
   test.setTimeout(180_000);
   for(const mobile of [false,true]){
     const context=await browser.newContext({baseURL,viewport:mobile?{width:320,height:800}:{width:1200,height:900},
@@ -919,7 +919,10 @@ test('France details flag grid previews and opens its child territories',async({
       const details=page.locator('#objectDetailSurface');
       await expect(details.locator('#objectDetailObjectName')).toHaveText('프랑스');
       if(mobile)await page.getByRole('slider',{name:'정보창 높이 조절'}).tap();
-      const group=details.locator('details').filter({has:page.getByText('해외집합체',{exact:true})});
+      await expect(details.getByRole('button',{name:'객체 정보 닫기'})).toHaveCount(0);
+      await expect(details.getByText(/^\d+개$/)).toHaveCount(0);
+      const heading=page.getByRole('heading',{name:'해외집합체',exact:true});
+      const group=details.locator('section.object-details-group').filter({has:heading});
       const tiles=group.locator('.object-details-child');
       await expect(tiles).toHaveCount(5);
       const boxes=await tiles.evaluateAll(nodes=>nodes.map(node=>{
@@ -935,7 +938,7 @@ test('France details flag grid previews and opens its child territories',async({
         expect(box.x+box.width).toBeLessThanOrEqual(mobile?320:1200);
       }
       const tile=tiles.first(),name=await tile.getAttribute('aria-label');
-      expect(name).toBeTruthy();
+      expect(name).toBe('생마르탱');
       if(mobile)await tile.tap();
       else {
         const previewKeys=()=>page.evaluate(async()=>{
@@ -952,19 +955,29 @@ test('France details flag grid previews and opens its child territories',async({
         await tiles.nth(1).hover();
         await expect(page.locator('#uiTooltip')).toHaveText(name2);
         await expect.poll(async()=>(await previewKeys()).filter(key=>!firstPreview.includes(key)).length).toBe(1);
-        const summary=group.locator('summary');
-        await summary.click();
+        await heading.hover();
         await expect(page.locator('#uiTooltip')).toBeHidden();
         await expect.poll(previewKeys).toEqual([]);
-        await summary.focus();
-        await page.keyboard.press('Enter');
-        await page.keyboard.press('Tab');
+        await tiles.nth(1).focus();
+        await page.keyboard.press('Shift+Tab');
         await expect(tile).toBeFocused();
         await expect(tile).toHaveCSS('outline-style','solid');
         await expect(page.locator('#uiTooltip')).toHaveText(name);
         await page.keyboard.press('Enter');
       }
       await expect(details.locator('#objectDetailObjectName')).toHaveText(name);
+      await expect.poll(()=>page.evaluate(()=>{
+        const map=window.__PANDOLAB_MAPLIBRE__,{lng,lat}=map.getCenter();
+        return Math.abs(lng+63.06)<3&&Math.abs(lat-18.08)<3&&map.getZoom()>5;
+      })).toBe(true);
+      if(mobile){
+        await page.evaluate(()=>window.history.back());
+        await expect(page.locator('#objectSearchInput')).toBeVisible();
+      }else{
+        await page.keyboard.press('Escape');
+        await expect(details).not.toHaveClass(/surface-open/);
+        await expect(page.locator('#map')).toBeFocused();
+      }
     }finally{await context.close();}
   }
 });
@@ -1338,23 +1351,23 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await expect(title).toHaveCSS('text-align','center');
     await expect(flag).toBeVisible();
     await expect(flag).toHaveCSS('height','96px');
-    const originalTitle=await title.textContent();
-    const longTitle='그레이트브리튼 및 북아일랜드 연합왕국';
-    await title.evaluate((node,name)=>{node.textContent=name;},longTitle);
     await page.setViewportSize({width:320,height:690});
     await expect.poll(()=>title.evaluate(node=>{
-      const box=node.getBoundingClientRect();
-      const style=getComputedStyle(node);
-      const range=document.createRange();
-      range.selectNodeContents(node);
-      const lines=[...range.getClientRects()];
-      return style.textOverflow!=='ellipsis'&&new Set(lines.map(line=>line.y)).size>1
-        &&lines.every(line=>line.left>=box.left-1&&line.right<=box.right+1&&line.bottom<=box.bottom+1);
+      const originalTitle=node.textContent;
+      node.textContent='그레이트브리튼 및 북아일랜드 연합왕국';
+      try{
+        const box=node.getBoundingClientRect();
+        const style=getComputedStyle(node);
+        const range=document.createRange();
+        range.selectNodeContents(node);
+        const lines=[...range.getClientRects()];
+        return style.textOverflow!=='ellipsis'&&new Set(lines.map(line=>line.y)).size>1
+          &&lines.every(line=>line.left>=box.left-1&&line.right<=box.right+1&&line.bottom<=box.bottom+1);
+      }finally{node.textContent=originalTitle;}
     })).toBe(true);
     const flagRect=await flag.boundingBox(),titleRect=await title.boundingBox(),tabRect=await infoTab.boundingBox();
     expect(flagRect.y+flagRect.height).toBeLessThan(titleRect.y);
     expect(titleRect.y+titleRect.height).toBeLessThan(tabRect.y);
-    await title.evaluate((node,name)=>{node.textContent=name;},originalTitle);
     await page.setViewportSize({width:390,height:844});
     await handle.tap();
     await expect(handle).toHaveAttribute('aria-valuenow','0');
@@ -1390,7 +1403,7 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await expect(reset).toBeHidden();
     expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe(monthBeforeReset);
     expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain('KOR');
-    await page.getByRole('button',{name:'객체 정보 닫기'}).tap();
+    await page.evaluate(()=>window.history.back());
     await expect(searchBar).toBeVisible();
     expect(await searchBar.boundingBox()).toEqual(searchBounds);
     await expect.poll(()=>chrome(menuButton)).toEqual(normalMenu);
