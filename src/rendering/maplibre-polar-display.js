@@ -45,11 +45,11 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   add(context.geometry,style.paint['physical-land-fill']['fill-color'],1,false,'land');
   for(const f of countryDisplay.rows.values())add(f.geometry,colored?f.properties.color:land,colored?f.properties.displayAlpha:1,colored&&f.properties.blendMode==='multiply');
   if(context.water)add(context.water,style.paint.ocean['background-color']);
-  if(countryDisplay.key)for(const {key,paths,feature:{properties}} of countryDisplay.borders.values()){
+  if(countryDisplay.key)for(const {key,revision,paths,feature:{properties}} of countryDisplay.borders.values()){
    if(!paths.polar.indices.length)continue;
    const {borderColor,borderAlpha,borderWidth}=properties;
    items.push({packet:paths.polar,color:rgba(borderColor,borderAlpha),width:borderWidth});
-   keys.push([key,borderColor,borderAlpha,borderWidth]);
+   keys.push([key,revision,borderColor,borderAlpha,borderWidth]);
   }
   if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){
    items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5,loadingRole:'grid'});

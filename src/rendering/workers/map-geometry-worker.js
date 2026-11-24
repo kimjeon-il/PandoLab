@@ -88,8 +88,9 @@ async function prepareCountryBoundary(input,context){
   ]);
   countryBoundary ||= createCountryBoundaryPreparation({loadSeed:loadBoundarySeed});
   const prepared=await countryBoundary.prepare(input,context);
-  return prepared&&{segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner,
-    affectedOwners:prepared.affectedOwners};
+  if(!prepared)return null;
+  if(input.partitioned)return countryBoundary.prepareOutput(prepared,input);
+  return {segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner};
 }
 
 self.PandoLabWorkerRpc.install({
@@ -116,10 +117,12 @@ self.PandoLabWorkerRpc.install({
       // immutable polygon catalogs or their initialization before it can draw.
       const requiresPolygons = payload.items.some(item => item.kind !== 'stroke');
       const store = requiresPolygons ? await preparedPolygonStore() : null;
-      // Preserve unchanged stroke groups after topology patch.
-      const items=payload.items.filter(item=>!item.countryVisibleIds||!item.knownGeometry
-        ||!boundary?.affectedOwners
-        ||item.countryVisibleIds.some(id=>boundary.affectedOwners.has(countryBoundaryOwner(id))));
+      // Snapshot the dirty owner partitions before yielding; later requests
+      // can advance the contact index without altering these segment arrays.
+      const items=[...payload.items,...(boundary?.changed??[]).map(group=>({
+        kind:'stroke',cacheKey:group.id,boundaryRevision:group.revision,
+        geometry:{type:'MultiLineString',coordinates:group.segments.map(segment=>[segment.start,segment.end])}
+      }))];
       const packets = new Array(items.length), packetTimings=[];
       // Two independent immutable asset reads may overlap without growing
       // the mobile decode/triangulation working set beyond two packets.
@@ -139,7 +142,7 @@ self.PandoLabWorkerRpc.install({
               throw new TypeError('Only line strokes may use the geographic stroke Worker path');
             const [{geographicStrokeChains},{encodeStrokeGeometry}]=await Promise.all([import('../maplibre-vector-group.js'),import('../stroke-transfer-codec.js')]);
             const values=[];for(const line of item.geometry.type==='LineString'?[item.geometry.coordinates]:item.geometry.coordinates)for(let i=1;i<line.length;i++)values.push(...line[i-1],...line[i]);
-            prepared={cacheKey:item.cacheKey,stroke:encodeStrokeGeometry(geographicStrokeChains(values))};
+            prepared={cacheKey:item.cacheKey,boundaryRevision:item.boundaryRevision,stroke:encodeStrokeGeometry(geographicStrokeChains(values))};
           }else{
             prepared=await store.prepare(item,context);
             if(item.polarCapOnly===true){
@@ -163,7 +166,7 @@ self.PandoLabWorkerRpc.install({
       const buffers = [...new Set(packets.flatMap(({ packet,stroke }) => [...Object.values(packet||{}),...Object.values(stroke||{})]
         .filter(ArrayBuffer.isView).map(value => value.buffer)))];
       const finishedAt=performance.now();
-      return self.PandoLabWorkerRpc.transferResult({packets,stats:{...store?.stats(),...countryBoundary?.stats(),
+      return self.PandoLabWorkerRpc.transferResult({packets,boundaryPartitions:boundary?.manifest,stats:{...store?.stats(),...countryBoundary?.stats(),
         transferBytes:buffers.reduce((total,buffer)=>total+buffer.byteLength,0),startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
         slowestPackets:packetTimings.sort((a,b)=>b.durationMs-a.durationMs).slice(0,8)}},buffers);
     },

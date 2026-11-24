@@ -1,6 +1,7 @@
 import { createPreparedBoundaryStore, attachBoundarySegmentReferences, topologyNodeKey, mergeSharedBoundaryContributions } from "../geometry/boundary-topology.js";
 import { computeCountrySharedContacts } from "../geometry/country-contact-core.js";
 import { countryBoundaryOwner, countryBoundarySeedOptions } from "./country-boundary-seed.js";
+import {createCountryBoundaryOutput} from './country-boundary-output.js';
 
 // Every ordinary map style renders shared land borders, not per-object coastal outlines.
 // This is a presentation policy: canonical polygon/coast geometry is unchanged.
@@ -11,6 +12,7 @@ export function visibleCountrySharedSegments(segments = [], isVisible = () => tr
 /** A seed is optional and can only accelerate the first complete snapshot. */
 export function createCountryBoundaryPreparation({loadSeed, seedWaitMs = 5_000}) {
   let current = null, seedPromise;
+  const output=createCountryBoundaryOutput(sharedSegmentKey);
   let boundarySeedFailure = null, boundarySeeded = false, boundaryChangedCount = 0;
 
   function readSeed() {
@@ -40,43 +42,62 @@ export function createCountryBoundaryPreparation({loadSeed, seedWaitMs = 5_000})
     context.throwIfCancelled();
     if (current?.key === input.key) return current;
     if (input.baseKey !== null && current?.key !== input.baseKey) return null;
-    const upserts = input.upserts.map(({id, geometry}) => ({type: 'Feature', id: countryBoundaryOwner(id), geometry}));
+    const upserts = input.upserts.map(({id, geometry, geometryRevision}) => ({type: 'Feature', id: countryBoundaryOwner(id), geometry,
+      ...(typeof geometryRevision==='string'?{boundaryGeometryRevision:geometryRevision}:{})}));
     if (input.baseKey === null) {
       const seed = current ? null : await readSeed();
       context.throwIfCancelled();
       if (current?.key === input.key) return current;
-      const options = countryBoundarySeedOptions(upserts, seed);
-      boundarySeeded = !!options;
-      boundaryChangedCount = options?.changedIds.size ?? upserts.length;
-      let state = null, segments = options?.cachedSegments;
-      if (!options || options.changedIds.size) {
-        state = createCountrySharedBoundaryState();
-        state.replace(upserts, options);
-        segments = state.segments();
+      const previous=current;
+      current=null;
+      if(previous?.state){
+        const state=previous.state;
+        boundaryChangedCount=state.replace(upserts).size;
+        output.patch(state.changedEdges(),input.key);
+        current={key:input.key,state,get segments(){return state.segments();},seedRows:null};
+      }else{
+        const options=previous?.seedRows?{
+          cachedSegments:previous.segments,
+          changedIds:new Set([...new Set([...previous.seedRows.map(row=>row.id),...upserts.map(row=>row.id)])].filter(id=>{
+            const before=previous.seedRows.find(row=>row.id===id),after=upserts.find(row=>row.id===id);
+            return !before||!after||!before.boundaryGeometryRevision||before.boundaryGeometryRevision!==after.boundaryGeometryRevision;
+          }))
+        }:countryBoundarySeedOptions(upserts,seed);
+        boundarySeeded=!!options;
+        boundaryChangedCount=options?.changedIds.size??upserts.length;
+        let state=null,segments=options?.cachedSegments;
+        if(!options||options.changedIds.size){
+          state=createCountrySharedBoundaryState();
+          state.replace(upserts,options);segments=state.segments();
+        }
+        output.replace(segments,input.key);
+        current={key:input.key,state,segments,seedRows:state?null:upserts};
       }
-      current = {key: input.key, state, segments, seedRows: state ? null : upserts,
-        affectedOwners:null};
     } else {
-      const previous = current;
-      // A failed state patch must force the next delivery to rebuild its base.
-      current = null;
-      const state = previous.state ?? createCountrySharedBoundaryState();
-      const removed = input.remove.map(countryBoundaryOwner);
-      if (previous.state) {
-        boundaryChangedCount = state.patch(upserts, removed).size;
-      } else {
-        const rows = new Map(previous.seedRows.map(row => [row.id, row]));
-        const changedIds = new Set(removed);
-        for (const id of removed) rows.delete(id);
-        for (const row of upserts) { rows.set(row.id, row); changedIds.add(row.id); }
-        state.replace([...rows.values()], {cachedSegments: previous.segments, changedIds});
-        boundaryChangedCount = changedIds.size;
+      const previous=current;
+      current=null;
+      const state=previous.state??createCountrySharedBoundaryState();
+      const removed=input.remove.map(countryBoundaryOwner);
+      if(previous.state){
+        boundaryChangedCount=state.patch(upserts,removed).size;
+        output.patch(state.changedEdges(),input.key);
+      }else{
+        const rows=new Map(previous.seedRows.map(row=>[row.id,row])),changedIds=new Set(removed);
+        for(const id of removed)rows.delete(id);
+        for(const row of upserts){rows.set(row.id,row);changedIds.add(row.id);}
+        state.replace([...rows.values()],{cachedSegments:previous.segments,changedIds});
+        boundaryChangedCount=changedIds.size;
+        output.replace(state.segments(),input.key);
       }
-      current = {key: input.key, state, segments: state.segments(),affectedOwners:state.affectedOwners()};
+      current={key:input.key,state,get segments(){return state.segments();},seedRows:null};
     }
     return current;
   }
-  return {prepare, stats: () => ({boundarySeedFailure, boundarySeeded, boundaryChangedCount})};
+  function prepareOutput(snapshot,input){
+    if(snapshot!==current)return null;
+    return output.select(input.visibleOwners??[],input.knownPartitions??[]);
+  }
+  return {prepare,prepareOutput, stats: () => ({boundarySeedFailure, boundarySeeded, boundaryChangedCount})};
 }
 
 const sharedSegmentKey = segment => [topologyNodeKey(segment.start), topologyNodeKey(segment.end)].sort().join('|');
@@ -87,6 +108,8 @@ export function createCountrySharedBoundaryState() {
   const preparedStore = createPreparedBoundaryStore();
   const contacts = new Map(), contactsByOwner = new Map(), edges = new Map();
   let contactComputationCount = 0, lastAffectedOwners = new Set();
+  const touchedEdges=new Set();
+  const changedEdges=()=>[...touchedEdges].map(key=>[key,edges.get(key)?.value??null]);
   // Each key normally has one country-pair contributor. Keep that path
   // Map-free; promote/demote only when coincident multi-owner borders require it.
   function updateEdge(key) {
@@ -113,6 +136,7 @@ export function createCountrySharedBoundaryState() {
     }
     for (const segment of contact.segments) {
       const edgeKey = sharedSegmentKey(segment);
+      touchedEdges.add(edgeKey);
       const record = edges.get(edgeKey);
       if (!record) continue;
       if (!record.contributions) {
@@ -135,6 +159,7 @@ export function createCountrySharedBoundaryState() {
     }
     for (const segment of segments) {
       const edgeKey = sharedSegmentKey(segment);
+      touchedEdges.add(edgeKey);
       const existing = edges.get(edgeKey);
       if (!existing) {
         edges.set(edgeKey, { contact: key, value: segment });
@@ -209,6 +234,7 @@ export function createCountrySharedBoundaryState() {
   }
   function replace(features, { cachedSegments, changedIds, profile, verifyContactParity = false } = {}) {
     const started = typeof profile === 'function' ? performance.now() : 0;
+    touchedEdges.clear();
     const changed = preparedStore.replace(features);
     if (typeof profile === 'function') profile('prepare-store-replace', performance.now() - started,
       {changedIds: changed.size, totalFeatures: features.length});
@@ -219,13 +245,14 @@ export function createCountrySharedBoundaryState() {
   }
   function patch(features = [], removedIds = [], {profile, verifyContactParity = false} = {}) {
     const started = typeof profile === 'function' ? performance.now() : 0;
+    touchedEdges.clear();
     const changed = preparedStore.patch(features, removedIds);
     if (typeof profile === 'function') profile('prepare-store-patch', performance.now() - started,
       {changedIds: changed.size, suppliedFeatures: features.length, removedIds: removedIds.length});
     reconcile(changed, profile, verifyContactParity);
     return changed;
   }
-  return { preparedStore, replace, patch,affectedOwners:()=>new Set(lastAffectedOwners),
+  return { preparedStore, replace, patch,changedEdges,affectedOwners:()=>new Set(lastAffectedOwners),
     segments: () => [...edges.values()].map(record => record.value),
     features: () => preparedStore.values().map(prepared => prepared.feature),
     stats: () => ({ ...preparedStore.stats(), contactComputationCount, contactCount: contacts.size }) };
