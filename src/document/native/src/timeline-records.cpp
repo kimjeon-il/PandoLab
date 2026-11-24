@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <pandoeditor/timeline-records.h>
 #include <pandoeditor/losslessjson.h>
 #include <pandoeditor/timeline-resolver.h>
@@ -116,9 +117,11 @@ TemporalInterval interval(const Validity& value) {
     }
 }
 struct Change {
+    std::optional<TemporalKey> date;
+    const ObjectRef* objectRef;
+    const std::string* id;
+    const std::string* parentId;
     std::size_t slot;
-    std::string id,parentId;
-    ObjectRef objectRef;
     bool add;
 };
 using Slots=std::array<std::map<std::string,std::string>,6>;
@@ -211,18 +214,17 @@ TimelineRecords normalizeTimelineRecords(const TimelineRecords& input,const Time
     }
     std::set<std::string> ids;
     std::set<ObjectRef> hasLife;
-    std::map<std::optional<TemporalKey>,std::vector<Change>> events;
-    events[std::nullopt];
+    std::vector<Change> events;
     auto result=input;
-    const auto common=[&](auto& row,std::size_t slot,const std::string& parentId) {
+    const auto common=[&](auto& row,std::size_t slot,const std::string* parentId=nullptr) {
         requireId(row.id); requireId(row.objectRef.id);
         if(!ids.insert(row.id).second) fail("TIMELINE_ID","Duplicate record "+row.id+".");
         if(!entities.count(row.objectRef)) fail("TIMELINE_ENTITY","Unknown object "+row.objectRef.id+".");
         const auto dates=interval(row.validity);
         row.validity={dates.validFrom,dates.validTo};
         const auto start=dates.start?std::optional<TemporalKey>{dates.start->startKey}:std::nullopt;
-        events[start].push_back({slot,row.id,parentId,row.objectRef,true});
-        if(dates.end) events[temporalFollowingDay(dates.end->endKey)].push_back({slot,row.id,parentId,row.objectRef,false});
+        events.push_back({start,&row.objectRef,&row.id,parentId,slot,true});
+        if(dates.end)events.push_back({temporalFollowingDay(dates.end->endKey),&row.objectRef,&row.id,parentId,slot,false});
     };
     for(auto& row:result.lifetimes) {
         common(row,0,{});
@@ -253,7 +255,7 @@ TimelineRecords normalizeTimelineRecords(const TimelineRecords& input,const Time
     }
     for(auto& row:result.parentRelations) {
         if(row.objectRef.domain!="territorial")fail("TIMELINE_KIND","Only territorial objects have administrative parents.");
-        common(row,2,row.parentId);
+        common(row,2,&row.parentId);
         if(row.coverageMode!="explicit"&&row.coverageMode!="partition") fail("TIMELINE_COVERAGE","Invalid coverage mode for "+row.id+".");
         if(row.parentId==row.objectRef.id) fail("TIMELINE_CYCLE","Self-parent "+row.objectRef.id+".");
         if(!row.parentId.empty()&&!entities.count(ObjectRef{"territorial",row.parentId})) fail("TIMELINE_PARENT","Unknown parent "+row.parentId+".");
@@ -292,16 +294,23 @@ TimelineRecords normalizeTimelineRecords(const TimelineRecords& input,const Time
         row.value=value.encode();
     }
     for(const auto& entry:entities) if(!hasLife.count(entry.first)) fail("TIMELINE_LIFETIME","No lifetime for "+entry.first.id+".");
+    std::sort(events.begin(),events.end(),[](const auto& a,const auto& b){
+        return a.date<b.date;
+    });
     ParentGraph graph;
-    for(const auto& boundary:events) {
-        std::set<ObjectRef> touched;
-        // Inspect only after every simultaneous change has been applied.
-        for(const auto& change:boundary.second) {
-            auto& slot=active.at(change.objectRef)[change.slot];
-            if(change.add) slot.emplace(change.id,change.parentId);
-            else slot.erase(change.id);
-            touched.insert(change.objectRef);
-        }
+    std::set<ObjectRef> touched;
+    for(std::size_t i=0;i<events.size();){
+        const auto date=events[i].date;
+        touched.clear();
+        // All same-date boundaries are atomic. Each ID has a unique
+        // interval, so a same-date removal/addition cannot target itself.
+        do{
+            const auto& change=events[i++];
+            auto& slot=active.at(*change.objectRef)[change.slot];
+            if(change.add)slot.emplace(*change.id,change.parentId?*change.parentId:std::string{});
+            else slot.erase(*change.id);
+            touched.insert(*change.objectRef);
+        }while(i<events.size()&&events[i].date==date);
         graph.inspect(active,touched);
     }
     return result;

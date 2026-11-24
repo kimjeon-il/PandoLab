@@ -57,6 +57,8 @@ struct ResolvedEntityRange {
 // shared by every event-free month, view, and detached candidate that owns it.
 struct ResolvedWorldProjection {
     ResolvedEntityStorage entities;
+    std::weak_ptr<const void> sourceIdentity;
+    std::size_t intervalId=0;
     std::shared_ptr<const ResolvedOffsets> offsets=std::make_shared<const ResolvedOffsets>();
     // Share the whole index when a cursor changes no corresponding entries.
     std::shared_ptr<const ResolvedPropertyIndex> activeProperties=std::make_shared<const ResolvedPropertyIndex>();
@@ -93,6 +95,7 @@ public:
     PreparedTimelineWorld(const TimelineRecords&,const TimelineValidationContext&);
     // The previous projection must come from this same prepared source.
     ResolvedWorld resolve(const std::string& month,const ResolvedWorld* previous=nullptr) const;
+    std::size_t intervalId(const TemporalKey&) const;
 private:
     struct Data;
     std::shared_ptr<const Data> data_;

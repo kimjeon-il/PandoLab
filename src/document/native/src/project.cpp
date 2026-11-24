@@ -219,11 +219,17 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
             return static_cast<std::int64_t>(value.year>0?value.year-1:value.year)*12+value.month.value_or(1)-1;
         };
         const auto wanted=monthIndex(requested);
-        auto distance=std::numeric_limits<std::int64_t>::max();
+        const auto interval=preparedTimeline_->intervalId(temporalMonthEnd(month).endKey);
+        auto distance=std::numeric_limits<std::size_t>::max();
+        auto calendarDistance=std::numeric_limits<std::int64_t>::max();
         for(const auto& candidate:resolvedTimeline_)if(candidate){
+            const auto prior=candidate->projection->intervalId;
+            const auto eventDistance=interval>prior?interval-prior:prior-interval;
             const auto difference=monthIndex(parseTemporal(candidate->month))-wanted;
             const auto absolute=difference<0?-difference:difference;
-            if(absolute<distance){distance=absolute;nearest=candidate.get();}
+            if(eventDistance<distance||(eventDistance==distance&&absolute<calendarDistance)){
+                distance=eventDistance;calendarDistance=absolute;nearest=candidate.get();
+            }
         }
     }
     auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month,nearest));
