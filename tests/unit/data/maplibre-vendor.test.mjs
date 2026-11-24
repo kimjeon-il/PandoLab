@@ -164,7 +164,7 @@ test('pinned native tile hook selects per tile zoom and leaves native source arr
 });
 
 
-test('overview LOD also simplifies shared fills with hidden strokes, never a single exterior coast',()=>{
+test('overview LOD simplifies shared fills with hidden strokes, not a bent single exterior coast',()=>{
  const {rows,shared}=sharedTileFixture();
  const fills=rows.slice(0,2),before=structuredClone(fills);
  const simplified=simplifySharedTileGeometry(fills,0,0,0,lodOptions);
@@ -196,4 +196,29 @@ test('dense candidate cells preserve independent simplification in other tile re
  const result=simplifySharedTileGeometry([dense,...rows],0,0,0,lodOptions);
  assert.equal(result[0],dense);
  assert.ok(positions(result[3].geometry).length<positions(rows[2].geometry).length);
+});
+
+
+test('overview coast, land and water remove only collinear exterior vertices without changing coverage',()=>{
+ const ring=coordinates=>({points:Float64Array.from(coordinates.flatMap(([x,y])=>[x,y,1])),size:.01,start:0,end:.01});
+ const shape=[[.375,.375],[.3828125,.375],[.390625,.375],[.3984375,.375],[.4375,.375],[.4375,.4375],[.375,.4375],[.375,.375]];
+ for(const role of ['physical-land','physical-water','country-fill']){
+  const row={id:'coast',type:'Polygon',tags:{displayRole:role},geometry:[ring(shape)]};
+  const rows=[row],before=structuredClone(rows);
+  const options=role==='country-fill'?lodOptions:{tolerance:0,maxZoom:18,coordinates:'lngLat'};
+  const result=simplifySharedTileGeometry(rows,0,0,0,options);
+  assert.ok(positions(result[0].geometry[0]).length<shape.length);
+  assert.deepEqual(rows,before);
+  for(const corner of [shape[0],shape[4],shape[5],shape[6]])
+   assert.ok(positions(result[0].geometry[0]).some(p=>p[0]===corner[0]&&p[1]===corner[1]));
+  const bent=shape.map(([x,y],i)=>[x,i===2?y+.0001:y]);
+  const single=[{...row,geometry:[ring(bent)]}];
+  const after=simplifySharedTileGeometry(single,0,0,0,options);
+  assert.ok(positions(after[0].geometry[0]).some(p=>p[0]===bent[2][0]&&p[1]===bent[2][1]));
+  const hole=ring([shape[2],[.391,.38],[.392,.38],shape[2]]);
+  const withHole=[{...row,geometry:[ring(shape),hole]}];
+  const protectedResult=simplifySharedTileGeometry(withHole,0,0,0,options);
+  assert.equal(protectedResult[0].geometry[1],hole);
+  assert.ok(positions(protectedResult[0].geometry[0]).some(p=>p[0]===shape[2][0]&&p[1]===shape[2][1]));
+ }
 });

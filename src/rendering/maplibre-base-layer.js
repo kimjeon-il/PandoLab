@@ -4,7 +4,7 @@ export function syncMapLibreBaseLayer(map,{style=null,landGeometry=null}={}){
  if(!style?.paint?.['physical-land-fill'])throw new TypeError('White map base style required');
  let changed=false;
  if(!map.getSource('physical-land')){
-  const features=landGeometry?[{type:'Feature',properties:{},geometry:landGeometry}]:[];
+  const features=landGeometry?[{type:'Feature',properties:{displayRole:'physical-land'},geometry:landGeometry}]:[];
   map.addSource('physical-land',mapLibreGeoJsonSource('physical-land',{type:'FeatureCollection',features}));
   changed=true;
  }

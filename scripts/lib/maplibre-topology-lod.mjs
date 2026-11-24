@@ -3,9 +3,12 @@ import {Linter} from 'eslint';
 // GeoJSON-VT 6.3.1's existing tile generator supplies projected, clipped
 // features. Derive only the tile output, leaving its index/source untouched.
 export function simplifySharedTileGeometry(features,z,tx,ty,options){
- if(!Array.isArray(features)||options?.promoteId!=='objectKey'||options.tolerance!==0
+ if(!Array.isArray(features)||!features.length||options?.tolerance!==0
   ||options.cluster||(options.coordinates&&options.coordinates!=='lngLat')
   ||!Number.isInteger(z)||z<0||z>10||z>=options.maxZoom)return features;
+ const physical=z<=4&&['physical-land','physical-water'].includes(features[0].tags?.displayRole);
+ if(!physical&&options.promoteId!=='objectKey')return features;
+ const physicalRole=physical?features[0].tags.displayRole:null;
  const scale=2**z,px=1/(512*scale),tol2=(0.25*px)**2,cell=16*px;
  // Overview tiles can consider longer subpixel shortcuts and borderless
  // shared fill edges, without relaxing the existing error bound.
@@ -29,8 +32,8 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
  }
  for(const feature of features){
   const role=feature.tags?.displayRole;
-  if(role!=='country-fill'&&role!=='country-border')return features;
-  if(role==='country-fill'&&!['Polygon','MultiPolygon'].includes(feature.type)
+  if(physical?role!==physicalRole:role!=='country-fill'&&role!=='country-border')return features;
+  if(role!=='country-border'&&!['Polygon','MultiPolygon'].includes(feature.type)
    ||role==='country-border'&&!['LineString','MultiLineString'].includes(feature.type))return features;
   eachRing(feature,(ring,hole)=>{
    points+=(ring?.points?.length??0)/3;
@@ -57,13 +60,17 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
    const error=(b[0]-a[0]-t*dx)**2+(b[1]-a[1]-t*dy)**2;
    const minX=Math.min(a[0],b[0],c[0]),maxX=Math.max(a[0],b[0],c[0]),minY=Math.min(a[1],b[1],c[1]),maxY=Math.max(a[1],b[1],c[1]);
    if(error>tol2||maxX-minX>maxSpan||maxY-minY>maxSpan)continue;
-   candidates.set(id,{id,a,b,c,error,minX,minY,maxX,maxY,invalid:false,fills:[],borders:0,occurrences:[]});
+   const collinear=(b[0]-a[0])*dy===(b[1]-a[1])*dx;
+   // Independent physical/territorial sources may share a coastline.
+   // A single-owner shortcut must preserve the exact projected segment.
+   if(physical&&!collinear)continue;
+   candidates.set(id,{id,a,b,c,error,collinear,minX,minY,maxX,maxY,invalid:false,fills:[],borders:0,occurrences:[]});
    if(overview)candidateCounts[slot]++;
   }
  }
  for(const {ring,role} of records)if(role==='country-border')propose(ring);
  if(overview)for(const {ring,role,hole} of records)
-  if(role==='country-fill'&&!hole&&ring.points.length>=24&&ring.size>16*px*px)propose(ring);
+  if(role!=='country-border'&&!hole&&ring.points.length>=24&&ring.size>16*px*px)propose(ring);
  if(!candidates.size)return features;
  // Match every occurrence of the vertex, including endpoints, holes and
  // other owners. Require two distinct, oppositely traversed exterior rings.
@@ -75,7 +82,7 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
    if(i===0||i+3===p.length){candidate.invalid=true;continue;}
    const a=point(p,i-3),c=point(p,i+3);
    if(!ends(candidate.a,candidate.c,a,c)){candidate.invalid=true;continue;}
-   if(role==='country-fill'){
+   if(role!=='country-border'){
     if(hole||p.length<24||!(ring.size>16*px*px)){candidate.invalid=true;continue;}
     candidate.fills.push({id,forward:same(candidate.a,a)});
     if(candidate.fills.length>2){candidate.invalid=true;continue;}
@@ -83,8 +90,10 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
    candidate.occurrences.push({ring,i});
   }
  }
- const eligible=[...candidates.values()].filter(v=>!v.invalid&&(overview||v.borders>0)&&v.fills.length===2
-  &&v.fills[0].id!==v.fills[1].id&&v.fills[0].forward!==v.fills[1].forward);
+ const eligible=[...candidates.values()].filter(v=>!v.invalid&&(
+  (!physical&&(overview||v.borders>0)&&v.fills.length===2
+   &&v.fills[0].id!==v.fills[1].id&&v.fills[0].forward!==v.fills[1].forward)
+  ||(overview&&v.collinear&&!v.borders&&v.fills.length===1)));
  if(!eligible.length)return features;
  // Spatially index the small changed rectangles, not the millions of
  // original edges. An unrelated edge entering one means no simplification.

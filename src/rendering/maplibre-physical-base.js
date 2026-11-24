@@ -33,7 +33,10 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   datedSources.set(id,{kind,source});
   const current=()=>!isDisposed()&&physicalPending.get(kind)===entry&&getMap().getSource(id)===source;
   if(kind==='physical-land'&&displayPrepared)getStats().physicalLandAssetHits++;
-  const prepared=kind==='physical-land'&&!displayPrepared?preparePhysicalDisplay(key,data.features[0].geometry).then(geometry=>collection([{...data.features[0],geometry}])):Promise.resolve(data);
+  // Tag only the display derivative; source-owned geometry and selection
+  // identities are left intact.
+  const tagged=collection(data.features.map(feature=>({...feature,properties:{...feature.properties,displayRole:kind}})));
+  const prepared=kind==='physical-land'&&!displayPrepared?preparePhysicalDisplay(key,tagged.features[0].geometry).then(geometry=>collection([{...tagged.features[0],geometry}])):Promise.resolve(tagged);
   prepared.then(value=>current()?setData(id,value,current,{shareAcrossGenerations:true}):false,cause=>{if(current()){physicalPending.delete(kind);failMapPreparation(cause);}return false;})
    .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){datedSources.set(id,{kind,source,key});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
  }
