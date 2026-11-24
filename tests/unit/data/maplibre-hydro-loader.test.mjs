@@ -1,11 +1,14 @@
+import {packHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHydroBrowserLoader} from '../../../src/data/maplibre-hydro-loader.js';
 import {createHydroService} from '../../../src/data/physical-layer-service.js';
 
+const river=(id,properties={})=>({type:'Feature',id,properties,geometry:{type:'LineString',coordinates:[[0,0],[1,1]]}});
+
 test('browser worker delivers only newly visible water packs and can release them',async()=>{
  const sent=[];let worker;
- class FakeWorker {constructor(){worker=this;} postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view')queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:1,features:[{id:'1:10',properties:{logicalId:'lake',featureId:'1:10'}}]}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[1]}});});}terminate(){}}
+ class FakeWorker {constructor(){worker=this;} postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view')queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:1,packed:packHydroFeatures([river('1:10',{logicalId:'lake',featureId:'1:10'})])}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[1]}});});}terminate(){}}
  const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),tilesForView:()=>[{stage:0,x:0,y:0}],baseUrl:'http://example/'});
  const result=await loader.view({knownKey:''});assert.equal(result.addPacks[0].features[0].id,'1:10');
  const reused=await loader.view({knownKey:'1'});assert.deepEqual(reused.addPacks,[]);
@@ -35,8 +38,8 @@ test('complete tile windows reuse decoded packs and emit live progress for misse
   const first=loader.view({center:[100,30],knownKey:'',tiles:[tile(0),tile(3)]},options);
   const sentFirst=sent.at(-1);
   assert.deepEqual(sentFirst.tiles,[tile(3),tile(0)]);
-  const features=[{id:'1:1'}];
-  deliver(sentFirst.revision,'pack',{packId:1,features});
+  const features=[river('1:1')];
+  deliver(sentFirst.revision,'pack',{packId:1,packed:packHydroFeatures(features)});
   assert.deepEqual(progress,[{packs:[{id:1,features}]}]);
   deliver(sentFirst.revision,'view-ready',{packIds:[1],stats:{rangeRequests:1,queueMs:.1,fetchMs:5,parseMs:1}});
   assert.deepEqual((await first).packs,[{id:1,features}]);
@@ -49,13 +52,13 @@ test('complete tile windows reuse decoded packs and emit live progress for misse
 
   const second=loader.view({knownKey:'1',tiles:[tile(2)]});
   const secondRevision=sent.at(-1).revision;
-  deliver(secondRevision,'pack',{packId:2,features:[]});
+  deliver(secondRevision,'pack',{packId:2,packed:packHydroFeatures([])});
   deliver(secondRevision,'view-ready',{packIds:[2]});
   await second;
   const revisited=loader.view({knownKey:'2',tiles:[tile(0),tile(3)]},options);
   assert.equal(sent.filter(message=>message.type==='view').length,3);
   const revisitRevision=sent.at(-1).revision;
-  deliver(revisitRevision,'pack',{packId:1,features});
+  deliver(revisitRevision,'pack',{packId:1,packed:packHydroFeatures(features)});
   deliver(revisitRevision,'view-ready',{packIds:[1]});
   assert.deepEqual((await revisited).removePacks,[2]);
  }finally{loader.dispose();}
@@ -69,7 +72,7 @@ test('recently shown water packs survive a viewport change and return without an
    if(message.type!=='view')return;
    const {revision,tiles}=message,id=tiles[0].x+1;
    queueMicrotask(()=>{
-    this.onmessage({data:{type:'pack',revision,packId:id,features:[{id:String(id)}]}});
+    this.onmessage({data:{type:'pack',revision,packId:id,packed:packHydroFeatures([river(String(id))])}});
     this.onmessage({data:{type:'view-ready',revision,packIds:[id]}});
    });
   }
@@ -98,7 +101,7 @@ test('recently shown water packs survive a viewport change and return without an
 });
 
 test('inactive cached packs are released when the cache limit is exceeded',async()=>{
- const sent=[];let next=0;class FakeWorker {postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view'){const id=++next;queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:id,features:[]}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[id]}});});}}terminate(){}}
+ const sent=[];let next=0;class FakeWorker {postMessage(message){sent.push(message);if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));if(message.type==='view'){const id=++next;queueMicrotask(()=>{this.onmessage({data:{type:'pack',revision:message.revision,packId:id,packed:packHydroFeatures([])}});this.onmessage({data:{type:'view-ready',revision:message.revision,packIds:[id]}});});}}terminate(){}}
  const loader=await createHydroBrowserLoader({manifest:{},createWorker:()=>new FakeWorker(),
   tilesForView:({knownKey})=>[{stage:0,x:Number(knownKey),y:0}],baseUrl:'http://example/',packLimit:1});
  await loader.view({knownKey:''});await loader.view({knownKey:'1'});
@@ -114,7 +117,7 @@ test('partial and failed views keep the applied viewport and release inactive pa
    if(message.type!=='view')return;
    const revision=message.revision,id=++next;
    queueMicrotask(()=>{
-    this.onmessage({data:{type:'pack',revision,packId:id,features:[]}});
+    this.onmessage({data:{type:'pack',revision,packId:id,packed:packHydroFeatures([])}});
     this.onmessage({data:id===1?{type:'view-ready',revision,packIds:[1],failedPacks:[{id:8,message:'offline'}]}:
      {type:'view-error',revision,message:'transport failed'}});
    });
@@ -158,4 +161,22 @@ test('disabled hydro cancels a manifest request and reuses an accepted manifest'
  enabled=true;assert.equal(await service.load(),true);
  enabled=false;service.cancel();enabled=true;assert.equal(await service.load(),true);
  assert.equal(requests,2);assert.equal(accepts,1);
+});
+
+test('invalid binary hydro packet rejects the viewport and retires its worker',async()=>{
+ let stopped=false;
+ class FakeWorker{
+  postMessage(message){
+   if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
+   if(message.type==='view')queueMicrotask(()=>this.onmessage({data:{type:'pack',revision:message.revision,packId:1,
+    packed:{metadata:[],lengths:Uint32Array.of(2),coordinates:Float64Array.of(0,0)}}}));
+  }
+  terminate(){stopped=true;}
+ }
+ const loader=await createHydroBrowserLoader({manifest:{},baseUrl:'http://example/',tilesForView:()=>[],createWorker:()=>new FakeWorker()});
+ try{
+  await assert.rejects(loader.view({knownKey:''}),/Invalid hydro coordinate lengths/);
+  assert.equal(stopped,true);
+  assert.equal(loader.disposed,true);
+ }finally{loader.dispose();}
 });

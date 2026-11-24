@@ -1,4 +1,4 @@
-import {unpackHydroFeatures} from '../rendering/hydro-transfer-codec.mjs';
+import {unpackHydroFeatures} from '../rendering/hydro-transfer-codec.js';
 const packIdsFromKey=key=>new Set((key||'').split(',').filter(Boolean).map(Number));
 const tileKey=({stage,x,y})=>`${stage}/${x}/${y}`;
 const windowKey=tiles=>[...new Set(tiles.map(tileKey))].sort().join(',');
@@ -84,7 +84,13 @@ export async function createHydroBrowserLoader({
   if(message.type==='ready'){readyResolve();return;}
   if(message.type==='init-error'){readyReject(Error(message.message));return;}
   if(message.type==='pack'){
-   const id=Number(message.packId);packs.delete(id);packs.set(id,unpackHydroFeatures(message.packed));
+   const id=Number(message.packId);
+   let features;
+   try{
+    if(!Number.isSafeInteger(id)||id<0)throw new TypeError('Invalid hydro pack ID');
+    features=unpackHydroFeatures(message.packed);
+   }catch(error){stop(error);return;}
+   packs.delete(id);packs.set(id,features);
    reportProgress(pending.get(message.revision),[id]);
    if(!pending.size)trim();
    return;

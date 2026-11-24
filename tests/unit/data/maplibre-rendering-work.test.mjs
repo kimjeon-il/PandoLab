@@ -1,6 +1,6 @@
 import {countryPaintOnly,countryTileDiff} from '../../../src/rendering/maplibre-country-presentation.js';
 import {createMapLibreCountryDisplay} from '../../../src/rendering/maplibre-country-display.js';
-import {packHydroFeatures,unpackHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.mjs';
+import {packHydroFeatures,unpackHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.js';
 import {encodeStrokeGeometry,decodeStrokeGeometry} from '../../../src/rendering/stroke-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';

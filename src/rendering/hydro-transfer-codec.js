@@ -18,9 +18,11 @@ export function packHydroFeatures(features){
  }
  return {metadata,lengths:Uint32Array.from(lengths),coordinates:Float64Array.from(values)};
 }
-export function unpackHydroFeatures({metadata,lengths,coordinates}){
+export function unpackHydroFeatures({metadata,lengths,coordinates}={}){
  if(!Array.isArray(metadata)||!(lengths instanceof Uint32Array)||!(coordinates instanceof Float64Array))
   throw new TypeError('Invalid hydro transport');
+ if(coordinates.length%2||lengths.reduce((sum,length)=>sum+length,0)*2!==coordinates.length)
+  throw new TypeError('Invalid hydro coordinate lengths');
  const lines=[];let at=0;
  for(const length of lengths){
   const line=[];
@@ -32,11 +34,18 @@ export function unpackHydroFeatures({metadata,lengths,coordinates}){
  }
  if(at!==coordinates.length)throw new TypeError('Unexpected hydro coordinates');
  return metadata.map(row=>{
+  if(!Number.isSafeInteger(row.lineStart)||!Number.isSafeInteger(row.lineCount)||row.lineStart<0||row.lineCount<1||row.lineStart+row.lineCount>lines.length)
+   throw new TypeError('Invalid hydro feature line range');
   const slices=lines.slice(row.lineStart,row.lineStart+row.lineCount);
   let geometry;
-  if(row.type==='LineString')geometry={type:row.type,coordinates:slices[0]};
+  if(row.type==='LineString'){
+   if(slices.length!==1)throw new TypeError('Invalid hydro line');
+   geometry={type:row.type,coordinates:slices[0]};
+  }
   else if(row.type==='MultiLineString'||row.type==='Polygon')geometry={type:row.type,coordinates:slices};
   else if(row.type==='MultiPolygon'){
+   if(!Array.isArray(row.polygonLengths)||!row.polygonLengths.length||row.polygonLengths.some(count=>!Number.isSafeInteger(count)||count<1)||row.polygonLengths.reduce((a,b)=>a+b,0)!==slices.length)
+    throw new TypeError('Invalid hydro polygon lengths');
    let offset=0;geometry={type:row.type,coordinates:row.polygonLengths.map(count=>{
     const polygon=slices.slice(offset,offset+count);offset+=count;return polygon;
    })};
