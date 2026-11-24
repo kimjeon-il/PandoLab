@@ -50,7 +50,7 @@ export function createMapLibrePicking({getMap,getProjection,getTerritories,getHy
     const {id,source}=layer;
     if(source==='viewer-labels')groups.labels.push(id);
     else if(['hydro','hydro-edits',datedSources.active('physical-water')].includes(source)||getVectorRole(source)==='project-hydro')groups.hydro.push(id);
-    else if(source!==datedSources.active('physical-land')&&!ownsHighlight(source)&&id!=='map-graticule'&&id!==border&&requiredSource(source))groups.getMap().push(id);
+    else if(source!==datedSources.active('physical-land')&&!ownsHighlight(source)&&id!=='map-graticule'&&id!==border&&requiredSource(source))groups.map.push(id);
    }
    pickLayerCache={min,max,groups};
   }
@@ -71,11 +71,11 @@ export function createMapLibrePicking({getMap,getProjection,getTerritories,getHy
    if(includeHydro)for(const feature of getHydroFeatures()){
     if(!feature.properties.physical_water||!feature.geometry||!isHydroFeatureVisible(feature))continue;
     const [west,south,east,north]=pickBounds(feature.geometry),[lon,lat]=coordinate;
-    if(lon>=west&&lon<=east&&lat>=south&&lat<=north&&deps.containsGeometry(coordinate,feature.geometry))
+    if(lon>=west&&lon<=east&&lat>=south&&lat<=north&&containsGeometry(coordinate,feature.geometry))
      refs.push(normalizeObjectRef({domain:'hydro',type:feature.properties.category,id:String(feature.id)}));
    }
    for(const row of getPolarLines()){
-    if(!row.ref||!isWithinDisplayZoom(zoom,row.displayMinZoom)||!deps.objectRefVisible(row.ref)||row.ref.domain==='hydro'&&(!includeHydro
+    if(!row.ref||!isWithinDisplayZoom(zoom,row.displayMinZoom)||!objectRefVisible(row.ref)||row.ref.domain==='hydro'&&(!includeHydro
      ||row.packFeatureId!==null&&!canPickHydro(row.packFeatureId,row.ref.id)))continue;
     if(projectedLineDistance(row.geometry,point,vertex=>getProjection().projectVisibleCoordinate(vertex,{allowOutsideViewport:true}))<=Math.max(4,row.width/2))
      refs.push(row.ref);
@@ -97,5 +97,6 @@ export function createMapLibrePicking({getMap,getProjection,getTerritories,getHy
   return [...refs.values()];
  }
 
- return Object.freeze({queryObjectRefs,pickBounds,invalidateLayers(){pickLayerCache=null;}});
+ return Object.freeze({queryObjectRefs,pickBounds,invalidateLayers(){pickLayerCache=null;},
+  reset(){pickLayerCache=null;indexedTerritories=null;polarTerritories.clear();polarPicking.clearDomain('territorial');}});
 }
