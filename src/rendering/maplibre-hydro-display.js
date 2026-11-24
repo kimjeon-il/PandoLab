@@ -48,16 +48,22 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   const lakeDisplayMinZoom=new Map(Object.entries(manifest.lakeDisplayMinZoom??{}));
   for(const [id,zoom] of lakeDisplayMinZoom)
    if(!/^\d+$/.test(id)||!HYDRO_DISPLAY_ZOOMS.includes(zoom))throw new RangeError('Invalid lake display zoom '+id);
-  const displayFeatures=features=>features.flatMap(feature=>{
+  const displayRows=new WeakMap();
+  const displayFeatures=features=>{
+   const rows=[];
+   for(const feature of features){
+   if(displayRows.has(feature)){const row=displayRows.get(feature);if(row)rows.push(row);continue;}
    const {stage,category}=feature.properties;
    const transportZoom=minZoomByStage.get(stage);
    if(transportZoom===undefined)throw new RangeError('Unknown hydro stage '+stage);
    const viewerMinZoom=category==='lake'?(lakeDisplayMinZoom.get(String(feature.properties.__logicalFid))??transportZoom):transportZoom;
    if(viewerMinZoom<transportZoom)throw new RangeError('Lake display zoom precedes its source stage');
    const geometry=category==='river'?clipMercatorLines(joinHydroLineParts(feature.geometry)):feature.geometry;
-   if(!geometry.coordinates.length)return [];
-   return [{...feature,geometry,properties:{...feature.properties,viewerMinZoom}}];
-  });
+   const row=geometry.coordinates.length?{...feature,geometry,properties:{...feature.properties,viewerMinZoom}}:null;
+   displayRows.set(feature,row);if(row)rows.push(row);
+   }
+   return rows;
+  };
   const viewportTiles=({zoom,width,height})=>{
    const bounds=projection.geographicBounds();
    return bounds?hydroTileSpecsForWindow(createHydroTileWindow({manifest:{stages},threshold:zoom,width,height,bounds})):[];

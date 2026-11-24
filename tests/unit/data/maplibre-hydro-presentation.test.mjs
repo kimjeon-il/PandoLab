@@ -263,3 +263,23 @@ test('partial water stays optional and only native tiles admitted to Core are se
   assert.equal(water.canPick(feature.id,'lake-a'),false);
  }finally{water.dispose();}
 });
+
+
+test('hydro selection changes only published packs and retains unchanged fragment eligibility',async()=>{
+ let view=0;
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),on(){},off(){}};
+ const pack=id=>({id,features:[{id:id+':f',properties:{logicalId:'water'+id}}]});
+ const first=pack(1),second=pack(2),third=pack(3);
+ const water=createMapLibreHydroPresentation({map,updateSource:async()=>true,admitFeatures:async()=>true,
+  onFeatures(){},onError:assert.fail,load:async()=>++view===1?{key:'1,2',packs:[first,second],packIds:[1,2]}:
+   {key:'2,3',packs:[second,third],packIds:[2,3]}});
+ try{
+  await water.refresh();
+  assert.equal(water.canPick('1:f','water1'),true);
+  assert.equal(water.canPick('2:f','water2'),true);
+  await water.refresh();
+  assert.equal(water.canPick('1:f','water1'),false);
+  assert.equal(water.canPick('2:f','water2'),true);
+  assert.equal(water.canPick('3:f','water3'),true);
+ }finally{water.dispose();}
+});

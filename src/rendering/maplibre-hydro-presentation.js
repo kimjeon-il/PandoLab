@@ -94,7 +94,7 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true,viewportTiles}){
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
- let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map();
+ let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map(),publishedPacks=new Map();
  let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null,resumePublication=null;
  const fragmentsById=new Map();
  const needsAdmission=new Set();
@@ -108,7 +108,13 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   if(!current())return;
   const features=presentedFeatures();
   needsAdmission.clear();
-  selectable=new Set(features.map(feature=>String(feature.id)));
+  // Worker fragment IDs include their owning pack. Update only the changed
+  // packs after native-source and Core admission, never a superseded view.
+  for(const [id,rows] of publishedPacks)if(activePacks.get(id)!==rows)
+   for(const feature of rows)selectable.delete(String(feature.id));
+  for(const [id,rows] of activePacks)if(publishedPacks.get(id)!==rows)
+   for(const feature of rows)selectable.add(String(feature.id));
+  publishedPacks=activePacks;
   onFeatures(features);publishedKey=key;
  }
  async function applyView(version,result,{partial=false}={}){
@@ -234,5 +240,5 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  map.on('moveend',moveEnded);
  return {refresh:()=>settle(true),suspend,ready:()=>pending,
   canPick:(id,logicalId)=>isEnabled()&&!needsSourceRestore()&&selectable.has(String(id))&&!needsAdmission.has(String(logicalId)),
-  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
+  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();publishedPacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
 }

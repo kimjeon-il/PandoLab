@@ -395,10 +395,9 @@ async function loadPackRangeGroup(group, signal = null) {
   activeRanges.add(active);
   try {
     const rows = await shardStore.read(shard, group.rows, group.start, group.end, signal);
-    return rows.map(([id, bytes]) => {
-      try { return { id, features: readPack(bytes, id) }; }
-      catch(error){ return {id,error}; }
-    });
+    // Transfer one decoded feature pack at a time. Keep only the raw member
+    // bytes for the rest of this coalesced range, not all expanded features.
+    return rows.map(([id,bytes])=>({id,bytes}));
   } finally {
     activeRanges.delete(active);
   }
@@ -425,7 +424,10 @@ function postPack(packId, decodedFeatures, revision) {
 async function processView(message) {
   const controller = new AbortController();foregroundController=controller;
   latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-  const packIds = [...new Set((message.tiles || []).flatMap(spec => tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`) || []))];
+  const uniquePacks=new Set();
+  for(const spec of message.tiles||[])
+    for(const id of tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`)||[])uniquePacks.add(id);
+  const packIds=[...uniquePacks];
   const needed = packIds.filter(packId => !postedPacks.has(packId));
   const failedPacks=[];
   const isCurrent=()=>message.revision>=latestRevision&&!controller.signal.aborted;
@@ -460,8 +462,14 @@ async function processView(message) {
               }else rows=group.rows.map(spec=>({id:spec.id,error}));
             }
             if(!isCurrent())return;
-            for(const {id,features,error} of rows){
-              if(error)recordFailure(id,error);else postPack(id,features,message.revision);
+            for(let i=0;i<rows.length;i++){
+              if(!isCurrent())return;
+              const {id,bytes,features:decoded,error}=rows[i];rows[i]=null;
+              if(error){recordFailure(id,error);continue;}
+              let features=decoded;
+              try{if(bytes)features=readPack(bytes,id);}
+              catch(cause){recordFailure(id,cause);continue;}
+              postPack(id,features,message.revision);
             }
           } finally {
             const count = activeShards.get(group.shard) - 1;
@@ -562,9 +570,17 @@ onmessage = async event => {
       for (const shard of manifest.shards || [])
         shardSpecs.set(Number(shard.id), manifest.container
           ? { ...shard, fileBytes: manifest.container.bytes } : shard);
-      readGlobalIndex(await fetchGzip(manifest.container ? manifest.index : manifest.index.url));
-      readFeatureMetadata(await fetchGzip(manifest.container
-        ? manifest.metadata.core : manifest.metadata?.core?.url || manifest.metadata?.url));
+      // A range-incapable container may return the whole bundle on the
+      // first request; retain sequential discovery there. Independent legacy
+      // files do not have that dependency and can download concurrently.
+      if(manifest.container){
+        readGlobalIndex(await fetchGzip(manifest.index));
+        readFeatureMetadata(await fetchGzip(manifest.metadata.core));
+      }else{
+        const [index,metadata]=await Promise.all([fetchGzip(manifest.index.url),
+          fetchGzip(manifest.metadata?.core?.url||manifest.metadata?.url)]);
+        readGlobalIndex(index);readFeatureMetadata(metadata);
+      }
       // The container reads already proved whether the host served ranges.
       rangeSupportPromise = manifest.container ? Promise.resolve(!wholeHydroBundle) : detectRangeSupport();
       postMessage({ type: 'ready' });
