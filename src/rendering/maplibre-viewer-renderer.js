@@ -22,6 +22,7 @@ import {distributionEntriesForLayer,DISTRIBUTION_MODES} from '../document/distri
 import {createMapLibreVectorGroup} from './maplibre-vector-group.js';
 import {createMapLibreHighlight,partitionHighlightLines} from './maplibre-highlight.js';
 import {createMapLibreGeometryClient} from './maplibre-geometry-client.js';
+import {createMapLibreCountryBorders} from './maplibre-country-borders.js';
 import {createMapLibrePicking} from './maplibre-picking-controller.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {layerObjectRank,layerStyle} from '../ui/layer-presentation.js';
@@ -63,9 +64,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let countrySequence=0,countryTail=Promise.resolve(),countrySourceSerial=0,countrySourceNeedsSwap=false;
  const activeCountryTasks=new Set();
  let sceneVectors=[];
- let acknowledgedBoundary=null,boundaryRequest=0,countryGeometryAbort=null;
- const geometryClient=createMapLibreGeometryClient({runtimeAssetUrl:path=>deps.platform.runtimeAssetUrl(path),isDisposed:()=>disposed,getGeneration:()=>generation,onRestart:()=>{acknowledgedBoundary=null;},getStats:()=>stats,metrics});
+ let countryGeometryAbort=null;
+ const geometryClient=createMapLibreGeometryClient({runtimeAssetUrl:path=>deps.platform.runtimeAssetUrl(path),isDisposed:()=>disposed,getGeneration:()=>generation,onRestart:()=>{borders.reset();},getStats:()=>stats,metrics});
  const {preparePhysicalDisplay,prepareRenderGeometry}=geometryClient;
+ const borders=createMapLibreCountryBorders({getBoundaryGeometry:()=>countryBoundaryGeometry,prepareRenderGeometry,metrics,getStats:()=>stats});
+ const {prepareCountryBorders}=borders;
 
  const vectorLayers=new Map(),strokeDomains=new Map(),strokeSignatures=new Map();
  let sceneOrder=[],highlight=null;
@@ -189,57 +192,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    order,role:name==='edited-water-strokes'?'project-hydro':undefined,
    geometryRevision:name+':'+revision(group),geometry:{type:'MultiLineString',coordinates:group.geometries.flatMap(lines)},style:group.style,blendMode:'normal'})));
   syncVectorGroups();
- }
- async function prepareCountryBorders(features,revision,signal){
-  const countryFeatures=[...features].sort((a,b)=>a.id.localeCompare(b.id));
-  const topologyKey=countryFeatures.map(feature=>feature.id+':'+geometryKey(feature.geometry)).join('|');
-  const groups=new Map();
-  for(const {id,properties:{borderColor,borderAlpha,borderWidth}} of countryFeatures){
-   if(!(borderAlpha>0&&borderWidth>0))continue;
-   const key=JSON.stringify([borderColor,borderAlpha,borderWidth]);
-   if(!groups.has(key))groups.set(key,{borderColor,borderAlpha,borderWidth,owners:[]});
-   groups.get(key).owners.push(id);
-  }
-  const rows=[...groups.values()].map(({owners,...paint},index)=>({
-   id:'country-border:'+index,paint,key:JSON.stringify([paint,owners]),owners,
-  }));
-  const prepared=await prepareBoundaryGroups(countryFeatures,topologyKey,rows,revision,signal);
-  const geometries=new Map(prepared?.packets.map(({cacheKey,geometry})=>[
-   cacheKey,{native:clipMercatorLines(geometry),polar:polarLinePacket(geometry.coordinates)},
-  ]));
-  stats.strokePreparedPackets+=geometries.size;
-  return rows.map(row=>{
-   const paths=geometries.get(row.key)||countryBoundaryGeometry.get(row.key)?.paths;
-   if(!paths)throw new Error('Shared country boundary was not prepared');
-   return {key:row.key,paths,feature:{type:'Feature',id:row.id,geometry:paths.native,
-    properties:{...row.paint,objectKey:row.id,displayRole:'country-border'}}};
-  });
- }
- async function prepareBoundaryGroups(features,key,groups,revision,signal){
-  const serial=++boundaryRequest;
-  const versions=new Map(features.map(feature=>[feature.id,geometryKey(feature.geometry)]));
-  const previous=acknowledgedBoundary;
-  const items=groups.map(row=>({kind:'stroke',cacheKey:row.key,countryVisibleIds:row.owners,
-    knownGeometry:countryBoundaryGeometry.has(row.key)}));
-  const request=async(base)=>{
-   const boundary=metrics.run('border.payload',()=>({
-    key,baseKey:base?.key??null,
-    upserts:features.filter(row=>base?.versions.get(row.id)!==versions.get(row.id))
-     .map(({id,geometry})=>({id,geometry})),
-    remove:base?[...base.versions.keys()].filter(id=>!versions.has(id)):[],
-   }));
-   stats.boundaryRequests++;
-   stats.boundaryGeometryRows+=boundary.upserts.length;
-   return prepareRenderGeometry(items,revision,boundary,signal);
-  };
-  let result=await request(previous);
-  if(result.boundaryMiss){
-   stats.boundaryCacheMisses++;
-   result=await request(null);
-  }
-  if(result.boundaryMiss)throw new Error('Shared border worker could not synchronize its source');
-  if(serial===boundaryRequest)acknowledgedBoundary={key,versions};
-  return result;
  }
  let polarLayer=null,polarInputs=[],polarLineInputs=[],polarVisibleLines=[],hydroMinZoomByStage=new Map();
  const polarGrid=polarGridPacket();
@@ -1182,7 +1134,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   resetProjectRenderState(options){if(options.presentation!=='temporal'){
    if(!initialMapLoading&&!initialFrameStaging&&lastPresentedZoom!==null){preserveDisplayedFrame();projectFrameHeld=true;}
    zoomFramePending=false;lastPresentedZoom=null;releaseTemporalFrame();hydroPresentation?.suspend();cancelHydroStartup();
-  }countryGeometryAbort?.abort();geometryClient.reset();polarInputs=[];highlight?.reset();generation=options.generation;pendingSceneDomains=null;sourceWrites.reset();if(activeCountryTasks.size){countrySourceNeedsSwap=true;countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
+  }countryGeometryAbort?.abort();borders.reset();geometryClient.reset();polarInputs=[];highlight?.reset();generation=options.generation;pendingSceneDomains=null;sourceWrites.reset();if(activeCountryTasks.size){countrySourceNeedsSwap=true;countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
   labelZoomVisibility,
   getRuntimeState:()=>({...stats,projectRenderBlocked:!!error,mapReady:ready,webglContextLost:contextLost,temporalPresentationPending:presentation.temporalPending(),temporalViewPending:presentation.temporalPending()&&presentation.ticket?.kind==='view',temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false,physicalContextRevision:landRevision}),
   getStats:()=>({...stats,datedSources:{territories:datedSources.active('territories'),land:datedSources.active('physical-land'),water:datedSources.active('physical-water')},performance:metrics.snapshot(),polar:polarLayer?.stats(),highlight:highlight?.stats(),hydro:hydroLoader?.stats(),errorMessage:error?.message||null,generation,projectReplacing:!!state.projectReplacing,webglContextLost:contextLost,projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},hydroFeatureCount:hydroFeatures.length,sourceRevision,certifiedRevision,labelLayout:deps.countryLabelModel.labelLayoutMetrics,mapMoving:state.mapMoving}),
