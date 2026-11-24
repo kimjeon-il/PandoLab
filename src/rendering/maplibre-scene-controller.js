@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {buildRenderableBoundarySegments} from '../geometry/geographic-boundary.js';
 import {connectBoundarySegments} from '../geometry/boundary-lines.js';
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
@@ -260,7 +261,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
      });
    }
    else{
-    map.addSource(id,{type:'geojson',data:data()});dynamicSources.add(id);indexedStyle=null;
+    map.addSource(id,mapLibreGeoJsonSource('overlay',data()));dynamicSources.add(id);indexedStyle=null;
     sceneGroups.set(id,{source:map.getSource(id),rows:next,signature});
     const kind=items[0].kind;
     const paint=kind==='fill'?{'fill-color':['get','color'],'fill-opacity':['get','alpha']}:{'circle-color':['get','color'],'circle-radius':5,'circle-opacity':['get','alpha']};

@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {clipMercatorLines} from './maplibre-polar-layer.js';
 import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,joinHydroLineParts,mapLibreHydroStyle} from './maplibre-hydro-presentation.js';
 import {HYDRO_DISPLAY_ZOOMS,hydroDisplayStages} from '../map/map-display-zoom.js';
@@ -147,7 +148,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   const editsKey=[ocean,edits.map(feature=>[String(feature.id),geometryKey(feature.geometry),feature.properties.category])];
   if(!sameRenderIdentity(editsKey,hydroEditsKey)){hydroEditsKey=editsKey;
    if(!map.getSource('hydro-edits')){
-    map.addSource('hydro-edits',{type:'geojson',data:empty()});
+    map.addSource('hydro-edits',mapLibreGeoJsonSource('hydro-edits',empty()));
     map.addLayer({id:'hydro-edits-fill',type:'fill',source:'hydro-edits',filter:['==',['geometry-type'],'Polygon'],paint:{'fill-color':['get','color']}});
     map.addLayer({id:'hydro-edits-line',type:'line',source:'hydro-edits',paint:{'line-color':['get','color'],'line-width':1,'line-opacity':0}});
    }

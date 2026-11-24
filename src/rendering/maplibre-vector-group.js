@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource,mapLibreVectorSourceKind} from './maplibre-source-spec.js';
 import {clipMercatorLines} from './maplibre-polar-layer.js';
 // Standard MapLibre sources/layers own drawing and context restoration.
 export function geographicStrokeChains(values){
@@ -19,7 +20,13 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
  let layerIds=noLayers;
  function clear(){for(const layer of [...layerIds].reverse())if(map.getLayer(layer))map.removeLayer(layer);layerIds=noLayers;definitions.clear();}
  function update(next){const request=++version;pending=true;const task=tail.catch(()=>{}).then(()=>apply(next,request));tail=task;return task;}
- const nativeGeometry=row=>row.kind==='line'?clipMercatorLines(row.geometry):row.geometry;
+ const clippedLines=new WeakMap();
+ const nativeGeometry=row=>{
+  if(row.kind!=='line')return row.geometry;
+  const cached=clippedLines.get(row.geometry);
+  if(cached?.revision===row.geometryRevision)return cached.geometry;
+  const geometry=clipMercatorLines(row.geometry);clippedLines.set(row.geometry,{revision:row.geometryRevision,geometry});return geometry;
+ };
  const feature=row=>({type:'Feature',id:row.key,geometry:nativeGeometry(row),properties:{key:row.key,objectKey:row.objectKey||''}});
  async function apply(next,request){
   if(disposed||request!==version)return;
@@ -29,7 +36,7 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
    if(!source||source!==sourceOwner){
     const data={type:'FeatureCollection',features:next.map(feature)};
     if(source)await source.setData(data);
-    else{map.addSource(id,{type:'geojson',data});source=map.getSource(id);}
+    else{map.addSource(id,mapLibreGeoJsonSource(mapLibreVectorSourceKind(next),data));source=map.getSource(id);}
    }else{
     const add=[],update=[],remove=[...sourceRows.keys()].filter(key=>!rows.has(key));
     for(const row of next){

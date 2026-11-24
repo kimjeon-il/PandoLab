@@ -66,7 +66,7 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
   const standby=slots(kind).find(([id])=>id!==current);
   if(standby){show(standby[0]);return standby[0];}
   const id=current===kind?kind+'-retained':kind;
-  if(!map.getSource(id))map.addSource(id,kind==='territories'?createCountrySource():createEmptySource());
+  if(!map.getSource(id))map.addSource(id,kind==='territories'?createCountrySource():createEmptySource(kind));
   const layers=map.getStyle().layers;
   for(const base of sourceLayers[kind]){
    const spec=layers.find(layer=>layer.id===sourceLayer(base,current));
