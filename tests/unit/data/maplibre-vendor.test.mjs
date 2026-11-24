@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {simplifySharedTileGeometry,patchMapLibreTopologyLod} from '../../../scripts/lib/maplibre-topology-lod.mjs';
 import {mapLibreVendorAssets} from '../../../scripts/lib/maplibre-vendor.mjs';
 import {createLabelGlyphMasks,createLabelGlyphCollision} from '../../../scripts/lib/maplibre-label-glyphs.mjs';
 import {createLabelZoomWorker,createLabelZoomRenderer} from '../../../scripts/lib/maplibre-label-zoom.mjs';
@@ -10,7 +11,7 @@ test('Viewer receives the MapLibre module, worker, stylesheet and license',()=>{
  for(const name of ['maplibre-gl.mjs','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs','maplibre-gl.css','LICENSE.txt'])
   assert.ok(assets.has('assets/vendor/maplibre-gl/'+name),name);
  assert.ok(assets.get('assets/vendor/maplibre-gl/maplibre-gl-worker.mjs').length>0);
- for(const name of ['maplibre-gl.mjs','maplibre-gl-worker.mjs'])
+ for(const name of ['maplibre-gl.mjs','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs'])
   assert.doesNotThrow(()=>transformSync(assets.get('assets/vendor/maplibre-gl/'+name).toString('utf8'),{format:'esm'}));
 });
 
@@ -106,4 +107,58 @@ test('a retained symbol bucket updates only its supplementary size buffer at the
  assert.deepEqual(uploads[2].slice(0,2),[13*128,14*128]);
  renderer.destroy(buffers);
  assert.equal(destroyed,1);
+});
+
+function sharedTileFixture(shared=[[.5,.48],[.5001,.484],[.5,.488],[.5001,.492],[.5,.496]]){
+ const ring=coordinates=>({points:Float64Array.from(coordinates.flatMap(([x,y])=>[x,y,1])),size:.01,start:0,end:.01});
+ const feature=(id,type,displayRole,geometry)=>({id,type,tags:{displayRole},geometry});
+ return {ring,feature,shared,rows:[
+  feature('a','Polygon','country-fill',[ring([[.46,.48],...shared,[.46,.496],[.45,.488],[.46,.48]])]),
+  feature('b','Polygon','country-fill',[ring([[.54,.496],...shared.slice().reverse(),[.54,.48],[.55,.488],[.54,.496]])]),
+  feature('ab','LineString','country-border',ring(shared)),
+ ]};
+}
+const lodOptions={promoteId:'objectKey',tolerance:0,maxZoom:18,coordinates:'lngLat'};
+const positions=ring=>Array.from({length:ring.points.length/3},(_,i)=>[ring.points[i*3],ring.points[i*3+1]]);
+test('native tile LOD removes identical shared vertices from both fills and the border without editing source',()=>{
+ const {rows,shared}=sharedTileFixture(),before=structuredClone(rows);
+ const simplified=simplifySharedTileGeometry(rows,0,0,0,lodOptions);
+ assert.ok(positions(simplified[2].geometry).length<shared.length);
+ assert.deepEqual(rows,before);
+ const edge=positions(simplified[2].geometry),left=positions(simplified[0].geometry[0]),right=positions(simplified[1].geometry[0]);
+ assert.deepEqual(left.filter(p=>shared.some(q=>q[0]===p[0]&&q[1]===p[1])),edge);
+ assert.deepEqual(right.filter(p=>shared.some(q=>q[0]===p[0]&&q[1]===p[1])).reverse(),edge);
+ assert.deepEqual(edge[0],shared[0]);assert.deepEqual(edge.at(-1),shared.at(-1));
+ assert.equal(simplified[0].tags.pandoDisplayLod,1);
+ assert.equal(rows[0].tags.pandoDisplayLod,undefined);
+ assert.equal(simplifySharedTileGeometry(rows,18,0,0,lodOptions),rows);
+ assert.equal(simplifySharedTileGeometry(rows,0,0,0,{...lodOptions,promoteId:'external'}),rows);
+});
+
+test('third-owner contacts, non-noded crossings, holes, and tile seams retain their coordinates',()=>{
+ const {rows,ring,feature,shared}=sharedTileFixture();
+ const third=feature('third','Polygon','country-fill',[ring([shared[1],[.501,.483],[.501,.485],shared[1]])]);
+ const crossing=feature('crossing','LineString','country-border',ring([[.4999,.492],[.5002,.492]]));
+ const result=simplifySharedTileGeometry([...rows,third,crossing],0,0,0,lodOptions);
+ const edge=positions(result[2].geometry);
+ assert.ok(edge.some(p=>p[0]===shared[1][0]&&p[1]===shared[1][1]));
+ assert.ok(edge.some(p=>p[0]===shared[3][0]&&p[1]===shared[3][1]));
+ assert.deepEqual(result[3],third);assert.deepEqual(result[4],crossing);
+ // x=.5 is a shared tile edge at z=1. No removal is permitted there.
+ assert.equal(simplifySharedTileGeometry(rows,1,1,0,lodOptions),rows);
+ const hole=ring([shared[2],[.4999,.487],[.4998,.489],shared[2]]);
+ const withHole=[{...rows[0],geometry:[...rows[0].geometry,hole]},...rows.slice(1)];
+ const protectedResult=simplifySharedTileGeometry(withHole,0,0,0,lodOptions);
+ assert.deepEqual(protectedResult[0].geometry[1],hole);
+ assert.ok(positions(protectedResult[2].geometry).some(p=>p[0]===shared[2][0]&&p[1]===shared[2][1]));
+});
+
+test('pinned native tile hook selects per tile zoom and leaves native source arrays intact',()=>{
+ const input='function nativeTile(a,b,c,d,e){const f=b===e.maxZoom?0:e.tolerance;const t={transformed:false,features:[],source:null,numPoints:0,numSimplified:0,numFeatures:a.length};for(const row of a)t.features.push(row);return t;}';
+ const patched=patchMapLibreTopologyLod(input);
+ assert.equal(patched.matches,1);
+ const nativeTile=new Function(patched.source+';return nativeTile;')(),{rows}=sharedTileFixture();
+ assert.ok(nativeTile(rows,0,0,0,lodOptions).features[2].geometry.points.length<rows[2].geometry.points.length);
+ assert.equal(nativeTile(rows,18,0,0,lodOptions).features[2],rows[2]);
+ assert.equal(patchMapLibreTopologyLod(input+input.replace('nativeTile','secondTile')).matches,2);
 });

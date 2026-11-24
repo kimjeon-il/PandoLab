@@ -46,3 +46,23 @@ test('a displayed frame carries the MapLibre camera without old GPU matrices or 
  assert.equal(Object.hasOwn(frame,'rowX'),false);
  assert.equal(Object.hasOwn(frame,'projectPath'),false);
 });
+
+test('scene snapshots retain unchanged domains and rows, including after a mutable style edit',()=>{
+ const scene=createMapScene();scene.connect({rendering:{mapRenderer:{setSceneDomains(){}}}});
+ const geometry={type:'Point',coordinates:[1,2]},style={color:'#aaaaaa'};
+ const a={key:'a',geometry,geometryRevision:'a1',style,order:10};
+ const b={key:'b',geometry,geometryRevision:'b1',style:{color:'#bbbbbb'},order:10};
+ scene.replaceSceneDomain('genericFeatures',{polygons:[a,b]});
+ scene.replaceSceneDomain('distributions',{polygons:[b]});
+ const first=scene.syncMapScene(),domain=first.get('genericFeatures'),other=first.get('distributions');
+ assert.equal(scene.replaceSceneDomain('genericFeatures',{polygons:[a,b]}),false);
+ assert.equal(scene.syncMapScene(),first);
+ style.color='#ffffff';
+ assert.equal(scene.replaceSceneDomain('genericFeatures',{polygons:[a,b]}),true);
+ const next=scene.syncMapScene();
+ assert.notEqual(next,first);
+ assert.equal(next.get('distributions'),other);
+ assert.equal(next.get('genericFeatures').polygons[1],domain.polygons[1]);
+ assert.equal(domain.polygons[0].style.color,'#aaaaaa');
+ assert.equal(next.get('genericFeatures').polygons[0].style.color,'#ffffff');
+});

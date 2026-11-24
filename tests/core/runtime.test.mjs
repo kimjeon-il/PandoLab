@@ -223,6 +223,13 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
     assert.ok(model.world().entities.every((row,i)=>row===rows[i]));
     assert.equal(model.territorialViews(),views);
     assert.equal(session.projectState().timelineCursor,'1916-01');
+    const adjacent=session.setTimelineCursor('1916-02',unchanged.state.epoch);
+    assert.deepEqual(adjacent.worldDelta.upserts,[]);
+    assert.deepEqual(adjacent.worldDelta.removed,[]);
+    model.acceptTransition(adjacent,'core.document-timeline-cursor');
+    assert.equal(model.world().month,'1916-02');
+    assert.equal(model.world().entities,rows);
+    assert.equal(model.territorialViews(),views);
     const restored=session.rollbackReplacement(replacement,session.projectState().epoch);
     assert.equal(restored.timelineCursor,before.timelineCursor);
     assert.equal(session.storageSnapshot(),stored);
@@ -470,4 +477,29 @@ test('native boundary edge boxes are chunked without deleting or reordering GIS 
   assert.deepEqual(result,rows.map(({a,b})=>[[...a,...b]]));
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:1_000_001,calculate:()=>[]}),/Invalid native boundary edge batch size/);
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:2,calculate:()=>[]}),/Native boundary edge box count mismatch/);
+});
+
+test('temporal frame approval compares the same immutable content pair only once',async()=>{
+ let comparisons=0,context=1;
+ const tokens=new WeakSet();
+ const token=rows=>{const key=Object.freeze(rows.map(row=>Object.freeze(row)));tokens.add(key);return key;};
+ const expected=token([['a','geometry-1']]),equivalent=token([['a','geometry-1']]),changed=token([['a','geometry-2']]);
+ const owner=createMapPresentationSession({getGeneration:()=>1,getContextRevision:()=>context,isDisposed:()=>false,
+  getReadiness:()=>({mapReady:false}),invalidateFrame(){},prepareContentKey:async()=>expected,
+  sameContentKey:(a,b)=>{comparisons++;return JSON.stringify(a)===JSON.stringify(b);},
+  isImmutableContentKey:key=>tokens.has(key),isProjectBlocked:()=>false,isRecoveryFrameAdmissible:()=>true,
+  waitForCanonicalFrame:async()=>true});
+ const id=owner.beginTemporalViewTransition();
+ await owner.prepareTemporalCountrySource([]);
+ assert.equal(owner.admitTemporalViewTransition(id),true);
+ for(let i=0;i<100;i++)assert.equal(owner.countrySourceAdmitted(equivalent),true);
+ assert.equal(comparisons,1);
+ assert.equal(owner.countrySourceAdmitted(changed),false);
+ assert.equal(owner.countrySourceAdmitted(changed),false);
+ assert.equal(comparisons,2);
+ context++;
+ assert.equal(owner.countrySourceAdmitted(equivalent),false);
+ owner.rebaseContext();
+ assert.equal(owner.countrySourceAdmitted(equivalent),true);
+ owner.dispose();
 });

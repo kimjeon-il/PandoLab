@@ -141,3 +141,24 @@ test('unchanged builtin water identities do not re-enter Core until the project 
   assert.equal(calls.length,3);
  }finally{project.dispose();}
 });
+
+test('an obsolete prepared date cannot supersede a newer date intent',async()=>{
+ const calls=[];let state={epoch:1,timelineCursor:'2026-12'};
+ const worker={postMessage(message){
+  calls.push(message.operation);
+  let result={state};
+  if(message.operation==='core.document-geometry-requirements')result={sourceEpoch:state.epoch,resources:[]};
+  if(message.operation==='core.document-timeline-cursor'){state={epoch:state.epoch+1,timelineCursor:message.payload.month};result={state};}
+  queueMicrotask(()=>worker.onmessage({data:{...message,type:'result',ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker});
+ try{
+  await client.load('{}');
+  const previous=await client.prepareTimelineGeometry('1922-12');
+  const next=await client.prepareTimelineGeometry('1923-01');
+  await assert.rejects(client.setTimelineCursor('1922-12',{geometryPreparation:previous}),{name:'AbortError'});
+  await client.setTimelineCursor('1923-01',{geometryPreparation:next});
+  assert.equal(client.state().timelineCursor,'1923-01');
+  assert.equal(calls.filter(operation=>operation==='core.document-timeline-cursor').length,1);
+ }finally{client.dispose();}
+});

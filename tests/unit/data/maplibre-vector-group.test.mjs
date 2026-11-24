@@ -162,3 +162,23 @@ test('a staged polar highlight uploads before commit and cannot survive context 
   assert.deepEqual(errors,[]);
  }finally{owner.dispose();}
 });
+
+test('a failed vector source update can retry the same geometry without a stuck pending flag',async()=>{
+ const sources=new Map(),layers=new Map();
+ let fail=true,fullWrites=0;
+ const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+  addSource(id,value){sources.set(id,{...value,async updateData(){if(fail){fail=false;throw Error('source update rejected');}},async setData(data){this.data=data;fullWrites++;}});},
+  addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),
+  setPaintProperty(){},setLayoutProperty(){},setFilter(){}};
+ const row={key:'a',kind:'fill',geometryRevision:'one',geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,1],[0,0]]]},style:{color:'#ffffff'}};
+ const group=createMapLibreVectorGroup(map,{id:'retry',onChange(){}});
+ try{
+  await group.update([row]);
+  const changed={...row,geometryRevision:'two',geometry:{type:'Polygon',coordinates:[[[1,0],[2,0],[1,1],[1,0]]]}};
+  await assert.rejects(group.update([changed]),/source update rejected/);
+  assert.equal(group.pending,false);
+  await group.update([changed]);
+  assert.equal(fullWrites,1);
+  assert.deepEqual(sources.get('retry').data.features[0].geometry,changed.geometry);
+ }finally{group.dispose();}
+});

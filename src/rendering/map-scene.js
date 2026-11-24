@@ -1,10 +1,37 @@
 import {overlayVisualOrder} from '../ui/layer-presentation.js';
 import {admittedGeometryKey} from '../geometry/geometry-version-store.js';
+import {sameRenderIdentity} from './render-identity.js';
+
+const preparedDomains=new WeakSet();
+export const isPreparedSceneDomain=value=>preparedDomains.has(value);
+function freezeStyle(value){
+ if(value&&typeof value==='object'&&!Object.isFrozen(value)){
+  for(const child of Object.values(value))freezeStyle(child);
+  Object.freeze(value);
+ }
+ return value;
+}
+const rowRevision=row=>row.geometryRevision??admittedGeometryKey(row.geometry);
+function reuseRows(items,previous){
+ const next=[];let same=true;
+ for(const item of items){
+  if(!item?.key||!item.geometry)continue;
+  const prior=previous[next.length],revision=rowRevision(item);
+  if(prior&&prior.geometryRevision===revision&&prior.key===item.key&&prior.objectKey===item.objectKey
+   &&prior.role===item.role&&prior.order===item.order&&prior.blendMode===item.blendMode
+   &&sameRenderIdentity(prior.style,item.style))next.push(prior);
+  else{
+   same=false;
+   next.push(Object.freeze({...item,geometryRevision:revision,style:freezeStyle(structuredClone(item.style))}));
+  }
+ }
+ return same&&next.length===previous.length?previous:Object.freeze(next);
+}
 
 /** One prepared overlay state for the MapLibre renderer. */
 export function createMapScene() {
   let dependencies = null;
-  const domains = new Map();
+  let domains = new Map();
   function connect(ports) {
     if (dependencies) throw new Error('map scene already connected');
     dependencies = ports;
@@ -23,16 +50,13 @@ export function createMapScene() {
   }
   function replaceSceneDomain(domain, {polygons = [], strokes = []} = {}) {
     const name = String(domain);
-    const renderable = item => item?.key && item?.geometry;
-    const snapshot = item => Object.freeze({...item});
-    const nextPolygons = polygons.filter(renderable).map(snapshot);
-    const nextStrokes = strokes.filter(renderable).map(snapshot);
-    const items = [...nextPolygons,...nextStrokes];
-    const signature = JSON.stringify(items.map(item => [
-      item.key,item.geometryRevision,item.objectKey,item.role,item.order,item.blendMode,item.style,
-    ]));
-    if (domains.get(name)?.signature === signature) return false;
-    domains.set(name,{signature,polygons:nextPolygons,strokes:nextStrokes});
+    const prior=domains.get(name);
+    const nextPolygons=reuseRows(polygons,prior?.polygons??[]);
+    const nextStrokes=reuseRows(strokes,prior?.strokes??[]);
+    if(prior&&nextPolygons===prior.polygons&&nextStrokes===prior.strokes)return false;
+    const prepared=Object.freeze({polygons:nextPolygons,strokes:nextStrokes});
+    preparedDomains.add(prepared);
+    domains=new Map(domains);domains.set(name,prepared);
     return true;
   }
   function syncMapScene() {
@@ -42,6 +66,6 @@ export function createMapScene() {
   return Object.freeze({
     connect,featureFromGeometry,selectionGeometryRevision,sceneOrder,
     replaceSceneDomain,syncMapScene,
-    initializeSceneDomains(){ domains.clear(); },
+    initializeSceneDomains(){ domains=new Map(); },
   });
 }

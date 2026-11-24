@@ -1,7 +1,7 @@
 import { timelineObjectKey } from "./timeline-records.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
 import { projectTimelineIdentity } from "./timeline-resolver.js";
-import { normalizeTemporalInterval,temporalContains, temporalMonthEnd } from "./temporal.js";
+import { normalizeTemporalInterval,temporalContains, temporalMonthEnd,compareTemporalKeys } from "./temporal.js";
 
 const fields = Object.freeze({ territorial: 'territorialEntities', label: 'labels', hydro: 'hydroEdits',
   generic: 'genericFeatures', distributionLayer: 'distributionLayers', distributionEntry: 'distributionEntries' });
@@ -48,14 +48,15 @@ export function createCoreDocumentReadModel(initialProject) {
   // Cache indexes by immutable source collections, not the whole project
   // snapshot: a geometry-only delta does not invalidate object identities.
   const identityIndexes=new WeakMap(),bindingIndexes=new WeakMap(),projectionSources=new WeakMap();
+  const worldBindingWindows=new WeakMap(),viewsByRow=new WeakMap();
   function identityIndex(identities){
     let index=identityIndexes.get(identities);
     if(!index){index=new Map(identities.map(identity=>[identity.id,identity]));identityIndexes.set(identities,index);}
     return index;
   }
-  function sourceBindingAt(identity,ref,date){
+  function sourceBindingCandidates(identity,ref){
     const bindings=identity.properties?.metadata?.historicalTimeline?.geometryBindings;
-    if(!Array.isArray(bindings))return null;
+    if(!Array.isArray(bindings))return [];
     let index=bindingIndexes.get(bindings);
     if(!index){
       index=new Map();
@@ -67,10 +68,33 @@ export function createCoreDocumentReadModel(initialProject) {
       }
       bindingIndexes.set(bindings,index);
     }
-    return (index.get(refKey(ref))||[]).find(row=>{
-      row.interval??=normalizeTemporalInterval(row.binding.validFrom,row.binding.validTo);
-      return temporalContains(row.interval,date);
-    })?.binding??null;
+    return index.get(refKey(ref))||[];
+  }
+  function bindingInterval(row){
+    return row.interval??=normalizeTemporalInterval(row.binding.validFrom,row.binding.validTo);
+  }
+  function sourceBindingAt(candidates,date){
+    return candidates.find(row=>temporalContains(bindingInterval(row),date))??null;
+  }
+  // For a unique active source binding, the intersection of its date bounds
+  // certifies reuse of the same presentation rows at a later cursor. Ambiguous
+  // or inactive bindings remain explicit checks; no hash or month guess.
+  function includeBinding(window,candidates,selected){
+    if(!candidates.length)return;
+    if(candidates.length!==1||!selected){window.checks.push({candidates,selected});return;}
+    const {start,end}=bindingInterval(selected);
+    if(start&&(!window.start||compareTemporalKeys(window.start.startKey,start.startKey)<0))window.start=start;
+    if(end&&(!window.end||compareTemporalKeys(window.end.endKey,end.endKey)>0))window.end=end;
+  }
+  function canReuseWorldAt(month){
+    if(worldSourceProject!==project)return false;
+    if(month===world.month)return true;
+    const window=worldBindingWindows.get(world.entities);
+    if(!window)return false;
+    const date=temporalMonthEnd(month);
+    if(window.start&&compareTemporalKeys(date.endKey,window.start.startKey)<0
+      ||window.end&&compareTemporalKeys(window.end.endKey,date.endKey)<0)return false;
+    return window.checks.every(({candidates,selected})=>sourceBindingAt(candidates,date)===selected);
   }
   function acceptLoadedProject(value) {
     if (!value || !Array.isArray(value.geometries)) invalid('A complete accepted C++ storage snapshot is required after document load.');
@@ -98,7 +122,7 @@ export function createCoreDocumentReadModel(initialProject) {
   }
   function get(ref) {
     if (!ref || typeof ref.id !== 'string') invalid('An explicit C++ document object reference is required.');
-    return list(ref.domain).find(row => row.id === ref.id) || null;
+    return identityIndex(list(ref.domain)).get(ref.id) || null;
   }
   function worldAgainst(responseWorld,expectedEpoch,sourceProject,sourceGeometries,detached = false) {
     if (!responseWorld || !Array.isArray(responseWorld.entities) || typeof responseWorld.month !== 'string')
@@ -110,6 +134,7 @@ export function createCoreDocumentReadModel(initialProject) {
     const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)},byId=new Map();
     const referenceDate=temporalMonthEnd(responseWorld.month);
     const previousWorld = !detached ? world : null;
+    const bindingWindow={start:null,end:null,checks:[]};
     const rows = responseWorld.entities.map(row => {
       const key=timelineObjectKey(row.objectRef);
       const identity = identities[row.objectRef.domain]?.get(row.objectRef.id), geometry = sourceGeometries.get(row.geometryRef);
@@ -120,12 +145,15 @@ export function createCoreDocumentReadModel(initialProject) {
       if (!row.properties || typeof row.properties !== 'object') invalid('C++ temporal property projection is required.');
       // Identity and geometry are from the unchanged, immutable source snapshot.
       // Reuse a resolved row when only the cursor changed, not its visible data.
-      const sourceBinding=sourceBindingAt(identity,row.geometryRef,referenceDate);
+      const candidates=sourceBindingCandidates(identity,row.geometryRef);
+      const selectedBinding=sourceBindingAt(candidates,referenceDate);
+      includeBinding(bindingWindow,candidates,selectedBinding);
+      const sourceBinding=selectedBinding?.binding;
       const sourceVersion=sourceBinding?.sourceVersionId ?? String(identity.properties?.sourceGeometryVersion ?? '');
       const prior=previousWorld?.byId?.getObject?.(row.objectRef);
       const priorSource=projectionSources.get(prior);
       if(prior && prior.geometry===geometry && priorSource?.identity===identity
-        && priorSource.version===sourceVersion
+        && priorSource.version===sourceVersion&&priorSource.binding===sourceBinding
         && (prior===row||(
           ['parentId','coverageMode','validFrom','validTo','rootId'].every(field=>prior[field]===row[field])
           && sameDisplayValue(prior.geometryRef,row.geometryRef)
@@ -142,35 +170,44 @@ export function createCoreDocumentReadModel(initialProject) {
       const effectiveIdentity=row.objectRef.domain==='hydro'
         ?freeze({...datedIdentity,properties:{...datedIdentity.properties,...row.rendering}}):datedIdentity;
       const projected = freeze({ ...structuredClone(worldEntityPayload(row)), id:row.objectRef.id, identity:effectiveIdentity, geometry });
-      projectionSources.set(projected,{identity,version:sourceVersion});
+      projectionSources.set(projected,{identity,version:sourceVersion,binding:sourceBinding});
       byId.set(key, projected);
       return projected;
     });
-    return Object.freeze({ month: responseWorld.month,...(detached ? {} : { sourceEpoch: responseWorld.sourceEpoch }), entities: Object.freeze(rows),
+    Object.freeze(rows);worldBindingWindows.set(rows,bindingWindow);
+    return Object.freeze({ month: responseWorld.month,...(detached ? {} : { sourceEpoch: responseWorld.sourceEpoch }), entities: rows,
       byId: Object.freeze({ get: id => byId.get(timelineObjectKey({domain:'territorial',id})), getObject: ref => byId.get(timelineObjectKey(ref)) }) });
   }
   const projectWorld=(value,expectedEpoch) => worldAgainst(value,expectedEpoch,project,geometries);
-  function viewsForWorld(nextWorld,domain='territorial') {
-    const oldViews=domain==='hydro'?hydroViews:territorialViews;
-    const previous=new Map((world?.entities || []).filter(row=>row.objectRef.domain===domain).map((row,index) => [row.id,{ row,view: oldViews[index] }]));
-    const nextViews=Object.freeze(nextWorld.entities.filter(row=>row.objectRef.domain===domain).map(row => {
-      const prior=previous.get(row.id);
-      if(prior?.row===row)return prior.view;
-      if (prior && (prior.row.identity===row.identity || (prior.row.identity.id===row.identity.id && sameDisplayValue(prior.row.identity.properties,row.identity.properties))) && prior.row.geometry===row.geometry
-        && ['parentId','coverageMode','validFrom','validTo'].every(field => prior.row[field]===row[field])) return prior.view;
-      if(domain==='hydro')return freeze({...row.identity,geometry:row.geometry});
-      return freeze({ ...row.identity,geometry: row.geometry,properties: { ...row.identity.properties,
-        parentId: row.parentId,coverageMode: row.coverageMode,validFrom: row.validFrom,validTo: row.validTo } });
-    }));
-    return nextViews.length===oldViews.length&&nextViews.every((row,i)=>row===oldViews[i])?oldViews:nextViews;
+  function viewsForWorld(nextWorld) {
+    const territorial=[],hydro=[];
+    let sameTerritorial=true,sameHydro=true;
+    for(const row of nextWorld.entities){
+      const isHydro=row.objectRef.domain==='hydro';
+      const target=isHydro?hydro:territorial,previous=isHydro?hydroViews:territorialViews;
+      let view=viewsByRow.get(row);
+      if(!view){
+        const prior=world?.byId.getObject(row.objectRef),priorView=prior&&viewsByRow.get(prior);
+        if(priorView&&prior.geometry===row.geometry
+          &&(prior.identity===row.identity||(prior.identity.id===row.identity.id&&sameDisplayValue(prior.identity.properties,row.identity.properties)))
+          &&['parentId','coverageMode','validFrom','validTo'].every(field=>prior[field]===row[field]))view=priorView;
+        else if(isHydro)view=freeze({...row.identity,geometry:row.geometry});
+        else view=freeze({...row.identity,geometry:row.geometry,properties:{...row.identity.properties,
+          parentId:row.parentId,coverageMode:row.coverageMode,validFrom:row.validFrom,validTo:row.validTo}});
+        viewsByRow.set(row,view);
+      }
+      if(view!==previous[target.length]){if(isHydro)sameHydro=false;else sameTerritorial=false;}
+      target.push(view);
+    }
+    return {territorial:sameTerritorial&&territorial.length===territorialViews.length?territorialViews:Object.freeze(territorial),
+      hydro:sameHydro&&hydro.length===hydroViews.length?hydroViews:Object.freeze(hydro)};
   }
   function acceptWorld(value,expectedEpoch) {
     const nextWorld=projectWorld(value,expectedEpoch);
-    const nextViews=viewsForWorld(nextWorld);
-    const nextHydroViews=viewsForWorld(nextWorld,'hydro');
+    const views=viewsForWorld(nextWorld);
     world=nextWorld;
     worldSourceProject=project;
-    territorialViews=nextViews;hydroViews=nextHydroViews;
+    territorialViews=views.territorial;hydroViews=views.hydro;
     return nextWorld;
   }
   const worldEntityPayload=({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties})=>
@@ -188,28 +225,35 @@ export function createCoreDocumentReadModel(initialProject) {
     };
     if(!delta.upserts.length&&!delta.removed.length){
       if(delta.entityCount!==world.entities.length)invalid('World delta entity count differs.');
-      if(delta.month===world.month&&worldSourceProject===project){
-        world=Object.freeze({...world,sourceEpoch:state.epoch});
+      if(canReuseWorldAt(delta.month)){
+        world=Object.freeze({...world,month:delta.month,sourceEpoch:state.epoch});
         return world;
       }
       return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities:world.entities},state.epoch);
     }
-    const prior=new Map(world.entities.map(row=>[key(row.objectRef),row]));
+    let retainedCount=world.entities.length;
     const touched=new Set(), positions=new Map();
     for(const ref of delta.removed){
       const id=key(ref);
-      if(touched.has(id)||!prior.delete(id))invalid('Invalid world delta removal.');
-      touched.add(id);
+      if(touched.has(id)||!world.byId.getObject(ref))invalid('Invalid world delta removal.');
+      touched.add(id);retainedCount--;
     }
     for(const {index,entity} of delta.upserts){
       const id=key(entity?.objectRef);
       if(touched.has(id)||!Number.isSafeInteger(index)||index<0||index>=delta.entityCount||positions.has(index))
         invalid('Invalid world delta upsert.');
-      touched.add(id);prior.delete(id);positions.set(index,entity);
+      touched.add(id);if(world.byId.getObject(entity.objectRef))retainedCount--;positions.set(index,entity);
     }
-    if(prior.size+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
-    const unchanged=prior.values();
-    const entities=Array.from({length:delta.entityCount},(_,index)=>positions.get(index)??unchanged.next().value);
+    if(retainedCount+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
+    let cursor=0;
+    const entities=Array.from({length:delta.entityCount},(_,index)=>{
+      if(positions.has(index))return positions.get(index);
+      while(cursor<world.entities.length){
+        const row=world.entities[cursor++];
+        if(!touched.has(key(row.objectRef)))return row;
+      }
+      invalid('Missing retained world delta row.');
+    });
     return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities},state.epoch);
   }
   function rebaseWorld(epoch) {
@@ -238,10 +282,12 @@ export function createCoreDocumentReadModel(initialProject) {
     for(const ref of delta.removed)if(!geometries.get(ref))invalid('Unknown evicted geometry resource.');
     const entries=project.geometries.filter(row=>!removed.has(refKey(row))).concat(rows);
     const next=createGeometryVersionStore(entries,{reuse:geometries,verifiedContentHashes:hashes});
+    const sameSource=worldSourceProject===project;
     project=freeze({...project,geometries:next.snapshot()});geometries=next;
     // Do not pin the old archive through the current read model.
-    // Old displayed rows remain valid until the atomic cursor projection.
-    worldSourceProject=project;
+    // Only a geometry-only admission on the same accepted source may rebase
+    // its certificate. A prior source edit still requires re-projection.
+    worldSourceProject=sameSource?project:null;
   }
   function acceptTransition(result,operation,verifiedResources) {
     if(operation==='core.document-temporal-candidate-adopt') {

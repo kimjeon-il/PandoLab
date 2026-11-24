@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {createMapLibrePolarDisplay} from './maplibre-polar-display.js';
 import {createMapLibreSceneController} from './maplibre-scene-controller.js';
 import {createMapLibreProjection} from './maplibre-projection.js';
@@ -17,8 +18,7 @@ import {createMapLibreSourceWrites,createMapLibreDatedSources} from './maplibre-
 
 const collection=features=>({type:'FeatureCollection',features});
 const empty=()=>collection([]);
-// Display-only simplification is performed by MapLibre per tile/zoom; canonical geometry stays intact.
-const countryTileSource=()=>({type:'geojson',data:empty(),promoteId:'objectKey',tolerance:0.5});
+const countryTileSource=()=>mapLibreGeoJsonSource('territories',empty(),{promoteId:'objectKey'});
 const countryFillFilter=batch=>['all',['==',['get','displayRole'],'country-fill'],['==',['get','paintBatch'],batch],['==',['get','blendMode'],'normal']];
 const SOURCE_LAYERS={'territories':['territories','borders'],'physical-land':['physical-land-fill'],'physical-water':['physical-water']};
 import {createMapLibreCamera,WORLD_VIEW_BOUNDS} from './maplibre-camera-controller.js';
@@ -105,7 +105,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  const stats={renderedFrames:0,preservedFrameCopies:0,sourceUpdates:0,sourceWrites:0,hydroVisibilityScans:0,geometryWorkerRequests:0,geometryWorkerTransferBytes:0,retainedSourceHits:0,boundaryRequests:0,boundaryGeometryRows:0,boundaryCacheMisses:0,approvalAttempts:0,renderer:'maplibre',firstCanonicalFrameMs:null,physicalLandPreparations:0,physicalLandPreparationMs:0,physicalLandAssetHits:0,strokePreparedPackets:0};
  const invalidate=reason=>deps.domains.renderingDomain?.invalidateView(reason);
  const datedSources=createMapLibreDatedSources({getMap:()=>map,sourceLayers:SOURCE_LAYERS,sourceLayer,mapSourceLayers,
-  createCountrySource:countryTileSource,createEmptySource:()=>({type:'geojson',data:empty()}),
+  createCountrySource:countryTileSource,createEmptySource:kind=>mapLibreGeoJsonSource(kind,empty()),
   invalidateLayerIndex:()=>scene.invalidateLayerIndex(),dirty,
   canRetire:()=>styleReady()&&!frame.temporalPending()&&!frame.zoomPending&&!map.isMoving(),
   temporalPending:()=>frame.temporalPending()});
@@ -172,7 +172,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    map=new api.Map({container,trackResize:false,attributionControl:false,interactive:true,fadeDuration:0,canvasContextAttributes:{preserveDrawingBuffer:true},dragRotate:false,pitchWithRotate:false,
     center:[-state.view.globeRotation[0],-state.view.globeRotation[1]],...(Number.isFinite(state.view.zoom)?{zoom:state.view.zoom}:{}),
     style:{version:8,projection:{type:'globe'},sources:{
-     'physical-land':{type:'geojson',data:empty()},'physical-water':{type:'geojson',data:empty()},
+     'physical-land':mapLibreGeoJsonSource('physical-land',empty()),'physical-water':mapLibreGeoJsonSource('physical-water',empty()),
      territories:countryTileSource(),...hydroStyle.sources,
     },layers:[{id:'ocean',type:'background',paint:initialStyle.paint.ocean},
      {id:'physical-land-fill',type:'fill',source:'physical-land',paint:initialStyle.paint['physical-land-fill']},
@@ -228,7 +228,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  feedback:deps.feedback,suppressHover:frameSuppressHover,objectRefVisible:ref=>deps.objectRefVisible(ref),
  getTerritory:id=>deps.territorialModel.entityRepository.get(id),getHydroFeature:id=>deps.hydroModel.hydroFeatureById(id),
  getInteractionStyle:()=>scene.interactionStyle,rgba,pickingPorts:{
- getMap:()=>map,getProjection:()=>projection,getTerritories:()=>country.features,
+ getMap:()=>map,getProjection:()=>projection,getTerritories:()=>country.features,getPresentedCountryRows:()=>countryDisplay.rows,
  getHydroFeatures:()=>state.hydroFeatureCache.values(),getPolarLines:()=>polarDisplay.visibleLines,getVectorRole:source=>scene.vectorRole(source),
  canPick:()=>loaded&&!frame.isFramePreserved(),canPickHydro:(...args)=>hydroDisplay.canPick(...args),
  containsGeometry:(...args)=>deps.containsGeometry(...args),isHydroFeatureVisible:feature=>deps.physicalServices.isHydroFeatureVisible(feature),

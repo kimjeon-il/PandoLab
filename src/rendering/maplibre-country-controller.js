@@ -1,5 +1,7 @@
 import {createTerritorialEntityRepository} from '../document/territorial-entity-repository.js';
-import {admittedGeometryKey as geometryKey,geometryReferenceFor} from '../geometry/geometry-version-store.js';
+import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
+import {sameRenderIdentity} from './render-identity.js';
+import {countryContentIdentity,immutableCountryRows} from './country-content-identity.js';
 import {countryDefaultColor} from '../ui/color-adapter.js';
 import {prepareCountryPresentation,countryPaintOnly,countryTileDiff} from './maplibre-country-presentation.js';
 const collection=features=>({type:'FeatureCollection',features});
@@ -12,6 +14,34 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
  let countryGeneration=-1,countryContentKey='',territories=[],acceptedCountryInputs=null;
  let countrySequence=0,countryTail=Promise.resolve();
  const activeCountryTasks=new Set();
+ const immutableRepositories=new WeakMap();
+ const fillInputs=new WeakMap();
+ function fillIdentity(row){
+  let key=fillInputs.get(row);
+  if(!key){key=[row.id,row.geometry,row.properties.parentId,row.properties.entityKind,row.properties.style?.color,countryDefaultColor(row)];fillInputs.set(row,key);}
+  return key;
+ }
+ const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>{
+  const next=after[index];
+  if(row===next)return true;
+  const previous=fillIdentity(row),current=fillIdentity(next);
+  return previous.every((value,i)=>value===current[i]);
+ });
+ function repositoryFor(entities,features){
+  if(immutableCountryRows(entities)&&immutableCountryRows(features)){
+   let byFeatures=immutableRepositories.get(entities);
+   if(!byFeatures){byFeatures=new WeakMap();immutableRepositories.set(entities,byFeatures);}
+   let repository=byFeatures.get(features);
+   if(!repository){
+    const rows=entities===features?entities:[...new Map([...entities,...features].map(row=>[String(row.id),row])).values()];
+    repository=createTerritorialEntityRepository({getEntities:()=>rows});byFeatures.set(features,repository);
+   }
+   return repository;
+  }
+  const rows=[...new Map([...entities,...features].map(row=>[String(row.id),row])).values()]
+   .map(row=>({...row,properties:structuredClone(row.properties)}));
+  return createTerritorialEntityRepository({getEntities:()=>rows});
+ }
  function setTerritorialFeatures(features){
   if(isDisposed())return Promise.resolve(false);
   const entities=getEntityRepository().list?.()??features;
@@ -20,34 +50,19 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    presentation:state.layerPresentation,visibility:state.itemVisibility?.objects,
    visible:state.layerVisibility.objects,stroke:JSON.stringify([countryStyle.countryStroke,countryStyle.borderAlpha])};
   const accepted=acceptedCountryInputs;
-  const immutable=rows=>rows.every(row=>Object.isFrozen(row)&&Object.isFrozen(row.properties)&&geometryReferenceFor(row.geometry));
-  // The country tiles consume geometry, hierarchy and fill inputs. Dated
-  // names, flags and other metadata belong to the separate label scene.
-  const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>{
-   const next=after[index];
-   return row===next||row.id===next.id&&row.geometry===next.geometry
-    &&row.properties.parentId===next.properties.parentId
-    &&row.properties.entityKind===next.properties.entityKind
-    &&row.properties.style?.color===next.properties.style?.color
-    &&countryDefaultColor(row)===countryDefaultColor(next);
-  });
   if(accepted&&styleReady()&&!isFrameBlocked()&&countryGeneration===getGeneration()&&!activeCountryTasks.size&&!countryDisplay.needsSwap
     &&accepted.generation===inputs.generation&&accepted.source===inputs.source&&accepted.stroke===inputs.stroke
     &&accepted.presentation===inputs.presentation&&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible
-    &&immutable(accepted.entities)&&immutable(entities)&&immutable(accepted.features)&&immutable(features)
+    &&immutableCountryRows(accepted.entities)&&immutableCountryRows(entities)&&immutableCountryRows(accepted.features)&&immutableCountryRows(features)
     &&equivalent(accepted.entities,entities)&&equivalent(accepted.features,features)){
-   territories=features;acceptedCountryInputs=inputs;return Promise.resolve(true);
+   territories=features;acceptedCountryInputs=inputs;countryContentKey=countryContentIdentity(features);return Promise.resolve(true);
   }
   if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}
   const signal=geometryClient.startCountryRequest();
   territories=features;const sequence=++countrySequence,requestedGeneration=getGeneration();countryGeneration=-1;
   const task=countryTail.then(async()=>{
    if(sequence!==countrySequence||requestedGeneration!==getGeneration()||isDisposed())return false;
-   const entityRepository=metrics.run('territorial.payload',()=>{
-    const rows=[...new Map([...entities,...features].map(feature=>[String(feature.id),feature])).values()]
-     .map(feature=>({...feature,properties:structuredClone(feature.properties)}));
-    return createTerritorialEntityRepository({getEntities:()=>rows});
-   });
+   const entityRepository=metrics.run('territorial.payload',()=>repositoryFor(entities,features));
    activeCountryTasks.add(sequence);
    try{
     const applied=await applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal);
@@ -67,12 +82,15 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(requestedGeneration!==getGeneration()||sequence!==countrySequence)return false;
   const map=getMap();
   const {presented,nextBatches,key}=prepareCountryPresentation(features,{state,entityRepository,style:currentMapStyle(),layerPresentation});
-  const cached=datedSources.reuse('territories',key);
+  const cached=datedSources.reuse('territories',key,sameRenderIdentity);
   const current=()=>!isDisposed()&&!signal.aborted&&requestedGeneration===getGeneration()&&sequence===countrySequence&&getMap()===map;
   const publish=(id,record)=>{
+   const sourceChanged=datedSources.active('territories')!==id;
    datedSources.activate('territories',id);
-   countryDisplay.publish(record,key);
-   scene.syncCountryPaint(id,record.rows);scene.orderSceneLayers();
+   countryDisplay.publish(record,record.key);
+   scene.syncCountryPaint(id,record.rows);
+   if(sourceChanged)scene.syncVectorGroups();
+   scene.orderSceneLayers();
   };
   const active=datedSources.get(datedSources.active('territories'));
   // A paint-only transition shares the already tiled source. Keep the actual
@@ -114,7 +132,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    publish(requestedSource,record);
   }
   if(sequence!==countrySequence||requestedGeneration!==getGeneration())return false;
-  if(requestedGeneration===getGeneration()&&sequence===countrySequence){countryGeneration=getGeneration();countryContentKey=features.map(feature=>String(feature.id)+':'+geometryKey(feature.geometry)).join('|');}
+  if(requestedGeneration===getGeneration()&&sequence===countrySequence){countryGeneration=getGeneration();countryContentKey=countryContentIdentity(features);}
   map.triggerRepaint();
   return true;
  }

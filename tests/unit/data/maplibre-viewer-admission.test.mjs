@@ -28,6 +28,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
   const page=await browser.newPage();page.on('pageerror',error=>console.error('Fixture page error:',error));await page.goto('http://127.0.0.1:'+server.address().port);
   const result=await page.evaluate(async()=>{
    const {createMapLibreViewerRenderer}=await import('/src/rendering/maplibre-viewer-renderer.js');
+   const {createRingHitTester}=await import('/src/geometry/ring-hit-test.js');
    const square=(id,left)=>({type:'Feature',id,properties:{entityKind:'general',parentId:null,style:{color:'#66aa44'}},geometry:{type:'Polygon',coordinates:[[[left,-5],[left+8,-5],[left+8,5],[left,5],[left,-5]]]}});
    const before=square('old',-8),after=square('current:상태%2',18),entities=new Map([[before.id,before],[after.id,after]]),errors=[];let visible=true,loadingPalette={ocean:'#4477aa',land:'#aaaaaa'};
    const state={size:{width:800,height:600},projection:'globe',view:{globeRotation:[0,0,0],zoom:1},layerVisibility:{objects:true},layerPresentation:{},hydroFeatureCache:new Map(),hydroEdits:[],genericFeatures:[],distributionEntries:[],labels:[]};
@@ -35,7 +36,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    let landAvailable=false,hydroEnabled=false;
    const renderer=createMapLibreViewerRenderer({projectState:{state},physicalConfig:{},countryLabelModel:{labelLayoutMetrics:{}},layerPresentation:{isLayerItemVisible:()=>true},
     preferences:{mapPalette:()=>({loadingSurface:loadingPalette,ocean:'#4477aa',defaultLand:'#aaaaaa',countryColorAlpha:1,borderAlpha:1,strokes:{country:{color:'#ffffff',width:1},river:{width:1}}})},
-    surfaces:{isMobile:()=>false},physicalResources:{get physicalLand(){return landAvailable?land:null;},physicalContextState:{ready:true},hydroActivityView:()=>null,hydroVisibilityThreshold:()=>0,hydroDetailEnabled:()=>hydroEnabled,prepareHydroFeature:feature=>feature,admitHydroFeatures:async()=>true},physicalServices:{isHydroFeatureVisible:()=>true},hydroPresentation:{hydroDisplayColor:()=> '#4477aa'},objectRefVisible:()=>visible,territorialModel:{entityRepository:{get:id=>entities.get(id),parent:id=>entities.get(entities.get(id)?.properties.parentId)}},
+    surfaces:{isMobile:()=>false},physicalResources:{get physicalLand(){return landAvailable?land:null;},physicalContextState:{ready:true},hydroActivityView:()=>null,hydroVisibilityThreshold:()=>0,hydroDetailEnabled:()=>hydroEnabled,prepareHydroFeature:feature=>feature,admitHydroFeatures:async()=>true},physicalServices:{isHydroFeatureVisible:()=>true},hydroPresentation:{hydroDisplayColor:()=> '#4477aa'},objectRefVisible:()=>visible,containsGeometry:createRingHitTester(ring=>ring).containsGeometry,territorialModel:{entityRepository:{get:id=>entities.get(id),parent:id=>entities.get(entities.get(id)?.properties.parentId)}},
     platform:{d3:globalThis.d3,runtimeAssetUrl:path=>{const url=new URL('/src/rendering/'+path,globalThis.location.href);url.searchParams.set('v','fixture');url.searchParams.set('dataRevision','fixture');return url;}},domains:{renderingDomain:{invalidateView(){},beginInteraction(){},endInteraction(){}}},feedback:{reportOperationError:error=>errors.push(error.message)}});
    renderer.attach(globalThis.document.getElementById('map'));await renderer.initialize();
    if(!renderer.map.isStyleLoaded())await new Promise(resolve=>renderer.map.once('load',resolve));
@@ -374,6 +375,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const lake={type:'Feature',id:'lake-fixture',properties:{featureId:'lake-fixture',logicalId:'lake-fixture',__logicalFid:42,category:'lake',stage:1},
     geometry:{type:'Polygon',coordinates:[[[1,-2],[2,-2],[2,-1],[1,-1],[1,-2]]]}};
    const features=[river('river-fixture',0,0),river('detail-3',1,1),river('detail-4',2,2),river('detail-5',3,3),river('polar-river',1,86),lake];
+   const {packHydroFeatures}=await import('/src/rendering/geometry-transfer-codec.js');
    const BrowserWorker=globalThis.Worker;
    globalThis.Worker=class {
     constructor(url,options){if(!new URL(url).pathname.endsWith('/hydro-tile-worker.js'))return new BrowserWorker(url,options);}
@@ -381,7 +383,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
      if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
      if(message.type==='view')queueMicrotask(()=>{
       const {revision}=message;
-      this.onmessage({data:{type:'pack',revision,packId:1,features}});
+      this.onmessage({data:{type:'pack',revision,packId:1,packed:packHydroFeatures(features)}});
       this.onmessage({data:{type:'view-ready',revision,packIds:[1]}});
      });
     }

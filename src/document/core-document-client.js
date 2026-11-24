@@ -2,6 +2,7 @@ import { createWorkerRpcClient } from "../runtime/worker-rpc.js";
 import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
 import {workerAssetUrl} from "../runtime/worker-asset-url.js";
 import { createProductModePolicy } from "../app/product-mode-policy.js";
+import {createCoreRequestQueue} from './core-request-queue.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const stateResponses = new Set(['core.document-state']);
@@ -16,7 +17,7 @@ export function createCoreDocumentClient({
   const policy = createProductModePolicy(productMode,{readOnly});
   let currentState = null;
   let disposed = false;
-  let queue = Promise.resolve();
+  let timelineIntent=null;
   let geometryLoader=null;
   let documentGeneration=0,geometryCacheRevision=0;
   const staleGeometryReceipt=Symbol('stale geometry preparation');
@@ -36,22 +37,33 @@ export function createCoreDocumentClient({
   ]);
   const cancelled = (code,message) => Object.assign(new Error(message),
     { code,name:'AbortError',cancelled:true });
+  const queue=createCoreRequestQueue(()=>cancelled('PL-CORE-CANCELLED','Request cancelled before dispatch.'));
+  // One latest-wins lane for interactive dates. A caller's explicit abort
+  // also cancels network preparation, but never interrupts an atomic commit.
+  function beginTimelineIntent(options){
+    if(disposed||options.signal?.aborted)throw cancelled('PL-CORE-CANCELLED','Timeline request cancelled.');
+    if(options.isCurrent?.()===false)throw cancelled('PL-CORE-STALE','Timeline request superseded.');
+    timelineIntent?.controller.abort();
+    const intent={controller:new AbortController()};
+    timelineIntent=intent;
+    return intent;
+  }
+  function timelineOptions(options,intent){
+    const signal=options.signal?AbortSignal.any([options.signal,intent.controller.signal]):intent.controller.signal;
+    return {...options,signal,isCurrent:()=>!disposed&&timelineIntent===intent&&!signal.aborted&&options.isCurrent?.()!==false};
+  }
   // After a lost reply the document state is unknown. Only load or initialize
   // can open a new session, since all other operations require currentState.
   const rpc = createWorkerRpcClient({ createWorker, isCurrent: () => true,
     onCrash: () => { currentState = null; } });
   function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument, geometryReceipt = null) {
-    const result = queue.then(async () => {
+    return queue.submit(async () => {
       policy.assertOperation(operation);
-      // Superseded interactive reads must never block the next cursor change.
-      if (options.signal?.aborted) throw cancelled('PL-CORE-CANCELLED','Request cancelled before dispatch.');
-      if (disposed) throw Object.assign(new Error('The C++ document owner was disposed.'),
-        { code: 'PL-CORE-CANCELLED', name: 'AbortError', cancelled: true });
+      if (disposed||options.signal?.aborted)
+        throw cancelled('PL-CORE-CANCELLED','Request cancelled before dispatch.');
       if (options.isCurrent && !options.isCurrent()) fail('PL-CORE-STALE', 'The request belongs to another project generation.');
       if (requiresDocument && !currentState) fail('PL-CORE-NOT-LOADED', 'The complete C++ document has not been loaded.');
       const speculative=speculativeOps.get(operation);
-      if ((atomic || speculative) && options.signal?.aborted)
-        throw cancelled('PL-CORE-CANCELLED','Document operation was cancelled before dispatch.');
       if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration||geometryReceipt.cacheRevision!==geometryCacheRevision))
         return staleGeometryReceipt;
       const request = injectEpoch ? { ...payload,
@@ -109,11 +121,9 @@ export function createCoreDocumentClient({
         throw error;
       }
       return result;
-    });
-    queue = result.catch(() => {});
-    return result;
+    },options.signal);
   }
-  async function ensureGeometryResources(month,options={}){
+  async function ensureGeometryResources(month,options={},intent){
     const generation=documentGeneration;
     const query=await ordered('core.document-geometry-requirements',{month},options);
     if(!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
@@ -131,18 +141,22 @@ export function createCoreDocumentClient({
     }
     if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
     const receipt=Object.freeze({});
-    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation,cacheRevision});
+    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation,cacheRevision,intent});
     return receipt;
   }
-  async function prepareTimelineGeometry(month,options={}){
+  async function prepareTimelineGeometryForIntent(month,options,intent){
     for(;;){
       const epoch=currentState?.epoch,generation=documentGeneration,cacheRevision=geometryCacheRevision;
-      try{return await ensureGeometryResources(month,options);}
+      try{return await ensureGeometryResources(month,options,intent);}
       catch(error){
         if((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
           ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation&&geometryCacheRevision===cacheRevision)||!currentState)throw error;
       }
     }
+  }
+  async function prepareTimelineGeometry(month,options={}){
+    const intent=beginTimelineIntent(options);
+    return prepareTimelineGeometryForIntent(month,timelineOptions(options,intent),intent);
   }
   return Object.freeze({
     productMode: policy.productMode,
@@ -186,9 +200,15 @@ export function createCoreDocumentClient({
     setTimelineCursor: async(month, options={}) => {
       try {
         let receipt=geometryReceipts.get(options.geometryPreparation);
+        if(receipt?.month===month&&(receipt.intent!==timelineIntent||receipt.intent.controller.signal.aborted))
+          throw cancelled('PL-CORE-STALE','Timeline geometry receipt was superseded.');
+        const intent=receipt?.month===month?receipt.intent:beginTimelineIntent(options);
+        const scoped=timelineOptions(options,intent);
         for(;;){
-          if(receipt?.month!==month)receipt=geometryReceipts.get(await prepareTimelineGeometry(month,options));
-          const accepted=await ordered('core.document-timeline-cursor',{month},options,true,true,true,receipt);
+          if(scoped.signal.aborted||!scoped.isCurrent())throw cancelled('PL-CORE-STALE','Timeline request superseded.');
+          if(receipt?.month!==month||receipt.intent!==intent)
+            receipt=geometryReceipts.get(await prepareTimelineGeometryForIntent(month,scoped,intent));
+          const accepted=await ordered('core.document-timeline-cursor',{month},scoped,true,true,true,receipt);
           if(accepted!==staleGeometryReceipt)return accepted;
           receipt=null;
         }
@@ -209,6 +229,6 @@ export function createCoreDocumentClient({
     selectionApply: (payload, options) => ordered('core.document-selection-apply', payload, options, true, true),
     selectionSnapshot: options => ordered('core.document-selection-snapshot', {}, options),
     state: () => currentState,
-    dispose: () => { if(disposed)return;disposed=true;geometryLoader=null;currentState = null; subscribers.clear(); rpc.stop(); },
+    dispose: () => { if(disposed)return;disposed=true;timelineIntent?.controller.abort();timelineIntent=null;queue.close();geometryLoader=null;currentState = null; subscribers.clear(); rpc.stop(); },
   });
 }

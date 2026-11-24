@@ -1,5 +1,6 @@
 import {createMapPresentationSession} from './map-presentation-session.js';
-import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
+import {countryContentIdentity,isCountryContentIdentity} from './country-content-identity.js';
+import {sameRenderIdentity} from './render-identity.js';
 
 // Own the displayed-frame lifecycle. The supplied display controllers retain
 // their own source, camera, geometry, and selection state.
@@ -23,7 +24,7 @@ export function createMapLibreFrameController({
  const presentation=createMapPresentationSession({
   getGeneration:()=>generation,getContextRevision:()=>contextRevision,isDisposed:unavailable,
   getReadiness:()=>({mapReady:preparedReady}),invalidateFrame:invalidate,
-  prepareContentKey:async features=>features.map(feature=>String(feature.id)+':'+geometryKey(feature.geometry)).join('|'),
+  prepareContentKey:async features=>countryContentIdentity(features),sameContentKey:sameRenderIdentity,isImmutableContentKey:isCountryContentIdentity,
   isProjectBlocked:()=>!!error,isRecoveryFrameAdmissible:()=>!error&&isLoaded()&&!contextLost&&!unavailable(),
   onTemporalRetired:()=>{if(presentation.ticket?.presented)releaseTemporalFrame();},
   waitForCanonicalFrame:()=>presentation.waitForMapPresentation(generation)
@@ -195,6 +196,7 @@ export function createMapLibreFrameController({
   if(unavailable())return;
   error=cause;ready=false;preparedReady=false;approvedFrame=null;
   notify('error','지도 불러오기 실패');
+  for(const waiter of styleWaiters)waiter.finish(cause);
   presentation.rejectMapPresentationWaiters(cause);presentation.failTemporalPresentation(cause);
   feedback.reportOperationError(cause,'지도를 표시하지 못했습니다.','PL-MAPLIBRE-001');
  }

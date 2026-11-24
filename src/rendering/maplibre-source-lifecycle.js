@@ -40,7 +40,7 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
    cause=>{finish();if(requiredSource(id)&&live()&&isCurrent()&&sameGeneration())onError(cause);});
   return outcome;
  }
- return Object.freeze({update,pendingCount,reset:()=>pending.clear(),handlesError:error=>handledErrors.has(error)});
+ return Object.freeze({update,pendingCount,hasPendingWrite:source=>queues.has(source),reset:()=>pending.clear(),handlesError:error=>handledErrors.has(error)});
 }
 
 const slotOpacity=type=>type==='line'?'line-layer-opacity':'fill-layer-opacity';
@@ -54,19 +54,35 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
   const map=getMap();
   return [...retained].filter(([id,record])=>record.kind===kind&&map.getSource(id)===record.source);
  }
- function reuse(kind,key){return slots(kind).find(([,record])=>record.key===key);}
+ function reuse(kind,key,equals=(a,b)=>a===b){return slots(kind).find(([,record])=>equals(record.key,key));}
  function show(id){
   const map=getMap();retiring.delete(id);
   for(const layer of mapSourceLayers()){
    if(layer.source===id&&!layer.visible){map.setLayoutProperty(layer.id,'visibility','visible');invalidateLayerIndex();}
   }
  }
- function reserve(kind){
+ function reserve(kind,hasPendingWrite=()=>false){
   const map=getMap(),current=active(kind);
   const standby=slots(kind).find(([id])=>id!==current);
-  if(standby){show(standby[0]);return standby[0];}
+  if(standby){
+   const [id,record]=standby;
+   if(hasPendingWrite(record.source)){
+    // The obsolete write belongs to the old native source instance. Rebuild
+    // only the standby slot, preserving the active layer and the draw order.
+    const layers=map.getStyle().layers;
+    const owned=layers.filter(layer=>layer.source===id);
+    for(const layer of owned)map.removeLayer(layer.id);
+    map.removeSource(id);map.addSource(id,createEmptySource(kind));
+    for(const layer of owned.reverse()){
+     const before=layers.slice(layers.indexOf(layer)+1).find(next=>map.getLayer(next.id));
+     map.addLayer(layer,before?.id);
+    }
+    retained.set(id,{kind,source:map.getSource(id)});invalidateLayerIndex();
+   }
+   show(id);return id;
+  }
   const id=current===kind?kind+'-retained':kind;
-  if(!map.getSource(id))map.addSource(id,kind==='territories'?createCountrySource():createEmptySource());
+  if(!map.getSource(id))map.addSource(id,kind==='territories'?createCountrySource():createEmptySource(kind));
   const layers=map.getStyle().layers;
   for(const base of sourceLayers[kind]){
    const spec=layers.find(layer=>layer.id===sourceLayer(base,current));

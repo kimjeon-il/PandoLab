@@ -1,58 +1,54 @@
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
 import {clipMercatorLines,polarLinePacket} from './maplibre-polar-layer.js';
+import {countryBoundaryOwner} from './country-boundary-seed.js';
+
 export function createMapLibreCountryBorders({getBoundaryGeometry,prepareRenderGeometry,metrics,getStats}){
- let acknowledgedBoundary=null,boundaryRequest=0;
+ let acknowledgedBoundary=null,sequence=0,boundaryRequest=0;
  async function prepareCountryBorders(features,revision,signal){
-  const countryFeatures=[...features].sort((a,b)=>a.id.localeCompare(b.id));
-  const topologyKey=countryFeatures.map(feature=>feature.id+':'+geometryKey(feature.geometry)).join('|');
-  const groups=new Map();
-  for(const {id,properties:{borderColor,borderAlpha,borderWidth}} of countryFeatures){
-   if(!(borderAlpha>0&&borderWidth>0))continue;
-   const key=JSON.stringify([borderColor,borderAlpha,borderWidth]);
-   if(!groups.has(key))groups.set(key,{borderColor,borderAlpha,borderWidth,owners:[]});
-   groups.get(key).owners.push(id);
-  }
-  const rows=[...groups.values()].map(({owners,...paint},index)=>({
-   id:'country-border:'+index,paint,key:JSON.stringify([paint,owners]),owners,
-  }));
-  const prepared=await prepareBoundaryGroups(countryFeatures,topologyKey,rows,revision,signal);
-  const geometries=new Map(prepared?.packets.map(({cacheKey,geometry})=>[
-   cacheKey,{native:clipMercatorLines(geometry),polar:polarLinePacket(geometry.coordinates)},
-  ]));
-  getStats().strokePreparedPackets+=geometries.size;
-  return rows.map(row=>{
-   const paths=geometries.get(row.key)||getBoundaryGeometry().get(row.key)?.paths;
-   if(!paths)throw new Error('Shared country boundary was not prepared');
-   return {key:row.key,paths,feature:{type:'Feature',id:row.id,geometry:paths.native,
-    properties:{...row.paint,objectKey:row.id,displayRole:'country-border'}}};
-  });
- }
- async function prepareBoundaryGroups(features,key,groups,revision,signal){
-  const serial=++boundaryRequest;
+  const serial=++boundaryRequest,key='topology:'+ ++sequence;
   const versions=new Map(features.map(feature=>[feature.id,geometryKey(feature.geometry)]));
-  const previous=acknowledgedBoundary;
-  const items=groups.map(row=>({kind:'stroke',cacheKey:row.key,countryVisibleIds:row.owners,
-    knownGeometry:getBoundaryGeometry().has(row.key)}));
-  const request=async(base)=>{
+  const paints=new Map();
+  for(const {id,properties:{borderColor,borderAlpha,borderWidth}} of features)
+   if(borderAlpha>0&&borderWidth>0)paints.set(countryBoundaryOwner(id),{borderColor,borderAlpha,borderWidth});
+  const known=new Map();
+  for(const row of getBoundaryGeometry().values())
+   if(row.partitionId!=null)known.set(row.partitionId,row);
+  const request=base=>{
    const boundary=metrics.run('border.payload',()=>({
-    key,baseKey:base?.key??null,
+    key,baseKey:base?.key??null,partitioned:true,visibleOwners:[...paints.keys()],
+    knownPartitions:[...known].map(([id,row])=>[id,row.revision]),
     upserts:features.filter(row=>base?.versions.get(row.id)!==versions.get(row.id))
-     .map(({id,geometry})=>({id,geometry})),
+     .map(({id,geometry})=>({id,geometry,geometryRevision:versions.get(id)})),
     remove:base?[...base.versions.keys()].filter(id=>!versions.has(id)):[],
    }));
-   getStats().boundaryRequests++;
-   getStats().boundaryGeometryRows+=boundary.upserts.length;
-   return prepareRenderGeometry(items,revision,boundary,signal);
+   getStats().boundaryRequests++;getStats().boundaryGeometryRows+=boundary.upserts.length;
+   return prepareRenderGeometry([],revision,boundary,signal);
   };
-  let result=await request(previous);
-  if(result.boundaryMiss){
-   getStats().boundaryCacheMisses++;
-   result=await request(null);
+  let result=await request(acknowledgedBoundary);
+  if(result.boundaryMiss){getStats().boundaryCacheMisses++;result=await request(null);}
+  if(result.boundaryMiss||!Array.isArray(result.boundaryPartitions))throw new Error('Shared border worker could not synchronize its source');
+  const fresh=new Map(result.packets.map(({cacheKey,boundaryRevision,geometry})=>[cacheKey,{
+   revision:boundaryRevision,paths:{native:clipMercatorLines(geometry),polar:polarLinePacket(geometry.coordinates)}
+  }]));
+  getStats().strokePreparedPackets+=fresh.size;
+  const rows=[];
+  for(const partition of result.boundaryPartitions){
+   const cached=fresh.get(partition.id)??known.get(partition.id);
+   if(cached?.revision!==partition.revision)throw new Error('Shared border partition revision mismatch');
+   const styles=new Map();
+   for(const owner of partition.ownerIds){
+    const paint=paints.get(owner);if(paint)styles.set(JSON.stringify(paint),paint);
+   }
+   let index=0;
+   for(const paint of [...styles.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([,paint])=>paint)){
+    const id='country-border:'+partition.id+':'+index++;
+    rows.push({key:id,partitionId:partition.id,revision:partition.revision,paths:cached.paths,
+     feature:{type:'Feature',id,geometry:cached.paths.native,properties:{...paint,objectKey:id,displayRole:'country-border'}}});
+   }
   }
-  if(result.boundaryMiss)throw new Error('Shared border worker could not synchronize its source');
+  signal?.throwIfAborted();
   if(serial===boundaryRequest)acknowledgedBoundary={key,versions};
-  return result;
+  return rows;
  }
-
  return Object.freeze({prepareCountryBorders,reset(){acknowledgedBoundary=null;boundaryRequest++;}});
 }

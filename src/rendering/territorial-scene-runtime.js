@@ -1,4 +1,5 @@
 import {geometryRevision} from "../geometry/geometry-versions.js";
+import {immutableCountryRows} from './country-content-identity.js';
 import {territorialSceneDisplayId} from "../document/territorial-display-identity.js";
 import {territorialRootId} from "../document/territorial-units.js";
 
@@ -12,7 +13,12 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
   function builtinTerritorialScene() {
     const dependencies=getDependencies();
     const entities = dependencies.territorialObjectModel.territorialScope.displayEntities();
-    const nativeGeometryRevision = entities.reduce((revision, entity) => revision + geometryRevision(
+    // Admitted canonical collections already carry immutable identity. The
+    // legacy revision scan is needed only for mutable source collections.
+    const immutable=immutableCountryRows(entities);
+    if(immutable&&builtinRenderCache?.entities===entities
+      &&builtinRenderCache.presentation===dependencies.projectState.state.layerPresentation)return builtinRenderCache;
+    const nativeGeometryRevision = immutable?0:entities.reduce((revision, entity) => revision + geometryRevision(
       entity.properties.entityKind === 'general' && entity.properties.parentId
         ? dependencies.territorialModel.entityRepository.get(entity.id).geometry : entity.geometry), 0);
     if (builtinRenderCache?.entities === entities && builtinRenderCache.nativeGeometryRevision === nativeGeometryRevision

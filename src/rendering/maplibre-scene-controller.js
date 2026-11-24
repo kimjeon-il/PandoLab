@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {buildRenderableBoundarySegments} from '../geometry/geographic-boundary.js';
 import {connectBoundarySegments} from '../geometry/boundary-lines.js';
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
@@ -7,6 +8,8 @@ import {createMapLibreVectorGroup} from './maplibre-vector-group.js';
 import {resolveMapLibreMapStyle} from './maplibre-map-style.js';
 import {syncMapLibreBaseLayer} from './maplibre-base-layer.js';
 import {createMapLibreStyleController} from './maplibre-style-controller.js';
+import {sameRenderIdentity} from './render-identity.js';
+import {isPreparedSceneDomain} from './map-scene.js';
 import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
 const collection=features=>({type:'FeatureCollection',features});
 const countryFillFilter=batch=>['all',['==',['get','displayRole'],'country-fill'],['==',['get','paintBatch'],batch],['==',['get','blendMode'],'normal']];
@@ -16,12 +19,14 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
  isInitialMapLoading,getPolarLayer,getHighlight,isPhysicalPending,getPhysicalGeometry,getExternalBasemap,
  getSelectionSnapshot,setSelection,invalidatePickingLayers,preferences,state,datedSources,sourceWrites,
  sourceLayer,sourceGroups,dirty,invalidate,failMapPreparation,feedback}){
- let sceneKey='',interactionStyle=null,pendingSceneDomains=null,pendingInteractionStyle=null,sceneVectors=[],sceneOrder=[];
- const dynamicLayers=new Set(),dynamicSources=new Set(),sceneGroups=new Map(),vectorLayers=new Map(),strokeDomains=new Map(),strokeSignatures=new Map();
+ let sceneKey=0,sceneIdentity=null,sceneStyle=null,vectorRevision=0,interactionStyle=null,pendingSceneDomains=null,pendingInteractionStyle=null,sceneVectors=[],sceneOrder=[];
+ const dynamicLayers=new Set(),dynamicSources=new Set(),sceneGroups=new Map(),vectorLayers=new Map(),strokeDomains=new Map(),strokeGroupCache=new Map();
  const countryFillGroups=new Map(),countryPaintState=new WeakMap();
  let sourceLayers=[],indexedStyle=null,requiredLayerCache=null,styleController=null;
  const getStyle=()=>resolveMapLibreMapStyle({palette:preferences.mapPalette(),
   antiAlias:interactionStyle?.antiAlias!==false,layerVisibility:state.layerVisibility});
+ const preparedDomainRows=new WeakMap();
+ const identityFor=rows=>rows.map(row=>[row.key,row.objectKey,row.geometryRevision??geometryKey(row.geometry),row.order,row.role,row.kind,row.blendMode,JSON.stringify(row.style)]);
  const colorsEnabled=()=>layerStyle(state.layerPresentation,'objects').colorVisible;
  function invalidateLayerIndex(){indexedStyle=null;requiredLayerCache=null;invalidatePickingLayers();}
  function attachMap(){styleController=createMapLibreStyleController(getMap());invalidateLayerIndex();}
@@ -37,15 +42,21 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    if(!groups.has(key))groups.set(key,{style,geometries:[],revisions:[]});
    const group=groups.get(key);group.geometries.push(geometry);group.revisions.push(geometryKey(geometry));
   }
-  const revision=group=>group.revisions.join('|');
-  const signature=[...groups].map(([key,group])=>key+':'+revision(group)).join(';');
-  if(strokeSignatures.get(name)===signature)return;
-  strokeSignatures.set(name,signature);
+  const previous=strokeGroupCache.get(name)||new Map(),next=new Map();
+  let changed=previous.size!==groups.size;
   const lines=geometry=>geometry.type==='LineString'?[geometry.coordinates]:geometry.type==='MultiLineString'
    ?geometry.coordinates:connectBoundarySegments(buildRenderableBoundarySegments(geometry));
-  strokeDomains.set(name,[...groups].map(([key,group])=>({key:name+key,kind:'line',
-   order,role:name==='edited-water-strokes'?'project-hydro':undefined,
-   geometryRevision:name+':'+revision(group),geometry:{type:'MultiLineString',coordinates:group.geometries.flatMap(lines)},style:group.style,blendMode:'normal'})));
+  for(const [key,group]of groups){
+   const old=previous.get(key);
+   if(old&&old.order===order&&sameRenderIdentity(old.revisions,group.revisions)){next.set(key,old);continue;}
+   changed=true;
+   next.set(key,{order,revisions:group.revisions,row:{key:name+key,kind:'line',order,
+    role:name==='edited-water-strokes'?'project-hydro':undefined,
+    geometryRevision:'stroke:'+ ++vectorRevision,geometry:{type:'MultiLineString',coordinates:group.geometries.flatMap(lines)},
+    style:group.style,blendMode:'normal'}});
+  }
+  if(!changed&&sameRenderIdentity([...previous.keys()],[...next.keys()]))return;
+  strokeGroupCache.set(name,next);strokeDomains.set(name,[...next.values()].map(group=>group.row));
   syncVectorGroups();
  }
 
@@ -98,22 +109,46 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   const groups=new Map();
   for(const row of [...sceneVectors,...[...strokeDomains.values()].flat()].sort((a,b)=>a.order-b.order)){
    const kind=row.kind||'fill',id=row.role==='graticule'?'map-graticule':'vector-'+kind+'-'+row.order+'-'+(row.role==='territorial-fill'?'territorial':row.role==='hydro-detail'?'hydro-detail':'independent');
-   if(!groups.has(id))groups.set(id,[]);groups.get(id).push({...row,style:kind==='line'?{...row.style,antiAlias:interactionStyle?.antiAlias??row.style?.antiAlias??true}:row.style,geometryRevision:kind+':'+row.geometryRevision});
+   if(!groups.has(id))groups.set(id,[]);groups.get(id).push({...row,style:kind==='line'?{...row.style,antiAlias:interactionStyle?.antiAlias??row.style?.antiAlias??true}:row.style,geometryRevision:kind+':'+(row.geometryRevision??geometryKey(row.geometry))});
   }
   for(const [id,entry]of vectorLayers)if(!groups.has(id)){entry.layer.dispose();vectorLayers.delete(id);indexedStyle=null;}
   for(const [id,originalItems]of groups){
-   let items=originalItems;
-   if(items[0]?.kind==='line'&&items.length>1){const batches=new Map();for(const row of items){const merge=!row.objectKey&&(row.style?.alpha??1)===1&&(!row.style?.casing||(row.style.casing.alpha??1)===1);const key=JSON.stringify([row.blendMode,row.style,merge?'':row.key]);if(!batches.has(key))batches.set(key,[]);batches.get(key).push(row);}items=[...batches.values()].map(rows=>rows.length===1?rows[0]:({...rows[0],key:rows.map(r=>r.key).join('|'),geometryRevision:rows.map(r=>r.geometryRevision).join('|'),geometry:{type:'MultiLineString',coordinates:rows.flatMap(r=>r.geometry.type==='MultiLineString'?r.geometry.coordinates:[r.geometry.coordinates])}}));}
-
-   const signature=items.map(item=>[item.key,item.geometryRevision,item.blendMode,JSON.stringify(item.style)].join(':')).join('|');
-   let entry=vectorLayers.get(id);
+   let entry=vectorLayers.get(id),items=originalItems;
+   const previousBatches=entry?.batches??new Map(),nextBatches=new Map();
+   if(items[0]?.kind==='line'&&items.length>1){
+    const batches=new Map();
+    for(const row of items){
+     const merge=!row.objectKey&&(row.style?.alpha??1)===1&&(!row.style?.casing||(row.style.casing.alpha??1)===1);
+     const key=JSON.stringify([row.blendMode,row.style,merge?'':row.key]);
+     if(!batches.has(key))batches.set(key,[]);batches.get(key).push(row);
+    }
+    items=[...batches].map(([key,rows])=>{
+     if(rows.length===1)return rows[0];
+     const identity=identityFor(rows),previous=previousBatches.get(key);
+     if(previous&&sameRenderIdentity(previous.identity,identity)){nextBatches.set(key,previous);return previous.row;}
+     const row={...rows[0],key:JSON.stringify(['merged-stroke',key]),geometryRevision:'merged:'+ ++vectorRevision,
+      geometry:{type:'MultiLineString',coordinates:rows.flatMap(r=>r.geometry.type==='MultiLineString'?r.geometry.coordinates:[r.geometry.coordinates])}};
+     nextBatches.set(key,{identity,row});return row;
+    });
+   }
+   const signature=identityFor(items);
    if(!entry){
     const layer=createMapLibreVectorGroup(map,{id,sharedSource:items[0].role==='territorial-fill'?()=>datedSources.active('territories'):undefined,before:items[0].role==='territorial-fill'?'physical-water':map.getLayer('interaction-fill')?'interaction-fill':undefined,
      onChange:({structureChanged})=>{if(!isDisposed()){if(structureChanged){indexedStyle=null;orderSceneLayers();}if(items[0].role!=='hydro-detail')dirty();invalidate('vector-ready');}}});
     entry={layer,signature:null,order:items[0].order,role:items[0].role};vectorLayers.set(id,entry);
    }
    else if(!map.getLayer(id))entry.signature=null;
-   if(entry.signature!==signature){entry.signature=signature;entry.layer.update(items).catch(cause=>{if(entry.role==='hydro-detail')feedback.reportOperationError(cause,'강 상세 표시를 준비하지 못했습니다.','PL-HYDRO-DETAIL-002');else failMapPreparation(cause);});}
+   entry.batches=nextBatches;
+   const boundSource=items[0].role==='territorial-fill'?datedSources.active('territories'):id;
+   if(entry.boundSource!==boundSource||!sameRenderIdentity(entry.signature,signature)){
+    entry.boundSource=boundSource;entry.signature=signature;
+    entry.layer.update(items).catch(cause=>{
+     if(isDisposed()||vectorLayers.get(id)!==entry||entry.signature!==signature)return;
+     entry.signature=null;sceneIdentity=null;sceneKey++;
+     if(entry.role==='hydro-detail')feedback.reportOperationError(cause,'강 상세 표시를 준비하지 못했습니다.','PL-HYDRO-DETAIL-002');
+     else failMapPreparation(cause);
+    });
+   }
   }
  }
  function moveInOrder(order,id,before){
@@ -191,18 +226,33 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   if(!isLoaded())return;
   if(!isStyleReady()){pendingSceneDomains=domains;return;}
   const map=getMap();
-  const rows=[...domains].flatMap(([domain,value])=>domain==='physical-land'||domain==='physical-water'?[]:[...value.polygons.map(item=>({...item,kind:'fill'})),...value.strokes.map(item=>({...item,kind:'line'}))]);
+  // Domain snapshots are immutable and reused by the upstream scene owner.
+  // Prepare the per-object identities only for changed domains, not on each
+  // camera/style refresh. Raw callers still get value-based comparisons.
+  const prepared=[];
+  for(const [name,value]of domains){
+   if(name==='physical-land'||name==='physical-water')continue;
+   let entry=preparedDomainRows.get(value);
+   if(!entry){
+    const rows=[...value.polygons.map(item=>({...item,kind:'fill'})),...value.strokes.map(item=>({...item,kind:'line'}))];
+    entry={rows,identity:identityFor(rows)};
+    if(isPreparedSceneDomain(value))preparedDomainRows.set(value,entry);
+   }
+   prepared.push([name,entry]);
+  }
+  const identity=prepared.map(([name,entry])=>[name,entry.identity]);
+  if(sceneStyle===map.style&&sameRenderIdentity(sceneIdentity,identity))return;
+  sceneIdentity=identity;sceneStyle=map.style;sceneKey++;
+  const rows=prepared.flatMap(([,entry])=>entry.rows);
   const native=row=>row.kind==='line'||row.blendMode==='multiply'||row.style?.blendMode==='multiply';
   sceneVectors=rows.filter(native).filter(row=>row.kind==='fill'?(row.style?.fillAlpha??1)>0:(row.style?.alpha??1)>0).map(row=>['Point','MultiPoint'].includes(row.geometry?.type)?{...row,kind:'point'}:row);
-  const key=rows.map(row=>[row.key,row.objectKey,row.geometryRevision,row.order,row.role,row.blendMode,JSON.stringify(row.style)].join(':')).join('|');
-  if(key===sceneKey)return;sceneKey=key;
   const groups=new Map();
   rows.filter(row=>!native(row)).sort((a,b)=>a.order-b.order).forEach(row=>{const kind=['Point','MultiPoint'].includes(row.geometry?.type)?'circle':row.kind,band=row.role==='territorial-fill'?'territorial':row.order<0?'base':'independent';const id='scene-'+kind+'-'+row.order+'-'+band;if(!groups.has(id))groups.set(id,[]);groups.get(id).push({...row,kind});});
   for(const id of dynamicLayers)if(!groups.has(id)){map.removeLayer(id);map.removeSource(id);dynamicLayers.delete(id);dynamicSources.delete(id);sceneGroups.delete(id);indexedStyle=null;}
   for(const [id,items]of groups){
-   const signature=items.map(item=>[item.key,item.objectKey,item.geometryRevision,item.blendMode,JSON.stringify(item.style)].join(':')).join('|');
+   const signature=identityFor(items);
    const currentSource=map.getSource(id),previous=sceneGroups.get(id);
-   if(previous&&previous.source===currentSource&&previous.signature===signature)continue;
+   if(previous&&previous.source===currentSource&&sameRenderIdentity(previous.signature,signature))continue;
    const next=new Map(items.filter(item=>item.geometry).map(item=>[item.key,{revision:item.geometryRevision,
     feature:{type:'Feature',id:item.key,geometry:item.geometry,properties:{objectKey:item.objectKey||'',color:item.style?.color||'#ffffff',alpha:item.style?.fillAlpha??item.style?.alpha??1}}}]));
    if(!next.size)continue;
@@ -229,15 +279,15 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
     },id,()=>sceneGroups.get(id)===group&&group.signature===signature)
      .then(applied=>{
       if(applied){group.rows=next;return;}
-      if(sceneGroups.get(id)===group&&group.signature===signature){group.signature=null;sceneKey='';}
+      if(sceneGroups.get(id)===group&&group.signature===signature){group.signature=null;sceneIdentity=null;sceneKey++;}
      },()=>{
       if(sceneGroups.get(id)!==group)return;
       group.rows=null;
-      if(group.signature===signature){group.signature=null;sceneKey='';}
+      if(group.signature===signature){group.signature=null;sceneIdentity=null;sceneKey++;}
      });
    }
    else{
-    map.addSource(id,{type:'geojson',data:data()});dynamicSources.add(id);indexedStyle=null;
+    map.addSource(id,mapLibreGeoJsonSource('overlay',data()));dynamicSources.add(id);indexedStyle=null;
     sceneGroups.set(id,{source:map.getSource(id),rows:next,signature});
     const kind=items[0].kind;
     const paint=kind==='fill'?{'fill-color':['get','color'],'fill-opacity':['get','alpha']}:{'circle-color':['get','color'],'circle-radius':5,'circle-opacity':['get','alpha']};
@@ -261,12 +311,12 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   get vectors(){return sceneVectors;},get key(){return sceneKey;},get interactionStyle(){return interactionStyle;},
   vectorRole:id=>vectorLayers.get(id)?.role,requiredVectorPending:()=>[...vectorLayers.values()].some(entry=>entry.role!=='hydro-detail'&&entry.layer.pending),
   removeCountryFillSource:id=>countryFillGroups.delete(id),
-  resetPendingDomains(){pendingSceneDomains=null;},
+  resetPendingDomains(){pendingSceneDomains=null;sceneIdentity=null;sceneStyle=null;},
   flushPendingInteractionStyle(){if(pendingInteractionStyle){const value=pendingInteractionStyle;pendingInteractionStyle=null;setInteractionStyle(value);}},
   flushPendingDomains(){if(pendingSceneDomains){const value=pendingSceneDomains;pendingSceneDomains=null;setSceneDomains(value);}},
   invalidateLayerIndex,
   dispose(){for(const entry of vectorLayers.values())entry.layer.dispose();vectorLayers.clear();styleController=null;
    dynamicLayers.clear();dynamicSources.clear();sceneGroups.clear();countryFillGroups.clear();
-   strokeDomains.clear();strokeSignatures.clear();sceneOrder=[];sceneVectors=[];sceneKey='';}
+   strokeDomains.clear();strokeGroupCache.clear();sceneOrder=[];sceneVectors=[];sceneIdentity=null;sceneKey++;}
  });
 }

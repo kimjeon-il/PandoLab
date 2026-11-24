@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
 
 const layerFilter=(category,zoom,hiddenIds)=>['all',['==',['get','category'],category],['==',['get','viewerMinZoom'],zoom],
@@ -49,7 +50,7 @@ export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){
   lakes:{'fill-antialias':antiAlias,'fill-color':'#5aa9d6'},
   rivers:{'line-color':'#3b82c4','line-width':mapLibreRiverWidth()},
  };
- return {sources:{hydro:{type:'geojson',data:{type:'FeatureCollection',features:[]},promoteId:'featureId'}},
+ return {sources:{hydro:mapLibreGeoJsonSource('hydro',undefined,{promoteId:'featureId'})},
   layers:hydroLayers.map(({id,baseId,category,type,zoom})=>({
    id,type,source:'hydro',filter:layerFilter(category,zoom,[]),
    paint:mapLibreHydroPaint(paints[baseId],type,zoom),
