@@ -54,7 +54,7 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
   const map=getMap();
   return [...retained].filter(([id,record])=>record.kind===kind&&map.getSource(id)===record.source);
  }
- function reuse(kind,key){return slots(kind).find(([,record])=>record.key===key);}
+ function reuse(kind,key,equals=(a,b)=>a===b){return slots(kind).find(([,record])=>equals(record.key,key));}
  function show(id){
   const map=getMap();retiring.delete(id);
   for(const layer of mapSourceLayers()){

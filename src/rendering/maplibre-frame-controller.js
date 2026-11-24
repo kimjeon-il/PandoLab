@@ -1,5 +1,6 @@
 import {createMapPresentationSession} from './map-presentation-session.js';
-import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
+import {countryContentIdentity} from './country-content-identity.js';
+import {sameRenderIdentity} from './render-identity.js';
 
 // Own the displayed-frame lifecycle. The supplied display controllers retain
 // their own source, camera, geometry, and selection state.
@@ -23,7 +24,7 @@ export function createMapLibreFrameController({
  const presentation=createMapPresentationSession({
   getGeneration:()=>generation,getContextRevision:()=>contextRevision,isDisposed:unavailable,
   getReadiness:()=>({mapReady:preparedReady}),invalidateFrame:invalidate,
-  prepareContentKey:async features=>features.map(feature=>String(feature.id)+':'+geometryKey(feature.geometry)).join('|'),
+  prepareContentKey:async features=>countryContentIdentity(features),sameContentKey:sameRenderIdentity,
   isProjectBlocked:()=>!!error,isRecoveryFrameAdmissible:()=>!error&&isLoaded()&&!contextLost&&!unavailable(),
   onTemporalRetired:()=>{if(presentation.ticket?.presented)releaseTemporalFrame();},
   waitForCanonicalFrame:()=>presentation.waitForMapPresentation(generation)

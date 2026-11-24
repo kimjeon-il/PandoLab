@@ -27,13 +27,12 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
  function syncPolar(){
   if(!isStyleReady())return;
   ensurePolar();
-  const style=getMapStyle(),items=[],keys=[];
+  const style=getMapStyle(),items=[];
   const add=(geometry,color,alpha=1,multiply=false,loadingRole)=>{
    if(!color||!(alpha>0))return;
    const shape=polarGeometry(geometry);
    if(!shape)return;
    items.push({geometry:shape,color:rgba(color,alpha),multiply,loadingRole});
-   keys.push([geometryKey(geometry),color,alpha,multiply,loadingRole]);
   };
   const context=physicalResources.physicalLand;
   if(!context||!physicalResources.physicalContextState.ready)return;
@@ -45,17 +44,15 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   add(context.geometry,style.paint['physical-land-fill']['fill-color'],1,false,'land');
   for(const f of countryDisplay.rows.values())add(f.geometry,colored?f.properties.color:land,colored?f.properties.displayAlpha:1,colored&&f.properties.blendMode==='multiply');
   if(context.water)add(context.water,style.paint.ocean['background-color']);
-  if(countryDisplay.key)for(const {key,revision,paths,feature:{properties}} of countryDisplay.borders.values()){
+  if(countryDisplay.key)for(const {paths,feature:{properties}} of countryDisplay.borders.values()){
    if(!paths.polar.indices.length)continue;
    const {borderColor,borderAlpha,borderWidth}=properties;
    items.push({packet:paths.polar,color:rgba(borderColor,borderAlpha),width:borderWidth});
-   keys.push([key,revision,borderColor,borderAlpha,borderWidth]);
   }
   if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){
    items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5,loadingRole:'grid'});
-   keys.push('grid');
   }
-  polarLayer.update(JSON.stringify([getGeneration(),keys,style.paint.ocean]),items,rgba(style.paint.ocean['background-color']));
+  polarLayer.update(Symbol('polar display revision'),items,rgba(style.paint.ocean['background-color']));
   positionPolarLayer();
  }
 

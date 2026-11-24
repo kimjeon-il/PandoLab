@@ -1,5 +1,7 @@
 import {createTerritorialEntityRepository} from '../document/territorial-entity-repository.js';
 import {admittedGeometryKey as geometryKey,geometryReferenceFor} from '../geometry/geometry-version-store.js';
+import {sameRenderIdentity} from './render-identity.js';
+import {countryContentIdentity} from './country-content-identity.js';
 import {countryDefaultColor} from '../ui/color-adapter.js';
 import {prepareCountryPresentation,countryPaintOnly,countryTileDiff} from './maplibre-country-presentation.js';
 const collection=features=>({type:'FeatureCollection',features});
@@ -67,11 +69,11 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(requestedGeneration!==getGeneration()||sequence!==countrySequence)return false;
   const map=getMap();
   const {presented,nextBatches,key}=prepareCountryPresentation(features,{state,entityRepository,style:currentMapStyle(),layerPresentation});
-  const cached=datedSources.reuse('territories',key);
+  const cached=datedSources.reuse('territories',key,sameRenderIdentity);
   const current=()=>!isDisposed()&&!signal.aborted&&requestedGeneration===getGeneration()&&sequence===countrySequence&&getMap()===map;
   const publish=(id,record)=>{
    datedSources.activate('territories',id);
-   countryDisplay.publish(record,key);
+   countryDisplay.publish(record,record.key);
    scene.syncCountryPaint(id,record.rows);scene.orderSceneLayers();
   };
   const active=datedSources.get(datedSources.active('territories'));
@@ -114,7 +116,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    publish(requestedSource,record);
   }
   if(sequence!==countrySequence||requestedGeneration!==getGeneration())return false;
-  if(requestedGeneration===getGeneration()&&sequence===countrySequence){countryGeneration=getGeneration();countryContentKey=features.map(feature=>String(feature.id)+':'+geometryKey(feature.geometry)).join('|');}
+  if(requestedGeneration===getGeneration()&&sequence===countrySequence){countryGeneration=getGeneration();countryContentKey=countryContentIdentity(features);}
   map.triggerRepaint();
   return true;
  }

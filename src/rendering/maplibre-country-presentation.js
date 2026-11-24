@@ -19,7 +19,7 @@ export function prepareCountryPresentation(features,{state,entityRepository,styl
    batch.ids.push(ref.key);
    return {type:'Feature',geometry:feature.geometry,id:ref.key,properties:{objectKey:ref.key,displayRole:'country-fill',color:fill.color||null,displayAlpha:fill.fillAlpha,alpha:blendMode==='multiply'?0:fill.fillAlpha,blendMode,paintOrder,paintBatch:batch.index,borderColor:border.color,borderAlpha:style.boundaryVisible?resolvedStyle.borderAlpha:0,borderWidth:border.width||0.6}};
   });
-  const key=presented.map(feature=>[feature.id,geometryKey(feature.geometry),JSON.stringify(feature.properties)].join(':')).join('|');
+  const key=presented.map(feature=>[feature.id,geometryKey(feature.geometry),feature.properties]);
 
  return {presented,nextBatches,key};
 }

@@ -4,6 +4,7 @@ import {HYDRO_DISPLAY_ZOOMS,hydroDisplayStages} from '../map/map-display-zoom.js
 import {createHydroBrowserLoader} from '../data/maplibre-hydro-loader.js';
 import {createHydroTileWindow,hydroTileSpecsForWindow} from '../data/hydro-tile-window.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
+import {sameRenderIdentity} from './render-identity.js';
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
 const collection=features=>({type:'FeatureCollection',features}),empty=()=>collection([]);
 // Optional hydro tile loading and editing overlays are renderer-side display
@@ -134,17 +135,17 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   const ocean=preferences.mapPalette().ocean||'#ffffff';
   const hydroEdits=state.hydroEdits||emptyHydroEdits;
   const inputs=[map.style,hydroFeatures,hydroEdits,physicalResources.hydroActivityView(),state.hydroFeatureCatalogRevision,
-   JSON.stringify(state.itemVisibility?.hydro??{}),state.physicalSettings?.hydroLayers,rivers,lakes,ocean];
-  if(hydroInputs?.every((value,index)=>value===inputs[index]))return;
+   Object.entries(state.itemVisibility?.hydro??{}),state.physicalSettings?.hydroLayers,rivers,lakes,ocean];
+  if(hydroInputs?.every((value,index)=>index===5?sameRenderIdentity(value,inputs[index]):value===inputs[index]))return;
   hydroInputs=inputs;getStats().hydroVisibilityScans++;
   const ids=hiddenMapLibreHydroIds(hydroFeatures,physicalServices.isHydroFeatureVisible);
-  const key=ids.join('|')+'|'+state.layerVisibility.rivers+'|'+state.layerVisibility.lakes;
-  if(key!==hydroStateKey){hydroStateKey=key;
+  const key=[ids,state.layerVisibility.rivers,state.layerVisibility.lakes];
+  if(!sameRenderIdentity(key,hydroStateKey)){hydroStateKey=key;
    syncMapLibreHydroVisibility(map,ids,state.layerVisibility);
   }
   const edits=hydroEdits.filter(physicalServices.isHydroFeatureVisible);
-  const editsKey=edits.map(feature=>String(feature.id)+':'+geometryKey(feature.geometry)).join('|')+'|'+ocean;
-  if(editsKey!==hydroEditsKey){hydroEditsKey=editsKey;
+  const editsKey=[ocean,edits.map(feature=>[String(feature.id),geometryKey(feature.geometry),feature.properties.category])];
+  if(!sameRenderIdentity(editsKey,hydroEditsKey)){hydroEditsKey=editsKey;
    if(!map.getSource('hydro-edits')){
     map.addSource('hydro-edits',{type:'geojson',data:empty()});
     map.addLayer({id:'hydro-edits-fill',type:'fill',source:'hydro-edits',filter:['==',['geometry-type'],'Polygon'],paint:{'fill-color':['get','color']}});

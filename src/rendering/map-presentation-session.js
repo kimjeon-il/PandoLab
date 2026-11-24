@@ -2,7 +2,7 @@
 // GPU resources, pixel buffers and canonical document state remain with their existing owners.
 export function createMapPresentationSession({
   getGeneration, getContextRevision, isDisposed, getReadiness,
-  invalidateFrame, prepareContentKey, isProjectBlocked,
+  invalidateFrame, prepareContentKey, sameContentKey=(a,b)=>a===b, isProjectBlocked,
   isRecoveryFrameAdmissible, onTemporalFailure = () => {},
   onTemporalRetired = () => {}, waitForCanonicalFrame,
 }) {
@@ -21,7 +21,7 @@ export function createMapPresentationSession({
       && temporalTicket.isCurrent() && temporalTicket.generation === getGeneration()
       && temporalTicket.context === getContextRevision()
       && (temporalTicket.kind !== 'view' || temporalTicket.countryContent !== null
-        && temporalTicket.countryContent === content);
+        && sameContentKey(temporalTicket.countryContent,content));
   }
 
   function rejectMapPresentationWaiters(error) {
