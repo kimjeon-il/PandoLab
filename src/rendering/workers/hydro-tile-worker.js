@@ -1,7 +1,7 @@
 /* Hydro GeoJSON viewport worker. */
 'use strict';
 
-importScripts('../vendor/fflate/fflate.min.js', 'hydro-shard-store.js');
+importScripts('../vendor/fflate/fflate.min.js', 'hydro-shard-store.js', 'hydro-transfer-codec.js');
 
 const textDecoder = new TextDecoder('utf-8');
 let manifest = null;
@@ -415,7 +415,8 @@ function postPack(packId, decodedFeatures, revision) {
       },
     };
   });
-  postMessage({ type: 'pack', revision, packId, features });
+  const packed=globalThis.PandoHydroTransport.packHydroFeatures(features);
+  postMessage({type:'pack',revision,packId,packed},[packed.lengths.buffer,packed.coordinates.buffer]);
   postedPacks.add(packId);
 }
 
