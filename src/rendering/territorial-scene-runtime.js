@@ -23,7 +23,11 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
         ? dependencies.territorialModel.entityRepository.get(entity.id).geometry : entity.geometry), 0);
     if (builtinRenderCache?.entities === entities && builtinRenderCache.nativeGeometryRevision === nativeGeometryRevision
       && builtinRenderCache.presentation === dependencies.projectState.state.layerPresentation) return builtinRenderCache;
-    const features = entities.filter(entity => entity.properties.entityKind === 'general' && !entity.properties.parentId);
+    let features = entities.filter(entity => entity.properties.entityKind === 'general' && !entity.properties.parentId);
+    if(immutable){
+      const prior=builtinRenderCache?.collection.features;
+      features=prior?.length===features.length&&features.every((row,i)=>row===prior[i])?prior:Object.freeze(features);
+    }
     const boundaryFeatures = [...features];
     const byId = new Map(features.map(feature => [String(feature.id), feature]));
     const countryIds = new Set(byId.keys());

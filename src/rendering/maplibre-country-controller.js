@@ -15,7 +15,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
  let countrySequence=0,countryTail=Promise.resolve();
  const activeCountryTasks=new Set();
  const immutableRepositories=new WeakMap();
- const fillInputs=new WeakMap();
+ const fillInputs=new WeakMap(),fillCache=new WeakMap();
  function fillIdentity(row){
   let key=fillInputs.get(row);
   if(!key){key=[row.id,row.geometry,row.properties.parentId,row.properties.entityKind,row.properties.style?.color,countryDefaultColor(row)];fillInputs.set(row,key);}
@@ -81,25 +81,26 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(isDisposed())return false;
   if(requestedGeneration!==getGeneration()||sequence!==countrySequence)return false;
   const map=getMap();
-  const {presented,nextBatches,key}=prepareCountryPresentation(features,{state,entityRepository,style:currentMapStyle(),layerPresentation});
+  const {presented,nextBatches,key}=prepareCountryPresentation(features,{state,entityRepository,style:currentMapStyle(),layerPresentation,
+   previousRows:countryDisplay.rows,fillCache});
   const cached=datedSources.reuse('territories',key,sameRenderIdentity);
   const current=()=>!isDisposed()&&!signal.aborted&&requestedGeneration===getGeneration()&&sequence===countrySequence&&getMap()===map;
-  const publish=(id,record)=>{
+  const publish=(id,record,paintChanges)=>{
    const sourceChanged=datedSources.active('territories')!==id;
    datedSources.activate('territories',id);
    countryDisplay.publish(record,record.key);
-   scene.syncCountryPaint(id,record.rows);
-   if(sourceChanged)scene.syncVectorGroups();
-   scene.orderSceneLayers();
+   scene.syncCountryPaint(id,record.rows,paintChanges);
+   if(sourceChanged){scene.syncVectorGroups();scene.orderSceneLayers();}
   };
   const active=datedSources.get(datedSources.active('territories'));
   // A paint-only transition shares the already tiled source. Keep the actual
   // tile rows for the next native diff and update its paint through feature state.
+  const paintChanges=[];
   const paintOnly=!cached&&!countryDisplay.needsSwap&&active?.source===map.getSource(datedSources.active('territories'))
-   &&countryPaintOnly(active,presented);
+   &&countryPaintOnly(active,presented,paintChanges);
   if(paintOnly){
    const record={...active,key,rows:new Map(presented.map(row=>[row.id,row]))};
-   datedSources.set(datedSources.active('territories'),record);publish(datedSources.active('territories'),record);dirty();
+   datedSources.set(datedSources.active('territories'),record);publish(datedSources.active('territories'),record,{base:active.rows,ids:paintChanges});dirty();
   }else if(cached){
    if(cached[0]!==datedSources.active('territories'))stats.retainedSourceHits++;
    countryDisplay.clearSwap();
@@ -129,7 +130,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    const record={kind:'territories',source,key,rows:new Map(presented.map(feature=>[feature.id,feature])),
     tiles:next,borders:new Map(borders.map(row=>[row.key,row]))};
    datedSources.set(requestedSource,record);
-   publish(requestedSource,record);
+   publish(requestedSource,record);scene.orderSceneLayers();
   }
   if(sequence!==countrySequence||requestedGeneration!==getGeneration())return false;
   if(requestedGeneration===getGeneration()&&sequence===countrySequence){countryGeneration=getGeneration();countryContentKey=countryContentIdentity(features);}

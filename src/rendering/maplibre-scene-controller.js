@@ -27,10 +27,46 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
  const getStyle=()=>resolveMapLibreMapStyle({palette:preferences.mapPalette(),
   antiAlias:interactionStyle?.antiAlias!==false,layerVisibility:state.layerVisibility});
  const preparedDomainRows=new WeakMap(),strokeContributions=new WeakMap();
+ const preparedRows=new WeakMap(),preparedFeatures=new WeakMap(),rowIdentities=new WeakMap();
+ const vectorRows=new WeakMap();
  const sceneGroupIndex=createSceneGroupIndex(),vectorGroupIndex=createSceneGroupIndex();
- let vectorContributions=[];
+ let vectorContributions=[],vectorDomainRows=[];
  const vectorId=row=>row.role==='graticule'?'map-graticule':'vector-'+(row.kind||'fill')+'-'+row.order+'-'+(row.role==='territorial-fill'?'territorial':row.role==='hydro-detail'?'hydro-detail':'independent');
- const identityFor=rows=>rows.map(row=>[row.key,row.objectKey,row.geometryRevision??geometryKey(row.geometry),row.order,row.role,row.kind,row.blendMode,JSON.stringify(row.style)]);
+ const identityFor=rows=>rows.map(row=>{
+  let value=rowIdentities.get(row);
+  if(!value){
+   value=[row.key,row.objectKey,row.geometryRevision??geometryKey(row.geometry),row.order,row.role,row.kind,row.blendMode,JSON.stringify(row.style)];
+   if(Object.isFrozen(row))rowIdentities.set(row,value);
+  }
+  return value;
+ });
+ function prepareRow(item,kind){
+  let cached=preparedRows.get(item);
+  if(cached?.kind===kind)return cached.row;
+  const point=item.geometry?.type==='Point'||item.geometry?.type==='MultiPoint';
+  const native=kind==='line'||item.blendMode==='multiply'||item.style?.blendMode==='multiply';
+  const row={...item,kind:point?(native?'point':'circle'):kind};
+  const value={row:Object.isFrozen(item)?Object.freeze(row):row,kind,native};
+  if(Object.isFrozen(item))preparedRows.set(item,value);
+  return value.row;
+ }
+ function featureFor(item){
+  let row=preparedFeatures.get(item);
+  if(!row){
+   row={revision:item.geometryRevision,feature:{type:'Feature',id:item.key,geometry:item.geometry,
+    properties:{objectKey:item.objectKey||'',color:item.style?.color||'#ffffff',alpha:item.style?.fillAlpha??item.style?.alpha??1}}};
+   if(Object.isFrozen(item))preparedFeatures.set(item,row);
+  }
+  return row;
+ }
+ function vectorRowFor(row,antiAlias){
+  const cached=vectorRows.get(row);
+  if(cached&&cached.antiAlias===antiAlias)return cached.value;
+  const value={...row,style:row.kind==='line'?{...row.style,antiAlias:antiAlias??row.style?.antiAlias??true}:row.style,
+   geometryRevision:(row.kind||'fill')+':'+(row.geometryRevision??geometryKey(row.geometry))};
+  if(Object.isFrozen(row)){Object.freeze(value);vectorRows.set(row,{antiAlias,value});}
+  return value;
+ }
  const colorsEnabled=()=>layerStyle(state.layerPresentation,'objects').colorVisible;
  function invalidateLayerIndex(){indexedStyle=null;requiredLayerCache=null;invalidatePickingLayers();}
  function attachMap(){styleController=createMapLibreStyleController(getMap());invalidateLayerIndex();}
@@ -123,8 +159,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    const nativeSource=map.getSource(boundSource),antiAlias=interactionStyle?.antiAlias;
    if(entry&&entry.signature&&entry.inputs===originalItems&&entry.antiAlias===antiAlias
     &&entry.boundSource===boundSource&&entry.nativeSource===nativeSource&&map.getLayer(id))continue;
-   let items=originalItems.map(row=>({...row,style:row.kind==='line'?{...row.style,antiAlias:antiAlias??row.style?.antiAlias??true}:row.style,
-    geometryRevision:(row.kind||'fill')+':'+(row.geometryRevision??geometryKey(row.geometry))}));
+   let items=originalItems.map(row=>vectorRowFor(row,antiAlias));
    const previousBatches=entry?.batches??new Map(),nextBatches=new Map();
    if(items[0]?.kind==='line'&&items.length>1){
     const batches=new Map();
@@ -214,14 +249,18 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   }
   countryFillGroups.set(source,next);
  }
- function syncCountryPaint(id,rows){
+ function syncCountryPaint(id,rows,changes){
   const map=getMap();
   const source=map.getSource(id),neutral=!colorsEnabled();
   const previous=countryPaintState.get(source);
   if(previous?.neutral===neutral&&previous.rows===rows)return;
-  for(const key of previous?.rows.keys()||[])if(!rows.has(key))map.removeFeatureState({source:id,id:key});
-  for(const [key,row] of rows)if(previous?.neutral!==neutral||previous.rows.get(key)?.properties.color!==row.properties.color)
-   map.setFeatureState({source:id,id:key},{neutral,countryColor:row.properties.color});
+  if(changes&&previous?.rows===changes.base&&previous.neutral===neutral){
+   for(const key of changes.ids)map.setFeatureState({source:id,id:key},{neutral,countryColor:rows.get(key).properties.color});
+  }else{
+   for(const key of previous?.rows.keys()||[])if(!rows.has(key))map.removeFeatureState({source:id,id:key});
+   for(const [key,row] of rows)if(previous?.neutral!==neutral||previous.rows.get(key)?.properties.color!==row.properties.color)
+    map.setFeatureState({source:id,id:key},{neutral,countryColor:row.properties.color});
+  }
   for(const group of countryFillGroups.get(id)||[])if(group.multiply&&map.getLayer(group.id))
    map.setPaintProperty(group.id,'fill-layer-blend',neutral?'normal':'multiply');
   countryPaintState.set(source,{rows,neutral});
@@ -247,14 +286,12 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    if(name==='physical-land'||name==='physical-water')continue;
    let entry=preparedDomainRows.get(value);
    if(!entry){
-    const rows=[...value.polygons.map(item=>({...item,kind:'fill'})),...value.strokes.map(item=>({...item,kind:'line'}))];
-    const native=row=>row.kind==='line'||row.blendMode==='multiply'||row.style?.blendMode==='multiply';
-    const vectors=[],fills=[];
-    for(const row of rows){
-     const point=['Point','MultiPoint'].includes(row.geometry?.type);
-     if(native(row)){
-      if(row.kind==='fill'?(row.style?.fillAlpha??1)>0:(row.style?.alpha??1)>0)vectors.push(point?{...row,kind:'point'}:row);
-     }else fills.push(point?{...row,kind:'circle'}:row);
+    const rows=[],vectors=[],fills=[];
+    for(const [kind,items]of [['fill',value.polygons],['line',value.strokes]])for(const item of items){
+     const row=prepareRow(item,kind);rows.push(row);
+     if(kind==='line'||item.blendMode==='multiply'||item.style?.blendMode==='multiply'){
+      if(kind==='fill'?(row.style?.fillAlpha??1)>0:(row.style?.alpha??1)>0)vectors.push(row);
+     }else fills.push(row);
     }
     entry={vectors,identity:identityFor(rows),vectorGroups:partitionSceneRows(vectors,vectorId),
      sceneGroups:partitionSceneRows(fills,row=>'scene-'+row.kind+'-'+row.order+'-'+(row.role==='territorial-fill'?'territorial':row.order<0?'base':'independent'))};
@@ -266,7 +303,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   if(sceneStyle===map.style&&sameRenderIdentity(sceneIdentity,identity))return;
   sceneIdentity=identity;sceneStyle=map.style;sceneKey++;
   vectorContributions=prepared.map(([,entry])=>entry.vectorGroups);
-  sceneVectors=prepared.flatMap(([,entry])=>entry.vectors);
+  vectorDomainRows=prepared.map(([,entry])=>entry.vectors);sceneVectors=null;
   const groups=sceneGroupIndex.reconcile(prepared.map(([,entry])=>entry.sceneGroups));
   for(const id of dynamicLayers)if(!groups.has(id)){map.removeLayer(id);map.removeSource(id);dynamicLayers.delete(id);dynamicSources.delete(id);sceneGroups.delete(id);indexedStyle=null;}
   for(const [id,items]of groups){
@@ -274,8 +311,8 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    if(previous?.signature&&previous.source===currentSource&&previous.inputs===items)continue;
    const signature=identityFor(items);
    if(previous&&previous.source===currentSource&&sameRenderIdentity(previous.signature,signature)){previous.inputs=items;continue;}
-   const next=new Map(items.filter(item=>item.geometry).map(item=>[item.key,{revision:item.geometryRevision,
-    feature:{type:'Feature',id:item.key,geometry:item.geometry,properties:{objectKey:item.objectKey||'',color:item.style?.color||'#ffffff',alpha:item.style?.fillAlpha??item.style?.alpha??1}}}]));
+   const next=new Map();
+   for(const item of items)if(item.geometry)next.set(item.key,featureFor(item));
    if(!next.size)continue;
    const data=()=>collection(Array.from(next.values(),row=>row.feature));
    if(currentSource){
@@ -290,6 +327,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
       for(const [key,{feature,revision}] of next){
        const old=before.get(key);
        if(!old){add.push(feature);continue;}
+       if(old===next.get(key))continue;
        const newGeometry=old.revision!==revision||revision==null&&old.feature.geometry!==feature.geometry?feature.geometry:null;
        const properties=changedRenderProperties(old.feature.properties,feature.properties);
        if(newGeometry||properties.length)update.push({id:key,...(newGeometry?{newGeometry}:{}),
@@ -297,7 +335,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
       }
       if(add.length||remove.length||update.length)await source.updateData({add,remove,update});
      }
-    },id,()=>sceneGroups.get(id)===group&&group.signature===signature)
+    },id,()=>sceneGroups.get(id)===group&&group.signature===signature,{coalesce:true})
      .then(applied=>{
       if(applied){group.rows=next;return;}
       if(sceneGroups.get(id)===group&&group.signature===signature){group.signature=null;sceneIdentity=null;sceneKey++;}
@@ -317,7 +355,9 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    }
   }
   syncVectorGroups();
-  sceneOrder=[...groups].map(([id,items])=>({id,order:items[0].order,role:items[0].role}));orderSceneLayers();
+  const nextOrder=[...groups].map(([id,items])=>({id,order:items[0].order,role:items[0].role}));
+  if(!sameRenderIdentity(sceneOrder,nextOrder)||indexedStyle!==map.style){sceneOrder=nextOrder;orderSceneLayers();}
+  else sceneOrder=nextOrder;
   dirty();
  }
 
@@ -329,7 +369,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
  return Object.freeze({getStyle,colorsEnabled,attachMap,applyStyle,syncLabelVisibility,syncLoadingSurface,
   hasStyleController:()=>!!styleController,strokeDomain,mapSourceLayers,requiredSource,requiredSourcesReady,
   syncVectorGroups,orderSceneLayers,syncTerritorialFills,syncCountryPaint,syncBaseLayer,setSceneDomains,setInteractionStyle,
-  get vectors(){return sceneVectors;},get key(){return sceneKey;},get interactionStyle(){return interactionStyle;},
+  get vectors(){return sceneVectors??=vectorDomainRows.flat();},get key(){return sceneKey;},get interactionStyle(){return interactionStyle;},
   vectorRole:id=>vectorLayers.get(id)?.role,requiredVectorPending:()=>[...vectorLayers.values()].some(entry=>entry.role!=='hydro-detail'&&entry.layer.pending),
   removeCountryFillSource:id=>countryFillGroups.delete(id),
   resetPendingDomains(){pendingSceneDomains=null;sceneIdentity=null;sceneStyle=null;},
@@ -338,7 +378,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   invalidateLayerIndex,
   dispose(){for(const entry of vectorLayers.values())entry.layer.dispose();vectorLayers.clear();styleController=null;
    dynamicLayers.clear();dynamicSources.clear();sceneGroups.clear();countryFillGroups.clear();
-   strokeDomains.clear();strokeGroupCache.clear();sceneGroupIndex.clear();vectorGroupIndex.clear();vectorContributions=[];
+   strokeDomains.clear();strokeGroupCache.clear();sceneGroupIndex.clear();vectorGroupIndex.clear();vectorContributions=[];vectorDomainRows=[];
    pendingSceneDomains=null;pendingInteractionStyle=null;sceneOrder=[];sceneVectors=[];sceneIdentity=null;sceneStyle=null;sceneKey++;}
  });
 }

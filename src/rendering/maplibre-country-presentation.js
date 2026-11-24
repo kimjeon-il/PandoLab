@@ -3,9 +3,9 @@ import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {layerObjectRank,layerStyle} from '../ui/layer-presentation.js';
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
 import {changedRenderProperties} from './render-identity.js';
-export function prepareCountryPresentation(features,{state,entityRepository,style,layerPresentation}){
+export function prepareCountryPresentation(features,{state,entityRepository,style,layerPresentation,previousRows=null,fillCache=null}){
   if(state.layerVisibility.objects===false)return {presented:[],nextBatches:[],key:[]};
-  const resolve=createTerritorialFillResolver({state,entityRepository,resolveStoredColors:true});
+  const resolve=createTerritorialFillResolver({state,entityRepository,resolveStoredColors:true,previousResults:fillCache});
   const nextBatches=[],ordered=[],key=[],border=style.countryStroke;
   for(const feature of features){
    const id=String(feature.id);
@@ -22,18 +22,25 @@ export function prepareCountryPresentation(features,{state,entityRepository,styl
    let batch=nextBatches.at(-1);
    if(!batch||batch.blendMode!==blendMode){batch={index:nextBatches.length,blendMode,ids:[]};nextBatches.push(batch);}
    batch.ids.push(ref.key);
-   const row={type:'Feature',geometry:feature.geometry,id:ref.key,properties:{objectKey:ref.key,displayRole:'country-fill',color:fill.color||null,displayAlpha:fill.fillAlpha,alpha:blendMode==='multiply'?0:fill.fillAlpha,blendMode,paintOrder,paintBatch:batch.index,borderColor:border.color,borderAlpha:objectStyle.boundaryVisible?style.borderAlpha:0,borderWidth:border.width||0.6}};
+   const properties={objectKey:ref.key,displayRole:'country-fill',color:fill.color||null,displayAlpha:fill.fillAlpha,alpha:blendMode==='multiply'?0:fill.fillAlpha,blendMode,paintOrder,paintBatch:batch.index,borderColor:border.color,borderAlpha:objectStyle.boundaryVisible?style.borderAlpha:0,borderWidth:border.width||0.6};
+   const prior=previousRows?.get(ref.key);
+   const row=prior&&prior.geometry===feature.geometry&&!changedRenderProperties(prior.properties,properties).length
+    ?prior:{type:'Feature',geometry:feature.geometry,id:ref.key,properties};
    key.push([row.id,geometryKey(row.geometry),row.properties]);
    return row;
   });
   return {presented,nextBatches,key};
 }
-export function countryPaintOnly(active,presented){
- return active?.rows?.size===presented.length&&presented.every(({id,geometry,properties})=>{
-  const old=active.rows.get(id);
-  return old&&(old.geometry===geometry||geometryKey(old.geometry)===geometryKey(geometry))
-   &&Object.keys(properties).every(name=>name==='color'||old.properties[name]===properties[name]);
- });
+export function countryPaintOnly(active,presented,changed){
+ if(active?.rows?.size!==presented.length)return false;
+ for(const row of presented){
+  const {id,geometry,properties}=row,old=active.rows.get(id);
+  if(old===row)continue;
+  if(!old||(old.geometry!==geometry&&geometryKey(old.geometry)!==geometryKey(geometry))
+   ||Object.keys(properties).some(name=>name!=='color'&&old.properties[name]!==properties[name]))return false;
+  if(old.properties.color!==properties.color)changed?.push(id);
+ }
+ return true;
 }
 export function countryTileDiff(previousTileRows,tileFeatures){
  const next=new Map(tileFeatures.map(feature=>[feature.id,feature]));

@@ -11,14 +11,15 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   }
   return count;
  }
- function update(start,id,isCurrent=()=>true,{shareAcrossGenerations=false}={}){
-  const map=getMap(),generation=getGeneration(),context=getContextRevision();
-  if(requiredSource(id))dirty();
-  const source=map.getSource(id),previous=queues.get(source)||Promise.resolve(),entry={id,source,generation,context};
-  pending.add(entry);
+ function pump(lane,source){
+  if(lane.running)return;
+  const entry=lane.waiting.shift();
+  if(!entry){if(queues.get(source)===lane)queues.delete(source);return;}
+  lane.running=true;
+  const {map,generation,context,id,isCurrent,shareAcrossGenerations,start}=entry;
   const live=()=>!isDisposed()&&getMap()===map&&context===getContextRevision()&&map.getSource(id)===source;
   const sameGeneration=()=>generation===getGeneration();
-  const outcome=previous.catch(()=>{}).then(async()=>{
+  const execute=async()=>{
    if(!live()||!isCurrent()||(!shareAcrossGenerations&&!sameGeneration()))return false;
    let sourceError=null;
    const onSourceError=event=>{
@@ -33,11 +34,35 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
     if(sourceError)throw sourceError;
     return true;
    }finally{source.off('error',onSourceError);}
+  };
+  Promise.resolve().then(execute).then(value=>{
+   pending.delete(entry);entry.resolve(value);
+   if(live()&&sameGeneration())map.triggerRepaint();
+  },cause=>{
+   pending.delete(entry);entry.reject(cause);
+   if(requiredSource(id)&&live()&&isCurrent()&&sameGeneration())onError(cause);
+  }).finally(()=>{
+   lane.running=false;
+   // The caller's acknowledgement updates its actual source baseline before
+   // the next snapshot computes its diff.
+   queueMicrotask(()=>pump(lane,source));
   });
-  queues.set(source,outcome);
-  const finish=()=>{pending.delete(entry);if(queues.get(source)===outcome)queues.delete(source);};
-  outcome.then(()=>{finish();if(live()&&sameGeneration())map.triggerRepaint();},
-   cause=>{finish();if(requiredSource(id)&&live()&&isCurrent()&&sameGeneration())onError(cause);});
+ }
+ function update(start,id,isCurrent=()=>true,{shareAcrossGenerations=false,coalesce=false}={}){
+  const map=getMap(),generation=getGeneration(),context=getContextRevision(),source=map.getSource(id);
+  if(requiredSource(id))dirty();
+  if(!source)return Promise.resolve(false);
+  let lane=queues.get(source);
+  if(!lane){lane={running:false,waiting:[]};queues.set(source,lane);}
+  const entry={map,id,source,generation,context,start,isCurrent,shareAcrossGenerations,coalesce};
+  if(coalesce){
+   const last=lane.waiting.at(-1);
+   if(last?.coalesce&&last.id===id&&last.context===context&&last.generation===generation){
+    lane.waiting.pop();pending.delete(last);last.resolve(false);
+   }
+  }
+  const outcome=new Promise((resolve,reject)=>{entry.resolve=resolve;entry.reject=reject;});
+  pending.add(entry);lane.waiting.push(entry);pump(lane,source);
   return outcome;
  }
  return Object.freeze({update,pendingCount,hasPendingWrite:source=>queues.has(source),reset:()=>pending.clear(),handlesError:error=>handledErrors.has(error)});
