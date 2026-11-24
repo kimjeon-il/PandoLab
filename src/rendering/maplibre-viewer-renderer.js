@@ -37,8 +37,7 @@ const empty=()=>collection([]);
 const countryTileSource=()=>({type:'geojson',data:empty(),promoteId:'objectKey',tolerance:0.5});
 const countryFillFilter=batch=>['all',['==',['get','displayRole'],'country-fill'],['==',['get','paintBatch'],batch],['==',['get','blendMode'],'normal']];
 const SOURCE_LAYERS={'territories':['territories','borders'],'physical-land':['physical-land-fill'],'physical-water':['physical-water']};
-const ZOOM_EPSILON=1e-9;
-const WORLD_VIEW_BOUNDS=[[-89.999,-85.0511287798066],[89.999,85.0511287798066]];
+import {createMapLibreCamera,ZOOM_EPSILON,WORLD_VIEW_BOUNDS} from './maplibre-camera-controller.js';
 
 export function createMapGeometryRequester({getWorker,restartWorker,isDisposed=()=>false,
  track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100))}){
@@ -71,8 +70,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  if(typeof deps.objectRefVisible!=='function')throw new TypeError('MapLibre requires the canonical object visibility query.');
  const state=deps.projectState.state;
  const metrics=createRenderingMetrics();
+ const camera=createMapLibreCamera({getMap:()=>map,isLoaded:()=>loaded,getProjection:()=>projection,getView:()=>state.view,readSafeInsets,onWorldFitChange,
+  onFarJump:()=>{if(lastPresentedZoom!==null&&!state.projectReplacing&&!contextLost){preserveDisplayedFrame();zoomFramePending=true;ready=false;preparedReady=false;}}});
+ const {fitMapBounds,refreshWorldFit,applyCameraFit,isAtWorldView,labelZoomVisibility,jumpCamera,syncCameraFromState}=camera;
  let map,api,projection,container,stylesheet,initialization,loadedStyle=null,disposed=false,loaded=false,generation=0,contextRevision=0,contextLost=false;
- let pendingCameraFit=null,worldFit=null,nativeMinZoom;
+
  let sourceRevision=0,certifiedRevision=-1,certifiedGeneration=-1,certifiedContext=-1,certifiedCamera='',pendingFrame=null,ready=false,preparedReady=false,error=null,countryGeneration=-1,countryContentKey='';
  let requestedCertificate=null,previousActiveRender=null;
  let endSourceFrame=null;
@@ -629,7 +631,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
      {id:'borders',type:'line',source:'territories',filter:['==',['get','displayRole'],'country-border'],
       layout:{'line-cap':'round','line-join':'round'},paint:initialStyle.paint.borders},
     ]}});
-   nativeMinZoom=map.getMinZoom();
+   camera.captureNativeMinZoom();
    styleController=createMapLibreStyleController(map);
    projection=createMapLibreProjection(map);
    map.on('styledata',()=>{indexedStyle=null;});
@@ -697,100 +699,18 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
      zoomFramePending=true;
     }
     if(zoomFramePending){ready=false;preparedReady=false;}
-    if(applyingCamera||state.projectReplacing)return;
+    if(camera.isApplying()||state.projectReplacing)return;
     invalidate('maplibre-camera');
    });
    map.on('movestart',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.beginInteraction('maplibre-move');});
    map.on('moveend',()=>{previousActiveRender=null;highlight?.onCameraChange();deps.domains.renderingDomain?.endInteraction('maplibre-move-end');datedSources.scheduleRetirement();});
    if(!initialCamera){
-    if(pendingCameraFit)applyCameraFit();else syncCameraFromState(initialView);
+    if(camera.hasPendingFit())applyCameraFit();else syncCameraFromState(initialView);
    }
    window.__PANDOLAB_MAPLIBRE__=map;
    return true;
   })();
   initialization.catch(failMapPreparation);return initialization;
- }
- function fitMapBounds(bounds,safeInsets={}){
-  pendingCameraFit={bounds,safeInsets};
-  return applyCameraFit();
- }
- function fitPadding(safeInsets,world=false){
-  const {clientWidth:width,clientHeight:height}=map.getCanvas();
-  if(!width||!height)return null;
-  // With a large canvas, fitting the geographic samples alone can clip the
-  // globe's silhouette. Provide extra fit padding only for the whole globe.
-  const minimum=world?Math.max(24,(Math.min(width,height)-1024)*.18):24;
-  return Object.fromEntries(['left','right','top','bottom'].map(side=>{
-   const extent=side==='left'||side==='right'?width:height;
-   return [side,Math.min(extent/4,Math.max(minimum,Number(safeInsets[side])||0))];
-  }));
- }
- function refreshWorldFit(safeInsets=readSafeInsets()){
-  if(!loaded)return null;
-  const padding=fitPadding(safeInsets,true);
-  if(!padding)return null;
-  const {clientWidth,clientHeight}=map.getCanvas();
-  const key=[clientWidth,clientHeight,...Object.values(padding)].join(':');
-  if(worldFit?.key===key)return worldFit.camera;
-  // The globe's fit calculation clones the current transform, including minZoom.
-  // Remove the old floor synchronously so it cannot constrain the new fit.
-  let minimum=map.getMinZoom();
-  if(minimum!==nativeMinZoom)map.setMinZoom(nativeMinZoom);
-  try{
-   const camera=map.cameraForBounds(WORLD_VIEW_BOUNDS,{padding,bearing:0});
-   if(!camera||!Number.isFinite(camera.zoom))return null;
-   // MapLibre stores the globe's minimum at the equator and adjusts it by latitude.
-   const latitude=Math.min(Math.abs(camera.center.lat),WORLD_VIEW_BOUNDS[1][1]);
-   const latitudeAdjustment=Math.log2(Math.cos(latitude*Math.PI/180));
-   minimum=Math.max(nativeMinZoom,Math.min(map.getMaxZoom(),camera.zoom-latitudeAdjustment));
-   worldFit={key,camera:{...camera,zoom:Math.max(camera.zoom,minimum+latitudeAdjustment)}};
-  }finally{
-   if(map.getMinZoom()!==minimum)map.setMinZoom(minimum);
-  }
-  onWorldFitChange?.();
-  return worldFit.camera;
- }
- function applyCameraFit(){
-  if(!loaded||!pendingCameraFit)return false;
-  const {bounds,safeInsets}=pendingCameraFit;
-  const padding=fitPadding(safeInsets);
-  if(!padding)return false;
-  const camera=bounds===WORLD_VIEW_BOUNDS?refreshWorldFit(safeInsets):map.cameraForBounds(bounds,{padding,bearing:0});
-  if(!camera)return false;
-  pendingCameraFit=null;
-  jumpCamera({...camera,pitch:0,roll:0});return true;
- }
- function isAtWorldView(){
-  const world=worldFit?.camera;
-  if(!world)return true;
-  const center=map.getCenter();
-  return Math.abs(center.wrap().lng-world.center.wrap().lng)<0.1
-   &&Math.abs(center.lat-world.center.lat)<0.1&&Math.abs(map.getZoom()-world.zoom)<0.01
-   &&Math.abs(map.getBearing())<0.1&&Math.abs(map.getPitch())<0.1&&Math.abs(map.getRoll())<0.1;
- }
- function labelZoomVisibility(){
-  if(!loaded)return {country:false,places:false};
-  const zoom=map.getZoom();
-  return {country:isWithinDisplayZoom(zoom,MAPLIBRE_LABEL_MIN_ZOOM.country),places:isWithinDisplayZoom(zoom,MAPLIBRE_LABEL_MIN_ZOOM.places)};
- }
- let applyingCamera=false;
- function jumpCamera(target){
-  const center=Array.isArray(target.center)?target.center:target.center.toArray();
-  const far=Math.abs(target.zoom-map.getZoom())>=2-ZOOM_EPSILON||!projection.projectVisibleCoordinate(center);
-  if(far&&lastPresentedZoom!==null&&!state.projectReplacing&&!contextLost){
-   preserveDisplayedFrame();zoomFramePending=true;ready=false;preparedReady=false;
-  }
-  map.jumpTo(target);
- }
- function syncCameraFromState(view=state.view){
-  pendingCameraFit=null;
-  if(!map||!loaded)return;
-  const center=[-view.globeRotation[0],-view.globeRotation[1]];
-  const zoom=Number.isFinite(view.zoom)?view.zoom:map.getZoom();
-  const orientation={};for(const key of ['bearing','pitch','roll'])if(Number.isFinite(view[key]))orientation[key]=view[key];
-  const current=map.getCenter();
-  if(Math.abs(current.lng-center[0])<1e-8&&Math.abs(current.lat-center[1])<1e-8&&Math.abs(map.getZoom()-zoom)<1e-8&&Object.entries(orientation).every(([key,value])=>Math.abs(({bearing:()=>map.getBearing(),pitch:()=>map.getPitch(),roll:()=>map.getRoll()})[key]()-value)<1e-8))return;
-  applyingCamera=true;try{jumpCamera({center,zoom,...orientation});}finally{applyingCamera=false;}
  }
  function setTerritorialFeatures(features){
   const entities=deps.territorialModel.entityRepository.list?.()??features;
