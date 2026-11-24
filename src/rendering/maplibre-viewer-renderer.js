@@ -424,7 +424,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    publish(...cached);
   }else{
    const preserve=presentation.temporalPending()&&datedSources.get(datedSources.active('territories'))?.key!=null;
-   if(!preserve)countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,countryFillGroups:scene.countryFillGroups,onStyleInvalidated:()=>{scene.invalidateLayerIndex();},dirty});
+   if(!preserve)countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,onCountrySourceRemoved:id=>scene.removeCountryFillSource(id),onStyleInvalidated:()=>{scene.invalidateLayerIndex();},dirty});
    else countryDisplay.clearSwap();
    const requestedSource=preserve?datedSources.reserve('territories'):datedSources.active('territories');
    const source=map.getSource(requestedSource);

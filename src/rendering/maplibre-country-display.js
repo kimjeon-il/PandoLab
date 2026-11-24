@@ -2,7 +2,7 @@
 // orchestration closure. The source itself remains owned by MapLibre.
 export function createMapLibreCountryDisplay(){
  let rows=new Map(),tiles=new Map(),borders=new Map(),key='',sourceSerial=0,sourceNeedsSwap=false;
- function replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers,countryTileSource,countryFillGroups,onStyleInvalidated,dirty}){
+ function replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers,countryTileSource,onCountrySourceRemoved,onStyleInvalidated,dirty}){
   if(!sourceNeedsSwap)return;
   const oldId=datedSources.active('territories'),newId='territories-generation-'+(++sourceSerial),layers=map.getStyle().layers;
   const affected=layers.map((layer,index)=>({layer,index})).filter(({layer})=>layer.source===oldId);
@@ -17,7 +17,7 @@ export function createMapLibreCountryDisplay(){
   }
   if(map.getSource(oldId))map.removeSource(oldId);
   onStyleInvalidated();
-  datedSources.replaceActive('territories',newId);countryFillGroups.delete(oldId);
+  datedSources.replaceActive('territories',newId);onCountrySourceRemoved?.(oldId);
   rows=new Map();tiles=new Map();borders=new Map();key='';sourceNeedsSwap=false;dirty();
  }
 

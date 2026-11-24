@@ -258,7 +258,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
  return Object.freeze({getStyle,colorsEnabled,attachMap,applyStyle,syncLabelVisibility,syncLoadingSurface,
   hasStyleController:()=>!!styleController,strokeDomain,mapSourceLayers,requiredSource,requiredSourcesReady,
   syncVectorGroups,orderSceneLayers,syncTerritorialFills,syncCountryPaint,syncBaseLayer,setSceneDomains,setInteractionStyle,
-  get countryFillGroups(){return countryFillGroups;},get vectors(){return sceneVectors;},get key(){return sceneKey;},get interactionStyle(){return interactionStyle;},
+  get vectors(){return sceneVectors;},get key(){return sceneKey;},get interactionStyle(){return interactionStyle;},
   vectorRole:id=>vectorLayers.get(id)?.role,requiredVectorPending:()=>[...vectorLayers.values()].some(entry=>entry.role!=='hydro-detail'&&entry.layer.pending),
   removeCountryFillSource:id=>countryFillGroups.delete(id),
   resetPendingDomains(){pendingSceneDomains=null;},

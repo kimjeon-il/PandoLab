@@ -387,7 +387,7 @@ test('country source replacement preserves mandatory layers and resets owned sta
  display.publish({rows:new Map(),tiles:new Map(),borders:new Map([['cached',{}]])},'before');
  display.markSourceStale();
  display.replaceObsoleteCountrySource({map,datedSources,sourceLayer:(id,source)=>id,sourceLayers:['territories','borders'],
-  countryTileSource:()=>({type:'geojson'}),countryFillGroups:new Map(),
+  countryTileSource:()=>({type:'geojson'}),onCountrySourceRemoved:()=>{},
   onStyleInvalidated:()=>{invalidated++;},dirty:()=>{}});
  assert.equal(active,'territories-generation-1');
  assert.equal(layers.get('territories').source,active);
