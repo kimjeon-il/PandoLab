@@ -169,6 +169,11 @@ struct ParentGraph {
                 if(!next.empty())children[next].insert(ref.id);
             }
         }
+        validateParentTargets(changed);
+        validateCycles(changed);
+    }
+
+    void validateParentTargets(const std::set<std::string>& changed) const {
         // Inspect only after every parent edit at this boundary is installed.
         for(const auto& id:changed){
             const auto current=parents.find(id);
@@ -182,6 +187,9 @@ struct ParentGraph {
                     fail("TIMELINE_PARENT_INACTIVE","Inactive parent "+id+" for "+*remaining->second.begin()+".");
             }
         }
+    }
+
+    void validateCycles(const std::set<std::string>& changed) const {
         // A new cycle must contain an edge changed at this boundary.
         std::set<std::string> settled;
         for(const auto& id:changed){

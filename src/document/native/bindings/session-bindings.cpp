@@ -86,7 +86,7 @@ val worldUpdate(const ResolvedEntity& row,const ResolvedEntity* before,std::size
 val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint32_t baseEpoch,
                std::uint32_t sourceEpoch,bool allowReorder=false) {
     auto value=val::object(),upserts=val::array(),removed=val::array();
-    unsigned u=0,r=0;
+    unsigned upsertIndex=0,removedIndex=0;
     std::vector<const ObjectRef*> retained;
     const bool changed=before.projection!=after.projection;
     const bool indexed=changed&&!allowReorder&&after.projection->deltaBase.lock()==before.projection;
@@ -95,13 +95,13 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
         for(const auto& ref:after.projection->affected){
             const auto* previous=before.find(ref);
             const auto* row=after.find(ref);
-            if(!row){if(previous)removed.set(r++,object(ref));continue;}
+            if(!row){if(previous)removed.set(removedIndex++,object(ref));continue;}
             if(!previous||!sameWorldEntity(*previous,*row))changedIndices.push_back(after.offsets().at(ref));
         }
         std::sort(changedIndices.begin(),changedIndices.end());
         for(const auto index:changedIndices){
             const auto& row=after.entities()[index];
-            upserts.set(u++,worldUpdate(row,before.find(row.objectRef),index,true));
+            upserts.set(upsertIndex++,worldUpdate(row,before.find(row.objectRef),index,true));
         }
     }
     if(allowReorder&&changed)retained.reserve(after.entities().size());
@@ -117,9 +117,9 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
             }
             continue;
         }
-        upserts.set(u++,worldUpdate(row,previous,i,!allowReorder));
+        upserts.set(upsertIndex++,worldUpdate(row,previous,i,!allowReorder));
     }
-    if(changed&&!indexed)for(const auto& row:before.entities())if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
+    if(changed&&!indexed)for(const auto& row:before.entities())if(!after.find(row.objectRef))removed.set(removedIndex++,object(row.objectRef));
     if(reordered){
         auto order=val::array();unsigned i=0;
         for(const auto* ref:retained)order.set(i++,object(*ref));
