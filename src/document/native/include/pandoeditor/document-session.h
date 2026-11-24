@@ -106,7 +106,8 @@ public:
     bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse=nullptr,std::vector<GeometryRef>* evictedResources=nullptr);
     SelectionState& selection() { return selection_; }
     const SelectionState& selection() const { return selection_; }
-    DocumentSessionOutcome selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>&,std::uint32_t expectedEpoch);
+    DocumentSessionOutcome selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>&,std::uint32_t expectedEpoch,
+        const std::vector<SelectionRef>* removed=nullptr);
     void requireEpoch(std::uint32_t expectedEpoch) const;
     bool selectionRefExists(const SelectionRef&) const;
 private:

@@ -470,6 +470,21 @@ std::vector<SelectionRef> selectionRefs(const val& value) {
     array(value,"CORE_SELECTION_REF");std::vector<SelectionRef> result;
     for(unsigned i=0;i<value["length"].as<unsigned>();++i)result.push_back(selectionRef(value[i]));return result;
 }
+std::vector<SelectionCatalogEntry> readCatalogEntries(const std::string& domain,const val& rows) {
+    array(rows,"CORE_SELECTION_CATALOG");std::vector<SelectionCatalogEntry> entries;
+    const auto count=rows["length"].as<unsigned>();entries.reserve(count);
+    for(unsigned i=0;i<count;++i) {
+        const auto row=rows[i];std::optional<std::string> logicalId;std::vector<std::string> sourceIds;
+        if(!row["logicalId"].isUndefined())logicalId=text(row["logicalId"],"CORE_SELECTION_CATALOG");
+        if(domain=="hydroBuiltin"){
+            const auto sources=row["sourceIds"];array(sources,"CORE_SELECTION_CATALOG");
+            const auto length=sources["length"].as<unsigned>();sourceIds.reserve(length);
+            for(unsigned j=0;j<length;++j)sourceIds.push_back(text(sources[j],"CORE_SELECTION_CATALOG"));
+        }
+        entries.push_back({selectionRef(row),std::move(logicalId),std::move(sourceIds)});
+    }
+    return entries;
+}
 val commandOutcome(const DocumentSessionOutcome& outcome,const DocumentSession& session) {
     auto value=val::object();value.set("ok",outcome.result.ok());
     value.set("changed",outcome.result.changed()||outcome.candidateId!=0);
@@ -759,14 +774,12 @@ public:
         });
     }
     val selectionCatalogLoad(const std::string& domain,val rows,std::uint32_t epoch) {
-        return boundary([&]{array(rows,"CORE_SELECTION_CATALOG");std::vector<SelectionCatalogEntry> entries;
-            for(unsigned i=0;i<rows["length"].as<unsigned>();++i) {
-                const auto row=rows[i];std::optional<std::string> logicalId;std::vector<std::string> sourceIds;
-                if(!row["logicalId"].isUndefined())logicalId=text(row["logicalId"],"CORE_SELECTION_CATALOG");
-                if(domain=="hydroBuiltin"){const auto sources=row["sourceIds"];array(sources,"CORE_SELECTION_CATALOG");for(unsigned j=0;j<sources["length"].as<unsigned>();++j)sourceIds.push_back(text(sources[j],"CORE_SELECTION_CATALOG"));}
-                entries.push_back({selectionRef(row),std::move(logicalId),std::move(sourceIds)});
-            }
-            return commandOutcome(session_.selectionCatalogLoad(domain,entries,epoch),session_);
+        return boundary([&]{return commandOutcome(session_.selectionCatalogLoad(domain,readCatalogEntries(domain,rows),epoch),session_);});
+    }
+    val selectionCatalogPatch(val rows,val removed,std::uint32_t epoch) {
+        return boundary([&]{
+            const auto removals=selectionRefs(removed);
+            return commandOutcome(session_.selectionCatalogLoad("hydroBuiltin",readCatalogEntries("hydroBuiltin",rows),epoch,&removals),session_);
         });
     }
     val presentationCatalogLoad(val input,std::uint32_t epoch) {
@@ -877,6 +890,7 @@ EMSCRIPTEN_BINDINGS(pandoeditor_document_session) {
         .function("resolveWorld",&WasmDocumentSession::resolveWorld).function("setTimelineCursor",&WasmDocumentSession::setTimelineCursor)
         .function("geometryRequirements",&WasmDocumentSession::geometryRequirements).function("admitGeometryResources",&WasmDocumentSession::admitGeometryResources)
         .function("selectionCatalogLoad",&WasmDocumentSession::selectionCatalogLoad)
+        .function("selectionCatalogPatch",&WasmDocumentSession::selectionCatalogPatch)
         .function("selectionApply",&WasmDocumentSession::selectionApply)
         .function("presentationCatalogLoad",&WasmDocumentSession::presentationCatalogLoad)
         .function("selectionSnapshot",&WasmDocumentSession::selectionSnapshot);

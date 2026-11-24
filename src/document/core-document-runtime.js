@@ -100,7 +100,13 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
             { code: 'INVALID_TIMELINE_CURSOR', cause: error });
         throw error;
       }),
-    selectionCatalogLoad: (payload, context) => call('selectionCatalogLoad', [payload.domain,payload.refs,payload.expectedEpoch], context),
+    selectionCatalogLoad: (payload, context) => {
+      if(Object.hasOwn(payload,'removed')){
+        if(payload.domain!=='hydroBuiltin')fail('PL-CORE-DOCUMENT-ABI','Only the hydro catalog supports patches.');
+        return call('selectionCatalogPatch',[payload.refs,payload.removed,payload.expectedEpoch],context);
+      }
+      return call('selectionCatalogLoad',[payload.domain,payload.refs,payload.expectedEpoch],context);
+    },
     presentationCatalogLoad: (payload,context) => call('presentationCatalogLoad',[payload.catalog,payload.expectedEpoch],context),
     selectionApply: (payload, context) => call('selectionApply', [payload], context),
     selectionSnapshot: (payload, context) => call('selectionSnapshot', [], context),

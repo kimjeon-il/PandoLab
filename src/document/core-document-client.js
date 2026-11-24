@@ -225,6 +225,8 @@ export function createCoreDocumentClient({
     projectState: options => ordered('core.document-state', {}, options),
     selectionCatalogLoad: (domain,refs,expectedEpoch,options) => ordered('core.document-selection-catalog',
       { domain,refs,...(expectedEpoch===undefined ? {}:{ expectedEpoch }) },options,true,true),
+    selectionCatalogPatch: (refs,removed,expectedEpoch,options) => ordered('core.document-selection-catalog',
+      {domain:'hydroBuiltin',refs,removed,...(expectedEpoch===undefined?{}:{expectedEpoch})},options,true,true),
     presentationCatalogLoad: (catalog,options) => ordered('core.document-presentation-catalog',{ catalog },options,true,true),
     selectionApply: (payload, options) => ordered('core.document-selection-apply', payload, options, true, true),
     selectionSnapshot: options => ordered('core.document-selection-snapshot', {}, options),

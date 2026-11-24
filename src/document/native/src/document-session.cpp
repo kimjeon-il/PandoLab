@@ -483,10 +483,13 @@ bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t e
 void DocumentSession::requireEpoch(std::uint32_t expectedEpoch) const {
     requireLoaded();if(expectedEpoch!=epoch_)throw std::invalid_argument("STALE_REVISION: session epoch changed");
 }
-DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>& refs,std::uint32_t expectedEpoch) {
+DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>& refs,std::uint32_t expectedEpoch,
+    const std::vector<SelectionRef>* removed) {
     requireEpoch(expectedEpoch);if(domain!="placeBuiltin"&&domain!="hydroBuiltin")throw std::invalid_argument("CORE_SELECTION_CATALOG: expected an external domain");
-    auto catalog=externalSelectionRefs_;
-    for(auto i=catalog.begin();i!=catalog.end();)if(i->first.domain==domain)i=catalog.erase(i);else ++i;
+    if(removed&&domain!="hydroBuiltin")throw std::invalid_argument("CORE_SELECTION_CATALOG: only hydro supports patches");
+    // Stage and validate the changed entries before touching the accepted
+    // catalog. Neither a full catalog copy nor a global diff is necessary.
+    std::map<SelectionRef,std::optional<std::string>> catalog;
     for(const auto& entry:refs) {
         const auto& ref=entry.ref;
         if(ref.domain!=domain||ref.id.empty()||ref.type.empty()||(entry.logicalId&&entry.logicalId->empty())||!catalog.emplace(ref,entry.logicalId).second)
@@ -495,9 +498,23 @@ DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& 
         for(const auto& source:entry.sourceIds)if(source.empty())throw std::invalid_argument("CORE_SELECTION_CATALOG: empty hydro source ID");
         if(!entry.sourceIds.empty()&&!entry.logicalId)throw std::invalid_argument("CORE_SELECTION_CATALOG: hydro aliases need explicit logical ID");
     }
-    auto selected=selection_;selected.prune([&](const SelectionRef& ref){return ref.domain!=domain||catalog.count(ref)!=0;});
-    auto candidate=project_.document();
-    if(domain=="hydroBuiltin"&&std::any_of(refs.begin(),refs.end(),[](const auto& row){return !row.sourceIds.empty();})) {
+    std::set<SelectionRef> removals;
+    if(removed)for(const auto& ref:*removed)
+        if(ref.domain!=domain||!externalSelectionRefs_.count(ref)||catalog.count(ref)||!removals.insert(ref).second)
+            throw std::invalid_argument("CORE_SELECTION_CATALOG: invalid patch removal");
+    auto selected=selection_;
+    selected.prune([&](const SelectionRef& ref){
+        return ref.domain!=domain||catalog.count(ref)!=0
+            ||(removed&&!removals.count(ref)&&externalSelectionRefs_.count(ref)!=0);
+    });
+    DocumentSessionOutcome outcome;outcome.result.status=CommandStatus::NoOp;
+    // Preserve the existing alias-presentation path, but do not copy the
+    // document for ordinary catalog admissions without visibility overrides.
+    const auto& visibility=project_.document().presentation.webPresentation.itemVisibility;
+    const auto hiddenGroup=visibility.find("hydro");
+    if(domain=="hydroBuiltin"&&hiddenGroup!=visibility.end()&&!hiddenGroup->second.empty()
+        &&std::any_of(refs.begin(),refs.end(),[](const auto& row){return !row.sourceIds.empty();})) {
+        auto candidate=project_.document();
         auto& hidden=candidate.presentation.webPresentation.itemVisibility["hydro"];
         for(const auto& entry:refs)if(entry.logicalId) {
             bool alias=false;for(const auto& row:hidden) {
@@ -506,15 +523,21 @@ DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& 
             }
             if(alias)hidden[*entry.logicalId]=false;
         }
+        if(candidate.exchangeMetadata!=project_.document().exchangeMetadata) {
+            GeometryProvenanceCodecAccess::admitPresentationMetadata(project_.document(),candidate);
+            outcome.result.impact=calculateChangeImpact(project_.document(),candidate,{},project_.timelineCursor());
+            outcome.delta=projectcodec::encodeWebDelta(project_.document(),candidate,outcome.result.impact);
+            project_.admitPresentation(std::move(candidate),false);outcome.result.status=CommandStatus::Applied;
+        }
     }
-    DocumentSessionOutcome outcome;outcome.result.status=CommandStatus::NoOp;
-    if(candidate.exchangeMetadata!=project_.document().exchangeMetadata) {
-        GeometryProvenanceCodecAccess::admitPresentationMetadata(project_.document(),candidate);
-        outcome.result.impact=calculateChangeImpact(project_.document(),candidate,{},project_.timelineCursor());
-        outcome.delta=projectcodec::encodeWebDelta(project_.document(),candidate,outcome.result.impact);
-        project_.admitPresentation(std::move(candidate),false);outcome.result.status=CommandStatus::Applied;
+    if(removed){
+        for(const auto& ref:removals)externalSelectionRefs_.erase(ref);
+        for(const auto& [ref,logicalId]:catalog)externalSelectionRefs_.erase(ref);
+    }else{
+        for(auto it=externalSelectionRefs_.begin();it!=externalSelectionRefs_.end();)
+            if(it->first.domain==domain)it=externalSelectionRefs_.erase(it);else ++it;
     }
-    externalSelectionRefs_=std::move(catalog);selection_=std::move(selected);
+    externalSelectionRefs_.merge(catalog);selection_=std::move(selected);
     return outcome;
 }
 bool DocumentSession::selectionRefExists(const SelectionRef& ref) const {

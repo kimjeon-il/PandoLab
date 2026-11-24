@@ -44,6 +44,25 @@ export function createProjectDomain({
   let commandQueue = Promise.resolve();
   const admittedSelectionCatalogs=new Map();
   const selectionCatalogKey=refs=>JSON.stringify(refs.map(resourceKey).sort());
+  const catalogEntryKey=ref=>JSON.stringify([ref.domain,ref.type,ref.id]);
+  function catalogEntries(refs){
+    const entries=new Map();
+    for(const ref of refs){
+      const id=catalogEntryKey(ref);
+      if(entries.has(id))return null; // keep native duplicate rejection
+      entries.set(id,{ref:cloneValue(ref),key:resourceKey(ref)});
+    }
+    return entries;
+  }
+  function catalogDelta(previous,next){
+    const refs=[],removed=[];
+    for(const [id,entry]of next)if(previous.get(id)?.key!==entry.key)refs.push(entry.ref);
+    for(const [id,entry]of previous)if(!next.has(id))removed.push(entry.ref);
+    return {refs,removed};
+  }
+  function rememberCatalog(domain,refs,key,entries=null){
+    admittedSelectionCatalogs.set(domain,{key,entries:domain==='hydroBuiltin'?(entries??catalogEntries(refs)):null});
+  }
   // One admitted C++ document is active irrespective of its input reader.
   // projectId identifies content; documentId and generation isolate a session.
   let activeProject=null;
@@ -93,7 +112,7 @@ export function createProjectDomain({
     for(const {domain,refs} of catalogs){
       const current=replacingProject?[]:refs;
       await commandOwner.selectionCatalogLoad(domain,current);
-      admittedSelectionCatalogs.set(domain,selectionCatalogKey(current));
+      rememberCatalog(domain,current,selectionCatalogKey(current));
     }
   };
 
@@ -233,11 +252,23 @@ export function createProjectDomain({
       if(typeof commandOwner?.selectionCatalogLoad!=='function' || typeof publishCommand!=='function')
         throw new TypeError('Canonical C++ builtin identity admission is required.');
       const refs=typeof refsProducerOrArray==='function' ? refsProducerOrArray():refsProducerOrArray;
-      const key=selectionCatalogKey(refs);
-      if(expectedEpoch===undefined&&admittedSelectionCatalogs.get(domain)===key)return false;
-      const result=await commandOwner.selectionCatalogLoad(domain,refs,expectedEpoch);
+      const previous=admittedSelectionCatalogs.get(domain);
+      const entries=domain==='hydroBuiltin'?catalogEntries(refs):null;
+      const patch=entries&&previous?.entries&&typeof commandOwner.selectionCatalogPatch==='function';
+      let key=null,result;
+      if(patch){
+        const delta=catalogDelta(previous.entries,entries);
+        if(expectedEpoch===undefined&&!delta.refs.length&&!delta.removed.length)return false;
+        result=await commandOwner.selectionCatalogPatch(delta.refs,delta.removed,expectedEpoch);
+      }else{
+        key=selectionCatalogKey(refs);
+        if(expectedEpoch===undefined&&previous?.key===key)return false;
+        result=await commandOwner.selectionCatalogLoad(domain,refs,expectedEpoch);
+      }
+      // A native acknowledgement updates the accepted transport base even
+      // if a subsequent presentation callback fails.
+      if(generation===expectedGeneration)rememberCatalog(domain,refs,key,entries);
       await publishCommand(result,{ expectedGeneration,reason: 'selection-catalog' });
-      if(generation===expectedGeneration)admittedSelectionCatalogs.set(domain,key);
       return result;
     });
     commandQueue=operation.catch(() => {});return operation;
