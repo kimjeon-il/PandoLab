@@ -32,7 +32,8 @@ import {createMapLibreSourceWrites,createMapLibreDatedSources} from './maplibre-
 
 const collection=features=>({type:'FeatureCollection',features});
 const empty=()=>collection([]);
-const countryTileSource=()=>({type:'geojson',data:empty(),promoteId:'objectKey',tolerance:0});
+// Display-only simplification is performed by MapLibre per tile/zoom; canonical geometry stays intact.
+const countryTileSource=()=>({type:'geojson',data:empty(),promoteId:'objectKey',tolerance:0.5});
 const countryFillFilter=batch=>['all',['==',['get','displayRole'],'country-fill'],['==',['get','paintBatch'],batch],['==',['get','blendMode'],'normal']];
 const SOURCE_LAYERS={'territories':['territories','borders'],'physical-land':['physical-land-fill'],'physical-water':['physical-water']};
 const ZOOM_EPSILON=1e-9;
@@ -220,8 +221,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    if(!groups.has(key))groups.set(key,{borderColor,borderAlpha,borderWidth,owners:[]});
    groups.get(key).owners.push(id);
   }
+  const geometryVersions=new Map(countryFeatures.map(feature=>[feature.id,geometryKey(feature.geometry)]));
   const rows=[...groups.values()].map(({owners,...paint},index)=>({
-   id:'country-border:'+index,paint,key:JSON.stringify([topologyKey,owners]),owners,
+   id:'country-border:'+index,paint,
+   key:JSON.stringify([paint,owners.map(id=>[id,geometryVersions.get(id)])]),
+   owners,
   }));
   const needed=rows.filter(row=>!countryBoundaryGeometry.has(row.key));
   const prepared=needed.length?await prepareBoundaryGroups(countryFeatures,topologyKey,needed,revision,signal):null;

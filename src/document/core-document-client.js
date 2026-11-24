@@ -43,6 +43,8 @@ export function createCoreDocumentClient({
   function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument, geometryReceipt = null) {
     const result = queue.then(async () => {
       policy.assertOperation(operation);
+      // Superseded interactive reads must never block the next cursor change.
+      if (options.signal?.aborted) throw cancelled('PL-CORE-CANCELLED','Request cancelled before dispatch.');
       if (disposed) throw Object.assign(new Error('The C++ document owner was disposed.'),
         { code: 'PL-CORE-CANCELLED', name: 'AbortError', cancelled: true });
       if (options.isCurrent && !options.isCurrent()) fail('PL-CORE-STALE', 'The request belongs to another project generation.');
