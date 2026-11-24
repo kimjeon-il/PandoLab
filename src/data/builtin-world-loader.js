@@ -66,7 +66,7 @@ export function resolveBuiltinWorldGeometry(index,read,month){
  return world.entities.map(row=>({owner:row.objectRef.id,asset:catalog.get(geometryKey(row.geometryRef))}));
 }
 
-export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches}){
+export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=64*1024*1024}){
  if(!manifestUrl||!manifestSpec?.sha256||!dataRevision)throw new Error('Builtin country catalog integrity metadata is required');
  const base=new URL(manifestUrl,globalThis.location?.href),parse=bytes=>JSON.parse(new TextDecoder().decode(bytes));
  const assetOptions={dataRevision,fetchFn,cacheStorage,resolveUrl:spec=>new URL(spec.url,base).href};
@@ -75,7 +75,28 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  const catalogs=createStoredAssetLoader(assetOptions);
  const assets=createStoredAssetLoader({...assetOptions,cachePolicy:'immutable'});
  let indexPromise,readMetadata,geometryAssetsByRef;
+ if(!Number.isSafeInteger(geometryCacheBytes)||geometryCacheBytes<0)throw new RangeError('Invalid builtin geometry cache budget');
  const geometries=new Map(),pending=new Map(),geometryStates=new Map();
+ let geometryBytes=0,geometryEvictions=0;
+ function cachedGeometry(key){
+  const entry=geometries.get(key);
+  if(!entry)return undefined;
+  geometries.delete(key);geometries.set(key,entry);
+  return entry.source;
+ }
+ function rememberGeometry(asset,source){
+  const key=asset.file,bytes=Math.max(asset.decodedBytes,source.length*2);
+  const previous=geometries.get(key);
+  if(previous){geometryBytes-=previous.bytes;geometries.delete(key);}
+  if(bytes>geometryCacheBytes){geometryStates.delete(key);return source;}
+  while(geometryBytes+bytes>geometryCacheBytes&&geometries.size){
+   const oldest=geometries.keys().next().value;
+   geometryBytes-=geometries.get(oldest).bytes;geometries.delete(oldest);
+   geometryStates.delete(oldest);geometryEvictions++;
+  }
+  geometries.set(key,{source,bytes});geometryStates.set(key,'ready');geometryBytes+=bytes;
+  return source;
+ }
  let activeReads=0;
  const readQueue=[];
  async function limitedRead(operation){
@@ -108,13 +129,13 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  }
  async function loadGeometry(asset){
   const key=asset.file;
-  if(geometries.has(key))return geometries.get(key);
+  if(geometries.has(key))return cachedGeometry(key);
   const existing=pending.get(key);
   if(existing)return (await existing)??loadGeometry(asset);
   geometryStates.set(key,'loading');
   const reading=limitedRead(()=>assets.loadAsset({...asset,url:asset.file},
    'builtin-world',asset.id,'국가 형상',buffer=>decodeGeometryContent(buffer,asset)))
-   .then(({value})=>{geometries.set(key,value);geometryStates.set(key,'ready');return value;})
+   .then(({value})=>rememberGeometry(asset,value))
    .catch(error=>{geometryStates.set(key,'error');throw error;}).finally(()=>pending.delete(key));
   pending.set(key,reading);
   return reading;
@@ -138,13 +159,13 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     }
     return rows;
    })).then(({value})=>{
-    for(const {asset,value:source} of value){geometries.set(asset.file,source);geometryStates.set(asset.file,'ready');}
+    return new Map(value.map(({asset,value:source})=>[asset.file,rememberGeometry(asset,source)]));
    }).catch(()=>{
     // The individual catalog assets remain the recovery path for this group.
     for(const {asset} of missing)geometryStates.delete(asset.file);
    }).finally(()=>{for(const {asset} of missing)pending.delete(asset.file);});
   for(const {asset} of missing){
-   pending.set(asset.file,done.then(()=>geometries.get(asset.file)));
+   pending.set(asset.file,done.then(values=>values?.get(asset.file)));
    geometryStates.set(asset.file,'loading');
   }
   return done;
@@ -204,16 +225,25 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   const files=new Map([...required.values()].map(asset=>[asset.file,asset]));
   const eligible=packs.filter(pack=>pack.members.every(({asset})=>files.has(asset.file)));
   const packed=new Set(eligible.flatMap(pack=>pack.members.map(({asset})=>asset.file)));
-  const reads=eligible.filter(pack=>pack.members.some(({asset})=>!geometries.has(asset.file))).map(pack=>()=>loadPack(pack));
-  for(const asset of files.values())if(!packed.has(asset.file)&&!geometries.has(asset.file))reads.push(()=>loadGeometry(asset));
+  // The request owns its assembly independently of the bounded reusable
+  // cache; a whole active world may itself exceed the cache budget.
+  const resolved=new Map();
+  for(const asset of files.values())if(geometries.has(asset.file))resolved.set(asset.file,cachedGeometry(asset.file));
+  const readGeometry=async asset=>{resolved.set(asset.file,await loadGeometry(asset));};
+  const reads=eligible.filter(pack=>pack.members.some(({asset})=>!resolved.has(asset.file))).map(pack=>async()=>{
+   const values=await loadPack(pack);
+   for(const [file,source] of values||[])resolved.set(file,source);
+  });
+  for(const asset of files.values())if(!packed.has(asset.file)&&!resolved.has(asset.file))reads.push(()=>readGeometry(asset));
   await loadAll(reads,read=>read());
   // A failed pack or a concurrent pack reader may leave individual members outstanding.
-  const outstanding=[...files.values()].filter(asset=>!geometries.has(asset.file));
-  await loadAll(outstanding,loadGeometry);
-  project.geometries=Array.from(required.values(),asset=>({id:asset.id,version:asset.version,source:geometries.get(asset.file)}));
+  const outstanding=[...files.values()].filter(asset=>!resolved.has(asset.file));
+  await loadAll(outstanding,readGeometry);
+  project.geometries=Array.from(required.values(),asset=>({id:asset.id,version:asset.version,source:resolved.get(asset.file)}));
   if(waitForIdle)await waitForIdle();
   assertCurrent();
   return {project,fingerprint:`${manifestSpec.sha256}:complete-timeline`};
  }
- return Object.freeze({loadIndex,loadProject,loadGeometryResources,geometryState});
+ return Object.freeze({loadIndex,loadProject,loadGeometryResources,geometryState,
+  geometryCacheStats:()=>({bytes:geometryBytes,budget:geometryCacheBytes,entries:geometries.size,evictions:geometryEvictions})});
 }

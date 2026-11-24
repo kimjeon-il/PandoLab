@@ -160,6 +160,24 @@ test('builtin startup geometry verifies packs and recovers only unavailable or i
   }
 });
 
+test('builtin geometry assembly survives a cache budget smaller than the active world',async()=>{
+  const world=fixture(),{receipt,assets}=world.output();
+  const loader=createBuiltinWorldLoader({manifestUrl:base+indexPath,manifestSpec:world.manifestSpec,dataRevision:'test',
+    startupGeometryPacks:receipt,assetRoot:base,cacheStorage:null,geometryCacheBytes:256,fetchFn:async url=>{
+      const path=new URL(url).pathname.replace('/Pando/','');
+      return new Response(path===indexPath?world.bytes:assets.get(path)??world.files.get(path.replace('assets/data/builtin-world/','')));
+    }});
+  const {project}=await loader.loadProject('2026-11');
+  assert.equal(project.geometries.length,world.index.geometryAssets.length);
+  assert.ok(project.geometries.every(row=>JSON.parse(row.source).type==='Polygon'));
+  const stats=loader.geometryCacheStats();
+  assert.ok(stats.bytes<=stats.budget);
+  assert.ok(stats.entries<project.geometries.length);
+  const resources=await loader.loadGeometryResources(world.index.geometryAssets);
+  assert.deepEqual(new Map(resources.map(row=>[row.id,row.source])),new Map(project.geometries.map(row=>[row.id,row.source])));
+  assert.ok(loader.geometryCacheStats().bytes<=stats.budget);
+});
+
 test('a fresh builtin compilation applies the dated formal name source and preserves earlier names and geometry',()=>{
  const fixture=historicalWorldCases();
  const selections=fixture.currentSnapshot.entityRefs.map(entityId=>{
