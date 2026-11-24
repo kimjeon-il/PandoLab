@@ -221,11 +221,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    if(!groups.has(key))groups.set(key,{borderColor,borderAlpha,borderWidth,owners:[]});
    groups.get(key).owners.push(id);
   }
-  const geometryVersions=new Map(countryFeatures.map(feature=>[feature.id,geometryKey(feature.geometry)]));
   const rows=[...groups.values()].map(({owners,...paint},index)=>({
-   id:'country-border:'+index,paint,
-   key:JSON.stringify([paint,owners.map(id=>[id,geometryVersions.get(id)])]),
-   owners,
+   id:'country-border:'+index,paint,key:JSON.stringify([topologyKey,owners]),owners,
   }));
   const needed=rows.filter(row=>!countryBoundaryGeometry.has(row.key));
   const prepared=needed.length?await prepareBoundaryGroups(countryFeatures,topologyKey,needed,revision,signal):null;
