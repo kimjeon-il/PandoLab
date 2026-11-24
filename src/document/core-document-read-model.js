@@ -210,6 +210,28 @@ export function createCoreDocumentReadModel(initialProject) {
     const entities=world.entities;
     return acceptWorld({ month: world.month,sourceEpoch: epoch,entities },epoch);
   }
+  function applyGeometryAdmission(delta,verified){
+    if(!Array.isArray(delta.admitted)||!Array.isArray(delta.removed))
+      invalid('A Core geometry resource receipt is required.');
+    if(!delta.admitted.length&&!delta.removed.length)return;
+    const incoming=new Map((verified?.resources||[]).map(row=>[refKey(row),row]));
+    const hashes=new Map((verified?.descriptors||[]).map(row=>[refKey(row),row.contentSha256]));
+    const removed=new Set(delta.removed.map(refKey)),admitted=new Set();
+    const rows=delta.admitted.map(ref=>{
+      const key=refKey(ref),payload=incoming.get(key);
+      if(!payload||admitted.has(key)||removed.has(key)||geometries.get(ref))
+        invalid('Core geometry receipt does not match the submitted immutable resource.');
+      admitted.add(key);
+      return {id:ref.id,version:ref.version,geojson:JSON.parse(payload.source)};
+    });
+    for(const ref of delta.removed)if(!geometries.get(ref))invalid('Unknown evicted geometry resource.');
+    const entries=project.geometries.filter(row=>!removed.has(refKey(row))).concat(rows);
+    const next=createGeometryVersionStore(entries,{reuse:geometries,verifiedContentHashes:hashes});
+    project=freeze({...project,geometries:next.snapshot()});geometries=next;
+    // Do not pin the old archive through the current read model.
+    // Old displayed rows remain valid until the atomic cursor projection.
+    worldSourceProject=project;
+  }
   function acceptTransition(result,operation,verifiedResources) {
     if(operation==='core.document-temporal-candidate-adopt') {
       const complete=Object.hasOwn(result||{},'project'),delta=result?.delta!=null;
@@ -219,6 +241,10 @@ export function createCoreDocumentReadModel(initialProject) {
     if (['core.document-load','core.document-load-baseline','core.document-initialize',
       'core.document-replacement-rollback'].includes(operation))
       acceptLoadedProject(result.project);
+    if(operation==='core.document-geometry-admit'||operation==='core.document-timeline-cursor'){
+      if(!result?.geometryDelta)invalid('Core resource transition requires a geometry receipt.');
+      applyGeometryAdmission(result.geometryDelta,verifiedResources);
+    }
     if (result?.delta) apply(result.delta,verifiedResources);
     if(operation==='core.document-timeline-cursor') {
       if(!result?.worldDelta)invalid('A cursor transition requires a Core world delta.');

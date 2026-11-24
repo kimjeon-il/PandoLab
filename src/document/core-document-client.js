@@ -18,7 +18,7 @@ export function createCoreDocumentClient({
   let disposed = false;
   let queue = Promise.resolve();
   let geometryLoader=null;
-  let documentGeneration=0;
+  let documentGeneration=0,geometryCacheRevision=0;
   const staleGeometryReceipt=Symbol('stale geometry preparation');
   const geometryReceipts=new WeakMap();
   const verifiedResourceAdmissions=new WeakMap();
@@ -52,7 +52,7 @@ export function createCoreDocumentClient({
       const speculative=speculativeOps.get(operation);
       if ((atomic || speculative) && options.signal?.aborted)
         throw cancelled('PL-CORE-CANCELLED','Document operation was cancelled before dispatch.');
-      if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration))
+      if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration||geometryReceipt.cacheRevision!==geometryCacheRevision))
         return staleGeometryReceipt;
       const request = injectEpoch ? { ...payload,
         expectedEpoch: Object.hasOwn(payload, 'expectedEpoch') ? payload.expectedEpoch : currentState?.epoch ?? 0 } : payload;
@@ -85,6 +85,7 @@ export function createCoreDocumentClient({
       if (detachedOps.has(operation))
         return result;
       if(replacesDocument.has(operation))documentGeneration++;
+      if(operation==='core.document-geometry-admit'||operation==='core.document-timeline-cursor')geometryCacheRevision++;
       const next = stateResponses.has(operation) ? result : result?.state;
       if (next) {
         if (!Number.isSafeInteger(next.epoch) || next.epoch < 0) fail('PL-CORE-RESPONSE', 'A current document operation epoch is required.');
@@ -112,28 +113,30 @@ export function createCoreDocumentClient({
     const generation=documentGeneration;
     const query=await ordered('core.document-geometry-requirements',{month},options);
     if(!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
+    let cacheRevision=geometryCacheRevision;
     const isCurrent=()=>!disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
-      &&options.isCurrent?.()!==false&&!options.signal?.aborted;
+      &&geometryCacheRevision===cacheRevision&&options.isCurrent?.()!==false&&!options.signal?.aborted;
     if(query.resources.length){
       if(typeof geometryLoader!=='function')fail('GEOMETRY_UNLOADED','Required immutable geometry loader is unavailable.');
       const resources=await geometryLoader(query.resources,{...options,isCurrent});
       if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
-      const admission={resources,expectedEpoch:query.sourceEpoch};
-      verifiedResourceAdmissions.set(admission,query.resources);
+      const admission={resources,month,expectedEpoch:query.sourceEpoch};
+      verifiedResourceAdmissions.set(admission,{descriptors:query.resources,resources});
       await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
+      cacheRevision=geometryCacheRevision;
     }
     if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
     const receipt=Object.freeze({});
-    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation});
+    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation,cacheRevision});
     return receipt;
   }
   async function prepareTimelineGeometry(month,options={}){
     for(;;){
-      const epoch=currentState?.epoch,generation=documentGeneration;
+      const epoch=currentState?.epoch,generation=documentGeneration,cacheRevision=geometryCacheRevision;
       try{return await ensureGeometryResources(month,options);}
       catch(error){
         if((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
-          ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation)||!currentState)throw error;
+          ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation&&geometryCacheRevision===cacheRevision)||!currentState)throw error;
       }
     }
   }
@@ -157,7 +160,11 @@ export function createCoreDocumentClient({
       geometryLoader=loader;return ()=>{if(geometryLoader===loader)geometryLoader=null;};
     },
     geometryRequirements:(month='',options)=>ordered('core.document-geometry-requirements',{month},options),
-    admitGeometryResources:(resources,options)=>ordered('core.document-geometry-admit',{resources},options,true,true),
+    admitGeometryResources:(resources,options)=>{
+      const admission={resources,month:''};
+      verifiedResourceAdmissions.set(admission,{resources,descriptors:[]});
+      return ordered('core.document-geometry-admit',admission,options,true,true);
+    },
     prepareTimelineGeometry,
     storageBaselineLoad: (baseline,options) => ordered('core.storage-baseline-load',{ baseline },options,true,true),
     temporalSourcePrepare:(source,{dataRevision,manifestSha256,...options}={})=>

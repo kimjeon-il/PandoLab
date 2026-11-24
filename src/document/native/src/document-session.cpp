@@ -427,20 +427,36 @@ ResolvedWorld DocumentSession::resolveWorld(const std::string& month) const { re
 std::vector<GeometryRef> DocumentSession::geometryRequirements(const std::string& month,std::uint32_t expectedEpoch) const {
     requireEpoch(expectedEpoch);return project_.missingGeometries(month);
 }
-std::string DocumentSession::admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>& payloads,std::uint32_t expectedEpoch) {
-    requireEpoch(expectedEpoch);GeometryStore admitted;ChangeImpact impact;auto candidate=project_.document();
+GeometryResourceAdmission DocumentSession::admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>& payloads,std::uint32_t expectedEpoch,const std::string& targetMonth) {
+    requireEpoch(expectedEpoch);auto candidate=project_.document().geometries;
+    GeometryResourceAdmission result;std::set<GeometryRef> received;
     for(const auto& [ref,bytes]:payloads) {
-        const auto found=candidate.geometries.resources().find(ref);
-        if(found==candidate.geometries.resources().end())throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: undeclared reference");
+        const auto found=candidate.resources().find(ref);
+        if(found==candidate.resources().end()||!received.insert(ref).second)
+            throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: undeclared or duplicate reference");
+        if(candidate.get(ref)){
+            if(bytes.size()!=found->second.decodedBytes||projectcodec::sha256Bytes(bytes)!=found->second.contentSha256)
+                throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: content mismatch");
+            continue;
+        }
         auto geometry=projectcodec::decodeGeometryResource(found->second,bytes);
-        admitted.declareResource(ref,found->second);
-        admitted.insertCanonical(ref,std::move(geometry));
-        if(!candidate.geometries.get(ref)){candidate.geometries.retainFrom(admitted,ref,ref);impact.changedGeometries.push_back(ref);}
+        candidate.insertCanonical(ref,std::move(geometry));
+        result.admitted.push_back(ref);
     }
-    const auto delta=projectcodec::encodeWebDelta(project_.document(),candidate,impact);
-    project_.admitGeometryResources(admitted);return delta;
+    // An explicit all-resource request (no month) is allowed to materialize
+    // the complete archive for export. Interactive preparation pins only
+    // the currently displayed and requested target months.
+    if(!targetMonth.empty()){
+        const auto current=project_.resolveTimelineMetadata(project_.timelineCursor());
+        const auto target=project_.resolveTimelineMetadata(targetMonth);
+        auto protectedRefs=project_.protectedGeometryResources(current.get(),target.get());
+        protectedRefs.insert(received.begin(),received.end());
+        result.evicted=candidate.trimResourceCache(protectedRefs);
+        candidate.requireReady(target->requiredGeometries);
+    }
+    project_.admitGeometryResources(std::move(candidate));return result;
 }
-bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse) {
+bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse,std::vector<GeometryRef>* evictedResources) {
     requireLoaded();if(expectedEpoch!=epoch_)throw std::invalid_argument("STALE_REVISION: session epoch changed");
     if(epoch_==std::numeric_limits<std::uint32_t>::max())throw std::overflow_error("CORE_SESSION_EPOCH_OVERFLOW");
     // Resolve exactly once. The same temporal result prunes selection, builds
@@ -450,7 +466,7 @@ bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t e
     // The immutable result is shared by selection, projection and transport.
     if(resolvedForResponse)*resolvedForResponse=world;
     const bool cursorChanged=project_.timelineCursor()!=month;
-    if(!project_.setTimelineCursor(month,true,world.get()))return false;
+    if(!project_.setTimelineCursor(month,true,world.get(),evictedResources))return false;
     sourceEpoch_=++epoch_;selection_=std::move(nextSelection);return cursorChanged;
 }
 void DocumentSession::requireEpoch(std::uint32_t expectedEpoch) const {

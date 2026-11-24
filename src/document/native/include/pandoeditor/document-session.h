@@ -17,6 +17,9 @@ struct DocumentSessionState {
     std::vector<std::string> dirtyTerritorialIds;
     std::uint32_t storageBaselineId=0;
 };
+struct GeometryResourceAdmission {
+    std::vector<GeometryRef> admitted,evicted;
+};
 struct DocumentSessionOutcome {
     CommandResult result;
     std::uint32_t candidateId=0;
@@ -98,8 +101,8 @@ public:
     ResolvedWorld resolveWorld(const std::string& month) const;
     std::shared_ptr<const ResolvedWorld> resolveWorldShared(const std::string& month) const;
     std::vector<GeometryRef> geometryRequirements(const std::string&,std::uint32_t expectedEpoch) const;
-    std::string admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>&,std::uint32_t expectedEpoch);
-    bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse=nullptr);
+    GeometryResourceAdmission admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>&,std::uint32_t expectedEpoch,const std::string& targetMonth={});
+    bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse=nullptr,std::vector<GeometryRef>* evictedResources=nullptr);
     SelectionState& selection() { return selection_; }
     const SelectionState& selection() const { return selection_; }
     DocumentSessionOutcome selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>&,std::uint32_t expectedEpoch);

@@ -135,7 +135,7 @@ void Project::replace(ProjectDocument document)
     revision_=0; presentationRevision_=0;
     timelineCursor_.clear();timelineEditsEnabled_=!isStaticTimeline(state_->document);
 }
-bool Project::setTimelineCursor(const std::string& month,bool activateEdits,const ResolvedWorld* resolved) {
+bool Project::setTimelineCursor(const std::string& month,bool activateEdits,const ResolvedWorld* resolved,std::vector<GeometryRef>* evictedResources) {
     const auto header=codecjson::parse(document().exchangeMetadata);if(header.object.count("projectSetup"))projectcodec::requireNavigationMonth(header.object.at("projectSetup"),month);
     std::string next;
     if(!month.empty()) {
@@ -144,11 +144,28 @@ bool Project::setTimelineCursor(const std::string& month,bool activateEdits,cons
         next=parsed.canonical;
     }
     const bool activates=activateEdits&&!timelineEditsEnabled_;
-    if(next==timelineCursor_){timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return activates;}
     const auto cached=(!resolved&&!next.empty()&&!isStaticTimeline(document()))?resolveTimelineMetadata(next):nullptr;
-    auto view=next.empty()?std::shared_ptr<const detail::DocumentState>{}:projectedState(document(),next,resolved?resolved:cached.get());
-    viewState_=std::move(view);
-    timelineCursor_.swap(next);timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return true;
+    const auto* target=resolved?resolved:cached.get();
+    auto nextState=state_;
+    std::vector<GeometryRef> evicted;
+    if(evictedResources&&target&&!document().geometries.resources().empty()){
+        auto store=document().geometries;
+        evicted=store.trimResourceCache(protectedGeometryResources(target));
+        // Preserve recency even if no eviction was necessary.
+        auto candidate=document();candidate.geometries=std::move(store);
+        nextState=std::make_shared<const detail::DocumentState>(std::move(candidate));
+    }
+    if(next==timelineCursor_&&nextState==state_){
+        timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return activates;
+    }
+    auto view=next.empty()?std::shared_ptr<const detail::DocumentState>{}:projectedState(nextState->document,next,target);
+    const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
+    const bool changed=next!=timelineCursor_;
+    state_=std::move(nextState);viewState_=std::move(view);
+    if(reuse)preparedTimelineSource_=state_;
+    if(evictedResources)*evictedResources=std::move(evicted);
+    timelineCursor_.swap(next);timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;
+    return changed||activates;
 }
 ProjectSnapshot Project::snapshotForView() const {
     if(!isStaticTimeline(document())) {
@@ -200,19 +217,25 @@ std::vector<GeometryRef> Project::missingGeometries(const std::string& month) co
     std::vector<GeometryRef> missing;for(const auto& ref:required)if(!document().geometries.get(ref))missing.push_back(ref);
     return missing;
 }
-void Project::admitGeometryResources(const GeometryStore& resources) {
-    std::map<const detail::DocumentState*,std::shared_ptr<const detail::DocumentState>> rebuilt;
-    const auto rebase=[&](const std::shared_ptr<const detail::DocumentState>& old) {
-        if(const auto found=rebuilt.find(old.get());found!=rebuilt.end())return found->second;
-        auto document=old->document;const bool changed=document.geometries.retainReadyFrom(resources);
-        auto next=changed?std::make_shared<const detail::DocumentState>(std::move(document)):old;
-        rebuilt.emplace(old.get(),next);return next;
-    };
-    auto state=rebase(state_);
+std::set<GeometryRef> Project::protectedGeometryResources(const ResolvedWorld* current,const ResolvedWorld* target) const {
+    std::set<GeometryRef> refs;
+    for(const auto* world:{current,target})if(world)refs.insert(world->requiredGeometries.begin(),world->requiredGeometries.end());
+    // Non-temporal content and opaque dependencies cannot be reconstructed
+    // from a month resolver. Keep their original resource allocations.
+    for(const auto& [ref,users]:index().geometryUsers)
+        for(const auto& owner:users)if(owner.domain!="territorial"&&owner.domain!="hydro"){refs.insert(ref);break;}
+    if(document().geometryProvenance.opaqueUncertain)
+        for(const auto& [ref,resource]:document().geometries.resources())refs.insert(ref);
+    return refs;
+}
+void Project::admitGeometryResources(GeometryStore resources) {
+    auto candidate=document();candidate.geometries=std::move(resources);
+    auto next=std::make_shared<const detail::DocumentState>(std::move(candidate));
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
-    std::shared_ptr<const ResolvedWorld> resolved;if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))resolved=resolveTimelineMetadata(timelineCursor_);
-    auto view=projectedState(state->document,timelineCursor_,resolved.get());
-    state_=std::move(state);viewState_=std::move(view);
+    std::shared_ptr<const ResolvedWorld> resolved;
+    if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(next->document))resolved=resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(next->document,timelineCursor_,resolved.get());
+    state_=std::move(next);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
 }
 const ProjectDocument& Project::document() const noexcept { return state_->document; }

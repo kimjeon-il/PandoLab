@@ -682,12 +682,16 @@ public:
             }
             auto result=val::object();result.set("resources",rows);result.set("sourceEpoch",epoch);return result;});
     }
-    val admitGeometryResources(val payloads,std::uint32_t epoch) {
+    val admitGeometryResources(val payloads,std::uint32_t epoch,const std::string& month) {
         return boundary([&]{array(payloads,"INVALID_GEOMETRY_RESOURCE");std::vector<std::pair<GeometryRef,std::string>> rows;
             for(unsigned i=0;i<payloads["length"].as<unsigned>();++i){const auto row=payloads[i];shape(row,{"id","version","source"},"INVALID_GEOMETRY_RESOURCE");
                 rows.push_back({{text(row["id"],"INVALID_GEOMETRY_RESOURCE"),temporalHandle(row["version"],"INVALID_GEOMETRY_RESOURCE")},text(row["source"],"INVALID_GEOMETRY_RESOURCE")});}
-            const auto delta=session_.admitGeometryResources(rows,epoch);auto result=val::object();
-            result.set("state",documentState(session_.projectState()));result.set("delta",val::global("JSON").call<val>("parse",delta));return result;
+            const auto delta=session_.admitGeometryResources(rows,epoch,month);
+            auto result=val::object(),geometryDelta=val::object(),admitted=val::array(),removed=val::array();
+            unsigned i=0;for(const auto& ref:delta.admitted)admitted.set(i++,geometry(ref));
+            i=0;for(const auto& ref:delta.evicted)removed.set(i++,geometry(ref));
+            geometryDelta.set("admitted",admitted);geometryDelta.set("removed",removed);
+            result.set("state",documentState(session_.projectState()));result.set("geometryDelta",geometryDelta);return result;
         });
     }
     val setTimelineCursor(const std::string& month,std::uint32_t epoch) {
@@ -695,12 +699,17 @@ public:
             session_.requireEpoch(epoch);
             const auto before=session_.resolveWorldShared(session_.project().timelineCursor());
             std::shared_ptr<const ResolvedWorld> resolved;
-            session_.setTimelineCursor(month,epoch,&resolved);
+            std::vector<GeometryRef> evicted;
+            session_.setTimelineCursor(month,epoch,&resolved,&evicted);
             const auto state=session_.projectState();
             auto result=val::object();
             result.set("state",documentState(state));
             result.set("selection",::selectionSnapshot(session_.selection()));
             result.set("worldDelta",worldDelta(*before,*resolved,epoch,state.epoch));
+            auto geometryDelta=val::object(),removed=val::array();
+            unsigned i=0;for(const auto& ref:evicted)removed.set(i++,geometry(ref));
+            geometryDelta.set("admitted",val::array());geometryDelta.set("removed",removed);
+            result.set("geometryDelta",geometryDelta);
             return result;
         });
     }

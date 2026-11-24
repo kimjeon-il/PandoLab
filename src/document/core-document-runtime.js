@@ -71,7 +71,7 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
     }),
     resolveWorld: (payload, context) => call('resolveWorld', [payload.month, payload.expectedEpoch], context),
     geometryRequirements:(payload,context)=>call('geometryRequirements',[payload.month,payload.expectedEpoch],context),
-    admitGeometryResources:(payload,context)=>call('admitGeometryResources',[payload.resources,payload.expectedEpoch],context),
+    admitGeometryResources:(payload,context)=>call('admitGeometryResources',[payload.resources,payload.expectedEpoch,payload.month],context),
     setTimelineCursor: (payload, context) => call('setTimelineCursor', [payload.month, payload.expectedEpoch], context,
       result => {
         const delta=result?.worldDelta;

@@ -87,6 +87,32 @@ bool GeometryStore::retainReadyFrom(const GeometryStore& source) {
     }
     return changed;
 }
+std::vector<GeometryRef> GeometryStore::trimResourceCache(const std::set<GeometryRef>& protectedRefs,std::uint64_t budget) {
+    std::uint64_t bytes=0;
+    struct Entry {GeometryRef ref;std::uint64_t bytes,access;};
+    std::vector<Entry> inactive;
+    for(const auto& [ref,resource]:resources_){
+        const auto found=versions_.find(ref);if(found==versions_.end())continue;
+        const auto& shape=*found->second;
+        // Conservative coordinate allocation estimate for the native and
+        // projected JS caches; not a process RSS or GPU memory measurement.
+        std::uint64_t cost=64ull*shape.points.size();
+        for(const auto& line:shape.lines)cost+=64ull*line.size()+64;
+        for(const auto& polygon:shape.polygons)for(const auto& ring:polygon)cost+=64ull*ring.size()+64;
+        cost=std::max(cost,resource.decodedBytes);bytes+=cost;
+        if(protectedRefs.count(ref))resourceAccess_[ref]=++resourceClock_;
+        else inactive.push_back({ref,cost,resourceAccess_[ref]});
+    }
+    std::sort(inactive.begin(),inactive.end(),[](const auto& a,const auto& b){
+        return std::tie(a.access,a.ref)<std::tie(b.access,b.ref);
+    });
+    std::vector<GeometryRef> evicted;
+    for(const auto& row:inactive){
+        if(bytes<=budget)break;
+        bytes-=row.bytes;versions_.erase(row.ref);resourceAccess_.erase(row.ref);evicted.push_back(row.ref);
+    }
+    return evicted;
+}
 std::vector<TimelineEntityIdentity> timelineEntityCatalog(const ProjectDocument& d) {
     std::vector<TimelineEntityIdentity> result;
     for(const auto& unit:d.units)result.push_back({territorialRef(unit.id),unit.kind==UnitKind::General?"general":"regional"});

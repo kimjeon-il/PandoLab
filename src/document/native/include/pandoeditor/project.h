@@ -44,7 +44,8 @@ class Project {
 public:
     const std::string& timelineCursor() const noexcept { return timelineCursor_; }
     // Session month only: no content revision, dirty bit or history entry.
-    bool setTimelineCursor(const std::string& month,bool activateEdits=true,const ResolvedWorld* resolved=nullptr);
+    bool setTimelineCursor(const std::string& month,bool activateEdits=true,const ResolvedWorld* resolved=nullptr,
+        std::vector<GeometryRef>* evictedResources=nullptr);
     bool timelineEditsEnabled() const noexcept { return timelineEditsEnabled_; }
     ResolvedWorld resolveWorld(const std::string& month) const;
     // A borrowed, immutable result remains valid across later cache lookups.
@@ -78,7 +79,8 @@ private:
     friend class DocumentSession;
     void admitTerritorialSource(ProjectDocument,const std::string& month,bool activateEdits);
     void admitPresentation(ProjectDocument,bool advanceRevision=true);
-    void admitGeometryResources(const GeometryStore&);
+    void admitGeometryResources(GeometryStore);
+    std::set<GeometryRef> protectedGeometryResources(const ResolvedWorld* current,const ResolvedWorld* target=nullptr) const;
     std::shared_ptr<const ResolvedWorld> resolveTimelineMetadata(const std::string&) const;
     void admitTerritorialDirtyIds(const std::function<std::vector<std::string>(const ProjectDocument&)>&);
     // Capture snapshots and mutate Project only on the owner thread.

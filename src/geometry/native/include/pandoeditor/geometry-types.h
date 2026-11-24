@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -51,11 +52,17 @@ public:
     void retain(GeometryRef,std::shared_ptr<const Geometry>);
     void retainFrom(const GeometryStore& validatedSource,const GeometryRef& sourceRef,GeometryRef destinationRef);
     bool retainReadyFrom(const GeometryStore& verifiedSource);
+    // Only hash-pinned, reloadable resources may be evicted. Declared
+    // references and authored/non-resource geometry remain canonical.
+    std::vector<GeometryRef> trimResourceCache(const std::set<GeometryRef>& protectedRefs,
+        std::uint64_t budget=64ull*1024*1024);
     std::shared_ptr<const Geometry> get(const GeometryRef& ref) const;
     const auto& versions() const { return versions_; }
 private:
     std::map<GeometryRef,GeometryResource> resources_;
     std::map<GeometryRef,std::shared_ptr<const Geometry>> versions_;
+    std::map<GeometryRef,std::uint64_t> resourceAccess_;
+    std::uint64_t resourceClock_=0;
 };
 struct Validity { std::optional<std::string> from, to; };
 std::pair<std::int64_t,std::int64_t> temporalBounds(const Validity& validity);
