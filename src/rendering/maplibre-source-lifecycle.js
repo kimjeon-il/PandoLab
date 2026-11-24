@@ -1,7 +1,9 @@
 import {createGeometryByteEstimator,estimateFeatureRows} from './geometry-residency.js';
+import {createRenderLifetime} from './render-lifetime.js';
 // Owns native source writes and the two dated source slots. Rendering owns
 // frame admission; no document state or camera policy is stored here.
-export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevision,isDisposed,requiredSource,dirty,track,onError}) {
+export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevision,isDisposed,requiredSource,dirty,track,onError,
+ lifetime=createRenderLifetime({getMap,getGeneration,getContextRevision,isDisposed})}) {
  const pending=new Set(),queues=new WeakMap(),liveLanes=new Set(),handledErrors=new WeakSet();
  function pendingCount(){
   const map=getMap(),generation=getGeneration(),context=getContextRevision();
@@ -17,8 +19,8 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   const entry=lane.waiting.shift();
   if(!entry){if(queues.get(source)===lane)queues.delete(source);liveLanes.delete(lane);return;}
   lane.running=true;
-  const {map,generation,context,id,isCurrent,shareAcrossGenerations,start}=entry;
-  const live=()=>!isDisposed()&&getMap()===map&&context===getContextRevision()&&map.getSource(id)===source;
+  const {map,generation,id,isCurrent,shareAcrossGenerations,start,scope}=entry;
+  const live=()=>scope.sourceCurrent(id,source);
   const sameGeneration=()=>generation===getGeneration();
   const execute=async()=>{
    if(!live()||!isCurrent()||(!shareAcrossGenerations&&!sameGeneration()))return false;
@@ -50,12 +52,12 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   });
  }
  function update(start,id,isCurrent=()=>true,{shareAcrossGenerations=false,coalesce=false}={}){
-  const map=getMap(),generation=getGeneration(),context=getContextRevision(),source=map.getSource(id);
+  const scope=lifetime.capture(),{map,generation,context}=scope,source=map?.getSource(id);
   if(requiredSource(id))dirty();
   if(!source)return Promise.resolve(false);
   let lane=queues.get(source);
   if(!lane){lane={running:false,waiting:[]};queues.set(source,lane);liveLanes.add(lane);}
-  const entry={map,id,source,generation,context,start,isCurrent,shareAcrossGenerations,coalesce};
+  const entry={map,id,source,generation,context,start,isCurrent,shareAcrossGenerations,coalesce,scope};
   if(coalesce){
    const last=lane.waiting.at(-1);
    if(last?.coalesce&&last.id===id&&last.context===context&&last.generation===generation){

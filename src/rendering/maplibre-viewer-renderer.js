@@ -15,6 +15,7 @@ import {createMapLibreHydroDisplay} from './maplibre-hydro-display.js';
 import {createMapLibreSelection} from './maplibre-selection-controller.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
 import {renderCacheBudget} from './render-cache-budget.js';
+import {createRenderLifetime} from './render-lifetime.js';
 import {createMapLibreSourceWrites,createMapLibreDatedSources} from './maplibre-source-lifecycle.js';
 
 const collection=features=>({type:'FeatureCollection',features});
@@ -112,7 +113,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   temporalPending:()=>frame.temporalPending(),standbyBudget:renderCacheBudget().datedStandbyBytes,
   hasPendingWrite:source=>sourceWrites.hasPendingWrite(source),
   onEvict:(kind,id)=>{if(kind==='territories')scene.removeCountryFillSource(id);}});
- const sourceWrites=createMapLibreSourceWrites({getMap:()=>map,getGeneration:()=>frame.generation,getContextRevision:()=>frame.contextRevision,
+ const lifetime=createRenderLifetime({getMap:()=>map,getGeneration:()=>frame.generation,getContextRevision:()=>frame.contextRevision,isDisposed:()=>disposed});
+ const sourceWrites=createMapLibreSourceWrites({lifetime,getMap:()=>map,getGeneration:()=>frame.generation,getContextRevision:()=>frame.contextRevision,
   isDisposed:()=>disposed,requiredSource:id=>requiredSource(id),dirty,onError:failMapPreparation,
   track:(name,submit)=>metrics.track(name,()=>{stats.sourceWrites++;return submit();})});
  const scene=createMapLibreSceneController({getMap:()=>map,isLoaded:()=>loaded,isStyleReady:styleReady,isDisposed:()=>disposed,
@@ -122,7 +124,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  getExternalBasemap:()=>externalBasemap,getSelectionSnapshot:()=>selection.snapshot,setSelection,
  invalidatePickingLayers:()=>selection.invalidateLayers(),preferences:deps.preferences,state,datedSources,sourceWrites,
  sourceLayer,sourceGroups:SOURCE_LAYERS,dirty,invalidate,failMapPreparation,feedback:deps.feedback});
- const physicalBase=createMapLibrePhysicalBase({getMap:()=>map,getGeneration:()=>frame.generation,isDisposed:()=>disposed,
+ const physicalBase=createMapLibrePhysicalBase({lifetime,getMap:()=>map,getGeneration:()=>frame.generation,isDisposed:()=>disposed,
  isContextReady:styleReady,isTemporalPending:()=>frame.temporalPending(),
  physicalResources:deps.physicalResources,datedSources,sourceWrites,setData,preparePhysicalDisplay,orderSceneLayers,
  dirty,invalidate,failMapPreparation,getStats:()=>stats});

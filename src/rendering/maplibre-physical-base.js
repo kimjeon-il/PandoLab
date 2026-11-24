@@ -1,13 +1,14 @@
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
 import {createGeometryByteEstimator,estimateFeatureRows} from './geometry-residency.js';
+import {createLatestRenderRequests,createRenderLifetime} from './render-lifetime.js';
 const collection=features=>({type:'FeatureCollection',features});
 // The native source writer stays with MapLibre, while its land/water
 // preparation, current-source identity and admission state live here.
 export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isContextReady,isTemporalPending,
  physicalResources,datedSources,sourceWrites,setData,preparePhysicalDisplay,orderSceneLayers,
- dirty,invalidate,failMapPreparation,getStats}){
+ dirty,invalidate,failMapPreparation,getStats,lifetime=createRenderLifetime({getMap,getGeneration,isDisposed})}){
  let landRevision=null,physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null;
- const physicalPending=new Map(),geometryBytes=createGeometryByteEstimator();
+ const physicalPending=createLatestRenderRequests(),geometryBytes=createGeometryByteEstimator();
  function preparePhysicalSource(kind,key,data,displayPrepared=false){
   const previous=physicalPending.get(kind);
   if(previous?.key===key&&previous.source===getMap().getSource(previous.id))return;
@@ -19,7 +20,7 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   };
   const cached=datedSources.reuse(kind,key);
   if(cached){
-   physicalPending.delete(kind);
+   physicalPending.cancel(kind);
    publish(cached[0],cached[1].source);
    getStats().retainedSourceHits++;
    return;
@@ -29,10 +30,9 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   const writePending=sourceWrites.hasPendingWrite(getMap().getSource(active));
   const useStandby=(isTemporalPending()&&activeReady)||previous?.id===active||writePending;
   const id=useStandby?datedSources.reserve(kind,sourceWrites.hasPendingWrite):active;
-  const source=getMap().getSource(id),entry={key,source,id,generation:getGeneration()};
-  physicalPending.set(kind,entry);
+  const scope=lifetime.capture(),source=scope.map.getSource(id),entry=physicalPending.begin(kind,{key,source,id,generation:scope.generation});
   datedSources.set(id,{kind,source});
-  const current=()=>!isDisposed()&&physicalPending.get(kind)===entry&&getMap().getSource(id)===source;
+  const current=()=>physicalPending.current(kind,entry)&&scope.sourceCurrent(id,source);
   if(kind==='physical-land'&&displayPrepared)getStats().physicalLandAssetHits++;
   // Tag only the display derivative; source-owned geometry and selection
   // identities are left intact.
@@ -43,8 +43,8 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
    if(!current())return false;
    estimatedBytes=estimateFeatureRows(value.features,geometryBytes);
    return setData(id,value,current,{shareAcrossGenerations:true});
-  },cause=>{if(current()){physicalPending.delete(kind);failMapPreparation(cause);}return false;})
-   .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){datedSources.set(id,{kind,source,key,estimatedBytes});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
+  },cause=>{if(current()){physicalPending.finish(kind,entry);failMapPreparation(cause);}return false;})
+   .then(applied=>{if(!current())return;physicalPending.finish(kind,entry);if(applied){datedSources.set(id,{kind,source,key,estimatedBytes});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.finish(kind,entry);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
  }
 
  function syncPhysicalContext(){
@@ -71,5 +71,5 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   get revision(){return landRevision;},
   resetContext(){physicalPending.clear();physicalLandKey='';physicalWaterKey='';physicalLandSource=null;physicalWaterSource=null;},
   resetProject(){physicalPending.clear();landRevision=null;physicalLandKey='';physicalWaterKey='';physicalLandSource=null;physicalWaterSource=null;},
-  dispose(){physicalPending.clear();}});
+  dispose(){physicalPending.dispose();}});
 }

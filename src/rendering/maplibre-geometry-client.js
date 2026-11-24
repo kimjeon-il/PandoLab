@@ -5,6 +5,7 @@ import {immutableGeometryContentKey} from '../geometry/geometry-version-store.js
 import {createGeometryInputTransport} from './geometry-input-transport.js';
 import {renderCacheBudget} from './render-cache-budget.js';
 import {createGeometryByteEstimator} from './geometry-residency.js';
+import {createLatestRenderRequests} from './render-lifetime.js';
 export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWorker=worker=>worker===getWorker(),isDisposed=()=>false,
  track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100)),
  inputTransport=null,onInput=()=>{}}){
@@ -53,14 +54,12 @@ export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWor
 }
 export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>false,getGeneration,onRestart=()=>{},getStats,metrics,
  createRpc=createWorkerRpcClient,createWorker=createVerifiedCoreWorker}){
- let geometryRpc=null,geometryAbort=new AbortController(),countryAbort=null,closed=false;
+ let geometryRpc=null,geometryAbort=new AbortController(),closed=false;
+ const latest=createLatestRenderRequests();
  const unavailable=()=>closed||isDisposed();
  function requireOpen(){if(unavailable())throw new DOMException('Geometry client disposed','AbortError');}
- function cancelCountryRequest(){countryAbort?.abort();countryAbort=null;}
- function startCountryRequest(){
-  requireOpen();cancelCountryRequest();
-  countryAbort=new AbortController();return countryAbort.signal;
- }
+ function cancelCountryRequest(){latest.cancel('country');}
+ function startCountryRequest(){requireOpen();return latest.begin('country').signal;}
  const physicalDisplayCache=new Map(),physicalEstimate=createGeometryByteEstimator(),budget=renderCacheBudget();
  const inputTransport=createGeometryInputTransport({stableKey:immutableGeometryContentKey});
  function trimPhysical(pinned){
@@ -136,7 +135,7 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   if(!retainPhysical){for(const entry of physicalDisplayCache.values())entry.controller.abort();physicalDisplayCache.clear();}
  },
  dispose(){
-  if(closed)return;closed=true;cancelCountryRequest();geometryAbort.abort();
+  if(closed)return;closed=true;latest.dispose();geometryAbort.abort();
   for(const entry of physicalDisplayCache.values())entry.controller.abort();
   physicalDisplayCache.clear();const worker=geometryRpc;geometryRpc=null;worker?.stop('maplibre-dispose');
  }});
