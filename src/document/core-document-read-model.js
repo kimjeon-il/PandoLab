@@ -63,11 +63,14 @@ export function createCoreDocumentReadModel(initialProject) {
         if(!binding.geometryRef)continue;
         const key=refKey(binding.geometryRef);
         if(!index.has(key))index.set(key,[]);
-        index.get(key).push({binding,interval:normalizeTemporalInterval(binding.validFrom,binding.validTo)});
+        index.get(key).push({binding,interval:null});
       }
       bindingIndexes.set(bindings,index);
     }
-    return (index.get(refKey(ref))||[]).find(({interval})=>temporalContains(interval,date))?.binding??null;
+    return (index.get(refKey(ref))||[]).find(row=>{
+      row.interval??=normalizeTemporalInterval(row.binding.validFrom,row.binding.validTo);
+      return temporalContains(row.interval,date);
+    })?.binding??null;
   }
   function acceptLoadedProject(value) {
     if (!value || !Array.isArray(value.geometries)) invalid('A complete accepted C++ storage snapshot is required after document load.');

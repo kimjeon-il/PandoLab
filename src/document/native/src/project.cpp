@@ -149,11 +149,11 @@ bool Project::setTimelineCursor(const std::string& month,bool activateEdits,cons
     auto nextState=state_;
     std::vector<GeometryRef> evicted;
     if(evictedResources&&target&&!document().geometries.resources().empty()){
-        auto store=document().geometries;
-        evicted=store.trimResourceCache(protectedGeometryResources(target));
-        // Preserve recency even if no eviction was necessary.
-        auto candidate=document();candidate.geometries=std::move(store);
-        nextState=std::make_shared<const detail::DocumentState>(std::move(candidate));
+        evicted=document().geometries.resourceCacheEvictions(protectedGeometryResources(target));
+        if(!evicted.empty()){
+            auto candidate=document();candidate.geometries.evictResources(evicted);
+            nextState=std::make_shared<const detail::DocumentState>(std::move(candidate),*state_,detail::DocumentState::VerifiedResources{});
+        }
     }
     if(next==timelineCursor_&&nextState==state_){
         timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return activates;
@@ -228,13 +228,17 @@ std::set<GeometryRef> Project::protectedGeometryResources(const ResolvedWorld* c
         for(const auto& [ref,resource]:document().geometries.resources())refs.insert(ref);
     return refs;
 }
-void Project::admitGeometryResources(GeometryStore resources) {
+void Project::admitGeometryResources(GeometryStore resources,bool evicted) {
     auto candidate=document();candidate.geometries=std::move(resources);
-    auto next=std::make_shared<const detail::DocumentState>(std::move(candidate));
+    auto next=std::make_shared<const detail::DocumentState>(std::move(candidate),*state_,detail::DocumentState::VerifiedResources{});
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
-    std::shared_ptr<const ResolvedWorld> resolved;
-    if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(next->document))resolved=resolveTimelineMetadata(timelineCursor_);
-    auto view=projectedState(next->document,timelineCursor_,resolved.get());
+    // New target-month bytes cannot change the current projected view. Only
+    // an eviction could leave an old view pinning a retired allocation.
+    auto view=viewState_;
+    if(evicted||(!view&&!isStaticTimeline(next->document))){
+        const auto resolved=timelineCursor_.empty()?nullptr:resolveTimelineMetadata(timelineCursor_);
+        view=projectedState(next->document,timelineCursor_,resolved.get());
+    }
     state_=std::move(next);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
 }

@@ -21,7 +21,7 @@ export function createCoreDocumentClient({
   let documentGeneration=0,geometryCacheRevision=0;
   const staleGeometryReceipt=Symbol('stale geometry preparation');
   const geometryReceipts=new WeakMap();
-  const verifiedResourceAdmissions=new WeakMap();
+  const verifiedResourceAdmissions=new WeakMap(),geometryResponseRevisions=new WeakMap();
   const replacesDocument=new Set(['core.document-load','core.document-load-baseline','core.document-initialize',
     'core.storage-baseline-load','core.document-temporal-candidate-adopt','core.document-replacement-rollback']);
   const subscribers = new Set();
@@ -86,6 +86,8 @@ export function createCoreDocumentClient({
         return result;
       if(replacesDocument.has(operation))documentGeneration++;
       if(operation==='core.document-geometry-admit'||operation==='core.document-timeline-cursor')geometryCacheRevision++;
+      if(operation==='core.document-geometry-requirements'||operation==='core.document-geometry-admit')
+        geometryResponseRevisions.set(result,geometryCacheRevision);
       const next = stateResponses.has(operation) ? result : result?.state;
       if (next) {
         if (!Number.isSafeInteger(next.epoch) || next.epoch < 0) fail('PL-CORE-RESPONSE', 'A current document operation epoch is required.');
@@ -93,7 +95,9 @@ export function createCoreDocumentClient({
           ? { dirtyTerritorialIds: Object.freeze([...next.dirtyTerritorialIds]) }: {}) });
       }
       try {
-        onTransition(result, operation, payload, verifiedResourceAdmissions.get(payload));
+        const verified=verifiedResourceAdmissions.get(payload);
+        verifiedResourceAdmissions.delete(payload);
+        onTransition(result, operation, payload, verified);
         // Accepted read projections publish synchronously in this queue. A
         // subscriber must not dispatch and await another queued Core request.
         for (const listener of subscribers) listener(result, operation, payload);
@@ -113,7 +117,7 @@ export function createCoreDocumentClient({
     const generation=documentGeneration;
     const query=await ordered('core.document-geometry-requirements',{month},options);
     if(!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
-    let cacheRevision=geometryCacheRevision;
+    let cacheRevision=geometryResponseRevisions.get(query);
     const isCurrent=()=>!disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
       &&geometryCacheRevision===cacheRevision&&options.isCurrent?.()!==false&&!options.signal?.aborted;
     if(query.resources.length){
@@ -122,8 +126,8 @@ export function createCoreDocumentClient({
       if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
       const admission={resources,month,expectedEpoch:query.sourceEpoch};
       verifiedResourceAdmissions.set(admission,{descriptors:query.resources,resources});
-      await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
-      cacheRevision=geometryCacheRevision;
+      const admitted=await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
+      cacheRevision=geometryResponseRevisions.get(admitted);
     }
     if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
     const receipt=Object.freeze({});

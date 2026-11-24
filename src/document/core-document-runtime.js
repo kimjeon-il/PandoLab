@@ -71,13 +71,19 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
     }),
     resolveWorld: (payload, context) => call('resolveWorld', [payload.month, payload.expectedEpoch], context),
     geometryRequirements:(payload,context)=>call('geometryRequirements',[payload.month,payload.expectedEpoch],context),
-    admitGeometryResources:(payload,context)=>call('admitGeometryResources',[payload.resources,payload.expectedEpoch,payload.month],context),
+    admitGeometryResources:(payload,context)=>call('admitGeometryResources',[payload.resources,payload.expectedEpoch,payload.month],context,result=>{
+      if(result?.state?.epoch!==payload.expectedEpoch||!Array.isArray(result?.geometryDelta?.admitted)||!Array.isArray(result?.geometryDelta?.removed))
+        fail('PL-CORE-DOCUMENT-ABI','Core resource admission requires an epoch-pinned reference receipt.');
+      return result;
+    }),
     setTimelineCursor: (payload, context) => call('setTimelineCursor', [payload.month, payload.expectedEpoch], context,
       result => {
         const delta=result?.worldDelta;
         if (!result?.state || !delta || delta.baseEpoch!==payload.expectedEpoch || delta.sourceEpoch!==result.state.epoch
           || delta.month!==result.state.timelineCursor || !Number.isSafeInteger(delta.entityCount) || delta.entityCount<0
-          || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed))
+          || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
+          || !Array.isArray(result.geometryDelta?.admitted)||result.geometryDelta.admitted.length
+          || !Array.isArray(result.geometryDelta?.removed))
           fail('PL-CORE-DOCUMENT-ABI', 'The C++ cursor transition must return its own epoch-pinned world delta.');
         return result;
       }).catch(error => {

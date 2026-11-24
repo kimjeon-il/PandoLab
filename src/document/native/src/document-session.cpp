@@ -454,7 +454,8 @@ GeometryResourceAdmission DocumentSession::admitGeometryResources(const std::vec
         result.evicted=candidate.trimResourceCache(protectedRefs);
         candidate.requireReady(target->requiredGeometries);
     }
-    project_.admitGeometryResources(std::move(candidate));return result;
+    if(!result.admitted.empty()||!result.evicted.empty())project_.admitGeometryResources(std::move(candidate),!result.evicted.empty());
+    return result;
 }
 bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse,std::vector<GeometryRef>* evictedResources) {
     requireLoaded();if(expectedEpoch!=epoch_)throw std::invalid_argument("STALE_REVISION: session epoch changed");

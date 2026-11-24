@@ -79,7 +79,7 @@ private:
     friend class DocumentSession;
     void admitTerritorialSource(ProjectDocument,const std::string& month,bool activateEdits);
     void admitPresentation(ProjectDocument,bool advanceRevision=true);
-    void admitGeometryResources(GeometryStore);
+    void admitGeometryResources(GeometryStore,bool evicted);
     std::set<GeometryRef> protectedGeometryResources(const ResolvedWorld* current,const ResolvedWorld* target=nullptr) const;
     std::shared_ptr<const ResolvedWorld> resolveTimelineMetadata(const std::string&) const;
     void admitTerritorialDirtyIds(const std::function<std::vector<std::string>(const ProjectDocument&)>&);
