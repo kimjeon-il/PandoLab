@@ -1,5 +1,6 @@
 import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
 import { admittedGeometryKey, geometryReferenceFor } from "../geometry/geometry-version-store.js";
+import {worldViewChange} from './world-view-change.js';
 // A fast path is allowed only for *verified* presentation-only differences.
 // The full Core and renderer path stays authoritative for any uncertainty.
 function sameValue(left,right,budget){
@@ -44,14 +45,15 @@ function sameOtherProperties(left,right,owner='',budget){
  * property may change. The returned IDs affect paint/labels only; both
  * queries and Core admission retain their existing authoritative contracts.
  */
-export function classifyTerritorialPropertyOnly(previous,next){
+export function classifyTerritorialPropertyOnly(previous,next,knownIndices=null){
   if(!Array.isArray(previous)||!Array.isArray(next)||previous.length!==next.length)return null;
   const paintChangedIds=[],labelChangedIds=[];
   // Avoid doubling the full-country coordinate scan on a large historical
   // replacement. The existing exact GPU digest remains the fallback.
   const budget={remaining:50000};
   let changedRows=0;
-  for(let index=0;index<previous.length;index++){
+  const indices=knownIndices??previous.keys();
+  for(const index of indices){
     const before=previous[index],after=next[index];
     if(!before||!after||before.id!==after.id||before.id==null)return null;
     if(before===after)continue;
@@ -101,15 +103,21 @@ export function createTerritorialEntityStore({ documentModel,commandOwner,onEnti
     content: resourceKey(rows.filter(feature => feature.properties.entityKind === 'general' && !feature.properties.parentId)
       .map(feature => [feature.id, admittedGeometryKey(feature.geometry)])), preparation: 'roots-v1', context: null, presentation: 'roots' });
   const unsubscribe=commandOwner.subscribeTransitions(() => {
-    const next=documentModel.territorialViews();
-    const before=new Map(previous.map(row => [row.id,row])),after=new Map(next.map(row => [row.id,row]));
-    const changedIds=new Set([...before.keys(),...after.keys()].filter(id => before.get(id)!==after.get(id)));
-    const prior=previous;
+    const next=documentModel.territorialViews(),prior=previous;
+    if(next===prior)return;
+    const indices=worldViewChange(prior,next);
+    let changedIds;
+    if(indices)changedIds=new Set(indices.map(i=>next[i].id));
+    else{
+      const before=new Map(prior.map(row=>[row.id,row])),after=new Map(next.map(row=>[row.id,row]));
+      changedIds=new Set([...before.keys(),...after.keys()].filter(id=>before.get(id)!==after.get(id)));
+    }
     previous=next;
     if (changedIds.size) {
-      const presentationOnly=classifyTerritorialPropertyOnly(prior,next);
+      const presentationOnly=classifyTerritorialPropertyOnly(prior,next,indices);
+      const rootGeometry=row=>row.properties.entityKind==='general'&&!row.properties.parentId?admittedGeometryKey(row.geometry):null;
       const rootGeometryChanged=presentationOnly===null
-        ?resourceUpdate(dependencies(prior), dependencies(next)).prepare:false;
+        ?indices?indices.some(i=>rootGeometry(prior[i])!==rootGeometry(next[i])):resourceUpdate(dependencies(prior), dependencies(next)).prepare:false;
       onEntitiesReplaced(next,{changedIds,previous:prior,rootGeometryChanged,
         propertyOnly:presentationOnly!==null,
         paintChangedIds:presentationOnly?.paintChangedIds||[],

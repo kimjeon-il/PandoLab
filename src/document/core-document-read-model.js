@@ -1,6 +1,8 @@
 import { timelineObjectKey } from "./timeline-records.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
 import { projectTimelineIdentity } from "./timeline-resolver.js";
+import {rememberWorldViewChange} from './world-view-change.js';
+import {createWorldLookup} from './world-view-lookup.js';
 import { normalizeTemporalInterval,temporalContains, temporalMonthEnd,compareTemporalKeys } from "./temporal.js";
 
 const fields = Object.freeze({ territorial: 'territorialEntities', label: 'labels', hydro: 'hydroEdits',
@@ -48,7 +50,7 @@ export function createCoreDocumentReadModel(initialProject) {
   // Cache indexes by immutable source collections, not the whole project
   // snapshot: a geometry-only delta does not invalidate object identities.
   const identityIndexes=new WeakMap(),bindingIndexes=new WeakMap(),projectionSources=new WeakMap();
-  const worldBindingWindows=new WeakMap(),viewsByRow=new WeakMap();
+  const worldBindingWindows=new WeakMap(),viewsByRow=new WeakMap(),worldLookups=new WeakMap(),viewOffsets=new WeakMap();
   function identityIndex(identities){
     let index=identityIndexes.get(identities);
     if(!index){index=new Map(identities.map(identity=>[identity.id,identity]));identityIndexes.set(identities,index);}
@@ -131,14 +133,27 @@ export function createCoreDocumentReadModel(initialProject) {
       invalid('A detached import world must be distinct from an epoch-pinned active read model.');
     if (!detached && responseWorld.sourceEpoch !== expectedEpoch) throw Object.assign(new Error('The C++ world belongs to another document operation epoch.'),
       { code: 'PL-CORE-STALE', name: 'AbortError', cancelled: true });
-    const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)},byId=new Map();
+    const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)};
     const referenceDate=temporalMonthEnd(responseWorld.month);
     const previousWorld = !detached ? world : null;
     const bindingWindow={start:null,end:null,checks:[]};
-    const rows = responseWorld.entities.map(row => {
+    const lookup=createWorldLookup();
+    const rows=responseWorld.entities.map(row=>{
       const key=timelineObjectKey(row.objectRef);
-      const identity = identities[row.objectRef.domain]?.get(row.objectRef.id), geometry = sourceGeometries.get(row.geometryRef);
-      if (!identity || !geometry || byId.has(key) || !Array.isArray(row.ancestors))
+      if(lookup.has(key))invalid('Duplicate C++ world identity: '+row.objectRef.id);
+      const projected=projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,bindingWindow);
+      lookup.set(key,projected);return projected;
+    });
+    return makeWorld(responseWorld,rows,lookup,bindingWindow,detached);
+  }
+  function makeWorld(response,rows,lookup,window,detached=false){
+    Object.freeze(rows);worldBindingWindows.set(rows,window);worldLookups.set(rows,lookup);
+    return Object.freeze({month:response.month,...(detached?{}:{sourceEpoch:response.sourceEpoch}),entities:rows,
+      byId:Object.freeze({get:id=>lookup.get(timelineObjectKey({domain:'territorial',id})),getObject:ref=>lookup.get(timelineObjectKey(ref))})});
+  }
+  function projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,bindingWindow){
+      const identity=identities[row.objectRef.domain]?.get(row.objectRef.id),geometry=sourceGeometries.get(row.geometryRef);
+      if (!identity || !geometry || !Array.isArray(row.ancestors))
         invalid(`The C++ world contains an unknown/duplicate identity or geometry: ${row.objectRef.id}`);
       for (const field of ['parentId','coverageMode','validFrom','validTo','rootId'])
         if (!Object.hasOwn(row, field)) invalid(`Required C++ world field is missing: ${field}`);
@@ -160,7 +175,6 @@ export function createCoreDocumentReadModel(initialProject) {
           && sameDisplayValue(prior.ancestors,row.ancestors)
           && sameDisplayValue(prior.rendering,row.rendering)
           && sameDisplayValue(prior.properties,row.properties)))) {
-        byId.set(key,prior);
         return prior;
       }
       const temporalIdentity=projectTimelineIdentity(identity,row.properties);
@@ -171,20 +185,11 @@ export function createCoreDocumentReadModel(initialProject) {
         ?freeze({...datedIdentity,properties:{...datedIdentity.properties,...row.rendering}}):datedIdentity;
       const projected = freeze({ ...structuredClone(worldEntityPayload(row)), id:row.objectRef.id, identity:effectiveIdentity, geometry });
       projectionSources.set(projected,{identity,version:sourceVersion,binding:sourceBinding});
-      byId.set(key, projected);
       return projected;
-    });
-    Object.freeze(rows);worldBindingWindows.set(rows,bindingWindow);
-    return Object.freeze({ month: responseWorld.month,...(detached ? {} : { sourceEpoch: responseWorld.sourceEpoch }), entities: rows,
-      byId: Object.freeze({ get: id => byId.get(timelineObjectKey({domain:'territorial',id})), getObject: ref => byId.get(timelineObjectKey(ref)) }) });
   }
   const projectWorld=(value,expectedEpoch) => worldAgainst(value,expectedEpoch,project,geometries);
-  function viewsForWorld(nextWorld) {
-    const territorial=[],hydro=[];
-    let sameTerritorial=true,sameHydro=true;
-    for(const row of nextWorld.entities){
-      const isHydro=row.objectRef.domain==='hydro';
-      const target=isHydro?hydro:territorial,previous=isHydro?hydroViews:territorialViews;
+  function viewForRow(row){
+    const isHydro=row.objectRef.domain==='hydro';
       let view=viewsByRow.get(row);
       if(!view){
         const prior=world?.byId.getObject(row.objectRef),priorView=prior&&viewsByRow.get(prior);
@@ -196,11 +201,23 @@ export function createCoreDocumentReadModel(initialProject) {
           parentId:row.parentId,coverageMode:row.coverageMode,validFrom:row.validFrom,validTo:row.validTo}});
         viewsByRow.set(row,view);
       }
+    return view;
+  }
+  function viewsForWorld(nextWorld) {
+    const territorial=[],hydro=[],territorialOffsets=new Map(),hydroOffsets=new Map();
+    let sameTerritorial=true,sameHydro=true;
+    for(const row of nextWorld.entities){
+      const isHydro=row.objectRef.domain==='hydro';
+      const target=isHydro?hydro:territorial,previous=isHydro?hydroViews:territorialViews;
+      const view=viewForRow(row);
       if(view!==previous[target.length]){if(isHydro)sameHydro=false;else sameTerritorial=false;}
+      (isHydro?hydroOffsets:territorialOffsets).set(row.id,target.length);
       target.push(view);
     }
-    return {territorial:sameTerritorial&&territorial.length===territorialViews.length?territorialViews:Object.freeze(territorial),
-      hydro:sameHydro&&hydro.length===hydroViews.length?hydroViews:Object.freeze(hydro)};
+    const nextTerritorial=sameTerritorial&&territorial.length===territorialViews.length?territorialViews:Object.freeze(territorial);
+    const nextHydro=sameHydro&&hydro.length===hydroViews.length?hydroViews:Object.freeze(hydro);
+    viewOffsets.set(nextTerritorial,territorialOffsets);viewOffsets.set(nextHydro,hydroOffsets);
+    return {territorial:nextTerritorial,hydro:nextHydro};
   }
   function acceptWorld(value,expectedEpoch) {
     const nextWorld=projectWorld(value,expectedEpoch);
@@ -212,6 +229,40 @@ export function createCoreDocumentReadModel(initialProject) {
   }
   const worldEntityPayload=({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties})=>
     ({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties});
+  function acceptStableWorldDelta(delta,positions){
+    const prior=world,oldWindow=worldBindingWindows.get(prior.entities),lookup=worldLookups.get(prior.entities);
+    if(!oldWindow||!lookup||!canReuseWorldAt(delta.month))return null;
+    // Keep the prior date certificate conservatively. A changed binding may
+    // shrink it; a later request outside it uses the complete validated path.
+    // Do not let accumulated uncertain checks grow without bound.
+    if(oldWindow.checks.length+positions.size>Math.max(16,prior.entities.length))return null;
+    const window={...oldWindow,checks:oldWindow.checks.slice()};
+    const identities={territorial:identityIndex(project.territorialEntities),hydro:identityIndex(project.hydroEdits)};
+    const referenceDate=temporalMonthEnd(delta.month),rows=prior.entities.slice(),updates=[];
+    const territorialChanges=[],hydroChanges=[];
+    for(const [index,entity]of positions){
+      const row=projectRow(entity,identities,geometries,referenceDate,prior,window);
+      if(row===prior.entities[index])continue;
+      rows[index]=row;updates.push([timelineObjectKey(row.objectRef),row]);
+      const isHydro=row.objectRef.domain==='hydro',before=isHydro?hydroViews:territorialViews;
+      const offset=viewOffsets.get(before)?.get(row.id);
+      if(offset===undefined)return null;
+      const view=viewForRow(row);
+      if(view!==before[offset])(isHydro?hydroChanges:territorialChanges).push([offset,view]);
+    }
+    const patchViews=(before,changed)=>{
+      if(!changed.length)return before;
+      const next=before.slice();
+      for(const [index,view]of changed)next[index]=view;
+      Object.freeze(next);viewOffsets.set(next,viewOffsets.get(before));
+      rememberWorldViewChange(before,next,changed.map(([index])=>index));
+      return next;
+    };
+    const next=makeWorld(delta,rows,lookup.fork(updates),window);
+    territorialViews=patchViews(territorialViews,territorialChanges);
+    hydroViews=patchViews(hydroViews,hydroChanges);
+    world=next;worldSourceProject=project;return next;
+  }
   function acceptWorldDelta(delta,state) {
     if (!world || delta.baseEpoch!==world.sourceEpoch || delta.sourceEpoch!==state.epoch
       || delta.month!==state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
@@ -246,6 +297,11 @@ export function createCoreDocumentReadModel(initialProject) {
       touched.add(id);if(world.byId.getObject(entity.objectRef))retainedCount--;positions.set(index,entity);
     }
     if(retainedCount+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
+    if(!delta.removed.length&&!Object.hasOwn(delta,'retainedOrder')&&delta.entityCount===world.entities.length
+      &&[...positions].every(([index,entity])=>key(world.entities[index].objectRef)===key(entity.objectRef))){
+      const stable=acceptStableWorldDelta(delta,positions);
+      if(stable)return stable;
+    }
     let retained=world.entities;
     if(Object.hasOwn(delta,'retainedOrder')){
       if(delta.retainedOrder.length!==retainedCount)invalid('Invalid retained world delta order count.');

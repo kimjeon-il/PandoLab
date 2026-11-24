@@ -3,6 +3,7 @@ import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-s
 import {sameRenderIdentity} from './render-identity.js';
 import {countryContentIdentity,immutableCountryRows} from './country-content-identity.js';
 import {countryDefaultColor} from '../ui/color-adapter.js';
+import {worldViewChange} from '../document/world-view-change.js';
 import {prepareCountryPresentation,countryPaintOnly,countryTileDiff} from './maplibre-country-presentation.js';
 const collection=features=>({type:'FeatureCollection',features});
 
@@ -21,12 +22,18 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(!key){key=[row.id,row.geometry,row.properties.parentId,row.properties.entityKind,row.properties.style?.color,countryDefaultColor(row)];fillInputs.set(row,key);}
   return key;
  }
- const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>{
-  const next=after[index];
-  if(row===next)return true;
-  const previous=fillIdentity(row),current=fillIdentity(next);
-  return previous.every((value,i)=>value===current[i]);
- });
+ const equivalent=(before,after)=>{
+  if(before===after)return true;
+  if(before.length!==after.length)return false;
+  const indices=worldViewChange(before,after)??before.keys();
+  for(const index of indices){
+   const row=before[index],next=after[index];
+   if(row===next)continue;
+   const previous=fillIdentity(row),current=fillIdentity(next);
+   if(!previous.every((value,i)=>value===current[i]))return false;
+  }
+  return true;
+ };
  function repositoryFor(entities,features){
   if(immutableCountryRows(entities)&&immutableCountryRows(features)){
    let byFeatures=immutableRepositories.get(entities);

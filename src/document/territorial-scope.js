@@ -1,5 +1,6 @@
 import { normalizeClippedPolygonGeometry } from "../geometry/polygon-geometry-utils.js";
 import { admittedGeometryKey } from "../geometry/geometry-version-store.js";
+import {worldViewChange} from './world-view-change.js';
 
 const polygons = geometry => geometry?.type === 'Polygon' ? [geometry.coordinates]
   : geometry?.type === 'MultiPolygon' ? geometry.coordinates : [];
@@ -66,8 +67,10 @@ export function createTerritorialScopeResolver({ entityRepository, clipper }) {
   function displayEntities() {
     const entities = entityRepository.list();
     if (entities !== displayValues) {
-      displayValues = entities;
-      displayById = new Map(entities.map(entity => [String(entity.id), entity]));
+      const changed=displayValues&&worldViewChange(displayValues,entities);
+      if(changed)for(const i of changed)displayById.set(String(entities[i].id),entities[i]);
+      else displayById=new Map(entities.map(entity=>[String(entity.id),entity]));
+      displayValues=entities;
     }
     return displayValues;
   }

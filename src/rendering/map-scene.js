@@ -13,10 +13,13 @@ function freezeStyle(value){
 }
 const rowRevision=row=>row.geometryRevision??admittedGeometryKey(row.geometry);
 function reuseRows(items,previous){
- const next=[];let same=true;
+ const next=[];let same=true,byKey=null;
  for(const item of items){
   if(!item?.key||!item.geometry)continue;
-  const prior=previous[next.length],revision=rowRevision(item);
+  const at=previous[next.length],revision=rowRevision(item);
+  let prior=at;
+  if(at?.key!==item.key){byKey??=new Map(previous.map(row=>[row.key,row]));prior=byKey.get(item.key);}
+  if(prior!==at)same=false;
   if(prior&&prior.geometryRevision===revision&&prior.key===item.key&&prior.objectKey===item.objectKey
    &&prior.role===item.role&&prior.order===item.order&&prior.blendMode===item.blendMode
    &&sameRenderIdentity(prior.style,item.style))next.push(prior);
