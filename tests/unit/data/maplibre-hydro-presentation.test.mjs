@@ -283,3 +283,29 @@ test('hydro selection changes only published packs and retains unchanged fragmen
   assert.equal(water.canPick('3:f','water3'),true);
  }finally{water.dispose();}
 });
+
+
+test('project reset readmits the same hydro viewport without rewriting its native source',async()=>{
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),on(){},off(){}};
+ const pack={id:1,features:[{id:'1:f',properties:{logicalId:'river'}}]};
+ let writes=0,admissions=0;
+ const water=createMapLibreHydroPresentation({map,updateSource:async()=>{writes++;return true;},
+  admitFeatures:async()=>{admissions++;return true;},onFeatures(){},onError:assert.fail,
+  load:async()=>({key:'1',packs:[pack],packIds:[1]})});
+ try{
+  await water.refresh();water.resetAdmission();assert.equal(water.canPick('1:f','river'),false);
+  await water.refresh();assert.equal(writes,1);assert.equal(admissions,2);assert.equal(water.canPick('1:f','river'),true);
+ }finally{water.dispose();}
+});
+test('evicted aggregate geometry is retired unless it still belongs to a selection',async()=>{
+ const map={getCenter:()=>({lng:0,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),on(){},off(){}};
+ const pack=id=>({id,features:[{id:id+':f',properties:{logicalId:'river'+id}}]});
+ const removals=[];let viewport=1,pinned=true;
+ const water=createMapLibreHydroPresentation({map,updateSource:async()=>true,onFeatures(){},onError:assert.fail,
+  preserveLogicalId:id=>pinned&&id==='river1',admitFeatures:async(_features,_current,{removedIds}={})=>{removals.push(...removedIds);return true;},
+  load:async()=>({key:String(viewport),packs:[pack(viewport)],packIds:[viewport]})});
+ try{
+  await water.refresh();viewport=2;await water.refresh();assert.deepEqual(removals,[]);
+  pinned=false;await water.refresh();assert.deepEqual(removals,['river1']);
+ }finally{water.dispose();}
+});

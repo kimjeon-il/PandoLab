@@ -33,10 +33,16 @@ export function createPhysicalContextCache({byteBudget=128*1024*1024,entryLimit=
    bytes-=entry.bytes||0;entry.activation=null;entries.delete(key);evictions++;
   }
  }
+ function cancelUnpinnedLoads(protectedKeys=[]){
+  const pins=new Set(protectedKeys);
+  for(const [key,entry]of entries)if(entry.status==='loading'&&!pins.has(key)){
+   entries.delete(key);entry.activation=null;entry.controller?.abort();evictions++;
+  }
+ }
  function touch(key){const entry=entries.get(key);if(entry){entries.delete(key);entries.set(key,entry);}return entry;}
  function clear(){for(const entry of entries.values()){entry.activation=null;entry.controller?.abort();}entries.clear();}
  return {get:key=>entries.get(key),has:key=>entries.has(key),set:(key,entry)=>entries.set(key,entry),
-  delete:key=>entries.delete(key),values:()=>entries.values(),touch,measure,trim,clear,
+  delete:key=>entries.delete(key),values:()=>entries.values(),touch,measure,trim,cancelUnpinnedLoads,clear,
   stats:()=>({entries:entries.size,estimatedBytes:[...entries.values()].reduce((sum,entry)=>sum+(entry.bytes||0),0),
    byteBudget,entryLimit,evictions})};
 }

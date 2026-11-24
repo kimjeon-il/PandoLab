@@ -129,9 +129,13 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
     }
    }
    return false;
-  },admitFeatures:async (features,isCurrent)=>{
+  },preserveLogicalId:id=>{
+   const snapshot=getSelectionSnapshot();
+   return snapshot?.selection?.items.some(ref=>ref.domain==='hydro'&&String(ref.id)===id)
+    ||snapshot?.hover?.domain==='hydro'&&String(snapshot.hover.id)===id;
+  },admitFeatures:async (features,isCurrent,{removedIds=[]}={})=>{
    const prepared=prepareMapLibreHydroFeatures(features,physicalResources.prepareHydroFeature);
-   return metrics.track('hydro.core-admission',()=>physicalResources.admitHydroFeatures(prepared,{isCurrent}));
+   return metrics.track('hydro.core-admission',()=>physicalResources.admitHydroFeatures(prepared,{isCurrent,removedIds}));
   },onFeatures:features=>{
    hydroFeatures=features;const snapshot=getSelectionSnapshot();if(snapshot?.selection.items.some(ref=>ref.domain==='hydro'))setSelection(snapshot);invalidate('hydro-ready');
   },load,cancel:()=>hydroLoader?.cancel(),onError:cause=>{if(cause?.name==='AbortError'||cause?.cancelled)return;feedback.reportOperationError(cause,'강·호수 상세 자료 일부를 불러오지 못했습니다. 지도를 이동하면 다시 시도합니다.','PL-HYDRO-DETAIL-001',4200);}});
@@ -175,7 +179,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   initialStyle:options=>mapLibreHydroStyle(options),
   resetStyle(){hydroInputs=null;hydroStateKey=null;hydroEditsKey=null;},
   invalidateVisibility(){hydroStateKey='';},
-  resetProject(){hydroPresentation?.suspend();cancelHydroStartup();},
+  resetProject(){hydroPresentation?.resetAdmission();cancelHydroStartup();hydroInputs=null;},
   dispose(){hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();hydroLoader=null;hydroPresentation=null;
    hydroFeatures=[];hydroManifest=null;hydroAppliedSource=null;hydroInputs=null;hydroMinZoomByStage.clear();hydroStateKey=hydroEditsKey='';}
  });

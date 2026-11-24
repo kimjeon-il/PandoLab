@@ -91,21 +91,29 @@ export function prepareMapLibreHydroFeatures(features,prepare){
 }
 
 export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,load,cancel,onError,updateSource,
- beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true,viewportTiles}){
+ beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true,viewportTiles,
+ preserveLogicalId=()=>false}){
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
  let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map(),publishedPacks=new Map();
  let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null,resumePublication=null;
  const fragmentsById=new Map();
- const needsAdmission=new Set();
+ const needsAdmission=new Set(),retiredLogicalIds=new Set();
  let selectable=new Set(),lastFailureKey='';
  let presentedFeatures=()=>[];
  async function publish(version,key){
   const current=()=>!disposed&&version===generation&&isEnabled();
   if(await waitForSource(current)===false||!current())return;
-  const changed=[...needsAdmission].flatMap(id=>[...fragmentsById.get(id)?.values()||[]]);
-  if(changed.length&&await admitFeatures(changed,current)===false)return;
+  const changed=[],removed=[];
+  for(const id of needsAdmission){
+   const fragments=fragmentsById.get(id);
+   if(fragments?.size){changed.push(...fragments.values());retiredLogicalIds.delete(id);}
+   else retiredLogicalIds.add(id);
+  }
+  for(const id of retiredLogicalIds)if(!fragmentsById.has(id)&&!preserveLogicalId(id))removed.push(id);
+  if((changed.length||removed.length)&&await admitFeatures(changed,current,{removedIds:removed})===false)return;
   if(!current())return;
+  for(const id of removed)retiredLogicalIds.delete(id);
   const features=presentedFeatures();
   needsAdmission.clear();
   // Worker fragment IDs include their owning pack. Update only the changed
@@ -127,7 +135,8 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
    if(failureKey&&failureKey!==lastFailureKey)onError(Object.assign(Error(failedPacks[0].message),{failedPacks,diagnostic:failedPacks[0].diagnostic}));
    lastFailureKey=failureKey;
   }
-  if(key===presentedKey&&!needsSourceRestore()&&publishedKey===key&&!needsAdmission.size)return;
+  if(key===presentedKey&&!needsSourceRestore()&&publishedKey===key&&!needsAdmission.size
+   &&![...retiredLogicalIds].some(id=>!preserveLogicalId(id)))return;
   await beforePublish(current);
   if(!current())return;
   if(key===presentedKey){
@@ -238,7 +247,13 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  };
  map.on('move',moving);
  map.on('moveend',moveEnded);
- return {refresh:()=>settle(true),suspend,ready:()=>pending,
+ function resetAdmission(){
+  suspend();publishedKey=null;publishedPacks=new Map();selectable.clear();
+  // The new Core document has cleared its external identity catalog even
+  // when its native map source and viewport are unchanged.
+  for(const id of fragmentsById.keys())needsAdmission.add(id);
+ }
+ return {refresh:()=>settle(true),suspend,resetAdmission,ready:()=>pending,
   canPick:(id,logicalId)=>isEnabled()&&!needsSourceRestore()&&selectable.has(String(id))&&!needsAdmission.has(String(logicalId)),
-  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();publishedPacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
+  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();publishedPacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();retiredLogicalIds.clear();presentedFeatures=()=>[];}};
 }

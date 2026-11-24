@@ -264,7 +264,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   getProjectGeneration:()=>frame.generation,
   resetProjectRenderState(options){
    frame.prepareProjectReset(options);
-   if(options.presentation!=='temporal')hydroDisplay.resetProject();
+   hydroDisplay.resetProject();
    borders.reset();geometryClient.reset({retainPhysical:options.presentation==='temporal'});physicalBase.resetProject();polarDisplay.resetProject();selection.reset();
    scene.resetPendingDomains();sourceWrites.reset();
    country.reset();frame.resetForProject(options);

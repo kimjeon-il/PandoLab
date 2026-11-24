@@ -26,8 +26,11 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
   const loadPhysicalLand=assetReader.loadPhysicalLand;
   const budget=renderCacheBudget();
   const waterContexts=createPhysicalContextCache({byteBudget:budget.physicalBytes,entryLimit:budget.physicalEntries});
-  let requestedWaterKey=null,preparedWaterKey=null;
-  const trimWaterContexts=()=>waterContexts.trim([requestedWaterKey,preparedWaterKey]);
+  let requestedWaterKey=null,preparedWaterKey=null,preparedWaterRequest=null;
+  const trimWaterContexts=()=>{
+    const pins=[requestedWaterKey,preparedWaterKey];
+    waterContexts.cancelUnpinnedLoads(pins);waterContexts.trim(pins);
+  };
   let physicalSelection=null;
   // The active document, not the serialized sourceMode field, selects
   // optional project-owned Hydro/physical-water catalogs.
@@ -40,7 +43,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     requestedWaterKey=null;physicalSelection=null;builtinTimelineView=null;
     for(const entry of waterContexts.values())entry.activation=null;
     presentPhysicalWater.clear();
-    if(activeSource!=='builtin'){preparedWaterKey=null;waterContexts.clear();}
+    if(activeSource!=='builtin'){preparedWaterKey=null;preparedWaterRequest=null;waterContexts.clear();}
     else trimWaterContexts();
   }
   function physicalSelectionFor(date) {
@@ -89,12 +92,18 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     const assertCurrent=()=>{if(!isCurrent())throw Object.assign(new Error('Physical preparation superseded'),{name:'AbortError',cancelled:true});};
     assertCurrent();
     const selection=physicalSelectionFor(month);
+    const request={};preparedWaterRequest=request;
     preparedWaterKey=selection.rows.length?selection.key:null;
     const entry=waterContexts.touch(selection.key);
     if(entry?.status==='error')waterContexts.delete(selection.key);
     trimWaterContexts();
-    const result=selection.rows.length?await ensurePhysicalContext(selection).promise:await loadPhysicalLand();
-    assertCurrent();return result;
+    try{
+      const result=selection.rows.length?await ensurePhysicalContext(selection).promise:await loadPhysicalLand();
+      assertCurrent();return result;
+    }catch(error){
+      if(preparedWaterRequest===request){preparedWaterRequest=null;preparedWaterKey=null;trimWaterContexts();}
+      throw error;
+    }
   }
   function activatePhysicalContext(entry,key) {
     const cache=dependencies.projectState.state.hydroFeatureCache;
@@ -124,7 +133,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     }
     if(key!==requestedWaterKey){
       const previous=waterContexts.get(requestedWaterKey);if(previous)previous.activation=null;
-      requestedWaterKey=key;if(preparedWaterKey===key)preparedWaterKey=null;
+      requestedWaterKey=key;if(preparedWaterKey===key){preparedWaterKey=null;preparedWaterRequest=null;}
       waterContexts.touch(key);trimWaterContexts();
       if(waterContexts.get(key)?.status==='error')waterContexts.delete(key);
       if(waterContexts.has(key))waterContexts.get(key).activation=null;
@@ -226,31 +235,45 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     })).values()];
   }
 
-  async function admitHydroFeatures(features=[],{isCurrent=()=>true}={}) {
-    if(activeSource!=='builtin')return false;
+  let hydroAdmissionTail=Promise.resolve();
+  function admitHydroFeatures(features=[],{isCurrent=()=>true,removedIds=[]}={}){
+    const cache=dependencies.projectState.state.hydroFeatureCache,epoch=projectSourceEpoch;
+    const sameScope=()=>activeSource==='builtin'&&epoch===projectSourceEpoch&&dependencies.projectState.state.hydroFeatureCache===cache;
+    const current=()=>sameScope()&&isCurrent();
+    const operation=hydroAdmissionTail.then(()=>applyHydroFeatures(features,{current,sameScope,cache,removedIds}));
+    hydroAdmissionTail=operation.catch(()=>{});
+    return operation;
+  }
+  async function applyHydroFeatures(features,{current,sameScope,cache,removedIds}){
+    if(!current())return false;
     if(typeof dependencies.domains.projectDomain?.admitSelectionCatalog!=='function')
       throw new TypeError('Hydro source identities require the canonical Core admission boundary.');
-    const cache=dependencies.projectState.state.hydroFeatureCache;
     if(!(cache instanceof Map))throw new TypeError('The canonical hydro resource cache is required.');
-    const current=()=>isCurrent()&&activeSource==='builtin'&&dependencies.projectState.state.hydroFeatureCache===cache;
-    if(!current())return false;
     const additions=new Map(features.map(feature=>[String(feature.properties?.pandolab_id||feature.id),feature]));
+    const removals=new Set(removedIds.map(String).filter(id=>cache.has(id)&&!additions.has(id)&&!cache.get(id)?.properties?.physical_water));
+    let submitted=false;
     await dependencies.domains.projectDomain.admitSelectionCatalog('hydroBuiltin',()=>{
       if(!current())return builtinHydroSelectionReferences();
-      const combined=[...cache].map(([id,feature])=>additions.get(id)||feature);
+      submitted=true;
+      const combined=[];
+      for(const [id,feature]of cache)if(!removals.has(id))combined.push(additions.get(id)||feature);
       for(const [id,feature]of additions)if(!cache.has(id))combined.push(feature);
       return builtinHydroSelectionReferences(combined);
     });
-    if(!current())return false;
-    for(const feature of features) {
+    // A viewport can be superseded after its native catalog commit. Apply
+    // the acknowledged cache change in the same project scope; the next
+    // viewport then starts from the actual accepted catalog.
+    if(!submitted||!sameScope())return false;
+    for(const id of removals)cache.delete(id);
+    for(const feature of additions.values()) {
       const id=String(feature.properties?.pandolab_id || feature.id),existing=cache.get(id);
       // Descriptor/FID indexes point at this aggregate. Hydrate that same
       // resource allocation rather than replacing it with a second full row.
       if(existing && existing!==feature)Object.assign(existing,feature);
       else cache.set(id,feature);
-      dependencies.projectState.state.hydroFeatureCatalogRevision=(dependencies.projectState.state.hydroFeatureCatalogRevision||0)+1;
     }
-    return true;
+    if(removals.size||additions.size)dependencies.projectState.state.hydroFeatureCatalogRevision=(dependencies.projectState.state.hydroFeatureCatalogRevision||0)+1;
+    return current();
   }
 
   async function loadPhysicalData({includeHydro=true}={}){

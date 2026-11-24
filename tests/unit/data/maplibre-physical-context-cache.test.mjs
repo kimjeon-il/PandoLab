@@ -18,3 +18,14 @@ test('cache clearing aborts pending reads and releases their activation referenc
  cache.clear();assert.equal(controller.signal.aborted,true);assert.equal(entry.activation,null);
  assert.equal(cache.stats().entries,0);
 });
+
+
+test('superseded physical reads release their slot immediately while current and target remain pinned',()=>{
+ const cache=createPhysicalContextCache();
+ const entries=['old','current','target'].map(key=>({key,status:'loading',controller:new AbortController(),activation:{}}));
+ for(const entry of entries)cache.set(entry.key,entry);
+ cache.cancelUnpinnedLoads(['current','target']);
+ assert.equal(cache.has('old'),false);assert.equal(entries[0].controller.signal.aborted,true);
+ assert.equal(entries[0].activation,null);
+ for(const entry of entries.slice(1))assert.equal(entry.controller.signal.aborted,false);
+});
