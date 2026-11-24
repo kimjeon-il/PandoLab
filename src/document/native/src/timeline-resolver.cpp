@@ -61,6 +61,9 @@ struct PreparedTimelineWorld::Data {
     RowsByEntity<TimelineGeometryBinding> geometries;
     RowsByEntity<TimelineParentRelation> parents;
     RowsByEntity<TimelinePropertyBinding> properties;
+    // Inclusive interval starts and the day after inclusive ends are the
+    // only dates on which an identity's direct projection can change.
+    std::map<TemporalKey,std::set<ObjectRef>> events;
 };
 PreparedTimelineWorld::PreparedTimelineWorld(const TimelineRecords& records,const TimelineValidationContext& context) {
     auto next=std::make_shared<Data>();
@@ -70,6 +73,14 @@ PreparedTimelineWorld::PreparedTimelineWorld(const TimelineRecords& records,cons
     next->geometries=indexRows(next->records.geometryBindings);
     next->parents=indexRows(next->records.parentRelations);
     next->properties=indexRows(next->records.propertyBindings);
+    const auto indexEvents=[&](const auto& rows){
+        for(const auto& [ref,entries]:rows)for(const auto& entry:entries){
+            if(entry.validity.start)next->events[entry.validity.start->startKey].insert(ref);
+            if(entry.validity.end)next->events[temporalFollowingDay(entry.validity.end->endKey)].insert(ref);
+        }
+    };
+    indexEvents(next->lifetimes);indexEvents(next->geometries);
+    indexEvents(next->parents);indexEvents(next->properties);
     data_=std::move(next);
 }
 const ResolvedEntity* ResolvedWorld::find(const ObjectRef& id) const {
@@ -126,41 +137,79 @@ Validity timelineMapCoverageAtMonth(const TimelineRecords& records,const ObjectR
     }
     throw TimelineError("TIMELINE_INACTIVE","No map coverage for "+id.domain+":"+id.id+" at "+month);
 }
-ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month) const {
+ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const ResolvedWorld* previous) const {
     const auto cursor=parseTemporal(month);
     const auto point=cursor.precision=="month"?temporalMonthEnd(cursor.canonical):cursor;
     const TemporalKey atEnd=point.endKey;
     const auto& index=*data_;
+    std::set<ObjectRef> changed;
+    if(previous){
+        const auto old=parseTemporal(previous->month);
+        const auto oldEnd=(old.precision=="month"?temporalMonthEnd(old.canonical):old).endKey;
+        const auto& low=std::min(oldEnd,atEnd);
+        const auto& high=std::max(oldEnd,atEnd);
+        for(auto event=index.events.upper_bound(low);event!=index.events.end()&&!(high<event->first);++event)
+            changed.insert(event->second.begin(),event->second.end());
+        if(changed.empty()){
+            auto result=*previous;result.month=cursor.canonical;return result;
+        }
+    }
     ResolvedWorld result;result.month=cursor.canonical;
     result.entities.reserve(index.entities.size());
-    for(const auto& [ref,properties]:index.properties)
+    const auto propertiesFor=[&](const ObjectRef& ref,const auto& properties){
         for(const auto& property:properties)if(active(property.validity,atEnd))
             result.activeProperties[ref][property.value->property]=property.value->value;
+    };
+    if(previous){
+        result.activeProperties=previous->activeProperties;
+        for(const auto& ref:changed){
+            result.activeProperties.erase(ref);
+            const auto found=index.properties.find(ref);
+            if(found!=index.properties.end())propertiesFor(ref,found->second);
+        }
+    }else for(const auto& [ref,properties]:index.properties)propertiesFor(ref,properties);
+
+    // Keep canonical catalog order. Unchanged identities reuse their already
+    // resolved lifetime, geometry, direct parent and property projection.
     for(const auto& identity:index.entities) {
-        const auto* lifetime=selected(index.lifetimes,identity.objectRef,atEnd);
+        const auto& ref=identity.objectRef;
+        if(previous&&!changed.count(ref)){
+            const auto* row=previous->find(ref);
+            if(row){
+                result.offsets.emplace(ref,result.entities.size());
+                result.entities.push_back(*row);
+            }
+            continue;
+        }
+        const auto* lifetime=selected(index.lifetimes,ref,atEnd);
         if(!lifetime)continue;
-        const auto* geometry=selected(index.geometries,identity.objectRef,atEnd);
-        const auto* parent=selected(index.parents,identity.objectRef,atEnd);
-        if(!geometry)continue; // Validated paired coverage may be absent during a lifetime.
-        result.entities.push_back({identity.objectRef,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
+        const auto* geometry=selected(index.geometries,ref,atEnd);
+        if(!geometry)continue;
+        const auto* parent=selected(index.parents,ref,atEnd);
+        result.entities.push_back({ref,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
         auto& entity=result.entities.back();
         entity.validity=lifetime->validity;
-        result.offsets.emplace(identity.objectRef,result.entities.size()-1);
-        const auto found=result.activeProperties.find(identity.objectRef);
+        result.offsets.emplace(ref,result.entities.size()-1);
+        const auto found=result.activeProperties.find(ref);
         if(found!=result.activeProperties.end())entity.properties=found->second;
     }
     std::set<GeometryRef> required;
     for(const auto& row:result.entities)required.insert(row.geometryRef);
     result.requiredGeometries.assign(required.begin(),required.end());
-    std::map<std::string,std::size_t> resolvedById;
-    for(std::size_t i=0;i<result.entities.size();++i)
-        if(result.entities[i].objectRef.domain=="territorial")
-            resolvedById.emplace(result.entities[i].objectRef.id,i);
     for(auto& entity:result.entities) {
+        // Any ancestor's changed direct relation can affect this row's root,
+        // even when the row itself has no event. Otherwise retain its chain.
+        if(previous&&!changed.count(entity.objectRef)
+            &&std::none_of(entity.ancestors.begin(),entity.ancestors.end(),[&](const auto& id){
+                return changed.count(ObjectRef{"territorial",id})!=0;
+            }))continue;
+        entity.ancestors.clear();
         auto parent=entity.parentId;
         while(!parent.empty()) {
             entity.ancestors.push_back(parent);
-            parent=result.entities.at(resolvedById.at(parent)).parentId;
+            const auto* resolvedParent=result.find(ObjectRef{"territorial",parent});
+            if(!resolvedParent)throw TimelineError("TIMELINE_PARENT_INACTIVE","Inactive parent "+parent);
+            parent=resolvedParent->parentId;
         }
         entity.rootId=entity.ancestors.empty()?entity.objectRef.id:entity.ancestors.back();
     }

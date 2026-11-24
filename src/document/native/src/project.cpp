@@ -198,7 +198,10 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
         preparedTimelineSource_=state_;
         resolvedTimeline_={};
     }
-    auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month));
+    // Only cached worlds from the same immutable prepared source may be
+    // used as an incremental base. Replacing that source clears all slots.
+    auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month,
+        reuse?resolvedTimeline_[0].get():nullptr));
     std::size_t slot=resolvedTimeline_.size()-1;
     while(slot>0&&resolvedTimeline_[slot]&&resolvedTimeline_[slot]->month==timelineCursor_)--slot;
     for(;slot>0;--slot)resolvedTimeline_[slot]=std::move(resolvedTimeline_[slot-1]);

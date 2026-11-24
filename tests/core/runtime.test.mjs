@@ -554,3 +554,20 @@ test('stored gzip assets enforce declared decoded byte bounds before admission',
     ()=>{validated++;}),/압축 해제 크기/);
   assert.equal(validated,0);
 });
+
+
+test('incremental Core timeline resolution matches cold resolution in both directions',async()=>{
+  const source=readFixture(),session=await sessionFor(source);
+  try{
+    const dates=['1914-06','1914-07','1915-12','1916-01','1916-02','1920-03','1920-04','1914-06','1916-01'];
+    for(const month of dates){
+      const epoch=session.projectState().epoch;
+      const warm=session.resolveWorld(month,epoch);
+      const cold=await sessionFor(source);
+      try{
+        const expected=cold.resolveWorld(month,cold.projectState().epoch);
+        assert.deepEqual(warm.entities,expected.entities);
+      }finally{cold.delete();}
+    }
+  }finally{session.delete();}
+});

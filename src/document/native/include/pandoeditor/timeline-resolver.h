@@ -39,7 +39,8 @@ HistoricalSourceAvailability classifyHistoricalSourceAvailability(const Validity
 class PreparedTimelineWorld {
 public:
     PreparedTimelineWorld(const TimelineRecords&,const TimelineValidationContext&);
-    ResolvedWorld resolve(const std::string& month) const;
+    // The previous projection must come from this same prepared source.
+    ResolvedWorld resolve(const std::string& month,const ResolvedWorld* previous=nullptr) const;
 private:
     struct Data;
     std::shared_ptr<const Data> data_;
