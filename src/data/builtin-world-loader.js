@@ -4,6 +4,7 @@ import {createBuiltinProjectSetup} from "../document/project-setup.js";
 import {PROJECT_SCHEMA_VERSION} from "../runtime/version-contract.js";
 import {resolveBuiltinGeometryPacks} from './builtin-geometry-pack-receipt.js';
 import {createBuiltinAssetTasks} from './builtin-asset-tasks.js';
+import {readGeometryDeltaReceipt,reconstructGeometryBytes} from './historical-geometry-delta.js';
 
 // The verified country catalog provides source coverage. The project retains
 // every original temporal interval; C++ owns month-end selection.
@@ -66,7 +67,7 @@ export function resolveBuiltinWorldGeometry(index,read,month){
  return world.entities.map(row=>({owner:row.objectRef.id,asset:catalog.get(geometryKey(row.geometryRef))}));
 }
 
-export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=64*1024*1024}){
+export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,historicalGeometryDeltas=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=64*1024*1024}){
  if(!manifestUrl||!manifestSpec?.sha256||!dataRevision)throw new Error('Builtin country catalog integrity metadata is required');
  const base=new URL(manifestUrl,globalThis.location?.href),assetTasks=createBuiltinAssetTasks();
  const memory=Number(globalThis.navigator?.deviceMemory),cores=Number(globalThis.navigator?.hardwareConcurrency);
@@ -76,7 +77,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  // unchanged files must survive a newer catalog/data revision without refetching.
  const catalogs=createStoredAssetLoader(assetOptions);
  const assets=createStoredAssetLoader({...assetOptions,cachePolicy:'immutable'});
- let indexPromise,readMetadata,geometryAssetsByRef;
+ let indexPromise,readMetadata,geometryAssetsByRef,geometryDeltas=new Map();
  if(!Number.isSafeInteger(geometryCacheBytes)||geometryCacheBytes<0)throw new RangeError('Invalid builtin geometry cache budget');
  const geometries=new Map(),pending=new Map(),geometryStates=new Map();
  let geometryBytes=0,geometryEvictions=0;
@@ -122,6 +123,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
    }
   }
   geometryAssetsByRef=new Map(value.geometryAssets.map(asset=>[geometryKey(asset),asset]));
+  geometryDeltas=readGeometryDeltaReceipt(historicalGeometryDeltas,manifestSpec.sha256,value.geometryAssets);
   return value;
  }
  async function loadIndex(){
@@ -135,9 +137,31 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   const existing=pending.get(key);
   if(existing)return (await existing)??loadGeometry(asset);
   geometryStates.set(key,'loading');
-  const reading=limitedRead(()=>assets.loadAsset({...asset,url:asset.file},
-   'builtin-world',asset.id,'국가 형상',buffer=>decodeGeometryContent(buffer,asset)))
-   .then(({value})=>rememberGeometry(asset,value))
+  const reading=limitedRead(async()=>{
+   const spec={...asset,url:asset.file},validate=buffer=>decodeGeometryContent(buffer,asset);
+   const delta=geometryDeltas.get(asset.sha256);
+   if(delta){
+    // Only use a local base. Never download an additional geometry merely
+    // to decode an optional historical patch; never follow delta chains.
+    const hit=await assets.loadCachedAsset(spec,'builtin-world',asset.id,'국가 형상',validate);
+    if(hit)return hit;
+    try{
+     const {base,replacement}=delta,source=cachedGeometry(base.file);
+     const local=source===undefined?await assets.loadCachedAsset({...base,url:base.file},'builtin-world',base.id,'기준 형상',async buffer=>{
+      await decodeGeometryContent(buffer,base);return buffer;
+     }):null;
+     const bytes=source===undefined?local?.value:new TextEncoder().encode(source).buffer;
+     if(bytes){
+      await decodeGeometryContent(bytes,base);
+      const patch=await assets.loadAsset({...replacement,url:new URL(replacement.url,assetRoot).href},
+       'builtin-world',asset.id,'역사 형상 변경분',buffer=>buffer);
+      const original=reconstructGeometryBytes(bytes,patch.value,asset);
+      return {value:await validate(original)};
+     }
+    }catch(error){if(error?.name==='AbortError')throw error;/* canonical full asset is the recovery path */}
+   }
+   return assets.loadAsset(spec,'builtin-world',asset.id,'국가 형상',validate);
+  }).then(({value})=>rememberGeometry(asset,value))
    .catch(error=>{geometryStates.set(key,'error');throw error;}).finally(()=>pending.delete(key));
   pending.set(key,reading);
   return reading;
@@ -162,7 +186,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
      try{
       while(!failed&&cursor<missing.length){
        const i=cursor++,{asset,start,end}=missing[i];
-       const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,maxDecodedBytes:asset.decodedBytes},
+       const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,url:asset.file,maxDecodedBytes:asset.decodedBytes},
         'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset),{persist:true});
        rows[i]={asset,value};
       }

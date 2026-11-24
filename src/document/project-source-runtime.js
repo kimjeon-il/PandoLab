@@ -59,6 +59,7 @@ export function createProjectSourceRuntime({
       builtinWorldLoader=createSourceLoader({
         manifestUrl:new URL(selected,assetRoot).href,
         manifestSpec:spec,dataRevision:meta.dataRevision,assetRoot,startupGeometryPacks:meta.startupGeometryPacks,
+        historicalGeometryDeltas:meta.historicalGeometryDeltas,
       });
     }
     const {project}=await builtinWorldLoader.loadProject(month,{isCurrent});

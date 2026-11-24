@@ -114,7 +114,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
  const {hydroVersion,preparedMeshesCurrent}=validateMapCatalogCoherence(
    mapProject,metadata,path=>catalogInputs[path].sha256);
  const territorialPath=resource('territorial'),territorial=catalogInputs[territorialPath];
- let startupGeometryPacks=null;
+ let startupGeometryPacks=null,historicalGeometryDeltas=null,historicalDeltaAssets=new Map();
  if(resourceProfile!=='test-fixture'){
    const {buildBuiltinGeometryPacks,readBuiltinGeometryPackInputs}=await import('./builtin-geometry-packs.mjs');
    const timestamp=Number(execFileSync('git',['show','-s','--format=%ct',sourceCommit],{cwd:root,encoding:'utf8'}).trim());
@@ -123,6 +123,11 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
      readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
    startupGeometryPacks=receipt;
    for(const [path,bytes] of packAssets)generated(path,bytes,'viewer');
+   const {buildBuiltinGeometryDeltas}=await import('./builtin-geometry-deltas.mjs');
+   const deltas=buildBuiltinGeometryDeltas({index:territorial.value,month,catalogSha256:territorial.sha256,
+     readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
+   historicalGeometryDeltas=deltas.receipt;historicalDeltaAssets=deltas.assets;
+   for(const [path,bytes]of historicalDeltaAssets)generated(path,bytes,'viewer');
  }
  const physicalCatalog=metadata[resource('physicalLand')];
  let physicalLandDisplays={},physicalLandDisplayAssets=new Map();
@@ -195,7 +200,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
  const buildMeta={appVersion,buildId,assetRevision,dataRevision,sourceCommit,dataCommit:pinned?.revision||null,...resourceProfile?{resourceProfile}:{},
    ...(externalData?{externalRuntimeData:externalData}:{}),
    mapProject,mapProjectManifest,projectCatalogs,
-   workerAssets,physicalLandDisplays,startupGeometryPacks,...countryBoundarySeed?{countryBoundarySeed}:{}};
+   workerAssets,physicalLandDisplays,startupGeometryPacks,historicalGeometryDeltas,...countryBoundarySeed?{countryBoundarySeed}:{}};
  generated('assets/js/build-meta.js','// Generated product identity.\nglobalThis.PANDOLAB_BUILD_META = Object.freeze('+JSON.stringify(buildMeta,null,2)+');\n');
  const templates=renderProductHtml(sourceText),moduleImports=Object.fromEntries([...assets.keys()].filter(p=>p.startsWith('assets/js/')&&p.endsWith('.js')).map(p=>['./'+p,'./'+p+'?v='+encodeURIComponent(assetRevision)]));
  const render=(template,imports)=>{
@@ -208,6 +213,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
  const viewerPaths=await collectViewerAssets({root,availablePaths:[...assets.keys(),...dataPaths],readSource:read,workerAssets,runtimeDependencyMap});
  for(const path of physicalLandDisplayAssets.keys())viewerPaths.add(path);
  for(const pack of startupGeometryPacks?.packs??[])viewerPaths.add(pack.url);
+ for(const path of historicalDeltaAssets.keys())viewerPaths.add(path);
  if(countryBoundarySeed)viewerPaths.add(countryBoundarySeed.url);
  const viewerImports=Object.fromEntries(Object.entries(moduleImports).filter(([path])=>viewerPaths.has(path.slice(2))));
  const html={viewer:render(templates.web,viewerImports)};

@@ -30,7 +30,7 @@ export function createStoredAssetLoader({dataRevision, resolveUrl, report = () =
    const match=await findStored(await openDataCache(),spec,resolveAssetUrl(spec));
    if(!match)return false;
    // A cache hit here is only a planning hint. Actual reads always verify.
-   try{await match.response.body?.cancel();}catch{}
+   try{match.response.body?.cancel().catch(()=>{});}catch{}
    return true;
  }
 async function openDataCache() {
