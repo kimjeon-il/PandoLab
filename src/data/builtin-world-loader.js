@@ -1,6 +1,6 @@
 import {createStoredAssetLoader} from "./stored-asset-loader.js";
 import {parseTemporal,temporalContains,temporalMonthEnd,normalizeTemporalInterval,sharedCalculationCore} from "../document/temporal.js";
- import {createBuiltinProjectSetup} from "../document/project-setup.js";
+import {createBuiltinProjectSetup} from "../document/project-setup.js";
 import {PROJECT_SCHEMA_VERSION} from "../runtime/version-contract.js";
 import {resolveBuiltinGeometryPacks} from './builtin-geometry-pack-receipt.js';
 import {createBuiltinAssetTasks} from './builtin-asset-tasks.js';
@@ -148,10 +148,11 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   if(actual!==asset.contentSha256)throw Error('Builtin geometry content hash mismatch: '+asset.id);
   return new TextDecoder('utf-8',{fatal:true}).decode(buffer);
  }
- function loadPack({spec,members}){
-  const missing=members.filter(({asset})=>!geometries.has(asset.file)&&!pending.has(asset.file));
+ function loadPack({spec,members},{resolved=null,cachedOnly=false,requiredFiles=null}={}){
+  const missing=members.filter(({asset})=>(!requiredFiles||requiredFiles.has(asset.file))&&!resolved?.has(asset.file)&&!geometries.has(asset.file)&&!pending.has(asset.file));
   if(!missing.length)return;
-  const done=limitedRead(()=>assets.loadStoredAsset({...spec,url:new URL(spec.url,assetRoot).href},
+  const readPack=cachedOnly?assets.loadCachedStoredAsset:assets.loadStoredAsset;
+  const done=limitedRead(()=>readPack({...spec,url:new URL(spec.url,assetRoot).href},
    'builtin-world',spec.sha256,'국가 형상 묶음',async buffer=>{
     const rows=new Array(missing.length);
     // Two bounded independent gzip members per pack; never launch all
@@ -162,7 +163,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
       while(!failed&&cursor<missing.length){
        const i=cursor++,{asset,start,end}=missing[i];
        const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,maxDecodedBytes:asset.decodedBytes},
-        'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset));
+        'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset),{persist:true});
        rows[i]={asset,value};
       }
      }catch(error){failed=true;throw error;}
@@ -171,12 +172,13 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     const failure=settled.find(row=>row.status==='rejected');
     if(failure)throw failure.reason;
     return rows;
-   })).then(({value})=>{
-    return new Map(value.map(({asset,value:source})=>[asset.file,rememberGeometry(asset,source)]));
+   })).then(result=>{
+    const value=result?.value;
+    return new Map((value||[]).map(({asset,value:source})=>[asset.file,rememberGeometry(asset,source)]));
    }).catch(()=>{
     // The individual catalog assets remain the recovery path for this group.
     for(const {asset} of missing)geometryStates.delete(asset.file);
-   }).finally(()=>{for(const {asset} of missing)pending.delete(asset.file);});
+   }).finally(()=>{for(const {asset} of missing){pending.delete(asset.file);if(geometryStates.get(asset.file)==='loading')geometryStates.delete(asset.file);}});
   for(const {asset} of missing){
    pending.set(asset.file,done.then(values=>values?.get(asset.file)));
    geometryStates.set(asset.file,'loading');
@@ -243,17 +245,33 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
    catch{ /* An invalid acceleration receipt leaves individual assets available. */ }
   }
   const files=new Map([...required.values()].map(asset=>[asset.file,asset]));
-  const eligible=packs.filter(pack=>pack.members.every(({asset})=>files.has(asset.file)));
-  const packed=new Set(eligible.flatMap(pack=>pack.members.map(({asset})=>asset.file)));
+  // Never download a partially needed pack. Already cached packs may
+  // supply their required members even outside the startup month.
+  const eligible=packs.filter(pack=>pack.members.some(({asset})=>files.has(asset.file)));
   // The request owns its assembly independently of the bounded reusable
   // cache; a whole active world may itself exceed the cache budget.
   const resolved=new Map();
   for(const asset of files.values())if(geometries.has(asset.file))resolved.set(asset.file,cachedGeometry(asset.file));
   const readGeometry=async asset=>{resolved.set(asset.file,await loadGeometry(asset));};
-  const reads=eligible.filter(pack=>pack.members.some(({asset})=>!resolved.has(asset.file))).map(pack=>async()=>{
-   const values=await loadPack(pack);
-   for(const [file,source] of values||[])resolved.set(file,source);
-  });
+  const packed=new Set(),reads=[];
+  // Cache presence is only a download selection hint; the loader still
+  // checks every member's SHA and length. A bad cached pack falls back.
+  for(const pack of eligible){
+   const needed=pack.members.filter(({asset})=>files.has(asset.file)&&!resolved.has(asset.file));
+   if(!needed.length)continue;
+   const packedSpec={...pack.spec,url:new URL(pack.spec.url,assetRoot).href};
+   const cachedPack=await assets.hasStoredAsset(packedSpec);
+   assertCurrent();
+   const coldComplete=needed.length===pack.members.length
+    &&!(await Promise.all(needed.map(({asset})=>pending.has(asset.file)||assets.hasStoredAsset({...asset,url:asset.file})))).some(Boolean);
+   assertCurrent();
+   if(!cachedPack&&!coldComplete)continue;
+   for(const {asset}of needed)packed.add(asset.file);
+   reads.push(async()=>{
+    const values=await loadPack(pack,{resolved,cachedOnly:cachedPack,requiredFiles:files});
+    for(const [file,source]of values||[])resolved.set(file,source);
+   });
+  }
   for(const asset of files.values())if(!packed.has(asset.file)&&!resolved.has(asset.file))reads.push(()=>readGeometry(asset));
   await loadAll(reads,read=>read());
   // A failed pack or a concurrent pack reader may leave individual members outstanding.
