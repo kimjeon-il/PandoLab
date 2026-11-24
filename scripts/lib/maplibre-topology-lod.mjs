@@ -7,10 +7,13 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
   ||options.cluster||(options.coordinates&&options.coordinates!=='lngLat')
   ||!Number.isInteger(z)||z<0||z>10||z>=options.maxZoom)return features;
  const scale=2**z,px=1/(512*scale),tol2=(0.25*px)**2,cell=16*px;
+ // Overview tiles can consider longer subpixel shortcuts and borderless
+ // shared fill edges, without relaxing the existing error bound.
+ const overview=z<=4,maxSpan=(overview?16:8)*px;
  const west=tx/scale,east=(tx+1)/scale,north=ty/scale,south=(ty+1)/scale;
  const polar=0.5-Math.log((1+Math.sin(84*Math.PI/180))/(1-Math.sin(84*Math.PI/180)))/(4*Math.PI);
- const EPS=1e-14,MAX_POINTS=1000000,MAX_CANDIDATES=16384,MAX_CHECKS=6000000;
- const records=[],candidates=new Map();let points=0,checks=0;
+ const EPS=1e-14,MAX_POINTS=1000000,MAX_CANDIDATES=16384,MAX_CANDIDATES_PER_CELL=64,MAX_CHECKS=6000000;
+ const records=[],candidates=new Map(),candidateCounts=new Uint8Array(1024);let points=0,checks=0;
  const point=(p,i)=>[p[i],p[i+1]],key=p=>p[0]+','+p[1],same=(a,b)=>a[0]===b[0]&&a[1]===b[1];
  const ends=(a,c,u,v)=>same(a,u)&&same(c,v)||same(a,v)&&same(c,u);
  const safe=p=>p[0]>Math.max(4*px,west+4*px)&&p[0]<Math.min(1-4*px,east-4*px)
@@ -35,26 +38,32 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
   });
   if(points>MAX_POINTS)return features;
  }
- // Only exact shared-border triples can propose a removal. Work budgets
- // are conservative: never make an unchecked shortcut on exhaustion.
- for(const {ring,role} of records){
-  if(role!=='country-border')continue;
+ // Prioritize actual shared strokes, then consider borderless fill pairs.
+ // Bound proposals in dense overview cells, rather than discarding a tile
+ // when its candidate capacity is reached. Every admitted candidate still
+ // passes all occurrence and crossing checks, including unproposed edges.
+ function propose(ring){
   const p=ring.points;
   for(let i=3;i+3<p.length;i+=3){
-   const a=point(p,i-3),b=point(p,i),c=point(p,i+3);
-   if(!safe(a)||!safe(b)||!safe(c)||same(a,b)||same(b,c)||same(a,c))continue;
+   const b=point(p,i);
+   if(!safe(b))continue;
+   const id=key(b),slot=Math.floor((b[1]-north)/cell)*32+Math.floor((b[0]-west)/cell);
+   if(candidates.has(id)||candidates.size>=MAX_CANDIDATES||overview&&candidateCounts[slot]>=MAX_CANDIDATES_PER_CELL)continue;
+   const a=point(p,i-3),c=point(p,i+3);
+   if(!safe(a)||!safe(c)||same(a,b)||same(b,c)||same(a,c))continue;
    const dx=c[0]-a[0],dy=c[1]-a[1],length=dx*dx+dy*dy;
    const t=((b[0]-a[0])*dx+(b[1]-a[1])*dy)/length;
    if(!(t>0&&t<1))continue;
    const error=(b[0]-a[0]-t*dx)**2+(b[1]-a[1]-t*dy)**2;
    const minX=Math.min(a[0],b[0],c[0]),maxX=Math.max(a[0],b[0],c[0]),minY=Math.min(a[1],b[1],c[1]),maxY=Math.max(a[1],b[1],c[1]);
-   if(error>tol2||maxX-minX>8*px||maxY-minY>8*px)continue;
-   const id=key(b),old=candidates.get(id);
-   if(old){if(!ends(old.a,old.c,a,c))old.invalid=true;continue;}
-   if(candidates.size>=MAX_CANDIDATES)return features;
+   if(error>tol2||maxX-minX>maxSpan||maxY-minY>maxSpan)continue;
    candidates.set(id,{id,a,b,c,error,minX,minY,maxX,maxY,invalid:false,fills:[],borders:0,occurrences:[]});
+   if(overview)candidateCounts[slot]++;
   }
  }
+ for(const {ring,role} of records)if(role==='country-border')propose(ring);
+ if(overview)for(const {ring,role,hole} of records)
+  if(role==='country-fill'&&!hole&&ring.points.length>=24&&ring.size>16*px*px)propose(ring);
  if(!candidates.size)return features;
  // Match every occurrence of the vertex, including endpoints, holes and
  // other owners. Require two distinct, oppositely traversed exterior rings.
@@ -74,7 +83,7 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
    candidate.occurrences.push({ring,i});
   }
  }
- const eligible=[...candidates.values()].filter(v=>!v.invalid&&v.borders>0&&v.fills.length===2
+ const eligible=[...candidates.values()].filter(v=>!v.invalid&&(overview||v.borders>0)&&v.fills.length===2
   &&v.fills[0].id!==v.fills[1].id&&v.fills[0].forward!==v.fills[1].forward);
  if(!eligible.length)return features;
  // Spatially index the small changed rectangles, not the millions of

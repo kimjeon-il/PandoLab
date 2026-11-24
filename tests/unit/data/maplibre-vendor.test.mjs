@@ -162,3 +162,38 @@ test('pinned native tile hook selects per tile zoom and leaves native source arr
  assert.equal(nativeTile(rows,18,0,0,lodOptions).features[2],rows[2]);
  assert.equal(patchMapLibreTopologyLod(input+input.replace('nativeTile','secondTile')).matches,2);
 });
+
+
+test('overview LOD also simplifies shared fills with hidden strokes, never a single exterior coast',()=>{
+ const {rows,shared}=sharedTileFixture();
+ const fills=rows.slice(0,2),before=structuredClone(fills);
+ const simplified=simplifySharedTileGeometry(fills,0,0,0,lodOptions);
+ const edge=ring=>positions(ring).filter(p=>shared.some(q=>q[0]===p[0]&&q[1]===p[1]));
+ assert.ok(edge(simplified[0].geometry[0]).length<shared.length);
+ assert.deepEqual(edge(simplified[0].geometry[0]),edge(simplified[1].geometry[0]).reverse());
+ assert.deepEqual(fills,before);
+ const single=[fills[0]];
+ assert.equal(simplifySharedTileGeometry(single,0,0,0,lodOptions),single);
+ const {ring,feature}=sharedTileFixture();
+ const third=feature('third','Polygon','country-fill',[ring([shared[1],[.501,.483],[.501,.485],shared[1]])]);
+ const protectedResult=simplifySharedTileGeometry([...fills,third],0,0,0,lodOptions);
+ assert.ok(edge(protectedResult[0].geometry[0]).some(p=>p[0]===shared[1][0]&&p[1]===shared[1][1]));
+});
+
+test('overview LOD accepts longer shared shortcuts within the original quarter-pixel error',()=>{
+ const {rows,shared}=sharedTileFixture([[.5,.46],[.5001,.472],[.5,.484],[.5001,.496],[.5,.508]]);
+ const result=simplifySharedTileGeometry(rows,0,0,0,lodOptions);
+ const edge=positions(result[2].geometry);
+ assert.ok(edge.length<shared.length);
+ assert.deepEqual(edge[0],shared[0]);assert.deepEqual(edge.at(-1),shared.at(-1));
+ const {rows:rough}=sharedTileFixture([[.5,.46],[.502,.472],[.5,.484],[.502,.496],[.5,.508]]);
+ assert.equal(simplifySharedTileGeometry(rough,0,0,0,lodOptions),rough);
+});
+
+test('dense candidate cells preserve independent simplification in other tile regions',()=>{
+ const {rows,ring,feature}=sharedTileFixture();
+ const dense=feature('dense','LineString','country-border',ring(Array.from({length:128},(_,i)=>[.2+(i%2)*.000001,.22+i*.00005])));
+ const result=simplifySharedTileGeometry([dense,...rows],0,0,0,lodOptions);
+ assert.equal(result[0],dense);
+ assert.ok(positions(result[3].geometry).length<positions(rows[2].geometry).length);
+});
