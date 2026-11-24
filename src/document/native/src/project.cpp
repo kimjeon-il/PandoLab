@@ -166,10 +166,10 @@ bool Project::setTimelineCursor(const std::string& month,bool activateEdits,cons
     // A cached prior month certifies an unchanged view only within the
     // same admitted document, with no archive eviction. The cursor itself
     // is stored separately and must still advance.
-    if(target&&target->projectionIdentity&&viewState_&&nextState==state_
+    if(target&&target->projection&&viewState_&&nextState==state_
         &&preparedTimeline_&&preparedTimelineSource_.lock()==state_){
         for(const auto& prior:resolvedTimeline_)
-            if(prior&&prior->month==timelineCursor_&&prior->projectionIdentity==target->projectionIdentity){
+            if(prior&&prior->month==timelineCursor_&&prior->projection==target->projection){
                 sameProjection=true;break;
             }
     }
@@ -234,7 +234,7 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
 }
 std::shared_ptr<const ResolvedWorld> Project::resolveWorldShared(const std::string& month) const {
     const auto world=resolveTimelineMetadata(month);
-    document().geometries.requireReady(world->requiredGeometries);
+    document().geometries.requireReady(world->requiredGeometries());
     return world;
 }
 ResolvedWorld Project::resolveWorld(const std::string& month) const {
@@ -243,13 +243,13 @@ ResolvedWorld Project::resolveWorld(const std::string& month) const {
 std::vector<GeometryRef> Project::missingGeometries(const std::string& month) const {
     std::vector<GeometryRef> required;
     if(month.empty())for(const auto& [ref,resource]:document().geometries.resources())required.push_back(ref);
-    else required=resolveTimelineMetadata(month)->requiredGeometries;
+    else required=resolveTimelineMetadata(month)->requiredGeometries();
     std::vector<GeometryRef> missing;for(const auto& ref:required)if(!document().geometries.get(ref))missing.push_back(ref);
     return missing;
 }
 std::set<GeometryRef> Project::protectedGeometryResources(const ResolvedWorld* current,const ResolvedWorld* target) const {
     std::set<GeometryRef> refs;
-    for(const auto* world:{current,target})if(world)refs.insert(world->requiredGeometries.begin(),world->requiredGeometries.end());
+    for(const auto* world:{current,target})if(world)refs.insert(world->requiredGeometries().begin(),world->requiredGeometries().end());
     // Non-temporal content and opaque dependencies cannot be reconstructed
     // from a month resolver. Keep their original resource allocations.
     for(const auto& [ref,users]:index().geometryUsers)

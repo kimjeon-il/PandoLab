@@ -107,12 +107,8 @@ PreparedTimelineWorld::PreparedTimelineWorld(const TimelineRecords& records,cons
     data_=std::move(next);
 }
 const ResolvedEntity* ResolvedWorld::find(const ObjectRef& id) const {
-    if(!offsets.empty()) {
-        const auto found=offsets.find(id);
-        return found==offsets.end()||found->second>=entities.size()?nullptr:&entities[found->second];
-    }
-    const auto it=std::find_if(entities.begin(),entities.end(),[&](const auto& row){return row.objectRef==id;});
-    return it==entities.end()?nullptr:&*it;
+    const auto found=offsets().find(id);
+    return found==offsets().end()?nullptr:&entities()[found->second];
 }
 std::string initialTimelineMonth(const TimelineRecords& records,const std::string& currentMonth) {
     const auto fallback=parseTemporal(currentMonth);
@@ -174,24 +170,26 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         for(auto event=index.events.upper_bound(low);event!=index.events.end()&&!(high<event->first);++event)
             changed.insert(event->second.begin(),event->second.end());
         if(changed.empty()){
-            auto result=*previous;result.month=cursor.canonical;return result;
+            return {cursor.canonical,previous->projection};
         }
         // A broad jump should not copy the old property map or compare
         // every prior row when most identities require reconstruction.
         if(changed.size()>index.entities.size()/2){previous=nullptr;changed.clear();}
     }
-    ResolvedWorld result;result.month=cursor.canonical;
-    result.projectionIdentity=std::make_shared<const bool>(true);
-    result.entities.reserve(index.entities.size());
+    auto projection=std::make_shared<ResolvedWorldProjection>();
+    ResolvedWorld result{cursor.canonical,projection};
+    if(previous)projection->deltaBase=previous->projection;
+    projection->entities.reserve(index.entities.size());
+    auto affected=changed;
     const auto propertiesFor=[&](const ObjectRef& ref,const auto& properties){
         for(const auto& [name,entries]:properties)
             if(const auto* property=selectedInterval(entries,atEnd))
-                result.activeProperties[ref][name]=property->value;
+                projection->activeProperties[ref][name]=property->value;
     };
     if(previous){
-        result.activeProperties=previous->activeProperties;
+        projection->activeProperties=previous->activeProperties();
         for(const auto& ref:changed){
-            result.activeProperties.erase(ref);
+            projection->activeProperties.erase(ref);
             const auto found=index.properties.find(ref);
             if(found!=index.properties.end())propertiesFor(ref,found->second);
         }
@@ -204,8 +202,8 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         if(previous&&!changed.count(ref)){
             const auto* row=previous->find(ref);
             if(row){
-                result.offsets.emplace(ref,result.entities.size());
-                result.entities.push_back(*row);
+                projection->offsets.emplace(ref,projection->entities.size());
+                projection->entities.push_back(*row);
             }
             continue;
         }
@@ -214,23 +212,24 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         const auto* geometry=selected(index.geometries,ref,atEnd);
         if(!geometry)continue;
         const auto* parent=selected(index.parents,ref,atEnd);
-        result.entities.push_back({ref,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
-        auto& entity=result.entities.back();
+        projection->entities.push_back({ref,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
+        auto& entity=projection->entities.back();
         entity.validity=lifetime->validity;
-        result.offsets.emplace(ref,result.entities.size()-1);
-        const auto found=result.activeProperties.find(ref);
-        if(found!=result.activeProperties.end())entity.properties=found->second;
+        projection->offsets.emplace(ref,projection->entities.size()-1);
+        const auto found=projection->activeProperties.find(ref);
+        if(found!=projection->activeProperties.end())entity.properties=found->second;
     }
     std::set<GeometryRef> required;
-    for(const auto& row:result.entities)required.insert(row.geometryRef);
-    result.requiredGeometries.assign(required.begin(),required.end());
-    for(auto& entity:result.entities) {
+    for(const auto& row:projection->entities)required.insert(row.geometryRef);
+    projection->requiredGeometries.assign(required.begin(),required.end());
+    for(auto& entity:projection->entities) {
         // Any ancestor's changed direct relation can affect this row's root,
         // even when the row itself has no event. Otherwise retain its chain.
         if(previous&&!changed.count(entity.objectRef)
             &&std::none_of(entity.ancestors.begin(),entity.ancestors.end(),[&](const auto& id){
                 return changed.count(ObjectRef{"territorial",id})!=0;
             }))continue;
+        if(previous)affected.insert(entity.objectRef);
         entity.ancestors.clear();
         auto parent=entity.parentId;
         while(!parent.empty()) {
@@ -241,6 +240,7 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         }
         entity.rootId=entity.ancestors.empty()?entity.objectRef.id:entity.ancestors.back();
     }
+    if(previous)projection->affected.assign(affected.begin(),affected.end());
     return result;
 }
 ResolvedWorld resolveWorld(const TimelineRecords& records,const TimelineValidationContext& context,

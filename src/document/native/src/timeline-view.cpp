@@ -39,10 +39,10 @@ bool overlap(std::initializer_list<Validity> intervals) {
     return !start||!end||!(*end<*start);
 }
 void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
-    if(world.activeProperties.empty())return;
+    if(world.activeProperties().empty())return;
     std::map<std::string,TerritorialUnit*> units;for(auto& unit:document.units)units.emplace(unit.id,&unit);
     std::map<std::string,HydroFeature*> waters;for(auto& water:document.hydro)waters.emplace(water.id,&water);
-    for(const auto& [ref,properties]:world.activeProperties)
+    for(const auto& [ref,properties]:world.activeProperties())
         for(const auto& [property,encoded]:properties) {
         if(ref.domain=="hydro") {
             const auto found=waters.find(ref.id);
@@ -67,7 +67,7 @@ void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
 }
 TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source,const ResolvedWorld& world) {
     TimelineDocumentProjection result;
-    source.geometries.requireReady(world.requiredGeometries);
+    source.geometries.requireReady(world.requiredGeometries());
     // Copy only the live document domains. The historical archive is not
     // part of this static view and must not be copied just to discard it.
     auto& document=result.document;

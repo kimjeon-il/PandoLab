@@ -176,7 +176,7 @@ val webWorld(const ResolvedWorld& world) {
     auto result=val::object(),entities=val::array();
     result.set("month",webText(world.month));
     unsigned index=0;
-    for(const auto& row:world.entities) {
+    for(const auto& row:world.entities()) {
         auto value=val::object(),ancestors=val::array();
         value.set("objectRef",webObjectRef(row.objectRef));value.set("geometryRef",webRef(row.geometryRef));
         value.set("rendering",val::global("JSON").call<val>("parse",row.rendering));

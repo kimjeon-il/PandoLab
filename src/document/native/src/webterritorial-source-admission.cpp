@@ -34,7 +34,7 @@ ActiveFrame activeFrame(const ProjectSnapshot& snapshot) {
         require(!snapshot.timelineMonth().empty(),"TIMELINE_ACTIVATION","A timeline month is required.");
         const auto point=parseTemporal(snapshot.timelineMonth());require(point.precision=="month","INVALID_TIMELINE_CURSOR","Month precision is required.");
         const auto world=resolveWorld(source.timelineRecords,{timelineEntityCatalog(source),[&](const ObjectRef& owner,const GeometryRef& ref){return source.geometries.contains(ref);}},snapshot.timelineMonth());
-        for(const auto& resolved:world.entities) {
+        for(const auto& resolved:world.entities()) {
             if(resolved.objectRef.domain!="territorial")continue;
             const auto found=snapshot.index().objects.find(resolved.objectRef);require(found!=snapshot.index().objects.end(),"invalid","Territorial identity is missing.");
             append(d.units.at(found->second),resolved.geometryRef,resolved.parentId,resolved.coverageMode,resolved.validity);

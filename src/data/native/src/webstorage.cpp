@@ -207,8 +207,8 @@ struct WebStorageBaseline::Data {
         std::map<std::string,GeometryRef> visible;
         if(!sourceMonth.empty()) {
             const auto world=resolveWorld(source->timelineRecords,{timelineEntityCatalog(*source),[&](const ObjectRef&,const GeometryRef& ref){return source->geometries.contains(ref);}},sourceMonth);
-            std::vector<GeometryRef> required;for(const auto& row:world.entities)required.push_back(row.geometryRef);source->geometries.requireReady(required);
-            for(const auto& row:world.entities)if(row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id,row.geometryRef);
+            std::vector<GeometryRef> required;for(const auto& row:world.entities())required.push_back(row.geometryRef);source->geometries.requireReady(required);
+            for(const auto& row:world.entities())if(row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id,row.geometryRef);
         } else if(isStaticTimeline(*source))for(const auto& row:source->timelineRecords.geometryBindings)if(row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id,row.geometryRef);
         features=V::arr();
         for(const auto& identity:source->units) {

@@ -14,19 +14,27 @@ struct ResolvedEntity {
     Validity validity;
     std::map<std::string,std::string> properties;
 };
+// The cursor is a small value; its resolved projection is immutable and
+// shared by every event-free month, view, and detached candidate that owns it.
+struct ResolvedWorldProjection {
+    std::vector<ResolvedEntity> entities;
+    std::map<ObjectRef,std::size_t> offsets;
+    // Includes identities without visible geometry.
+    std::map<ObjectRef,std::map<std::string,std::string>> activeProperties;
+    std::vector<GeometryRef> requiredGeometries;
+    // A weak receipt cannot pin previous months. Only a matching base may
+    // use the affected owner set to skip the full wire comparison.
+    std::weak_ptr<const ResolvedWorldProjection> deltaBase;
+    std::vector<ObjectRef> affected;
+};
 struct ResolvedWorld {
     std::string month;
-    std::vector<ResolvedEntity> entities;
-    // Stable index positions survive copies of the resolved world.
-    std::map<ObjectRef,std::size_t> offsets;
-    // Active values include identities without currently visible geometry.
-    std::map<ObjectRef,std::map<std::string,std::string>> activeProperties;
+    std::shared_ptr<const ResolvedWorldProjection> projection=std::make_shared<const ResolvedWorldProjection>();
+    const auto& entities() const noexcept {return projection->entities;}
+    const auto& offsets() const noexcept {return projection->offsets;}
+    const auto& activeProperties() const noexcept {return projection->activeProperties;}
+    const auto& requiredGeometries() const noexcept {return projection->requiredGeometries;}
     const ResolvedEntity* find(const ObjectRef&) const;
-    // Populated by the resolver once, reused by admission and projection.
-    std::vector<GeometryRef> requiredGeometries;
-    // An immutable projection certificate is shared only by exact
-    // event-free cursor copies of one prepared timeline source.
-    std::shared_ptr<const bool> projectionIdentity;
 };
 
 // One inclusive as-of-boundary rule for project and library object histories.

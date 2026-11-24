@@ -12,7 +12,7 @@ namespace {
 // record; this small receipt never substitutes for the canonical resolver.
 std::string temporalWorldSha256(const ResolvedWorld& world) {
     std::string bytes;
-    bytes.reserve(world.entities.size()*180);
+    bytes.reserve(world.entities().size()*180);
     const auto append=[&](const std::string& value) {
         bytes+=std::to_string(value.size());bytes+=':';bytes+=value;
     };
@@ -21,8 +21,8 @@ std::string temporalWorldSha256(const ResolvedWorld& world) {
     };
     append("pando-core-temporal-world-v1");
     append(world.month);
-    append(std::to_string(world.entities.size()));
-    for(const auto& row:world.entities) {
+    append(std::to_string(world.entities().size()));
+    for(const auto& row:world.entities()) {
         append(row.objectRef.domain);append(row.objectRef.id);
         append(row.geometryRef.id);append(std::to_string(row.geometryRef.version));
         append(row.rendering);append(row.parentId);append(row.coverageMode);append(row.rootId);
@@ -206,7 +206,7 @@ TemporalCandidateReceipt DocumentSession::temporalCandidatePrepare(
     const auto sha=temporalWorldSha256(staged->world);
     const auto candidateId=temporalCandidateSequence_+1;
     staged->receipt={candidateId,sourceId,expectedEpoch,targetMonth,
-        sourceFingerprint,sha,staged->world.entities.size(),false};
+        sourceFingerprint,sha,staged->world.entities().size(),false};
     temporalCandidate_=std::move(staged);
     temporalCandidateSequence_=candidateId;
     return temporalCandidate_->receipt;
@@ -257,7 +257,7 @@ DocumentSessionState DocumentSession::temporalCandidateAdopt(
     if(temporalCandidate_->project.timelineCursor()!=targetMonth
         ||temporalCandidate_->project.document().documentId!=temporalCandidate_->preparedDocumentId
         ||temporalWorldSha256(temporalCandidate_->world)!=worldSha256
-        ||temporalCandidate_->world.entities.size()!=receipt.resolvedEntityCount)
+        ||temporalCandidate_->world.entities().size()!=receipt.resolvedEntityCount)
         throw TimelineError("CORE_TEMPORAL_CANDIDATE_STALE","The prepared world no longer matches its verified receipt.");
     if(epoch_==std::numeric_limits<std::uint32_t>::max()
         ||storageBaselineSequence_==std::numeric_limits<std::uint32_t>::max())
@@ -461,7 +461,7 @@ GeometryResourceAdmission DocumentSession::admitGeometryResources(const std::vec
         auto protectedRefs=project_.protectedGeometryResources(current.get(),target.get());
         protectedRefs.insert(received.begin(),received.end());
         result.evicted=candidate.trimResourceCache(protectedRefs,project_.resourceCache_,geometryCacheBudget_);
-        candidate.requireReady(target->requiredGeometries);
+        candidate.requireReady(target->requiredGeometries());
     }
     if(!result.admitted.empty()||!result.evicted.empty())project_.admitGeometryResources(std::move(candidate),!result.evicted.empty());
     return result;
