@@ -6,10 +6,14 @@ export function createMapLibreCountryBorders({getBoundaryGeometry,prepareRenderG
  let acknowledgedBoundary=null,sequence=0,boundaryRequest=0;
  async function prepareCountryBorders(features,revision,signal){
   const serial=++boundaryRequest,key='topology:'+ ++sequence;
-  const versions=new Map(features.map(feature=>[feature.id,geometryKey(feature.geometry)]));
-  const paints=new Map();
-  for(const {id,properties:{borderColor,borderAlpha,borderWidth}} of features)
-   if(borderAlpha>0&&borderWidth>0)paints.set(countryBoundaryOwner(id),{borderColor,borderAlpha,borderWidth});
+  const versions=new Map(),paints=new Map();
+  for(const {id,geometry,properties:{borderColor,borderAlpha,borderWidth}} of features){
+   versions.set(id,geometryKey(geometry));
+   if(borderAlpha>0&&borderWidth>0){
+    const paint={borderColor,borderAlpha,borderWidth};
+    paints.set(countryBoundaryOwner(id),{key:JSON.stringify(paint),paint});
+   }
+  }
   const known=new Map();
   for(const row of getBoundaryGeometry().values())
    if(row.partitionId!=null)known.set(row.partitionId,row);
@@ -37,10 +41,10 @@ export function createMapLibreCountryBorders({getBoundaryGeometry,prepareRenderG
    if(cached?.revision!==partition.revision)throw new Error('Shared border partition revision mismatch');
    const styles=new Map();
    for(const owner of partition.ownerIds){
-    const paint=paints.get(owner);if(paint)styles.set(JSON.stringify(paint),paint);
+    const style=paints.get(owner);if(style)styles.set(style.key,style.paint);
    }
    let index=0;
-   for(const paint of [...styles.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([,paint])=>paint)){
+   for(const [,paint] of [...styles].sort(([a],[b])=>a.localeCompare(b))){
     const id='country-border:'+partition.id+':'+index++;
     rows.push({key:id,partitionId:partition.id,revision:partition.revision,paths:cached.paths,
      feature:{type:'Feature',id,geometry:cached.paths.native,properties:{...paint,objectKey:id,displayRole:'country-border'}}});

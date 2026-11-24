@@ -1,3 +1,4 @@
+import {sameRenderIdentity} from './render-identity.js';
 import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
 
@@ -61,7 +62,7 @@ export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){
 export function syncMapLibreHydroVisibility(map,hiddenIds,visibility){
  for(const {id,baseId,category,zoom}of hydroLayers){
   const filter=layerFilter(category,zoom,hiddenIds);
-  if(JSON.stringify(map.getFilter(id))!==JSON.stringify(filter))map.setFilter(id,filter);
+  if(!sameRenderIdentity(map.getFilter(id),filter))map.setFilter(id,filter);
   const value=visibility[baseId]===false?'none':'visible';
   if(map.getLayoutProperty(id,'visibility')!==value)map.setLayoutProperty(id,'visibility',value);
  }

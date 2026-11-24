@@ -8,7 +8,7 @@ import {createMapLibreVectorGroup} from './maplibre-vector-group.js';
 import {resolveMapLibreMapStyle} from './maplibre-map-style.js';
 import {syncMapLibreBaseLayer} from './maplibre-base-layer.js';
 import {createMapLibreStyleController} from './maplibre-style-controller.js';
-import {sameRenderIdentity} from './render-identity.js';
+import {sameRenderIdentity,changedRenderProperties} from './render-identity.js';
 import {isPreparedSceneDomain} from './map-scene.js';
 import {createSceneGroupIndex,partitionSceneRows} from './maplibre-scene-group-index.js';
 import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
@@ -285,13 +285,13 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
      const before=group.rows;
      if(!before)await source.setData(data());
      else{
-      const remove=[...before.keys()].filter(key=>!next.has(key)),add=[],update=[];
+      const remove=[],add=[],update=[];
+      for(const key of before.keys())if(!next.has(key))remove.push(key);
       for(const [key,{feature,revision}] of next){
        const old=before.get(key);
        if(!old){add.push(feature);continue;}
        const newGeometry=old.revision!==revision||revision==null&&old.feature.geometry!==feature.geometry?feature.geometry:null;
-       const properties=Object.entries(feature.properties).filter(([name,value])=>old.feature.properties[name]!==value)
-        .map(([key,value])=>({key,value}));
+       const properties=changedRenderProperties(old.feature.properties,feature.properties);
        if(newGeometry||properties.length)update.push({id:key,...(newGeometry?{newGeometry}:{}),
         ...(properties.length?{addOrUpdateProperties:properties}:{})});
       }

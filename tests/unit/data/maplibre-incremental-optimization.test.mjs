@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCountryBoundaryOutput} from '../../../src/rendering/country-boundary-output.js';
 import {createCoreRequestQueue} from '../../../src/document/core-request-queue.js';
-import {sameRenderIdentity} from '../../../src/rendering/render-identity.js';
+import {sameRenderIdentity,changedRenderProperties} from '../../../src/rendering/render-identity.js';
 import {mapLibreGeoJsonSource,mapLibreVectorSourceKind} from '../../../src/rendering/maplibre-source-spec.js';
 
 test('border output only regenerates changed owner partitions',()=>{
@@ -62,4 +62,13 @@ test('native tile generalization protects topology and selected geometry',()=>{
  assert.equal(mapLibreGeoJsonSource('derived-line').tolerance,0.5);
  assert.equal(mapLibreVectorSourceKind([{kind:'line',role:'graticule'}]),'derived-line');
  assert.equal(mapLibreVectorSourceKind([{kind:'line',role:'graticule',objectKey:'country'}]),'overlay');
+});
+
+
+test('property diffs emit only modified fields and preserve explicit false, zero and null',()=>{
+ const previous={color:'#fff',alpha:1,visible:true,other:'old'};
+ assert.deepEqual(changedRenderProperties(previous,previous),[]);
+ assert.deepEqual(changedRenderProperties(previous,{color:'#fff',alpha:0,visible:false,other:null}),
+  [{key:'alpha',value:0},{key:'visible',value:false},{key:'other',value:null}]);
+ assert.deepEqual(changedRenderProperties(previous,{...previous}),[]);
 });
