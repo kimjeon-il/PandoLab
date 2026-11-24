@@ -196,6 +196,7 @@ export function createMapLibreFrameController({
   if(unavailable())return;
   error=cause;ready=false;preparedReady=false;approvedFrame=null;
   notify('error','지도 불러오기 실패');
+  for(const waiter of styleWaiters)waiter.finish(cause);
   presentation.rejectMapPresentationWaiters(cause);presentation.failTemporalPresentation(cause);
   feedback.reportOperationError(cause,'지도를 표시하지 못했습니다.','PL-MAPLIBRE-001');
  }

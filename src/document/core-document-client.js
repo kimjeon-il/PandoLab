@@ -200,8 +200,9 @@ export function createCoreDocumentClient({
     setTimelineCursor: async(month, options={}) => {
       try {
         let receipt=geometryReceipts.get(options.geometryPreparation);
-        const intent=receipt?.month===month&&receipt.intent===timelineIntent&&!receipt.intent.controller.signal.aborted
-          ?receipt.intent:beginTimelineIntent(options);
+        if(receipt?.month===month&&(receipt.intent!==timelineIntent||receipt.intent.controller.signal.aborted))
+          throw cancelled('PL-CORE-STALE','Timeline geometry receipt was superseded.');
+        const intent=receipt?.month===month?receipt.intent:beginTimelineIntent(options);
         const scoped=timelineOptions(options,intent);
         for(;;){
           if(scoped.signal.aborted||!scoped.isCurrent())throw cancelled('PL-CORE-STALE','Timeline request superseded.');

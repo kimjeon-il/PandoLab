@@ -137,7 +137,16 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    }
    else if(!map.getLayer(id))entry.signature=null;
    entry.batches=nextBatches;
-   if(!sameRenderIdentity(entry.signature,signature)){entry.signature=signature;entry.layer.update(items).catch(cause=>{if(entry.role==='hydro-detail')feedback.reportOperationError(cause,'강 상세 표시를 준비하지 못했습니다.','PL-HYDRO-DETAIL-002');else failMapPreparation(cause);});}
+   const boundSource=items[0].role==='territorial-fill'?datedSources.active('territories'):id;
+   if(entry.boundSource!==boundSource||!sameRenderIdentity(entry.signature,signature)){
+    entry.boundSource=boundSource;entry.signature=signature;
+    entry.layer.update(items).catch(cause=>{
+     if(isDisposed()||vectorLayers.get(id)!==entry||entry.signature!==signature)return;
+     entry.signature=null;sceneIdentity=null;sceneKey++;
+     if(entry.role==='hydro-detail')feedback.reportOperationError(cause,'강 상세 표시를 준비하지 못했습니다.','PL-HYDRO-DETAIL-002');
+     else failMapPreparation(cause);
+    });
+   }
   }
  }
  function moveInOrder(order,id,before){

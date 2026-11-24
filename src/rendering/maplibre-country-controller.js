@@ -72,9 +72,12 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   const cached=datedSources.reuse('territories',key,sameRenderIdentity);
   const current=()=>!isDisposed()&&!signal.aborted&&requestedGeneration===getGeneration()&&sequence===countrySequence&&getMap()===map;
   const publish=(id,record)=>{
+   const sourceChanged=datedSources.active('territories')!==id;
    datedSources.activate('territories',id);
    countryDisplay.publish(record,record.key);
-   scene.syncCountryPaint(id,record.rows);scene.orderSceneLayers();
+   scene.syncCountryPaint(id,record.rows);
+   if(sourceChanged)scene.syncVectorGroups();
+   scene.orderSceneLayers();
   };
   const active=datedSources.get(datedSources.active('territories'));
   // A paint-only transition shares the already tiled source. Keep the actual

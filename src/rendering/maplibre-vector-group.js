@@ -19,7 +19,17 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
  const noLayers=Object.freeze([]),definitions=new Map();
  let layerIds=noLayers;
  function clear(){for(const layer of [...layerIds].reverse())if(map.getLayer(layer))map.removeLayer(layer);layerIds=noLayers;definitions.clear();}
- function update(next){const request=++version;pending=true;const task=tail.catch(()=>{}).then(()=>apply(next,request));tail=task;return task;}
+ function update(next){
+  const request=++version;pending=true;
+  const task=tail.catch(()=>{}).then(()=>apply(next,request)).catch(error=>{
+   // A rejected native update can already have changed part of its data.
+   // The next live request must rebuild that source rather than diff it.
+   sourceOwner=null;sourceRows=null;
+   if(request===version)pending=false;
+   throw error;
+  });
+  tail=task;return task;
+ }
  const clippedLines=new WeakMap();
  const nativeGeometry=row=>{
   if(row.kind!=='line')return row.geometry;
