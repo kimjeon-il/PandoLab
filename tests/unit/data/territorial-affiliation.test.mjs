@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {normalizeAffiliationMetadata,affiliationTypeAt} from '../../../src/document/territorial-affiliation.js';
 import {normalizeTerritorialIdentity} from '../../../src/document/territorial-units.js';
 import {normalizeTerritorialLibraryEntity} from '../../../tools/gis/territorial-library.js';
+import {applyBuiltinAffiliation} from '../../../tools/build/builtin-world-compiler.mjs';
 
 const dated=[
   {validFrom:'1930-01-01',validTo:'1935-03-31',type:'총독부'},
@@ -32,6 +33,15 @@ test('dated affiliation uses canonical end-of-month cursor and leaves unlabeled 
   assert.equal(affiliationTypeAt(metadata,'1935-04'),'');
   assert.equal(affiliationTypeAt(metadata,'1936-01'),'보호령');
   assert.equal(affiliationTypeAt(metadata,'1941-01'),'');
+});
+
+test('builtin child generation copies reviewed affiliation types without changing identity metadata',()=>{
+  const source={affiliationTypeHistory:dated,builtinSubunit:{sourceCountryId:'A'}};
+  const display={affiliationType:'임시유형',builtinSubunit:{sourceCountryId:'B'}};
+  applyBuiltinAffiliation(display,source);
+  assert.deepEqual(display,{affiliationTypeHistory:dated,builtinSubunit:{sourceCountryId:'B'}});
+  assert.equal(affiliationTypeAt(display,'1936-01'),'보호령');
+  assert.notEqual(display.affiliationTypeHistory,dated);
 });
 
 test('invalid child-authored affiliation intervals and mixed static/dynamic definitions are rejected',()=>{

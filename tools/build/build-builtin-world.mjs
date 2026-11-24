@@ -12,7 +12,7 @@ import {readTerritorialSources,readTerritorialSource,entityFileName,territorialS
 import {normalizeTerritorialLibraryEntity} from "../gis/territorial-library.js";
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {buildCurrentWorld} from "../data/territorial-current-world.mjs";
-import {addBuiltinWorldFormalName,compileBuiltinWorldCatalog,readBuiltinWorldFormalNames,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
+import {addBuiltinWorldFormalName,applyBuiltinAffiliation,compileBuiltinWorldCatalog,readBuiltinWorldFormalNames,replaceBuiltinWorldCountryNames} from "./builtin-world-compiler.mjs";
 import {builtinSubunitId} from "../../src/document/territorial-display-identity.js";
 import {loadBuiltinDisplayPolicy} from "../gis/builtin-display-policy.mjs";
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountryStoredBytes,readBuiltinCountry} from "../data/builtin-country-bytes.mjs";
@@ -20,6 +20,10 @@ import {isDeepStrictEqual} from 'node:util';
 import {readProjectGenerationContext} from './project-generation-context.mjs';
 import {assertTerritorialRetirement,assertBuiltinRetirement,readRetirementReceipt,planTerritorialRetirement,mixedRetirementPublicationPlan,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
 import {buildReviewedBorderBatch,buildReviewedBorderEdition} from './reviewed-border-edition.mjs';
+import {assertIndexedTerritorialChunk} from '../data/territorial-metadata-projection.mjs';
+import {selectTerritorialChunkBytes} from '../data/territorial-chunk-compression.mjs';
+import {normalizeTimelineRecords} from '../../src/document/timeline-records.js';
+import {parseTemporal,temporalIntervalsOverlap} from '../../src/document/temporal.js';
 export {finalizeBuiltinWorldFiles};
 
 const output=fileURLToPath(new URL("../../assets/data/builtin-world/generated/v1/",import.meta.url));
@@ -99,6 +103,155 @@ export function buildBuiltinWorldNamePublication({entityIds,sourceIndex,previous
  const ordered=Object.fromEntries(Object.entries(revisions).sort(([a],[b])=>a.localeCompare(b,'en')));
  index.inputHashes.sourceRevisions=ordered;index.inputHashes.entities=sha(JSON.stringify(ordered));
  return finalizeBuiltinWorldFiles(index,files,{previousIndex});
+}
+
+/** Publish source affiliation metadata and both derivative catalogs without touching geometry or parent records. */
+export function buildBuiltinWorldAffiliationPublication({generation,read,updates}) {
+ return buildBuiltinWorldSourcePublication({generation,read,updates,edit({id,value,raw,chunk,entry,country,isChild}){
+  if(!isChild)throw Error('Affiliation requires one known child source: '+id);
+  if(Object.keys(value).length!==1||!['affiliationType','affiliationTypeHistory'].some(key=>Object.hasOwn(value,key)))
+   throw Error('Expected one affiliation field: '+id);
+  const items=[raw,chunk,entry,country.identity.properties];
+  const nextMetadata=items.map(item=>{
+   const next=structuredClone(item.metadata??{});
+   applyBuiltinAffiliation(next,value);
+   return next;
+  });
+  if(items.every((item,i)=>isDeepStrictEqual(item.metadata,nextMetadata[i])))return false;
+  items.forEach((item,i)=>{item.metadata=nextMetadata[i];});
+  return true;
+ }});
+}
+
+/** Record a historical lifetime extension while retaining the admitted display records. */
+export function buildBuiltinWorldLifetimePublication({generation,read,updates}) {
+ return buildBuiltinWorldSourcePublication({generation,read,updates,edit({id,value,raw,chunk,entry,country}){
+  const date=parseTemporal(value,{nullable:false});
+  const timeline=country.identity.properties.metadata.historicalTimeline;
+  const previous=raw.lifetime;
+  if(date.precision!=='date'||date.canonical!==value||!/^[0-9]{4}-/.test(value)||
+    timeline?.entityId!==id||!previous?.validTo||value<previous.validTo||entry.validTo!==previous.validTo||
+    ![chunk,entry,timeline].every(item=>isDeepStrictEqual(item.lifetime,previous))||
+    raw.geometryVersions.some(version=>!version.validTo||version.validTo>previous.validTo))
+   throw Error('Expected a source lifetime extension beyond fixed historical geometry: '+id);
+  if(value===previous.validTo)return false;
+  for(const item of [raw,chunk,entry,timeline])item.lifetime={...previous,validTo:value};
+  entry.validTo=value;
+  return true;
+ }});
+}
+
+function buildBuiltinWorldSourcePublication({generation,read,updates,edit}) {
+ if(!(updates instanceof Map)||!updates.size)throw Error('Explicit territorial source scope required');
+ const rawRoot=generation.source('territorialSourceRoot');
+ const sourceIndexPath=generation.source('territorialSourceIndex');
+ const sourceRoot=path.posix.dirname(sourceIndexPath);
+ const builtinIndexPath=generation.catalogs.territorial;
+ const builtinRoot=path.posix.dirname(builtinIndexPath);
+ const source=JSON.parse(read(sourceIndexPath));
+ const before=JSON.parse(read(builtinIndexPath)),index=structuredClone(before);
+ const files=new Map(),builtinFiles=new Map(),countries=[];
+ const children=new Set(before.readIndex.records.parentRelations.filter(row=>row.parentId).map(row=>row.objectRef.id));
+ const revisions=index.inputHashes.sourceRevisions;
+ for(const [id,value] of updates){
+  const matches=before.sourceIdentities.filter(row=>row.sourceEntityIds.includes(id));
+  const match=matches[0],projectId=match?.projectEntityId;
+  if(matches.length!==1||match.sourceEntityIds.length!==1)
+   throw Error('Expected one known territorial source: '+id);
+  const rawPath=rawRoot+'/countries/'+entityFileName(id);
+  const entry=source.entities.find(row=>row.entityId===id);
+  const builtin=before.entities.find(row=>row.entityId===projectId);
+  if(!entry||!builtin||revisions[id]!==entry.sha256)throw Error('Unpaired territorial source: '+id);
+  const sourcePath=sourceRoot+'/'+entry.file;
+  const sourceBytes=read(sourcePath);
+  assertIndexedTerritorialChunk(entry,sourceBytes);
+  const raw=JSON.parse(read(rawPath)),chunk=JSON.parse(gunzipSync(sourceBytes));
+  const country=JSON.parse(gunzipSync(readBuiltinCountryStoredBytes(builtin,file=>read(builtinRoot+'/'+file))));
+  if(raw.entityId!==id||chunk.entityId!==id||country.entityId!==projectId)
+   throw Error('Territorial source file identity mismatch: '+id);
+  const format=value=>Buffer.from(JSON.stringify(value,null,2)+'\n');
+  if(!edit({id,value,raw,chunk,entry,country,isChild:children.has(projectId)}))continue;
+  const decoded=format(chunk);
+  const {stored}=selectTerritorialChunkBytes(decoded,sourceBytes);
+  Object.assign(entry,{sha256:sha(stored),compressedBytes:stored.length,decodedBytes:decoded.length});
+  revisions[id]=entry.sha256;
+  files.set(rawPath,format(raw));
+  files.set(sourcePath,stored);
+  countries.push(country);
+ }
+ if(!countries.length)return files;
+ index.inputHashes.entities=sha(JSON.stringify(revisions));
+ encodeBuiltinCountries(index,countries,builtinFiles);
+ finalizeBuiltinWorldFiles(index,builtinFiles,{previousIndex:before});
+ if(!isDeepStrictEqual(index.geometryAssets,before.geometryAssets)||
+   !isDeepStrictEqual(index.readIndex.records,before.readIndex.records))
+   throw Error('Territorial source publication changed geometry or timeline records');
+ files.set(sourceIndexPath,Buffer.from(JSON.stringify(source,null,2)+'\n'));
+ for(const [path,bytes] of builtinFiles)files.set(builtinRoot+'/'+path,bytes);
+ return files;
+}
+
+/** Extend an approved historical relationship only within the same admitted child and parent geometries. */
+export function extendBuiltinParentWindows({generation,read,windows}) {
+ if(!(windows instanceof Map)||!windows.size)throw Error('Explicit parent extension scope required');
+ const policyPath=generation.source('historicalPolicy'),indexPath=generation.catalogs.territorial;
+ const root=path.posix.dirname(indexPath),policy=JSON.parse(read(policyPath));
+ const before=JSON.parse(read(indexPath)),index=structuredClone(before);
+ if(sha(JSON.stringify(policy))!==before.inputHashes.policy)throw Error('Unpaired historical parent policy');
+ const records=before.readIndex.records,validationIds=new Set(),countries=[];
+ const projectId=id=>{
+  const matches=before.sourceIdentities.filter(row=>row.sourceEntityIds.includes(id));
+  if(matches.length!==1)throw Error('Unpaired historical parent identity: '+id);
+  return matches[0].projectEntityId;
+ };
+ const step=(day,delta)=>new Date(Date.parse(day+'T00:00:00Z')+delta*86_400_000).toISOString().slice(0,10);
+ for(const [sourceId,scope] of windows){
+  const {validFrom,validTo}=scope;
+  const rules=policy.parentRelations.filter(row=>row.entityId===sourceId);
+  if(rules.length!==1)throw Error('Expected one approved parent policy: '+sourceId);
+  const rule=rules[0],childId=projectId(sourceId),parentId=projectId(rule.parentEntityId);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(validFrom)||!/^\d{4}-\d{2}-\d{2}$/.test(validTo)||
+    validFrom>rule.validFrom||validTo<rule.validTo)
+   throw Error('Expected a bounded extension of the approved parent interval: '+sourceId);
+  for(const id of [childId,parentId]){
+   const bindings=records.geometryBindings.filter(row=>row.objectRef.id===id&&temporalIntervalsOverlap(row,scope));
+   if(bindings.length!==1||bindings[0].validFrom>validFrom||(bindings[0].validTo&&bindings[0].validTo<validTo))
+    throw Error('Parent extension crosses a geometry change: '+id);
+   validationIds.add(id);
+  }
+  const entry=before.entities.find(row=>row.entityId===childId);
+  const country=JSON.parse(gunzipSync(readBuiltinCountryStoredBytes(entry,file=>read(root+'/'+file))));
+  const rows=country.timelineRecords.parentRelations;
+  const anchor=rows.find(row=>row.validFrom===rule.validFrom&&row.validTo===rule.validTo&&row.parentId===parentId);
+  if(!anchor||rows.some(row=>row!==anchor&&row.parentId&&temporalIntervalsOverlap(row,scope)))
+   throw Error('Parent extension conflicts with existing history: '+childId);
+  country.timelineRecords.parentRelations=rows.filter(row=>row!==anchor).flatMap(row=>{
+   if(!temporalIntervalsOverlap(row,scope))return [row];
+   const retained=[];
+   if(!row.validFrom||row.validFrom<validFrom)retained.push({...row,validTo:step(validFrom,-1)});
+   if(!row.validTo||row.validTo>validTo)retained.push({...row,validFrom:step(validTo,1)});
+   return retained;
+  }).concat({...anchor,validFrom,validTo}).sort((a,b)=>(a.validFrom??'').localeCompare(b.validFrom??'','en'));
+  Object.assign(rule,{validFrom,validTo});
+  rule.basis.scope='Extension within the existing, unchanged Viewer geometry bindings of the child and parent. Geometry and source validity remain unchanged.';
+  countries.push(country);
+ }
+ index.inputHashes.policy=sha(JSON.stringify(policy));
+ const files=finalizeBuiltinWorldFiles(index,encodeBuiltinCountries(index,countries,new Map()),{previousIndex:before});
+ const next=index.readIndex.records;
+ for(const table of ['lifetimes','geometryBindings','propertyBindings'])
+  if(!isDeepStrictEqual(next[table],records[table]))throw Error('Parent extension changed an unrelated timeline table: '+table);
+ if(!isDeepStrictEqual(index.geometryAssets,before.geometryAssets))throw Error('Parent extension changed geometry assets');
+ const scoped=Object.fromEntries(Object.entries(next).map(([name,rows])=>[name,Array.isArray(rows)?
+  rows.filter(row=>validationIds.has(row.objectRef.id)):rows]));
+ const geometryKeys=new Set(index.geometryAssets.map(({id,version})=>JSON.stringify([id,version])));
+ normalizeTimelineRecords(scoped,{
+  entities:index.readIndex.identities.filter(row=>validationIds.has(row.id))
+   .map(row=>({objectRef:{domain:'territorial',id:row.id},entityKind:row.properties.entityKind})),
+  geometryExists:ref=>geometryKeys.has(JSON.stringify([ref.id,ref.version])),
+ });
+ return new Map([[policyPath,Buffer.from(JSON.stringify(policy,null,2)+'\n')],
+  ...[...files].map(([file,bytes])=>[root+'/'+file,bytes])]);
 }
 
 /** Remove an explicitly disproven current identity without altering any surviving

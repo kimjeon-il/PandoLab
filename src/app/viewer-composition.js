@@ -162,9 +162,13 @@ export async function composeViewer({ productMode, meta }) {
       const month=activeSession.commandOwner.state().timelineCursor;
       const row=repository.get(ref.id),parent=repository.parent(ref.id);
       const objectName=id=>map.objectQuery.objectDisplayInfo({domain:'territorial',type:'entity',id}).name;
+      const metadata=row?.properties?.metadata;
+      const affiliationType=affiliationTypeAt(metadata,month);
+      const lessee=affiliationType==='조차지'&&metadata?.builtinSubunit?.lesseeCountryId;
       return {
         parentName:parent?objectName(parent.id):'',
-        affiliationType:affiliationTypeAt(row?.properties?.metadata,month),
+        affiliationType,
+        affiliationSubjectName:lessee?objectName(lessee):'',
         children:repository.children(ref.id).map(child=>({
           id:child.id,name:objectName(child.id),
           affiliationType:affiliationTypeAt(child.properties?.metadata,month),

@@ -24,7 +24,7 @@ const evidence=item=>({file:basename(item.path),sha256:item.sha256});
 const collection=item=>{if(item.value?.type!=='FeatureCollection'||!Array.isArray(item.value.features))throw Error('Hydro source FeatureCollection required');
   return item.value.features;};
 export async function executeHydroGeneration(input,options={}){
-  options.signal?.throwIfAborted();const {riverRoots,naturalEarthRoot,raster,output,overridesPath,independentPath}=input??{},codes=options.codes??defaultCodes;
+  options.signal?.throwIfAborted();const {riverRoots,naturalEarthRoot,raster,output,overridesPath,independentPath,displayReviewPath}=input??{},codes=options.codes??defaultCodes;
   if(!Array.isArray(riverRoots)||!riverRoots.length||[naturalEarthRoot,raster,output].some(value=>typeof value!=='string'||!value))
     throw Error('Explicit Hydro source roots, raster and new output required');
   if(typeof independentPath!=='string'||!independentPath)throw Error('Explicit independent-hydronym-replacements recipe required.');
@@ -34,11 +34,11 @@ export async function executeHydroGeneration(input,options={}){
   await mkdir(dirname(target),{recursive:true});const physicalTarget=join(await realpath(dirname(target)),basename(target)),
     physicalAssets=existsSync(workspaceAssets)?realpathSync(workspaceAssets):workspaceAssets;
   if(inside(dirname(earth),physicalTarget)||inside(physicalAssets,physicalTarget))throw Error('Hydro output must be outside runtime data');
-  const [river,lake,country,overrides,independent]=await Promise.all([
+  const [river,lake,country,overrides,independent,displayReview]=await Promise.all([
     stableJson(join(earth,'rivers_base.geojson'),options.signal),stableJson(join(earth,'lakes_base.geojson'),options.signal),
     stableJson(join(dirname(earth),'countries-ne-5.1.1.geojson'),options.signal),
     stableJson(overridesPath||join(earth,'hydronym-ko-overrides.json'),options.signal),
-    stableJson(independentPath,options.signal)]);
+    stableJson(independentPath,options.signal),displayReviewPath?stableJson(displayReviewPath,options.signal):null]);
   const references=collection(river),lakes=collection(lake),countries=collection(country).map((row,index)=>({id:String(row.id||index),geometry:row.geometry})),
     aliases=overrides.value?.aliases||{},systemOverrides=overrides.value?.systems||{};
   const sources=await prepareHydroRiverSources({riverRoots,codes,signal:options.signal}),physical=await readPhysicalRaster(raster,{...options.physical,signal:options.signal});
@@ -46,9 +46,10 @@ export async function executeHydroGeneration(input,options={}){
   const sampleWater=createHydroWaterRasterSampler({width:physical.width,height:physical.height,data:physical.pixels}),
     source={naturalEarthNameReference:[evidence(river),evidence(lake),evidence(country)],drainageFreeWaterMask:{file:basename(raster),sha256:physical.sha256},
       naturalEarthLakes:{...evidence(lake),selected:0},osmWaterways:{file:null,matchedSystems:0,license:null},hydronymOverrides:evidence(overrides),
-      independentHydronymReplacements:{...evidence(independent),replacedSystems:0,geometryChanged:false}};
+      independentHydronymReplacements:{...evidence(independent),replacedSystems:0,geometryChanged:false},
+      ...(displayReview?{displayReview:evidence(displayReview)}:{})};
   const generated=await generateHydroFromSources({sources,countries,references,lakes,sampleWater,aliases,systemOverrides,
-    independentDocument:independent.value,source},options),manifest=Buffer.from(JSON.stringify(generated.manifest,null,2));
+    independentDocument:independent.value,displayReview:displayReview?.value,source},options),manifest=Buffer.from(JSON.stringify(generated.manifest,null,2));
   if(manifest.length>100*1024)throw Error('Hydro manifest exceeds 100 KiB');
   options.signal?.throwIfAborted();await mkdir(physicalTarget);const entries=[...generated.pack.files,['manifest.json',manifest]];
   const files=[];for(const [name,bytes] of entries){const path=join(physicalTarget,name);
@@ -61,7 +62,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const controller=new AbortController(),abort=()=>controller.abort();process.once('SIGINT',abort);process.once('SIGTERM',abort);
   try{const {values,positionals}=parseArgs({allowPositionals:true,options:{'hydrorivers-root':{type:'string',multiple:true},
     'natural-earth-root':{type:'string'},'drainage-free-raster':{type:'string'},output:{type:'string'},
-    'hydronym-overrides':{type:'string'},'independent-hydronym-replacements':{type:'string'}}});
+    'hydronym-overrides':{type:'string'},'independent-hydronym-replacements':{type:'string'},'display-review':{type:'string'}}});
     if(positionals.length||!values['hydrorivers-root']?.length||!values['natural-earth-root']||!values['drainage-free-raster']||!values.output)
       throw Error('Expected --hydrorivers-root, --natural-earth-root, --drainage-free-raster and --output');
     const pointScreen={directory:process.env.PANDO_HYDRO_POINT_SCREEN_DIRECTORY,runtimeRoot:process.env.PANDO_HYDRO_RUNTIME_ROOT},
@@ -69,7 +70,8 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
       physical={directory:process.env.PANDO_PHYSICAL_RASTER_DIRECTORY};
     const result=await executeHydroGeneration({riverRoots:values['hydrorivers-root'],naturalEarthRoot:values['natural-earth-root'],
       raster:values['drainage-free-raster'],output:values.output,overridesPath:values['hydronym-overrides'],
-      independentPath:values['independent-hydronym-replacements']},{pointScreen,connectivity,encoding,physical,signal:controller.signal,
+      independentPath:values['independent-hydronym-replacements'],displayReviewPath:values['display-review']},
+      {pointScreen,connectivity,encoding,physical,signal:controller.signal,
       onRegion:row=>process.stderr.write(`[${row.code}] ${row.systems} systems, ${row.chains} chains\n`)});
     console.log(JSON.stringify(result));
   }catch(error){console.error('build-hydro: '+error.message);process.exitCode=1;}

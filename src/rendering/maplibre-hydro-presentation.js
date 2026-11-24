@@ -93,7 +93,7 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
  let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map();
- let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null;
+ let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null,resumePublication=null;
  const fragmentsById=new Map();
  const needsAdmission=new Set();
  let selectable=new Set(),lastFailureKey='';
@@ -161,7 +161,8 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
    if(current())await publish(version,key);
   }
  }
- const suspend=()=>{generation++;currentWindow=null;windowFailed=false;flushProgress=null;clearTimeout(movementTimer);movementTimer=null;cancel?.();};
+ const releasePublication=()=>{const resume=resumePublication;resumePublication=null;resume?.();};
+ const suspend=()=>{generation++;currentWindow=null;windowFailed=false;flushProgress=null;releasePublication();clearTimeout(movementTimer);movementTimer=null;cancel?.();};
  function settle(force=false,retry=false){
   if(disposed||!isEnabled())return Promise.resolve();
   const center=map.getCenter(),canvas=map.getCanvas();
@@ -174,6 +175,10 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   }
   windowFailed=false;
   const version=++generation;
+  // An existing scene is the fallback while a new viewport loads. Only an
+  // empty initial scene benefits from progressive native source writes.
+  const progressive=presentedKey===null&&!map.isMoving?.();
+  releasePublication();
   const current=()=>!disposed&&version===generation&&isEnabled();
   let progress=[],progressTimer=null;
   const enqueue=(result,options)=>{
@@ -190,15 +195,19 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   };
   flushProgress=progressReady;
   const onProgress=({packs})=>{
-   if(!current())return;
+   if(!progressive||!current())return;
    progress.push(...packs);
    if(!progressTimer&&!map.isMoving?.())progressTimer=setTimeout(progressReady,16);
   };
   pending=Promise.resolve().then(()=>current()?load(view,current,{onProgress}):null)
-   .then(result=>{
+   .then(async result=>{
     clearTimeout(progressTimer);progressTimer=null;progress=[];
     if(flushProgress===progressReady)flushProgress=null;
-    if(result&&current()){windowFailed=!!result.failedPacks?.length;return enqueue(result);}
+    if(!result||!current())return;
+    // Keep the last rendered coverage while the camera is moving. A new
+    // viewport or suspension releases the waiter and invalidates its result.
+    while(current()&&map.isMoving?.())await new Promise(resolve=>{resumePublication=resolve;});
+    if(current()){windowFailed=!!result.failedPacks?.length;return enqueue(result);}
    })
    .catch(error=>{
     clearTimeout(progressTimer);
@@ -215,6 +224,7 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  const moveEnded=()=>{
   clearTimeout(movementTimer);movementTimer=null;
   const settled=settle(false,true);
+  releasePublication();
   flushProgress?.();
   return settled;
  };

@@ -1148,7 +1148,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const {rivers,lakes}=state.layerVisibility;
   const ocean=deps.preferences.mapPalette().ocean||'#ffffff';
   const hydroEdits=state.hydroEdits||emptyHydroEdits;
-  const inputs=[map.style,hydroFeatures,hydroEdits,state.timelineCursor,state.hydroFeatureCatalogRevision,
+  const inputs=[map.style,hydroFeatures,hydroEdits,deps.physicalResources.hydroActivityView(),state.hydroFeatureCatalogRevision,
    JSON.stringify(state.itemVisibility?.hydro??{}),state.physicalSettings?.hydroLayers,rivers,lakes,ocean];
   if(hydroInputs?.every((value,index)=>value===inputs[index]))return;
   hydroInputs=inputs;stats.hydroVisibilityScans++;

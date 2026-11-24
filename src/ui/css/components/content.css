@@ -190,10 +190,6 @@
   white-space: normal;
 }
 
-.object-details-heading:has(.object-details-affiliation:not([hidden])) .object-details-type {
-  display: none;
-}
-
 .preferences-appearance-grid {
   display: grid;
   grid-template-columns: minmax(128px, 1fr) minmax(0, 2fr);

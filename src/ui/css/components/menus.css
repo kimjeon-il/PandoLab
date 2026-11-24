@@ -33,8 +33,7 @@
 .object-chooser-item {
   width: 100%;
   min-height: var(--ui-control-height);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
   gap: var(--ui-row-gap);
   padding-inline: var(--ui-menu-item-padding-x);
@@ -42,17 +41,16 @@
 }
 
 .object-chooser-item > span {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .object-chooser-item > small {
+  flex: none;
   color: var(--muted);
-}
-
-.object-chooser-item.is-selected > small {
-  color: var(--selection-strong-muted);
 }
 
 /* Object actions reuse the common menu surface and item styling. */

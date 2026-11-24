@@ -108,10 +108,14 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       button.setAttribute('role', 'option');
       button.setAttribute('aria-selected', String(dependencies.domains.selectionDomain.has(ref)));
       const name = document.createElement('span');
-      const type = document.createElement('small');
       name.textContent = info.name;
-      type.textContent = [info.type, info.detail].filter(Boolean).join(' · ');
-      button.append(name, type);
+      button.append(name);
+      const detail = options.describe ? [info.type, info.detail].filter(Boolean).join(' · ') : info.detail;
+      if (detail) {
+        const description = document.createElement('small');
+        description.textContent = detail;
+        button.append(description);
+      }
       return button;
     }));
     chooser.classList.remove('hidden');

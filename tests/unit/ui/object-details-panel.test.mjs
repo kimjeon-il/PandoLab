@@ -21,7 +21,7 @@ function fakeElement(id='') {
 const ref=(id)=>({domain:'territorial',type:'entity',key:'territorial:entity:'+id,id});
 
 test('child-authored types group under their parent, child buttons navigate, and roots have an empty subtitle',()=>{
-  const ids=['objectDetailObjectName','objectDetailAffiliation','objectDetailFlag','objectDetailType','objectDetailGroups','objectDetailInfoEmpty',
+  const ids=['objectDetailObjectName','objectDetailAffiliation','objectDetailFlag','objectDetailGroups','objectDetailInfoEmpty',
     'objectDetailCloseBtn','objectDetailTabs','objectDetailTabInfo','objectDetailInfoPane',
     'objectDetailTabHistory','objectDetailHistoryPane'];
   const nodes=new Map(ids.map(id=>[id,fakeElement(id)])),operations=[],selected=[];
@@ -33,13 +33,12 @@ test('child-authored types group under their parent, child buttons navigate, and
     {id:'UKR',name:'우크라이나',affiliationType:'구성국'},
     {id:'OTHER',name:'미등록 속령',affiliationType:''},
   ]};
-  const ui=createObjectDetailsPanel({document,surfaces,displayInfo:row=>({name:'Selected '+row.id,type:'국가',flagUrl:'flags/'+row.id+'.svg'}),
+  const ui=createObjectDetailsPanel({document,surfaces,displayInfo:row=>({name:'Selected '+row.id,type:'객체',flagUrl:'flags/'+row.id+'.svg'}),
     relations:()=>view,selectObject:id=>selected.push(id)});
   const first=ref('USSR'),snapshot={projectGeneration:1,selection:{items:[first]}};
   assert.equal(ui.syncSelection(snapshot),true);
   assert.equal(nodes.get('objectDetailObjectName').textContent,'Selected USSR');
   assert.equal(nodes.get('objectDetailFlag').getAttribute('src'),'flags/USSR.svg');
-  assert.equal(nodes.get('objectDetailType').textContent,'국가');
   assert.equal(nodes.get('objectDetailAffiliation').textContent,'');
   assert.equal(nodes.get('objectDetailAffiliation').hidden,true);
   assert.equal(nodes.get('objectDetailInfoEmpty').hidden,true);
@@ -68,6 +67,9 @@ test('child-authored types group under their parent, child buttons navigate, and
   view={parentName:'소련',affiliationType:'',children:[]};
   ui.syncSelection(snapshot);
   assert.equal(nodes.get('objectDetailAffiliation').textContent,'소련 소속');
+  view={parentName:'쿠바',affiliationSubjectName:'미국',affiliationType:'조차지',children:[]};
+  ui.syncSelection(snapshot);
+  assert.equal(nodes.get('objectDetailAffiliation').textContent,'미국의 조차지');
 
   nodes.get('objectDetailTabHistory').fire('click');
   assert.equal(nodes.get('objectDetailInfoPane').hidden,true);
@@ -117,7 +119,7 @@ test('details and search share one mutually exclusive responsive surface owner',
 });
 
 test('repeated selection refresh reuses disclosure and buttons, preserving collapse, focus and live name changes',()=>{
-  const ids=['objectDetailObjectName','objectDetailAffiliation','objectDetailFlag','objectDetailType','objectDetailGroups','objectDetailInfoEmpty',
+  const ids=['objectDetailObjectName','objectDetailAffiliation','objectDetailFlag','objectDetailGroups','objectDetailInfoEmpty',
     'objectDetailCloseBtn','objectDetailTabs','objectDetailTabInfo','objectDetailInfoPane',
     'objectDetailTabHistory','objectDetailHistoryPane'];
   const nodes=new Map(ids.map(id=>[id,fakeElement(id)]));

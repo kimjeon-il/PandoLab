@@ -542,7 +542,7 @@ body .app-root[data-layout="phone-landscape"] .mobile-menu-toolbar { padding: 0;
     font-size: var(--design-font-xl);
   }
 
-  :is(.object-details-flag, .object-details-type, .object-details-affiliation, .surface-tabs, .surface-body) {
+  :is(.object-details-flag, .object-details-affiliation, .surface-tabs, .surface-body) {
     display: none;
   }
 }

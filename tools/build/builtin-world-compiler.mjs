@@ -3,6 +3,7 @@ import { normalizeTemporalInterval, parseTemporal } from "../../src/document/tem
 import { normalizeCountryCollection } from "../../src/document/country-feature.js";
 import {classifyBuiltinCountries} from '../gis/builtin-country-classification.mjs';
 import { builtinSubunitSourceId } from "../../src/document/territorial-display-identity.js";
+import { normalizeAffiliationMetadata } from "../../src/document/territorial-affiliation.js";
 import {loadBuiltinDisplayPolicy} from "../gis/builtin-display-policy.mjs";
 import { createTerritorialFeature, normalizeTerritorialIdentities, TERRITORIAL_IDENTITY_FIELDS } from "../../src/document/territorial-units.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../../src/geometry/geometry-version-store.js";
@@ -114,6 +115,14 @@ export function replaceBuiltinWorldCountryNames(country,entity,formalName) {
   result.timelineRecords.propertyBindings=[...result.timelineRecords.propertyBindings.filter(row=>row.property!=='name'),
     ...compileBuiltinWorldNameBindings(entity,result.entityId,formalName)];
   return result;
+}
+
+export function applyBuiltinAffiliation(target,metadata={}) {
+  const keys=['affiliationType','affiliationTypeHistory'];
+  const fields=normalizeAffiliationMetadata(Object.fromEntries(keys.filter(key=>Object.hasOwn(metadata,key))
+    .map(key=>[key,metadata[key]])));
+  for(const key of keys)delete target[key];
+  Object.assign(target,fields);
 }
 
 export function readBuiltinWorldFormalNames(input) {
@@ -243,6 +252,7 @@ export function compileBuiltinWorldCatalog({ entities, view, currentWorld = null
     if(!version)throw new Error(`Missing selected geometry: ${primary.entityId}`);
     const normalized = identity(feature);
     applyNameBaseline(normalized,primary);
+    if (builtinSubunitSourceId(feature)) applyBuiltinAffiliation(normalized.properties.metadata,primary.metadata);
     normalized.properties.metadata.historicalTimeline = { entityId: primary.entityId, sourceEntityIds: info.sourceEntityIds,
       lifetime: structuredClone(primary.lifetime), geometryVersions: primary.geometryVersions.map(withoutGeometry), geometryBindings: [] };
     const windows=primary.geometryVersions.flatMap(row=>lifetimes.map(lifetime=>{

@@ -153,20 +153,21 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     await admitHydroFeatures([feature],{isCurrent});
   }
   let builtinTimelineView=null;
-  function isHydroObjectActive(feature) {
-    if(feature.properties?.pandolab_domain==='hydro')return true;
-    if(activeSource!=='builtin')return false;
-    const state=dependencies.projectState.state,date=state.timelineCursor;
-    if(!date)return false;
+  function hydroActivityView() {
+    if(activeSource!=='builtin'||!dependencies.projectState.state.timelineCursor)return null;
     const selection=selectedPhysicalWater(),entry=waterContexts.get(selection.key);
     const ready=entry?.status==='ready';
     if(!builtinTimelineView||builtinTimelineView.catalog!==selection.catalog
-      ||builtinTimelineView.date!==date||builtinTimelineView.key!==selection.key
+      ||builtinTimelineView.key!==selection.key
       ||builtinTimelineView.ready!==ready) {
-      builtinTimelineView={catalog:selection.catalog,date,key:selection.key,ready,
+      builtinTimelineView={catalog:selection.catalog,key:selection.key,ready,
         reference:physicalWaterReferenceView(selection.catalog,selection.rows,ready)};
     }
-    return builtinTimelineView.reference.isActive(feature.properties?.pandolab_id||feature.id);
+    return builtinTimelineView.reference;
+  }
+  function isHydroObjectActive(feature) {
+    if(feature.properties?.pandolab_domain==='hydro')return true;
+    return hydroActivityView()?.isActive(feature.properties?.pandolab_id||feature.id)??false;
   }
   function connect(ports) {
     if (dependencies) throw new Error('physical-resources already connected');
@@ -315,6 +316,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     },
     get loadHydroData() { return loadHydroData; },
     builtinHydroSelectionReferences,
+    hydroActivityView,
     isHydroObjectActive,
     hydroDetailEnabled,
     admitHydroFeatures,

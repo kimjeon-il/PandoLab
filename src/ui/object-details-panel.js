@@ -24,7 +24,7 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     return node;
   };
   const title=get('objectDetailObjectName'),affiliation=get('objectDetailAffiliation'),
-    flag=get('objectDetailFlag'),typeLabel=get('objectDetailType'),
+    flag=get('objectDetailFlag'),
     groupHost=get('objectDetailGroups'),infoEmpty=get('objectDetailInfoEmpty'),
     closeButton=get('objectDetailCloseBtn'),tablist=get('objectDetailTabs');
   const tabs=[
@@ -71,7 +71,8 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     const parentName=typeof view.parentName==='string'?view.parentName.trim():'';
     const type=typeof view.affiliationType==='string'?view.affiliationType.trim():'';
     // A missing parent must remain empty, without an invented affiliation.
-    const subtitle=parentName?(type?`${parentName}의 ${type}`:`${parentName} 소속`):'';
+    const affiliationSubjectName=view.affiliationSubjectName||parentName;
+    const subtitle=parentName?(type?`${affiliationSubjectName}의 ${type}`:`${parentName} 소속`):'';
     if(affiliation.textContent!==subtitle)affiliation.textContent=subtitle;
     affiliation.hidden=!parentName;
     const groups=groupObjectDetailChildren(view.children);
@@ -153,9 +154,6 @@ export function createObjectDetailsPanel({document,surfaces,displayInfo,relation
     if(flagUrl&&flag.getAttribute('src')!==flagUrl)flag.setAttribute('src',flagUrl);
     if(!flagUrl)flag.removeAttribute('src');
     flag.hidden=!flagUrl;
-    const type=info?.type||'';
-    if(typeLabel.textContent!==type)typeLabel.textContent=type;
-    typeLabel.hidden=!type;
     renderRelations(selected,{reset:changed});
     if(changed){
       selectTab('info');

@@ -3,6 +3,25 @@ import assert from 'node:assert/strict';
 import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,mapLibreHydroStyle,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,riverWidthAtZoom,joinHydroLineParts} from '../../../src/rendering/maplibre-hydro-presentation.js';
 import {resolveMapLibreMapStyle} from '../../../src/rendering/maplibre-map-style.js';
 import {hydroDisplayStages,hydroLakeDisplayMinZoom} from '../../../src/map/map-display-zoom.js';
+import {hydroDisplayReview,applyReviewedHydroReaches} from '../../../tools/gis/hydro-display-review.mjs';
+
+test('reviewed Hydro source cuts and traced centerlines preserve unrelated reaches and junctions',()=>{
+ const sourceSha256='a'.repeat(64),sources=[{specification:{datasetCode:'af',files:[{file:'af.shp',sha256:sourceSha256}]}}];
+ const inside=[[0,0],[0.0005,0.01],[0.01,0.02]];
+ const region={datasetCode:'af',sourceSha256,exclusions:[{systemId:'20',reachIds:[2],evidence:['review']}],
+  replacements:[{id:3,systemId:'20',evidence:['review'],sourceStart:inside[0],sourceEnd:inside.at(-1),coordinates:inside}]};
+ const review=hydroDisplayReview({version:1,regions:[region]},sources).get('af');
+ const reaches=[{id:1,next:2,mainRiver:20,endorheic:true},{id:2,next:3,mainRiver:20,endorheic:true},
+  {id:3,next:4,mainRiver:20,width:1.1,parts:[[[0,0],[0,0.01],[0.01,0.02]]]},
+  {id:4,next:0,mainRiver:20,parts:[[[0.01,0.02],[0.02,0.04]]]}];
+ const [first,redrawn,untouched]=applyReviewedHydroReaches(reaches,review);
+ assert.equal(first.next,0);assert.equal(redrawn.width,1.1);assert.deepEqual(redrawn.parts,[inside]);
+ assert.equal(untouched,reaches[3]);assert.deepEqual(redrawn.parts[0].at(-1),untouched.parts[0][0]);
+ assert.throws(()=>applyReviewedHydroReaches([{...reaches[0],endorheic:false},...reaches.slice(1)],review),/outward-draining/);
+ assert.throws(()=>applyReviewedHydroReaches([reaches[0],{...reaches[1],mainRiver:99}],review),/another source system/);
+ const moved={...region,replacements:[{...region.replacements[0],coordinates:[...inside.slice(0,-1),[0.01,0.03]]}]};
+ assert.throws(()=>applyReviewedHydroReaches(reaches,hydroDisplayReview({version:1,regions:[moved]},sources).get('af')),/disconnects its downstream/);
+});
 
 test('hydro display joins consecutive exact endpoints within one feature',()=>{
  const geometry={type:'MultiLineString',coordinates:[
@@ -118,7 +137,7 @@ test('a superseded source update is not published as the current selection catal
  assert.deepEqual(published,[['b']]);water.dispose();
 });
 
-test('a progressive viewport batches motion-time packs and retains old coverage until final delivery',async()=>{
+test('an existing water scene keeps its coverage until one final viewport delivery',async()=>{
  const layouts=new Map(),shown=[],writes=[];let generation=0,notify,last,moving=false;
  const map={getCenter:()=>({lng:generation,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),
   isMoving:()=>moving,on:(type,fn)=>layouts.set(type,fn),off(){}};
@@ -140,13 +159,31 @@ test('a progressive viewport batches motion-time packs and retains old coverage 
   assert.deepEqual(shown,[['1']],'Download progress must not re-tile the active drag');
   moving=false;layouts.get('moveend')();
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(shown,[['1'],['1','2','3']]);
-  assert.equal(water.canPick('2','2'),true);
-  assert.deepEqual(writes.at(-1).add.map(feature=>feature.id),['2','3']);
-  assert.deepEqual(writes.at(-1).remove,[]);
+  assert.deepEqual(shown,[['1']],'Settling the camera must not flush an intermediate source delta');
+  assert.equal(water.canPick('2','2'),false);
   last({key:'2,3',packIds:[2,3],packs:[pack(2),pack(3)]});await pending;
+  assert.equal(writes.length,2);
+  assert.deepEqual(writes.at(-1).add.map(feature=>feature.id),['2','3']);
   assert.deepEqual(writes.at(-1).remove,['1']);
   assert.deepEqual(shown.at(-1),['2','3']);
+ }finally{water.dispose();}
+});
+
+test('completed motion-time windows submit only the final settled pack set',async()=>{
+ const events=new Map(),writes=[];let x=0,moving=false,completed;
+ const map={getCenter:()=>({lng:x,lat:0}),getZoom:()=>4,getCanvas:()=>({clientWidth:1,clientHeight:1}),
+  isMoving:()=>moving,on:(type,fn)=>events.set(type,fn),off(){}};
+ const water=createMapLibreHydroPresentation({map,viewportTiles:()=>[{stage:'base',x,y:0}],
+  updateSource:async diff=>{writes.push(diff);return true;},admitFeatures:async()=>true,onFeatures:()=>{},onError:assert.fail,
+  load:async({center:[id]})=>{completed=id;return {key:String(id),packIds:[id],packs:[{id,features:[{id:String(id),properties:{logicalId:String(id)}}]}]};}});
+ try{
+  await water.refresh();moving=true;x=1;
+  const old=water.refresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(completed,1);
+  assert.equal(writes.length,1);
+  x=2;moving=false;await events.get('moveend')();await old;
+  assert.deepEqual(writes.map(diff=>diff.add.map(feature=>feature.id)),[['0'],['2']]);
+  assert.deepEqual(writes.at(-1).remove,['0']);
  }finally{water.dispose();}
 });
 

@@ -15,7 +15,8 @@ export function buildHydroGenerationManifest({layout,stats,sourceRows,source,nam
   totals.unnamedRiverSystemCount=unnamedSystems;totals.osmWaterwayMatchCount=osmMatches;
   return {version:'0.13.1',schema:'pandolab-water-shards-v5',
     dataset:'HydroRIVERS 1.0 systems · independent river names · Natural Earth 5.0.0 1:10m lakes · Natural Earth 5.1.1 border alignment',crs:'EPSG:4326',
-    coordinatePolicy:'Hydro source vertices retained outside border-aligned display fragments; aligned fragments use exact Natural Earth shared-border paths; 1e-6 degree Int32 delta-varint',
+    coordinatePolicy:'Hydro source vertices retained outside border-aligned display fragments; aligned fragments use exact Natural Earth shared-border paths; 1e-6 degree Int32 delta-varint'
+      +(source.displayReview?'; reviewed exclusions and replacement centerlines are recorded in sources.displayReview':''),
     selection:{riverFormula:'ORD_STRA + 4*log10(DIS_AV_CMS) - 0.5*log10(UPLAND_SKM)',riverThresholds:[14.4744,12.4307,11.2137,10.55],
       riverWidthFormula:'clamp(0.5 + 0.19*log2(1+DIS_AV_CMS) + 0.06*(ORD_STRA-1), 0.55, 2.6)',
       riverContinuity:'Natural Earth guided Hydro main-stem path to headwater from selected headward roots; with ORD_STRA >= 5 and DIS_AV_CMS >= 75; importance >= 10.86; all terminal basins >= 2500 km2 preserve one main stem; all selected paths closed downstream to Hydro terminal; added reaches at stage 3',
@@ -35,5 +36,6 @@ export function buildHydroGenerationManifest({layout,stats,sourceRows,source,nam
     sources:{naturalEarthNameReference:source.naturalEarthNameReference,drainageFreeWaterMask:source.drainageFreeWaterMask,
       hydroRivers:sourceRows,naturalEarthLakes:source.naturalEarthLakes,osmWaterways:source.osmWaterways,
       hydronymOverrides:source.hydronymOverrides,independentHydronymReplacements:source.independentHydronymReplacements,
+      ...(source.displayReview?{displayReview:source.displayReview}:{}),
       nameEnrichment:{namedRiverSystems:namedSystems,unnamedRiverSystems:unnamedSystems,osmMatches}}};
 }

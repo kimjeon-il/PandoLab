@@ -48,6 +48,95 @@ function directRuntimeDirectories(index){
   return new Set(Object.entries(index.files).filter(([path,entry])=>path.startsWith('assets/data/')&&path===entry.stored).map(([path])=>dirname(path)));
 }
 
+export async function storeBuiltinAffiliations({root=defaultRoot,updates}){
+  const {buildBuiltinWorldAffiliationPublication}=await import('../build/build-builtin-world.mjs');
+  return storeBuiltinWorldSelection({root,kind:'affiliation',
+    build:inputs=>buildBuiltinWorldAffiliationPublication({...inputs,updates})});
+}
+
+export async function storeBuiltinLifetimes({root=defaultRoot,updates}){
+  const {buildBuiltinWorldLifetimePublication}=await import('../build/build-builtin-world.mjs');
+  return storeBuiltinWorldSelection({root,kind:'source lifetime',
+    build:inputs=>buildBuiltinWorldLifetimePublication({...inputs,updates})});
+}
+
+export async function storeBuiltinParentWindows({root=defaultRoot,windows}){
+  const {extendBuiltinParentWindows}=await import('../build/build-builtin-world.mjs');
+  return storeBuiltinWorldSelection({root,kind:'historical parent',
+    build:inputs=>extendBuiltinParentWindows({...inputs,windows})});
+}
+
+async function storeBuiltinWorldSelection({root,kind,build}){
+  const {readProjectGenerationContext}=await import('../build/project-generation-context.mjs');
+  const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  const generation=readProjectGenerationContext({root,projectId:'default-world'});
+  return storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind,
+    prepare:read=>{
+      if(libraryConfig(root).revision!==baselineRevision)throw Error('Builtin baseline changed before storage');
+      return build({generation,read});
+    }});
+}
+
+function storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind,prepare}){
+  return withLibraryLock(root,()=>{
+    if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active')
+      throw Error('Application revision changed before storing the Viewer edition');
+    const shared=librarySharedCheckout(root),head=git(shared,['rev-parse','HEAD']);
+    if(git(shared,['symbolic-ref','--short','HEAD'])!=='main'||git(shared,['status','--porcelain','--untracked-files=no']))
+      throw Error('Preserve the library checkout edits before storing the Viewer edition');
+    git(shared,['merge-base','--is-ancestor',baselineRevision,head]);
+    const baseline=JSON.parse(git(shared,['show',baselineRevision+':archive/index.json']));
+    const files=prepare(path=>{
+      const entry=baseline.files[path];
+      if(!entry)throw Error('Missing source in Viewer baseline: '+path);
+      return decodeArchiveEntry(shared,entry,baselineRevision);
+    });
+    const archived=structuredClone(baseline),directories=directRuntimeDirectories(archived);
+    const selected=new Set(files.keys());
+    if(!selected.size)return {revision:baselineRevision,retained:head,files:[]};
+    if(libraryWriteLeases(shared).some(lease=>lease.alive&&lease.prefixes.some(p=>[...selected].some(q=>scopesOverlap(p,q)))))
+      throw Error('A library writer overlaps the Viewer edition');
+    const protectedPaths=new Set(Object.entries(baseline.files).filter(([p])=>!selected.has(p))
+      .flatMap(([,spec])=>archiveStoredResources(spec).map(r=>r.stored)));
+    const scratch=resolve(shared,'.pando-store','viewer-edition-'+randomUUID()+'.index');
+    mkdirSync(dirname(scratch),{recursive:true});
+    const date=git(root,['show','-s','--format=%aI',sourceRevision]);
+    const env={...process.env,GIT_INDEX_FILE:scratch,GIT_NO_LAZY_FETCH:'1',GIT_OPTIONAL_LOCKS:'0',
+      GIT_AUTHOR_DATE:date,GIT_COMMITTER_DATE:date};
+    const run=(args,input)=>execFileSync('git',[...gitOptions,...args],{cwd:shared,env,input,encoding:'utf8',maxBuffer:32*1024*1024}).trim();
+    const objects=new Map();
+    const mapObject=(path,oid)=>{
+      if(protectedPaths.has(path)&&git(shared,['rev-parse',baselineRevision+':'+path])!==oid)
+        throw Error('Viewer edition collides with a retained object: '+path);
+      if(objects.has(path)&&objects.get(path)!==oid)throw Error('Conflicting Viewer edition object: '+path);
+      objects.set(path,oid);
+    };
+    const put=(path,bytes)=>mapObject(path,run(['hash-object','-w','--stdin'],bytes));
+    const ident=['-c','user.name=Pando library publisher','-c','user.email=library-publisher@users.noreply.github.com'];
+    try{
+      run(['read-tree',baselineRevision]);
+      for(const [logical,bytes] of files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
+      archived.sourceRevision=sourceRevision;
+      put('archive/index.json',Buffer.from(JSON.stringify(archived)+'\n'));
+      run(['update-index','-z','--index-info'],[...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`).join(''));
+      const tree=run(['write-tree']);
+      const revision=run([...ident,'commit-tree',tree,'-p',baselineRevision,'-m','Store '+kind+' Viewer edition']);
+      for(const [p,bytes] of files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
+      for(const [p,entry] of Object.entries(baseline.files))if(!selected.has(p)&&!isDeepStrictEqual(entry,archived.files[p]))
+        throw Error('Viewer edition changed an unselected file: '+p);
+      // Reachability keeps the edition pinned without moving the authoring tree
+      // back to the application's older data or publishing unrelated history.
+      const retained=run([...ident,'commit-tree',git(shared,['rev-parse',head+'^{tree}']),'-p',head,'-p',revision,
+        '-m','Retain local '+kind+' Viewer edition '+revision]);
+      git(shared,['update-ref','refs/heads/main',retained,head]);
+      return {revision,retained,files:[...selected].sort()};
+    }finally{
+      for(const p of [scratch+'.lock',scratch])if(existsSync(p))unlinkSync(p);
+    }
+  });
+}
+
+
 /** Create the application's scoped edition while retaining the authoring tree. */
 export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map()}){
   validateExpectedLibraryRevision(evidenceRevision);validateExpectedLibraryRevision(sourceRevision);
