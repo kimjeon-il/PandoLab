@@ -211,6 +211,24 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   return changed;
  }
 
+ // Diff against the last acknowledged native write, not the most recent
+ // requested scene. Coalesced requests may never reach MapLibre.
+ function sceneSourceDiff(before,next){
+  const remove=[],add=[],update=[];
+  for(const key of before.keys())if(!next.has(key))remove.push(key);
+  for(const [key,{feature,revision}] of next){
+   const old=before.get(key);
+   if(!old){add.push(feature);continue;}
+   if(old===next.get(key))continue;
+   const geometryChanged=old.revision!==revision
+    || (revision==null&&old.feature.geometry!==feature.geometry);
+   const properties=changedRenderProperties(old.feature.properties,feature.properties);
+   const newGeometry=geometryChanged?feature.geometry:null;
+   if(newGeometry||properties.length)update.push({id:key,...(newGeometry?{newGeometry}:{}),
+    ...(properties.length?{addOrUpdateProperties:properties}:{})});
+  }
+  return {remove,add,update};
+ }
  function setSceneDomains(domains){
   if(!isLoaded())return;
   if(!isStyleReady()){pendingSceneDomains=domains;return;}
@@ -259,17 +277,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
      const before=group.rows;
      if(!before)await source.setData(data());
      else{
-      const remove=[],add=[],update=[];
-      for(const key of before.keys())if(!next.has(key))remove.push(key);
-      for(const [key,{feature,revision}] of next){
-       const old=before.get(key);
-       if(!old){add.push(feature);continue;}
-       if(old===next.get(key))continue;
-       const newGeometry=old.revision!==revision||revision==null&&old.feature.geometry!==feature.geometry?feature.geometry:null;
-       const properties=changedRenderProperties(old.feature.properties,feature.properties);
-       if(newGeometry||properties.length)update.push({id:key,...(newGeometry?{newGeometry}:{}),
-        ...(properties.length?{addOrUpdateProperties:properties}:{})});
-      }
+      const {remove,add,update}=sceneSourceDiff(before,next);
       if(add.length||remove.length||update.length)await source.updateData({add,remove,update});
      }
     },id,()=>sceneGroups.get(id)===group&&group.signature===signature,{coalesce:true})

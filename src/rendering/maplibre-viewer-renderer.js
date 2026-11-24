@@ -271,9 +271,15 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   resetProjectRenderState(options){
    frame.prepareProjectReset(options);
    hydroDisplay.resetProject({retain:options.presentation==='temporal'});
-   borders.reset();geometryClient.reset({retainPhysical:options.presentation==='temporal'});physicalBase.resetProject();polarDisplay.resetProject();selection.reset();
-   scene.resetPendingDomains();sourceWrites.reset();
-   country.reset();frame.resetForProject(options);
+   borders.reset();
+   geometryClient.reset({retainPhysical:options.presentation==='temporal'});
+   physicalBase.resetProject();
+   polarDisplay.resetProject();
+   selection.reset();
+   scene.resetPendingDomains();
+   sourceWrites.reset();
+   country.reset();
+   frame.resetForProject(options);
   },
   labelZoomVisibility,
   getRuntimeState:()=>({...stats,...frame.runtimeState(),physicalContextRevision:physicalBase.revision}),
@@ -288,6 +294,33 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   setInteractionStyle,
   getRenderPixelRatio:()=>quality?.dprCap||window.devicePixelRatio||1,
   verifyLayout:()=>camera.verifyLayout(syncBaseLayer),failMapPreparation,retryMapPreparation,
-  dispose(){if(disposed)return;disposed=true;sourceWrites.reset();frame.dispose();camera.dispose();datedSources.dispose();country.dispose();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
+  dispose(){
+   if(disposed)return;
+   disposed=true;
+   // Invalidate pending publications before releasing native map resources.
+   sourceWrites.reset();
+   frame.dispose();
+   camera.dispose();
+   datedSources.dispose();
+   country.dispose();
+   geometryClient.dispose();
+   selection.dispose();
+   polarDisplay.dispose();
+   externalBasemap?.dispose();
+   if(externalAttribution)map?.removeControl(externalAttribution);
+   externalAttribution=null;
+   for(const record of mapFeatures.values()){
+    try{record.owner.dispose();}
+    catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}
+   }
+   mapFeatures.clear();
+   hydroDisplay.dispose();
+   physicalBase.dispose();
+   scene.dispose();
+   map?.remove();
+   if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;
+   stylesheet?.remove();
+   container?.remove();
+  },
  });
 }

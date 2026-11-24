@@ -144,6 +144,16 @@ export function createMapLibreFrameController({
   endSourceFrame?.();endSourceFrame=null;
   if(pendingFrame)invalidate('maplibre-presented');
  }
+ function requiredFramePending(country,map){
+  return !!polarDisplay.pending
+    || (presentation.temporalPending()&&selection.selectionPending())
+    || !!error || !isLoaded() || contextLost
+    || sourceWrites.pendingCount() || scene.requiredVectorPending()
+    || country.generation!==generation
+    || !presentation.countrySourceAdmitted(country.contentKey)
+    || !physicalResources.physicalContextState.ready || !scene.requiredSourcesReady()
+    || (zoomFramePending&&map.isMoving());
+ }
  function renderFrame(frame){
   stats.approvalAttempts++;approvedFrame=null;
   if(error){pendingFrame=null;return {succeeded:false,presentationReady:false,error};}
@@ -153,10 +163,7 @@ export function createMapLibreFrameController({
   metrics.run('polar.sync',()=>{polarDisplay.syncPolar();polarDisplay.syncPolarLines();});
   if(initialMapLoading)syncInitialMapSkeleton();else syncLabelVisibility();
   const country=getCountryStatus(),map=getMap();
-  const pending=!!polarDisplay.pending||presentation.temporalPending()&&selection.selectionPending()||!!error
-    ||!isLoaded()||contextLost||sourceWrites.pendingCount()||scene.requiredVectorPending()
-    ||country.generation!==generation||!presentation.countrySourceAdmitted(country.contentKey)
-    ||!physicalResources.physicalContextState.ready||!scene.requiredSourcesReady()||zoomFramePending&&map.isMoving();
+  const pending=requiredFramePending(country,map);
   if(pending||!certificateCurrent()){
    ready=false;preparedReady=false;
    if(!pending){

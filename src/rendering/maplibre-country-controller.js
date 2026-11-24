@@ -23,7 +23,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(!key){key=[row.id,row.geometry,row.properties.parentId,row.properties.entityKind,row.properties.style?.color,countryDefaultColor(row)];fillInputs.set(row,key);}
   return key;
  }
- const equivalent=(before,after)=>{
+ const sameCountryRows=(before,after)=>{
   if(before===after)return true;
   if(before.length!==after.length)return false;
   const indices=worldViewChange(before,after)??before.keys();
@@ -50,6 +50,18 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    .map(row=>({...row,properties:structuredClone(row.properties)}));
   return createTerritorialEntityRepository({getEntities:()=>rows});
  }
+ function canReuseCountryInputs(inputs){
+  const accepted=acceptedCountryInputs;
+  if(!accepted||!styleReady()||isFrameBlocked()||countryGeneration!==getGeneration()
+    ||activeCountryTasks.size||countryDisplay.needsSwap)return false;
+  const samePresentation=accepted.generation===inputs.generation&&accepted.source===inputs.source
+    &&accepted.stroke===inputs.stroke&&accepted.presentation===inputs.presentation
+    &&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible;
+  if(!samePresentation)return false;
+  const immutable=immutableCountryRows(accepted.entities)&&immutableCountryRows(inputs.entities)
+    &&immutableCountryRows(accepted.features)&&immutableCountryRows(inputs.features);
+  return immutable&&sameCountryRows(accepted.entities,inputs.entities)&&sameCountryRows(accepted.features,inputs.features);
+ }
  function setTerritorialFeatures(features){
   if(isDisposed())return Promise.resolve(false);
   const entities=getEntityRepository().list?.()??features;
@@ -57,12 +69,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   const inputs={entities,features,generation:getGeneration(),source:getMap()?.getSource(datedSources.active('territories')),
    presentation:state.layerPresentation,visibility:state.itemVisibility?.objects,
    visible:state.layerVisibility.objects,stroke:JSON.stringify([countryStyle.countryStroke,countryStyle.borderAlpha])};
-  const accepted=acceptedCountryInputs;
-  if(accepted&&styleReady()&&!isFrameBlocked()&&countryGeneration===getGeneration()&&!activeCountryTasks.size&&!countryDisplay.needsSwap
-    &&accepted.generation===inputs.generation&&accepted.source===inputs.source&&accepted.stroke===inputs.stroke
-    &&accepted.presentation===inputs.presentation&&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible
-    &&immutableCountryRows(accepted.entities)&&immutableCountryRows(entities)&&immutableCountryRows(accepted.features)&&immutableCountryRows(features)
-    &&equivalent(accepted.entities,entities)&&equivalent(accepted.features,features)){
+  if(canReuseCountryInputs(inputs)){
    territories=features;acceptedCountryInputs=inputs;countryContentKey=countryContentIdentity(features);return Promise.resolve(true);
   }
   if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}

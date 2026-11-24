@@ -6,6 +6,12 @@ import {createGeometryInputTransport} from './geometry-input-transport.js';
 import {renderCacheBudget} from './render-cache-budget.js';
 import {createGeometryByteEstimator} from './geometry-residency.js';
 import {createLatestRenderRequests} from './render-lifetime.js';
+function geometryRequestPriority(operation,payload){
+ if(payload.boundary)return 100;
+ if(operation==='geometry.physical-land')return 80;
+ return payload.items?.some(item=>item.polarCapOnly!==true)?60:70;
+}
+
 export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWorker=worker=>worker===getWorker(),isDisposed=()=>false,
  track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100)),
  inputTransport=null,onInput=()=>{}}){
@@ -19,7 +25,7 @@ export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWor
    requireLive();
    worker=getWorker();
    try{
-    const priority=payload.boundary?100:operation==='geometry.physical-land'?80:payload.items?.some(item=>item.polarCapOnly!==true)?60:70;
+    const priority=geometryRequestPriority(operation,payload);
     const send=async force=>{
      requireLive();
      const encoded=inputTransport?.encode(operation,payload,worker,force)??{payload,transfer:[],bytes:0,refHits:0};
