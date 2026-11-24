@@ -43,7 +43,7 @@ void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
     std::map<std::string,TerritorialUnit*> units;for(auto& unit:document.units)units.emplace(unit.id,&unit);
     std::map<std::string,HydroFeature*> waters;for(auto& water:document.hydro)waters.emplace(water.id,&water);
     for(const auto& [ref,properties]:world.activeProperties())
-        for(const auto& [property,encoded]:properties) {
+        for(const auto& [property,encoded]:*properties) {
         if(ref.domain=="hydro") {
             const auto found=waters.find(ref.id);
             if(found==waters.end())throw TimelineError("TIMELINE_ENTITY","Water identity missing.");

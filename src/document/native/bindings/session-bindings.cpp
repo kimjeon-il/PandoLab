@@ -58,10 +58,10 @@ val world(const ResolvedWorld& result) {
     value.set("entities",entities);return value;
 }
 bool sameWorldEntity(const ResolvedEntity& a,const ResolvedEntity& b) {
-    return a.objectRef==b.objectRef&&a.geometryRef==b.geometryRef&&a.rendering==b.rendering
+    return &a==&b||(a.objectRef==b.objectRef&&a.geometryRef==b.geometryRef&&a.rendering==b.rendering
         &&a.parentId==b.parentId&&a.coverageMode==b.coverageMode&&a.rootId==b.rootId
         &&a.ancestors==b.ancestors&&a.validity.from==b.validity.from&&a.validity.to==b.validity.to
-        &&a.properties==b.properties;
+        &&a.properties==b.properties);
 }
 // Cursor transitions keep catalog order. Source adoption can reorder the
 // retained identities; send their references only when that actually happens.
@@ -92,7 +92,7 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
         const auto& row=after.entities()[i];const auto* previous=before.find(row.objectRef);
         if(previous&&sameWorldEntity(*previous,row)){
             if(allowReorder){
-                const auto index=static_cast<std::size_t>(previous-before.entities().data());
+                const auto index=before.offsets().at(previous->objectRef);
                 if(havePrevious&&index<previousIndex)reordered=true;
                 previousIndex=index;havePrevious=true;retained.push_back(&row.objectRef);
             }

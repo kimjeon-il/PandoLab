@@ -3,6 +3,7 @@
 #include <pandoeditor/temporal.h>
 #include <map>
 #include <memory>
+#include <iterator>
 
 namespace pandoeditor {
 struct ResolvedEntity {
@@ -14,13 +15,43 @@ struct ResolvedEntity {
     Validity validity;
     std::map<std::string,std::string> properties;
 };
+using ResolvedEntityStorage=std::vector<std::shared_ptr<const ResolvedEntity>>;
+using ResolvedProperties=std::map<std::string,std::string>;
+// A read-only ordered range preserves the existing consumers' row interface
+// without making a second contiguous copy of shared entities.
+struct ResolvedEntityRange {
+    const ResolvedEntityStorage& rows;
+    struct Iterator {
+        using iterator_category=std::forward_iterator_tag;
+        using value_type=ResolvedEntity;
+        using difference_type=std::ptrdiff_t;
+        using pointer=const ResolvedEntity*;
+        using reference=const ResolvedEntity&;
+        ResolvedEntityStorage::const_iterator it;
+        reference operator*() const {return **it;}
+        pointer operator->() const {return it->get();}
+        Iterator& operator++(){++it;return *this;}
+        Iterator operator++(int){auto prior=*this;++*this;return prior;}
+        bool operator==(const Iterator& other) const {return it==other.it;}
+        bool operator!=(const Iterator& other) const {return !(*this==other);}
+    };
+    Iterator begin() const {return {rows.begin()};}
+    Iterator end() const {return {rows.end()};}
+    std::size_t size() const noexcept {return rows.size();}
+    bool empty() const noexcept {return rows.empty();}
+    const ResolvedEntity& operator[](std::size_t index) const {return *rows[index];}
+    const ResolvedEntity& at(std::size_t index) const {return *rows.at(index);}
+    const ResolvedEntity& front() const {return *rows.front();}
+    const ResolvedEntity& back() const {return *rows.back();}
+};
 // The cursor is a small value; its resolved projection is immutable and
 // shared by every event-free month, view, and detached candidate that owns it.
 struct ResolvedWorldProjection {
-    std::vector<ResolvedEntity> entities;
+    ResolvedEntityStorage entities;
     std::map<ObjectRef,std::size_t> offsets;
-    // Includes identities without visible geometry.
-    std::map<ObjectRef,std::map<std::string,std::string>> activeProperties;
+    // Includes identities without visible geometry. Unchanged property maps
+    // are shared too, including large embedded symbols and names.
+    std::map<ObjectRef,std::shared_ptr<const ResolvedProperties>> activeProperties;
     std::vector<GeometryRef> requiredGeometries;
     // A weak receipt cannot pin previous months. Only a matching base may
     // use the affected owner set to skip the full wire comparison.
@@ -30,7 +61,7 @@ struct ResolvedWorldProjection {
 struct ResolvedWorld {
     std::string month;
     std::shared_ptr<const ResolvedWorldProjection> projection=std::make_shared<const ResolvedWorldProjection>();
-    const auto& entities() const noexcept {return projection->entities;}
+    ResolvedEntityRange entities() const noexcept {return {projection->entities};}
     const auto& offsets() const noexcept {return projection->offsets;}
     const auto& activeProperties() const noexcept {return projection->activeProperties;}
     const auto& requiredGeometries() const noexcept {return projection->requiredGeometries;}

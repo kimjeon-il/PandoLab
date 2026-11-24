@@ -182,9 +182,11 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
     projection->entities.reserve(index.entities.size());
     auto affected=changed;
     const auto propertiesFor=[&](const ObjectRef& ref,const auto& properties){
+        ResolvedProperties values;
         for(const auto& [name,entries]:properties)
             if(const auto* property=selectedInterval(entries,atEnd))
-                projection->activeProperties[ref][name]=property->value;
+                values.emplace(name,property->value);
+        if(!values.empty())projection->activeProperties.emplace(ref,std::make_shared<const ResolvedProperties>(std::move(values)));
     };
     if(previous){
         projection->activeProperties=previous->activeProperties();
@@ -197,13 +199,16 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
 
     // Keep canonical catalog order. Unchanged identities reuse their already
     // resolved lifetime, geometry, direct parent and property projection.
+    std::vector<std::shared_ptr<ResolvedEntity>> freshRows;
+    if(previous)freshRows.reserve(changed.size());
+    else freshRows.reserve(index.entities.size());
     for(const auto& identity:index.entities) {
         const auto& ref=identity.objectRef;
         if(previous&&!changed.count(ref)){
-            const auto* row=previous->find(ref);
-            if(row){
+            const auto prior=previous->offsets().find(ref);
+            if(prior!=previous->offsets().end()){
                 projection->offsets.emplace(ref,projection->entities.size());
-                projection->entities.push_back(*row);
+                projection->entities.push_back(previous->projection->entities.at(prior->second));
             }
             continue;
         }
@@ -212,33 +217,37 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         const auto* geometry=selected(index.geometries,ref,atEnd);
         if(!geometry)continue;
         const auto* parent=selected(index.parents,ref,atEnd);
-        projection->entities.push_back({ref,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
-        auto& entity=projection->entities.back();
-        entity.validity=lifetime->validity;
-        projection->offsets.emplace(ref,projection->entities.size()-1);
+        auto entity=std::make_shared<ResolvedEntity>(ResolvedEntity{ref,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
+        entity->validity=lifetime->validity;
+        projection->offsets.emplace(ref,projection->entities.size());
         const auto found=projection->activeProperties.find(ref);
-        if(found!=projection->activeProperties.end())entity.properties=found->second;
+        if(found!=projection->activeProperties.end())entity->properties=*found->second;
+        projection->entities.push_back(entity);
+        freshRows.push_back(std::move(entity));
     }
     std::set<GeometryRef> required;
-    for(const auto& row:projection->entities)required.insert(row.geometryRef);
+    for(const auto& row:result.entities())required.insert(row.geometryRef);
     projection->requiredGeometries.assign(required.begin(),required.end());
-    for(auto& entity:projection->entities) {
-        // Any ancestor's changed direct relation can affect this row's root,
-        // even when the row itself has no event. Otherwise retain its chain.
-        if(previous&&!changed.count(entity.objectRef)
-            &&std::none_of(entity.ancestors.begin(),entity.ancestors.end(),[&](const auto& id){
-                return changed.count(ObjectRef{"territorial",id})!=0;
-            }))continue;
-        if(previous)affected.insert(entity.objectRef);
-        entity.ancestors.clear();
-        auto parent=entity.parentId;
+    std::size_t freshIndex=0;
+    for(auto& row:projection->entities) {
+        // Only newly created rows and descendants of changed parents need
+        // mutable ancestry reconstruction. Unaffected rows retain identity.
+        const bool fresh=!previous||changed.count(row->objectRef);
+        if(!fresh&&std::none_of(row->ancestors.begin(),row->ancestors.end(),[&](const auto& id){
+            return changed.count(ObjectRef{"territorial",id})!=0;
+        }))continue;
+        if(previous)affected.insert(row->objectRef);
+        auto entity=fresh?freshRows.at(freshIndex++):std::make_shared<ResolvedEntity>(*row);
+        entity->ancestors.clear();
+        auto parent=entity->parentId;
         while(!parent.empty()) {
-            entity.ancestors.push_back(parent);
+            entity->ancestors.push_back(parent);
             const auto* resolvedParent=result.find(ObjectRef{"territorial",parent});
             if(!resolvedParent)throw TimelineError("TIMELINE_PARENT_INACTIVE","Inactive parent "+parent);
             parent=resolvedParent->parentId;
         }
-        entity.rootId=entity.ancestors.empty()?entity.objectRef.id:entity.ancestors.back();
+        entity->rootId=entity->ancestors.empty()?entity->objectRef.id:entity->ancestors.back();
+        row=std::move(entity);
     }
     if(previous)projection->affected.assign(affected.begin(),affected.end());
     return result;
