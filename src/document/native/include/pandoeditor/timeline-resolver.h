@@ -7,6 +7,7 @@
 #include <set>
 
 namespace pandoeditor {
+using ResolvedProperties=std::map<std::string,std::string>;
 struct ResolvedEntity {
     ObjectRef objectRef;
     GeometryRef geometryRef;
@@ -14,10 +15,13 @@ struct ResolvedEntity {
     std::string parentId, coverageMode, rootId;
     std::vector<std::string> ancestors;
     Validity validity;
-    std::map<std::string,std::string> properties;
+    std::shared_ptr<const ResolvedProperties> propertyValues;
+    const ResolvedProperties& properties() const noexcept {
+        static const ResolvedProperties empty;
+        return propertyValues?*propertyValues:empty;
+    }
 };
 using ResolvedEntityStorage=std::vector<std::shared_ptr<const ResolvedEntity>>;
-using ResolvedProperties=std::map<std::string,std::string>;
 using ResolvedOffsets=std::map<ObjectRef,std::size_t>;
 using ResolvedPropertyIndex=std::map<ObjectRef,std::shared_ptr<const ResolvedProperties>>;
 using ResolvedGeometryUsers=std::map<GeometryRef,std::size_t>;

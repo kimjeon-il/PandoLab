@@ -7,24 +7,19 @@ export function createGeometryInputTransport({stableKey=()=>null}={}){
  const knownByWorker=new WeakMap();let sequence=0;
  function encode(operation,payload,worker,force=false){
   let known=knownByWorker.get(worker);if(!known){known=new Set();knownByWorker.set(worker,known);}
-  const rows=[],refs=new Map(),persistent=[],request=++sequence;let refHits=0;
+  const rows=[],refs=new Map(),sent=new Set(),persistent=[],request=++sequence;let refHits=0;
   const encodeRow=row=>{
    if(!row?.geometry)return row;
-   const geometry=row.geometry,stable=stableKey(geometry);
-   if(!stable&&!canPackExactGeometry(geometry))return row;
-   if(stable&&!known.has(stable)&&!canPackExactGeometry(geometry))return row;
-   const existing=refs.get(geometry);
-   let key=existing??stable??'request:'+request+':'+rows.length;
+   const geometry=row.geometry,stable=stableKey(geometry),existing=refs.get(geometry);
+   const key=existing??stable??'request:'+request+':'+rows.length;
    if(!existing){
-    refs.set(geometry,key);
     if(!force&&stable&&known.has(key))refHits++;
-    else{
+    else if(!sent.has(key)){
      if(!canPackExactGeometry(geometry))return row;
-     if(!rows.some(item=>item.id===key)){
-      rows.push({type:'Feature',id:key,properties:{},geometry});
-      if(stable)persistent.push(key);
-     }
+     sent.add(key);rows.push({type:'Feature',id:key,properties:{},geometry});
+     if(stable)persistent.push(key);
     }
+    refs.set(geometry,key);
    }
    const {geometry:unused,...rest}=row;
    return {...rest,geometryInputRef:key};

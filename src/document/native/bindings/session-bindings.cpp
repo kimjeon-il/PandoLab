@@ -49,7 +49,7 @@ val worldEntity(const ResolvedEntity& row) {
     v.set("parentId",webString(row.parentId));v.set("coverageMode",webString(row.coverageMode));v.set("rootId",webString(row.rootId));
     v.set("validFrom",optional(row.validity.from));v.set("validTo",optional(row.validity.to));
     auto ancestors=val::array();unsigned j=0;for(const auto& id:row.ancestors)ancestors.set(j++,webString(id));
-    auto properties=val::object();for(const auto& [name,json]:row.properties)properties.set(name,val::global("JSON").call<val>("parse",json));
+    auto properties=val::object();for(const auto& [name,json]:row.properties())properties.set(name,val::global("JSON").call<val>("parse",json));
     v.set("properties",properties);v.set("ancestors",ancestors);return v;
 }
 val world(const ResolvedWorld& result) {
@@ -57,11 +57,29 @@ val world(const ResolvedWorld& result) {
     unsigned i=0;for(const auto& row:result.entities())entities.set(i++,worldEntity(row));
     value.set("entities",entities);return value;
 }
-bool sameWorldEntity(const ResolvedEntity& a,const ResolvedEntity& b) {
+bool sameWorldStructure(const ResolvedEntity& a,const ResolvedEntity& b) {
     return &a==&b||(a.objectRef==b.objectRef&&a.geometryRef==b.geometryRef&&a.rendering==b.rendering
         &&a.parentId==b.parentId&&a.coverageMode==b.coverageMode&&a.rootId==b.rootId
-        &&a.ancestors==b.ancestors&&a.validity.from==b.validity.from&&a.validity.to==b.validity.to
-        &&a.properties==b.properties);
+        &&a.ancestors==b.ancestors&&a.validity.from==b.validity.from&&a.validity.to==b.validity.to);
+}
+bool sameWorldEntity(const ResolvedEntity& a,const ResolvedEntity& b) {
+    return sameWorldStructure(a,b)&&(a.propertyValues==b.propertyValues||a.properties()==b.properties());
+}
+val worldUpdate(const ResolvedEntity& row,const ResolvedEntity* before,std::size_t index,bool allowPatch){
+    auto update=val::object();update.set("index",double(index));
+    if(allowPatch&&before&&sameWorldStructure(*before,row)){
+        auto patch=val::object(),set=val::object(),removed=val::array();
+        const auto& prior=before->properties();const auto& next=row.properties();
+        const auto json=val::global("JSON");
+        for(const auto& [name,value]:next){
+            const auto found=prior.find(name);
+            if(found==prior.end()||found->second!=value)set.set(name,json.call<val>("parse",value));
+        }
+        unsigned i=0;for(const auto& [name,value]:prior)if(!next.count(name))removed.set(i++,webString(name));
+        patch.set("objectRef",object(row.objectRef));patch.set("set",set);patch.set("removed",removed);
+        update.set("propertyPatch",patch);
+    }else update.set("entity",worldEntity(row));
+    return update;
 }
 // Cursor transitions keep catalog order. Source adoption can reorder the
 // retained identities; send their references only when that actually happens.
@@ -82,7 +100,8 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
         }
         std::sort(changedIndices.begin(),changedIndices.end());
         for(const auto index:changedIndices){
-            auto update=val::object();update.set("index",double(index));update.set("entity",worldEntity(after.entities()[index]));upserts.set(u++,update);
+            const auto& row=after.entities()[index];
+            upserts.set(u++,worldUpdate(row,before.find(row.objectRef),index,true));
         }
     }
     if(allowReorder&&changed)retained.reserve(after.entities().size());
@@ -98,7 +117,7 @@ val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint3
             }
             continue;
         }
-        auto update=val::object();update.set("index",i);update.set("entity",worldEntity(row));upserts.set(u++,update);
+        upserts.set(u++,worldUpdate(row,previous,i,!allowReorder));
     }
     if(changed&&!indexed)for(const auto& row:before.entities())if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
     if(reordered){

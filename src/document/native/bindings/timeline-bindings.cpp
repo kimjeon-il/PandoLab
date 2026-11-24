@@ -184,7 +184,7 @@ val webWorld(const ResolvedWorld& world) {
         value.set("rootId",webText(row.rootId));
         value.set("validFrom",webEndpoint(row.validity.from));value.set("validTo",webEndpoint(row.validity.to));
         unsigned j=0;for(const auto& ancestor:row.ancestors)ancestors.set(j++,webText(ancestor));
-        auto properties=val::object();for(const auto& [name,json]:row.properties)properties.set(name,val::global("JSON").call<val>("parse",json));
+        auto properties=val::object();for(const auto& [name,json]:row.properties())properties.set(name,val::global("JSON").call<val>("parse",json));
         value.set("properties",properties);value.set("ancestors",ancestors);entities.set(index++,value);
     }
     result.set("entities",entities);return result;

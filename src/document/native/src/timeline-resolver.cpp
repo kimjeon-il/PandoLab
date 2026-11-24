@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <pandoeditor/timeline-resolver.h>
 #include <pandoeditor/temporal.h>
 #include <algorithm>
@@ -215,29 +216,19 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
             parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
         row->validity=lifetime->validity;
         const auto found=result.activeProperties().find(ref);
-        if(found!=result.activeProperties().end())row->properties=*found->second;
+        if(found!=result.activeProperties().end())row->propertyValues=found->second;
         return row;
     };
     std::map<ObjectRef,std::shared_ptr<ResolvedEntity>> fresh;
     std::set<ObjectRef> affected=changed;
-    std::shared_ptr<ResolvedGeometryUsers> geometryUsers;
+    std::map<GeometryRef,std::int64_t> geometryCountChanges;
     std::shared_ptr<ResolvedChildren> children;
     bool requiredChanged=!previous,membershipChanged=!previous;
     const auto updateResources=[&](const ObjectRef& ref,const ResolvedEntity* before,const ResolvedEntity* after){
         if((before!=nullptr)!=(after!=nullptr))membershipChanged=true;
         if(!before||!after||!(before->geometryRef==after->geometryRef)){
-            if(before||after){
-                if(!geometryUsers){geometryUsers=std::make_shared<ResolvedGeometryUsers>(*projection->geometryUsers);projection->geometryUsers=geometryUsers;}
-                if(before){
-                    auto it=geometryUsers->find(before->geometryRef);
-                    if(it==geometryUsers->end())throw TimelineError("TIMELINE_GEOMETRY","Missing prior geometry reference count.");
-                    if(--it->second==0){geometryUsers->erase(it);requiredChanged=true;}
-                }
-                if(after){
-                    auto [it,inserted]=geometryUsers->emplace(after->geometryRef,0);
-                    ++it->second;requiredChanged=requiredChanged||inserted;
-                }
-            }
+            if(before)--geometryCountChanges[before->geometryRef];
+            if(after)++geometryCountChanges[after->geometryRef];
         }
         const auto oldParent=before?before->parentId:std::string{};
         const auto newParent=after?after->parentId:std::string{};
@@ -308,6 +299,20 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
             projection->entities.push_back(row);fresh.emplace(ref,std::move(row));affected.insert(ref);
         }
         projection->offsets=std::move(offsets);
+    }
+    // Combine opposing ownership changes before copying the reference
+    // index. A swap of geometries can leave both counts and resource set intact.
+    std::shared_ptr<ResolvedGeometryUsers> geometryUsers;
+    for(const auto& [ref,delta]:geometryCountChanges){
+        if(!delta)continue;
+        if(!geometryUsers){geometryUsers=std::make_shared<ResolvedGeometryUsers>(*projection->geometryUsers);projection->geometryUsers=geometryUsers;}
+        const auto found=geometryUsers->find(ref);
+        const auto oldCount=found==geometryUsers->end()?std::int64_t(0):static_cast<std::int64_t>(found->second);
+        const auto count=oldCount+delta;
+        if(count<0)throw TimelineError("TIMELINE_GEOMETRY","Invalid geometry reference count.");
+        requiredChanged=requiredChanged||((oldCount==0)!=(count==0));
+        if(count==0)geometryUsers->erase(ref);
+        else (*geometryUsers)[ref]=static_cast<std::size_t>(count);
     }
     if(requiredChanged){
         auto required=std::make_shared<std::vector<GeometryRef>>();required->reserve(projection->geometryUsers->size());

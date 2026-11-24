@@ -29,8 +29,8 @@ std::string temporalWorldSha256(const ResolvedWorld& world) {
         append(std::to_string(row.ancestors.size()));
         for(const auto& parent:row.ancestors)append(parent);
         opt(row.validity.from);opt(row.validity.to);
-        append(std::to_string(row.properties.size()));
-        for(const auto& [key,value]:row.properties){append(key);append(value);}
+        append(std::to_string(row.properties().size()));
+        for(const auto& [key,value]:row.properties()){append(key);append(value);}
     }
     return projectcodec::sha256Bytes(bytes);
 }

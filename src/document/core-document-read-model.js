@@ -290,7 +290,25 @@ export function createCoreDocumentReadModel(initialProject) {
       if(touched.has(id)||!world.byId.getObject(ref))invalid('Invalid world delta removal.');
       touched.add(id);retainedCount--;
     }
-    for(const {index,entity} of delta.upserts){
+    for(const update of delta.upserts){
+      if(!update||typeof update!=='object')invalid('Invalid world delta upsert.');
+      const {index,propertyPatch}=update;
+      let entity=update.entity;
+      if(Object.hasOwn(update,'propertyPatch')){
+        if(Object.hasOwn(update,'entity')||!propertyPatch||typeof propertyPatch!=='object')invalid('Invalid property-only world patch.');
+        const {objectRef,set,removed}=propertyPatch;
+        key(objectRef);
+        const prior=world.byId.getObject(objectRef);
+        if(!prior||!set||typeof set!=='object'||Array.isArray(set)||!Array.isArray(removed)
+          ||new Set(removed).size!==removed.length||removed.some(name=>typeof name!=='string'||!Object.hasOwn(prior.properties,name)||Object.hasOwn(set,name))
+          ||Object.keys(set).some(name=>!['name','color','flag'].includes(name))
+          ||removed.some(name=>!['name','color','flag'].includes(name)))
+          invalid('Invalid property-only world patch.');
+        const properties={...prior.properties};
+        for(const name of removed)delete properties[name];
+        Object.assign(properties,set);
+        entity={...worldEntityPayload(prior),properties};
+      }
       const id=key(entity?.objectRef);
       if(touched.has(id)||!Number.isSafeInteger(index)||index<0||index>=delta.entityCount||positions.has(index))
         invalid('Invalid world delta upsert.');
