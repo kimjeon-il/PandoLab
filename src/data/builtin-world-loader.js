@@ -1,9 +1,9 @@
 import {createStoredAssetLoader} from "./stored-asset-loader.js";
 import {parseTemporal,temporalContains,temporalMonthEnd,normalizeTemporalInterval,sharedCalculationCore} from "../document/temporal.js";
-import {builtinCountryAssets,validateBuiltinReadIndex} from "./builtin-country-files.js";
-import {createBuiltinProjectSetup} from "../document/project-setup.js";
+ import {createBuiltinProjectSetup} from "../document/project-setup.js";
 import {PROJECT_SCHEMA_VERSION} from "../runtime/version-contract.js";
 import {resolveBuiltinGeometryPacks} from './builtin-geometry-pack-receipt.js';
+import {createBuiltinAssetTasks} from './builtin-asset-tasks.js';
 
 // The verified country catalog provides source coverage. The project retains
 // every original temporal interval; C++ owns month-end selection.
@@ -68,7 +68,9 @@ export function resolveBuiltinWorldGeometry(index,read,month){
 
 export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=64*1024*1024}){
  if(!manifestUrl||!manifestSpec?.sha256||!dataRevision)throw new Error('Builtin country catalog integrity metadata is required');
- const base=new URL(manifestUrl,globalThis.location?.href),parse=bytes=>JSON.parse(new TextDecoder().decode(bytes));
+ const base=new URL(manifestUrl,globalThis.location?.href),assetTasks=createBuiltinAssetTasks();
+ const memory=Number(globalThis.navigator?.deviceMemory),cores=Number(globalThis.navigator?.hardwareConcurrency);
+ const readLimit=memory>0&&memory<=2?2:memory>0&&memory<=4||cores>0&&cores<=4?4:6;
  const assetOptions={dataRevision,fetchFn,cacheStorage,resolveUrl:spec=>new URL(spec.url,base).href};
  // The mutable catalog belongs to a revision. Content-hashed countries do not:
  // unchanged files must survive a newer catalog/data revision without refetching.
@@ -100,14 +102,14 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  let activeReads=0;
  const readQueue=[];
  async function limitedRead(operation){
-  if(activeReads===6)await new Promise(resolve=>readQueue.push(resolve));else activeReads++;
+  if(activeReads>=readLimit)await new Promise(resolve=>readQueue.push(resolve));else activeReads++;
   try{return await operation();}finally{if(readQueue.length)readQueue.shift()();else activeReads--;}
  }
- function parseIndex(bytes){
-  const value=parse(bytes);builtinCountryAssets(value);
+ async function parseIndex(bytes){
+  const value=await assetTasks.parseIndex(bytes);
   if(value.template?.schemaVersion!==PROJECT_SCHEMA_VERSION||value.template?.format!=='pandolab-project-state'
     ||Object.hasOwn(value.template,'projectSetup'))throw new Error('Invalid builtin world index');
-  const read=validateBuiltinReadIndex(value);
+  const read=value.readIndex;
   const freeze=value=>{if(value&&typeof value==='object'&&!Object.isFrozen(value)){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;};
   freeze(read);freeze(value.template);
   readMetadata={...value.template,territorialEntities:read.identities,timelineRecords:read.records,
@@ -155,7 +157,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     // Two bounded independent gzip members per pack; never launch all
     // members at once or abandon an in-flight decode on a sibling failure.
     let cursor=0,failed=false;
-    const workers=Array.from({length:Math.min(2,missing.length)},async()=>{
+    const workers=Array.from({length:Math.min(readLimit<=2?1:2,missing.length)},async()=>{
      try{
       while(!failed&&cursor<missing.length){
        const i=cursor++,{asset,start,end}=missing[i];
@@ -183,12 +185,19 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  }
  async function loadGeometryResources(requirements,{isCurrent=()=>true}={}){
   await loadIndex();
-  const rows=await Promise.all(requirements.map(async requirement=>{
-   if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
-   const asset=geometryAssetsByRef.get(geometryKey(requirement));
-   if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))throw Error('Builtin geometry requirement does not match pinned catalog');
-   return {id:asset.id,version:asset.version,source:await loadGeometry(asset)};
-  }));
+  const rows=new Array(requirements.length);let cursor=0,failed=false;
+  const workers=Array.from({length:Math.min(readLimit,requirements.length)},async()=>{
+   try{
+    while(!failed&&cursor<requirements.length){
+     if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
+     const i=cursor++,requirement=requirements[i],asset=geometryAssetsByRef.get(geometryKey(requirement));
+     if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))throw Error('Builtin geometry requirement does not match pinned catalog');
+     rows[i]={id:asset.id,version:asset.version,source:await loadGeometry(asset)};
+    }
+   }catch(error){failed=true;throw error;}
+  });
+  const completed=await Promise.allSettled(workers),failure=completed.find(row=>row.status==='rejected');
+  if(failure)throw failure.reason;
   if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
   return rows;
  }

@@ -13,7 +13,8 @@ export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWor
    requireLive();
    worker=getWorker();
    try{
-    const response=await track(operation,()=>worker.request(operation,payload,{projectRevision:revision,signal}));
+    const priority=payload.boundary?100:operation==='geometry.physical-land'?80:payload.items?.some(item=>item.polarCapOnly!==true)?60:70;
+    const response=await track(operation,()=>worker.request(operation,payload,{projectRevision:revision,signal,priority}));
     requireLive();
     return response.result;
    }catch(cause){

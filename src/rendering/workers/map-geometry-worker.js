@@ -81,6 +81,14 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady().then((
   });
 }).catch(error=>{polygonPreparation=null;throw error;});
 let physicalDisplay=null;
+let workGates;
+function gates(){
+ return workGates ||= import('../geometry-work-gate.js').then(({createGeometryWorkGate})=>{
+  const memory=Number(self.navigator?.deviceMemory),cores=Number(self.navigator?.hardwareConcurrency);
+  const limit=memory>0&&memory<=4||cores>0&&cores<=4?1:2;
+  return {geometry:createGeometryWorkGate(limit),boundary:createGeometryWorkGate(1)};
+ });
+}
 
 async function prepareCountryBoundary(input,context){
   const [{createCountryBoundaryPreparation,visibleCountrySharedSegments},{countryBoundaryOwner}]=await Promise.all([
@@ -101,17 +109,19 @@ self.PandoLabWorkerRpc.install({
       if(physicalDisplay?.key===payload.sourceKey)return physicalDisplay.result;
       const [{dissolvePhysicalLand},core]=await Promise.all([import('../physical-land-display.js'),meshCoreReady()]);
       const started=performance.now();
-      const geometry=await dissolvePhysicalLand(payload.geometry,{
+      const {geometry:workGate}=await gates();
+      const geometry=await workGate.run(context,()=>dissolvePhysicalLand(payload.geometry,{
         union:coordinates=>core.polygonOperation('union',[coordinates],false),
         checkpoint:async()=>{context.throwIfCancelled();await new Promise(resolve=>setTimeout(resolve,0));context.throwIfCancelled();},
-      });
+      }));
       context.throwIfCancelled();
       const result={geometry,durationMs:performance.now()-started};
       physicalDisplay={key:payload.sourceKey,result};return result;
     },
     'geometry.prepare': async (payload, context) => {
       const startedAt=performance.now();
-      const boundary=payload.boundary?await prepareCountryBoundary(payload.boundary,context):null;
+      const {geometry:workGate,boundary:boundaryGate}=await gates();
+      const boundary=payload.boundary?await boundaryGate.run(context,()=>prepareCountryBoundary(payload.boundary,context)):null;
       if(payload.boundary&&!boundary)return {boundaryMiss:true};
       // A line-only overlay does not require the polygon prepared-mesh store,
       // immutable polygon catalogs or their initialization before it can draw.
@@ -128,7 +138,7 @@ self.PandoLabWorkerRpc.install({
       // the mobile decode/triangulation working set beyond two packets.
       for(let index=0;index<items.length;index+=2){
         const batch=items.slice(index,index+2);
-        const rows=await Promise.all(batch.map(async sourceItem=>{let item=sourceItem;
+        const rows=await Promise.all(batch.map(sourceItem=>workGate.run(context,async()=>{let item=sourceItem;
           context.throwIfCancelled();
           const started=performance.now(),before=store?.stats?.()||null;
           let prepared;
@@ -156,7 +166,7 @@ self.PandoLabWorkerRpc.install({
             durationMs:performance.now()-started,
             packetBytes:Object.values(prepared.packet||{}).reduce((n,value)=>n+(ArrayBuffer.isView(value)?value.byteLength:0),0),
             assetHitsBefore:before?.assetHits??null,assetHitsAfter:after?.assetHits??null}};
-        }));
+        })));
         await new Promise(resolve=>setTimeout(resolve,0));
         context.throwIfCancelled();
         for(let j=0;j<rows.length;j++){

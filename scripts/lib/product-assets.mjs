@@ -7,6 +7,7 @@ import {validateMapProjectManifest} from "../../src/data/map-project-manifest.js
 // Dependencies selected through URLs or classic Worker APIs are reviewed here;
 // static ESM edges are discovered by the same parser used by the build tooling.
 export const runtimeDependencies = Object.freeze({
+  'assets/js/modules/builtin-asset-tasks.js':['assets/js/workers/builtin-asset-worker.js'],
   'assets/js/modules/maplibre-hydro-display.js':['assets/js/workers/hydro-tile-worker.js'],
   'assets/js/modules/maplibre-geometry-client.js':['assets/js/workers/map-geometry-worker.js'],
   'assets/js/modules/map-display-client.js':['assets/js/workers/map-display-worker.js'],

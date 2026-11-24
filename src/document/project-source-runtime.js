@@ -1,4 +1,5 @@
 import {createBuiltinWorldLoader} from "../data/builtin-world-loader.js";
+import {createBuiltinAssetTasks} from '../data/builtin-asset-tasks.js';
 import {deviceCurrentMonth} from "./calendar-month.js";
 import {createBuiltinProjectSetup} from "./project-setup.js";
 import {mapProjectResourcePath} from "../data/map-project-manifest.js";
@@ -15,7 +16,7 @@ export function createProjectSourceRuntime({
   let projectBaseline = null,projectBaselineGeneration=null;
   const injectedWorldLoader=builtinWorldLoader!==null;
   let sourceIdentity=null,disposed=false;
-  const preparedSources=new WeakMap();
+  const preparedSources=new WeakMap(),assetTasks=createBuiltinAssetTasks();
   const staleBuiltin=()=>Object.assign(new Error('Builtin source request was superseded'),
     {name:'AbortError',cancelled:true,code:'PL-CORE-STALE'});
   const territorialSpec=()=>buildMeta?.mapProject
@@ -65,10 +66,7 @@ export function createProjectSourceRuntime({
     const active=()=>!disposed&&isCurrent()&&domain.getGeneration()===expectedGeneration
       &&currentSourceIdentity()===identity;
     if(!active())throw staleBuiltin();
-    const bytes=new TextEncoder().encode(JSON.stringify(project));
-    if(!active())throw staleBuiltin();
-    const fingerprint=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))]
-      .map(value=>value.toString(16).padStart(2,'0')).join('');
+    const {bytes,fingerprint}=await assetTasks.serializeProject(project);
     if(!active())throw staleBuiltin();
     const prepared=Object.freeze({kind:'stored-asset',encoding:'identity',
       compressedBytes:bytes.byteLength,decodedBytes:bytes.byteLength,
