@@ -26,14 +26,14 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   const active=datedSources.active(kind);
   const activeReady=datedSources.get(active)?.key;
   const id=(isTemporalPending()&&activeReady)||previous?.id===active?datedSources.reserve(kind):active;
-  const source=getMap().getSource(id),entry={key,source,id,getGeneration()};
+  const source=getMap().getSource(id),entry={key,source,id,generation:getGeneration()};
   physicalPending.set(kind,entry);
   datedSources.set(id,{kind,source});
   const current=()=>!isDisposed()&&physicalPending.get(kind)===entry&&getMap().getSource(id)===source;
   if(kind==='physical-land'&&displayPrepared)getStats().physicalLandAssetHits++;
   const prepared=kind==='physical-land'&&!displayPrepared?preparePhysicalDisplay(key,data.features[0].geometry).then(geometry=>collection([{...data.features[0],geometry}])):Promise.resolve(data);
   prepared.then(value=>current()?setData(id,value,current,{shareAcrossGenerations:true}):false,cause=>{if(current()){physicalPending.delete(kind);failMapPreparation(cause);}return false;})
-   .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){datedSources.set(id,{kind,source,key});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.getGeneration()===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
+   .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){datedSources.set(id,{kind,source,key});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
  }
 
  function syncPhysicalContext(){
