@@ -96,8 +96,8 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(isDisposed())return false;
   if(requestedGeneration!==getGeneration()||sequence!==countrySequence)return false;
   const map=getMap();
-  const {presented,nextBatches,key}=prepareCountryPresentation(features,{state:readCountryPresentation(),entityRepository,style:currentMapStyle(),layerPresentation,
-   previousRows:countryDisplay.rows,fillCache});
+  const {presented,nextBatches,key}=metrics.run('territorial.presentation',()=>prepareCountryPresentation(features,{
+   state:readCountryPresentation(),entityRepository,style:currentMapStyle(),layerPresentation,previousRows:countryDisplay.rows,fillCache}));
   const cached=datedSources.reuse('territories',key,sameRenderIdentity);
   const current=()=>!isDisposed()&&!signal.aborted&&requestedGeneration===getGeneration()&&sequence===countrySequence&&getMap()===map;
   const publish=(id,record,paintChanges)=>{
@@ -123,27 +123,35 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   }else{
    const preserve=isTemporalPending()&&datedSources.get(datedSources.active('territories'))?.key!=null;
    if(!preserve)countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers,countryTileSource,onCountrySourceRemoved:id=>scene.removeCountryFillSource(id),onStyleInvalidated:()=>{scene.invalidateLayerIndex();},dirty});
-   else countryDisplay.clearSwap();
-   const requestedSource=preserve?datedSources.reserve('territories'):datedSources.active('territories');
+   const activeId=datedSources.active('territories'),activeSource=map.getSource(activeId);
+   const borders=await metrics.track('territorial.borders',()=>prepareCountryBorders(presented,requestedGeneration,signal));
+   // Do not allocate or wake a standby source until its complete payload is ready.
+   if(!current()||datedSources.active('territories')!==activeId||map.getSource(activeId)!==activeSource)return false;
+   const tileFeatures=presented.slice();
+   for(const {feature} of borders)if(feature.geometry.coordinates.length)tileFeatures.push(feature);
+   if(preserve)countryDisplay.clearSwap();
+   const requestedSource=preserve?datedSources.reserve('territories'):activeId;
    const source=map.getSource(requestedSource);
    const previousTileRows=datedSources.get(requestedSource)?.tiles
-    ??(requestedSource===datedSources.active('territories')?countryDisplay.tiles:new Map());
-   const borders=await prepareCountryBorders(presented,requestedGeneration,signal);
+    ??(requestedSource===activeId?countryDisplay.tiles:new Map());
    const ownsSource=()=>current()&&map.getSource(requestedSource)===source;
    if(!ownsSource())return false;
-   const tileFeatures=[...presented,...borders.map(row=>row.feature).filter(feature=>feature.geometry.coordinates.length)];
-   const {next,remove,add,update}=countryTileDiff(previousTileRows,tileFeatures);
+   // An empty native baseline needs one full write, not a redundant all-add diff.
+   const delta=previousTileRows.size?metrics.run('territorial.tile-diff',()=>countryTileDiff(previousTileRows,tileFeatures)):null;
    const dirtyEntry={kind:'territories',source};datedSources.set(requestedSource,dirtyEntry);
    try{
     let applied=true;
-    if(!previousTileRows.size)applied=await setData(requestedSource,collection(tileFeatures),ownsSource);
-    else if(remove.length||add.length||update.length)applied=await sourceWrites.update(source=>source.updateData({remove,add,update}),requestedSource,ownsSource);
+    if(!delta)applied=await metrics.track('territorial.full-submit',()=>setData(requestedSource,collection(tileFeatures),ownsSource));
+    else if(delta.remove.length||delta.add.length||delta.update.length){
+     const {remove,add,update}=delta;
+     applied=await metrics.track('territorial.delta-submit',()=>sourceWrites.update(source=>source.updateData({remove,add,update}),requestedSource,ownsSource));
+    }
     if(!applied)return false;
    }catch(cause){if(current()){countryDisplay.clearTiles();}throw cause;}
    if(!ownsSource())return false;
    scene.syncTerritorialFills(requestedSource,nextBatches);
    const record={kind:'territories',source,key,rows:new Map(presented.map(feature=>[feature.id,feature])),
-    tiles:next,borders:new Map(borders.map(row=>[row.key,row]))};
+    tiles:delta?.next??new Map(tileFeatures.map(feature=>[feature.id,feature])),borders:new Map(borders.map(row=>[row.key,row]))};
    datedSources.set(requestedSource,record);
    publish(requestedSource,record);scene.orderSceneLayers();
   }
