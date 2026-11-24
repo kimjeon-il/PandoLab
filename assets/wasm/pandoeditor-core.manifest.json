@@ -1,7 +1,7 @@
 {
   "schema": "pandoeditor-core-wasm",
   "abiVersion": 1,
-  "sourceSha256": "e3eeb4028aa6668ae85ae9c32f0e5889faa322dd44e75701ff97ec0951d14b63",
+  "sourceSha256": "ea13e3e981ff0db1d71c32085ba427fc6c73ffa955ec4bfda53ab962f0e0e9df",
   "compiler": {
     "name": "emscripten",
     "version": "6.0.3"
@@ -73,7 +73,7 @@
     },
     {
       "path": "src/document/native/bindings/session-bindings.cpp",
-      "sha256": "58322faf6a11b62c55f4e079eb7369621d93d00a1bab45d54c7169551837ae71"
+      "sha256": "d48891d9b5561e311a316bdf719be068af11f11f385834d44e85f472b2caf5a9"
     },
     {
       "path": "src/document/native/bindings/timeline-bindings.cpp",
@@ -141,7 +141,7 @@
     },
     {
       "path": "src/document/native/include/pandoeditor/timeline-resolver.h",
-      "sha256": "2c6e318ed42ecd88118d2ac9a899562421fd89e0fcf490421d30d816a124e5d6"
+      "sha256": "998ff139eef8b188b3d58fe10e935156a6987f50d4cce85757edec8a7045fd00"
     },
     {
       "path": "src/document/native/include/pandoeditor/timeline-storage.h",
@@ -205,7 +205,7 @@
     },
     {
       "path": "src/document/native/src/project.cpp",
-      "sha256": "c8fad4fc4e3f9edd2bd7cb4d1a56e7a20c2ce444f428302ff79f747f5024e0c1"
+      "sha256": "bdfeb129a52b24c5eace8639c55d198eed0e28cdd1e89d7a6d320a87c4fa7a16"
     },
     {
       "path": "src/document/native/src/snapshot.cpp",
@@ -221,11 +221,11 @@
     },
     {
       "path": "src/document/native/src/timeline-records.cpp",
-      "sha256": "404a78afd0e742e7b29bf5750cf1b88c25b4801f96f70adc340753d267f76e93"
+      "sha256": "caa329847806af2ce728d68024209da23425859b25ec8c5b70cdb5c2f8be399f"
     },
     {
       "path": "src/document/native/src/timeline-resolver.cpp",
-      "sha256": "408edc43c20fcea5afb5c4f0c2f77eadc1bac903b01efdaa94b5ac04e7730a0b"
+      "sha256": "5287964c3b3e5121cfef0ebf369256b1269811609441076d03bdd14d3eca58e1"
     },
     {
       "path": "src/document/native/src/timeline-storage.cpp",
@@ -467,7 +467,7 @@
     },
     "wasm": {
       "file": "pandoeditor-core.wasm",
-      "sha256": "18185c184bf76522a0505106aac3d86dde414039f1e13b9a7639bf9356fe634a"
+      "sha256": "25e45ef32727e09fdb140c7808a1a50e262c74ecd7f1cb8a56ad15be038892b6"
     }
   }
 }
