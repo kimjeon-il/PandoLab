@@ -1,3 +1,4 @@
+import {encodeStrokeGeometry,decodeStrokeGeometry} from '../../../src/rendering/stroke-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
@@ -309,4 +310,14 @@ test('native source writes serialize and reject queued work from an obsolete gen
  assert.equal(dirty,2);
  assert.equal(await writes.update(()=>{},'territories'),true);
  assert.equal(writes.pendingCount(),0);
+});
+
+test('prepared stroke packets survive transferable binary round-trip',()=>{
+ const geometry={type:'MultiLineString',coordinates:[[[0,1],[2,3]],[],[[4,5],[6,7],[8,9]]]};
+ const packed=encodeStrokeGeometry(geometry);
+ const received=structuredClone(packed,{transfer:[packed.coordinates.buffer,packed.offsets.buffer]});
+ assert.equal(packed.coordinates.byteLength,0);
+ assert.equal(packed.offsets.byteLength,0);
+ assert.deepEqual(decodeStrokeGeometry(received),geometry);
+ assert.throws(()=>decodeStrokeGeometry({coordinates:new Float64Array(2),offsets:new Uint32Array([0,2])}),TypeError);
 });
