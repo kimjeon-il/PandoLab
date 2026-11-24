@@ -2,7 +2,7 @@
 // GPU resources, pixel buffers and canonical document state remain with their existing owners.
 export function createMapPresentationSession({
   getGeneration, getContextRevision, isDisposed, getReadiness,
-  invalidateFrame, prepareContentKey, sameContentKey=(a,b)=>a===b, isProjectBlocked,
+  invalidateFrame, prepareContentKey, sameContentKey=(a,b)=>a===b, isImmutableContentKey=()=>false, isProjectBlocked,
   isRecoveryFrameAdmissible, onTemporalFailure = () => {},
   onTemporalRetired = () => {}, waitForCanonicalFrame,
 }) {
@@ -21,7 +21,7 @@ export function createMapPresentationSession({
     if(expected===content)return true;
     // The controller supplies immutable content identities. Never rescan the
     // same frozen pair on every deferred frame approval.
-    const cacheable=Object.isFrozen(expected)&&Object.isFrozen(content);
+    const cacheable=isImmutableContentKey(expected)&&isImmutableContentKey(content);
     if(cacheable&&checkedTicket===ticket&&checkedExpected===expected&&checkedContent===content)return checkedMatch;
     const match=sameContentKey(expected,content);
     if(cacheable){checkedTicket=ticket;checkedExpected=expected;checkedContent=content;checkedMatch=match;}

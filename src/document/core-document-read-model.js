@@ -282,10 +282,12 @@ export function createCoreDocumentReadModel(initialProject) {
     for(const ref of delta.removed)if(!geometries.get(ref))invalid('Unknown evicted geometry resource.');
     const entries=project.geometries.filter(row=>!removed.has(refKey(row))).concat(rows);
     const next=createGeometryVersionStore(entries,{reuse:geometries,verifiedContentHashes:hashes});
+    const sameSource=worldSourceProject===project;
     project=freeze({...project,geometries:next.snapshot()});geometries=next;
     // Do not pin the old archive through the current read model.
-    // Old displayed rows remain valid until the atomic cursor projection.
-    worldSourceProject=project;
+    // Only a geometry-only admission on the same accepted source may rebase
+    // its certificate. A prior source edit still requires re-projection.
+    worldSourceProject=sameSource?project:null;
   }
   function acceptTransition(result,operation,verifiedResources) {
     if(operation==='core.document-temporal-candidate-adopt') {

@@ -1,5 +1,5 @@
 import {createMapPresentationSession} from './map-presentation-session.js';
-import {countryContentIdentity} from './country-content-identity.js';
+import {countryContentIdentity,isCountryContentIdentity} from './country-content-identity.js';
 import {sameRenderIdentity} from './render-identity.js';
 
 // Own the displayed-frame lifecycle. The supplied display controllers retain
@@ -24,7 +24,7 @@ export function createMapLibreFrameController({
  const presentation=createMapPresentationSession({
   getGeneration:()=>generation,getContextRevision:()=>contextRevision,isDisposed:unavailable,
   getReadiness:()=>({mapReady:preparedReady}),invalidateFrame:invalidate,
-  prepareContentKey:async features=>countryContentIdentity(features),sameContentKey:sameRenderIdentity,
+  prepareContentKey:async features=>countryContentIdentity(features),sameContentKey:sameRenderIdentity,isImmutableContentKey:isCountryContentIdentity,
   isProjectBlocked:()=>!!error,isRecoveryFrameAdmissible:()=>!error&&isLoaded()&&!contextLost&&!unavailable(),
   onTemporalRetired:()=>{if(presentation.ticket?.presented)releaseTemporalFrame();},
   waitForCanonicalFrame:()=>presentation.waitForMapPresentation(generation)

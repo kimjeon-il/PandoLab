@@ -23,7 +23,9 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
  }
  const equivalent=(before,after)=>before===after||before.length===after.length&&before.every((row,index)=>{
   const next=after[index];
-  return row===next||fillIdentity(row).every((value,i)=>value===fillIdentity(next)[i]);
+  if(row===next)return true;
+  const previous=fillIdentity(row),current=fillIdentity(next);
+  return previous.every((value,i)=>value===current[i]);
  });
  function repositoryFor(entities,features){
   if(immutableCountryRows(entities)&&immutableCountryRows(features)){
