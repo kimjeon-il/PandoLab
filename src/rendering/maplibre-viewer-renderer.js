@@ -24,6 +24,7 @@ import {createMapLibreHighlight,partitionHighlightLines} from './maplibre-highli
 import {createMapLibreGeometryClient} from './maplibre-geometry-client.js';
 import {createMapLibreCountryBorders} from './maplibre-country-borders.js';
 import {prepareCountryPresentation,countryPaintOnly,countryTileDiff} from './maplibre-country-presentation.js';
+import {createMapLibreCountryDisplay} from './maplibre-country-display.js';
 import {createMapLibrePicking} from './maplibre-picking-controller.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {layerObjectRank,layerStyle} from '../ui/layer-presentation.js';
@@ -56,11 +57,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let endSourceFrame=null;
  let territories=[],landRevision=null,hydroLoader,hydroPresentation,hydroFeatures=[],hydroManifest=null;
  let hydroStartup,hydroStartupAbort,hydroAppliedSource=null;
- let sceneKey='',countryKey='',quality=null,interactionStyle=null;
+ let sceneKey='',quality=null,interactionStyle=null;
  let acceptedCountryInputs=null;
  const dynamicLayers=new Set(),dynamicSources=new Set(),sceneGroups=new Map();
- let countryRows=new Map(),hydroStateKey='',hydroEditsKey='',physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null,selectionSnapshot=null;
- let countryTileRows=new Map(),countryBoundaryGeometry=new Map();
+ let hydroStateKey='',hydroEditsKey='',physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null,selectionSnapshot=null;
+ const countryDisplay=createMapLibreCountryDisplay();
  const physicalPending=new Map();
  let countrySequence=0,countryTail=Promise.resolve(),countrySourceSerial=0,countrySourceNeedsSwap=false;
  const activeCountryTasks=new Set();
@@ -68,7 +69,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let countryGeometryAbort=null;
  const geometryClient=createMapLibreGeometryClient({runtimeAssetUrl:path=>deps.platform.runtimeAssetUrl(path),isDisposed:()=>disposed,getGeneration:()=>generation,onRestart:()=>{borders.reset();},getStats:()=>stats,metrics});
  const {preparePhysicalDisplay,prepareRenderGeometry}=geometryClient;
- const borders=createMapLibreCountryBorders({getBoundaryGeometry:()=>countryBoundaryGeometry,prepareRenderGeometry,metrics,getStats:()=>stats});
+ const borders=createMapLibreCountryBorders({getBoundaryGeometry:()=>countryDisplay.borders,prepareRenderGeometry,metrics,getStats:()=>stats});
  const {prepareCountryBorders}=borders;
 
  const vectorLayers=new Map(),strokeDomains=new Map(),strokeSignatures=new Map();
@@ -225,14 +226,14 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const context=deps.physicalResources.physicalLand;
   if(!context||!deps.physicalResources.physicalContextState.ready)return;
   const colored=colorsEnabled(),land=style.paint['physical-land-fill']['fill-color'];
-  const inputs=[generation,countryKey,colored,context.geometry,context.water,context.revision,
+  const inputs=[generation,countryDisplay.key,colored,context.geometry,context.water,context.revision,
    land,style.paint.ocean['background-color'],state.backgroundSettings?.graticule,state.resourceCapabilities?.graticule];
   if(inputs.length===polarInputs.length&&inputs.every((value,index)=>value===polarInputs[index]))return;
   polarInputs=inputs;
   add(context.geometry,style.paint['physical-land-fill']['fill-color'],1,false,'land');
-  for(const f of countryRows.values())add(f.geometry,colored?f.properties.color:land,colored?f.properties.displayAlpha:1,colored&&f.properties.blendMode==='multiply');
+  for(const f of countryDisplay.rows.values())add(f.geometry,colored?f.properties.color:land,colored?f.properties.displayAlpha:1,colored&&f.properties.blendMode==='multiply');
   if(context.water)add(context.water,style.paint.ocean['background-color']);
-  if(countryKey)for(const {key,paths,feature:{properties}} of countryBoundaryGeometry.values()){
+  if(countryDisplay.key)for(const {key,paths,feature:{properties}} of countryDisplay.borders.values()){
    if(!paths.polar.indices.length)continue;
    const {borderColor,borderAlpha,borderWidth}=properties;
    items.push({packet:paths.polar,color:rgba(borderColor,borderAlpha),width:borderWidth});
@@ -660,7 +661,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(map.getSource(oldId))map.removeSource(oldId);
   indexedStyle=null;
   datedSources.replaceActive('territories',newId);countryFillGroups.delete(oldId);
-  countryRows=new Map();countryTileRows=new Map();countryKey='';countrySourceNeedsSwap=false;dirty();
+  countryDisplay.clearTiles();countrySourceNeedsSwap=false;dirty();
  }
  async function applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal){
   if(basemapRecovery)await basemapRecovery;
@@ -673,7 +674,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const current=()=>!disposed&&requestedGeneration===generation&&sequence===countrySequence;
   const publish=(id,record)=>{
    datedSources.activate('territories',id);
-   countryRows=record.rows;countryTileRows=record.tiles;countryKey=key;countryBoundaryGeometry=record.borders;
+   countryDisplay.publish(record,key);
    syncCountryPaint(id,record.rows);orderSceneLayers();
   };
   const active=datedSources.get(datedSources.active('territories'));
@@ -695,7 +696,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    const requestedSource=preserve?datedSources.reserve('territories'):datedSources.active('territories');
    const source=map.getSource(requestedSource);
    const previousTileRows=datedSources.get(requestedSource)?.tiles
-    ??(requestedSource===datedSources.active('territories')?countryTileRows:new Map());
+    ??(requestedSource===datedSources.active('territories')?countryDisplay.tiles:new Map());
    const borders=await prepareCountryBorders(presented,requestedGeneration,signal);
    const ownsSource=()=>current()&&map.getSource(requestedSource)===source;
    if(!ownsSource())return false;
@@ -707,7 +708,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     if(!previousTileRows.size)applied=await setData(requestedSource,collection(tileFeatures),ownsSource);
     else if(remove.length||add.length||update.length)applied=await sourceWrites.update(source=>source.updateData({remove,add,update}),requestedSource,ownsSource);
     if(!applied)return false;
-   }catch(cause){if(current()){countryRows=new Map();countryTileRows=new Map();countryKey='';}throw cause;}
+   }catch(cause){if(current()){countryDisplay.clearTiles();}throw cause;}
    if(!ownsSource())return false;
    syncTerritorialFills(requestedSource,nextBatches);
    const record={kind:'territories',source,key,rows:new Map(presented.map(feature=>[feature.id,feature])),
@@ -1057,7 +1058,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  function retryMapPreparation(){error=null;polarInputs=[];highlight?.reset();polarLayer?.retry();if(selectionSnapshot)setSelection(selectionSnapshot);invalidate('map-retry');}
  function invalidateCountryColors(){
   if(!styleReady()){pendingCountryPaint=true;return;}
-  syncCountryPaint(datedSources.active('territories'),countryRows);
+  syncCountryPaint(datedSources.active('territories'),countryDisplay.rows);
   dirty();invalidate('country-paint');
  }
  function invalidateStyle(){if(loaded&&!styleReady()){pendingStyleRefresh=true;return;}if(loaded){
