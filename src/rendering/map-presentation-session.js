@@ -20,7 +20,7 @@ export function createMapPresentationSession({
     return !temporalTicket.error && temporalTicket.sourceAdmitted !== false
       && temporalTicket.isCurrent() && temporalTicket.generation === getGeneration()
       && temporalTicket.context === getContextRevision()
-      && (temporalTicket.kind !== 'view' || !!temporalTicket.countryContent
+      && (temporalTicket.kind !== 'view' || temporalTicket.countryContent !== null
         && temporalTicket.countryContent === content);
   }
 
