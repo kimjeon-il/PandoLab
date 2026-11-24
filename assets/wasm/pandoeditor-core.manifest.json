@@ -1,7 +1,7 @@
 {
   "schema": "pandoeditor-core-wasm",
   "abiVersion": 1,
-  "sourceSha256": "ff9d1b783012ce61ec04a17344b7df28f363a2f6e2c1c26f1aecc0ea8a512181",
+  "sourceSha256": "0b6a3dd5de5868a39ad6b38774b45035b72f8ec0b500d0e6e993e2523d3de370",
   "compiler": {
     "name": "emscripten",
     "version": "6.0.3"
@@ -65,7 +65,7 @@
     },
     {
       "path": "src/data/native/src/webstorage.cpp",
-      "sha256": "038ea5448b8d6938754a165f8a3a3ef1d771572c063e33458813875007a7dc8d"
+      "sha256": "0456fe09d9a6daaa1e97377d049d1b0011527204b4e5db7d6a2c82a949582667"
     },
     {
       "path": "src/document/native/bindings/place-bindings.cpp",
@@ -73,11 +73,11 @@
     },
     {
       "path": "src/document/native/bindings/session-bindings.cpp",
-      "sha256": "fa4e178437b8f08a722e96849a3b657ddf3ac50648aea1ab068edf69ec97c71e"
+      "sha256": "a6db19547e1e3ef8d5e984f89df67ef347ca5c13e400ef1d4c588ed2c61acee9"
     },
     {
       "path": "src/document/native/bindings/timeline-bindings.cpp",
-      "sha256": "2a265c12e824afacf0c91f1f971ca27533ee6b0758529648ac26de57736a9389"
+      "sha256": "80533047c90c883dfb475600d095592fdff20f617f70a689c3ec7301f2b57fc6"
     },
     {
       "path": "src/document/native/include/pandoeditor/commands.h",
@@ -85,7 +85,7 @@
     },
     {
       "path": "src/document/native/include/pandoeditor/document-session.h",
-      "sha256": "ed0a3a6cf097ecbbf878a8385f438ed2621e0a63e2a64fd4a60c584b81b02a4b"
+      "sha256": "2131c587bb045cbe751007621601e272f06d852cff142f949d7ac4a83430783a"
     },
     {
       "path": "src/document/native/include/pandoeditor/document.h",
@@ -141,7 +141,7 @@
     },
     {
       "path": "src/document/native/include/pandoeditor/timeline-resolver.h",
-      "sha256": "ada96cbf81d73800d91b6c53dadd85d5a2a98894bba499832c53bbf1e3ed4e44"
+      "sha256": "5f3e699702ccb81f227a81a74e4aaa131454ded21dfcd3df47732e2fb9153397"
     },
     {
       "path": "src/document/native/include/pandoeditor/timeline-storage.h",
@@ -169,11 +169,11 @@
     },
     {
       "path": "src/document/native/src/document-session.cpp",
-      "sha256": "14fad3210c0edf156482226a39ba18c57a0b939d15dcbbb1797f26feb196b4ec"
+      "sha256": "245bfa9c3c16800f048fb374201a551dc7c1ae1fd00ebcf2b70e890857638986"
     },
     {
       "path": "src/document/native/src/document.cpp",
-      "sha256": "a385b720df215da2b6e94f044ccf930c58de65f3cec9a291c9c1834aef71eb2a"
+      "sha256": "b02955b242a6f2153d9e6d7de80c49c769e09fa81e109624e3b469c779f02674"
     },
     {
       "path": "src/document/native/src/documentstate.h",
@@ -205,7 +205,7 @@
     },
     {
       "path": "src/document/native/src/project.cpp",
-      "sha256": "a10b760f8869aae08463b17ed365d227e214efb877ea4224adb3891a6195bb5f"
+      "sha256": "633dfdbba12ebbfff6d35d6745d778a048a21d2df2c6b7585f8eb8aa414d5f84"
     },
     {
       "path": "src/document/native/src/snapshot.cpp",
@@ -221,11 +221,11 @@
     },
     {
       "path": "src/document/native/src/timeline-records.cpp",
-      "sha256": "204393a9deeeef31794b529bb19efc3f2da04ba70243a95a5259755e6c869412"
+      "sha256": "404a78afd0e742e7b29bf5750cf1b88c25b4801f96f70adc340753d267f76e93"
     },
     {
       "path": "src/document/native/src/timeline-resolver.cpp",
-      "sha256": "e0ba26abbb0c123d4ac5b5fc551f1f82f1a3269de6deecdb0a7c2109141b8843"
+      "sha256": "e122021764c2186a8fc964e7b37f8359c18aefac5a706144b8962f5f4569fe04"
     },
     {
       "path": "src/document/native/src/timeline-storage.cpp",
@@ -233,7 +233,7 @@
     },
     {
       "path": "src/document/native/src/timeline-view.cpp",
-      "sha256": "771dc7d5837280e4fb5ab60b9ea05684c3cc77ee524f6f374864f3dcc4c2877c"
+      "sha256": "b73a6d93353fbaf7a4bbeec77f719dba56491376534758f689f6de04addc8e68"
     },
     {
       "path": "src/document/native/src/webcommands.cpp",
@@ -241,7 +241,7 @@
     },
     {
       "path": "src/document/native/src/webterritorial-source-admission.cpp",
-      "sha256": "9621c2571ecfe0d7ef522c1f798ae2cfb85fde87538a5d4556f49e41298ce329"
+      "sha256": "6faaa052ec8d18b36a9ac29e228d270cb79633a87fa597c148ec3564d03d4950"
     },
     {
       "path": "src/document/native/src/webterritorial-source-codec.cpp",
@@ -467,7 +467,7 @@
     },
     "wasm": {
       "file": "pandoeditor-core.wasm",
-      "sha256": "a7112a26a408f0647c4a3fbdeb6c7109d434d63c8b4c2f3d6502f70bc5f401b0"
+      "sha256": "78fe36dda3661d0d277e61005f9ba28661c6ecf0d07bb9f9fa94b73c57f4da81"
     }
   }
 }
