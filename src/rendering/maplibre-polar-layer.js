@@ -106,7 +106,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
  const emptyBatch={rows:[],packets:new Set()};
  let staticBatch=emptyBatch,gridBatch=emptyBatch,overlayBatch=emptyBatch,highlightBatch=emptyBatch,stagedHighlights=emptyBatch,highlightSequence=0,contextGeneration=0;
  let loadingSurface=null;
- let culledFrames=0,drawCalls=0,submittedTriangles=0,uploadedBytes=0;
+ let culledFrames=0,drawCalls=0,submittedTriangles=0,uploadedBytes=0,residentBytes=0;
  const buffers=new Map();
  const shader=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const message=gl.getShaderInfoLog(s);gl.deleteShader(s);throw Error(message);}return s;};
  let variant='',preparations=0,failed=false;
@@ -153,8 +153,9 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,index);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,indices,gl.STATIC_DRAW);
   }catch(error){gl.deleteBuffer(vertex);gl.deleteBuffer(index);throw error;}
   finally{gl.bindBuffer(gl.COPY_WRITE_BUFFER,null);}
-  uploadedBytes+=values.byteLength+indices.byteLength;
-  const record={vertex,index,ranges:packet.ranges||[{cap:BOTH_CAPS,offset:0,count:indices.length}]};
+  const bytes=values.byteLength+indices.byteLength;
+  uploadedBytes+=bytes;residentBytes+=bytes;
+  const record={vertex,index,bytes,ranges:packet.ranges||[{cap:BOTH_CAPS,offset:0,count:indices.length}]};
   buffers.set(packet,record);return record;
  }
  function retire(batch){
@@ -162,14 +163,14 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    if(staticBatch.packets.has(packet)||gridBatch.packets.has(packet)||overlayBatch.packets.has(packet)
     ||highlightBatch.packets.has(packet)||stagedHighlights.packets.has(packet))continue;
    const b=buffers.get(packet);if(!b)continue;
-   gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);buffers.delete(packet);
+   gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);residentBytes-=b.bytes;buffers.delete(packet);
   }
  }
  function release(){
   contextGeneration++;stagedHighlights=emptyBatch;
   if(!gl)return;
   for(const b of buffers.values()){gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);}
-  buffers.clear();if(program)gl.deleteProgram(program);if(vao)gl.deleteVertexArray(vao);program=null;vao=null;variant='';
+  buffers.clear();residentBytes=0;if(program)gl.deleteProgram(program);if(vao)gl.deleteVertexArray(vao);program=null;vao=null;variant='';
  }
  function presentBatch(batch,caps,zoom){
   for(const row of batch.rows){
@@ -253,7 +254,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   if(previous.rows.length)map.triggerRepaint?.();
  }
  function resetContext(){failed=false;release();if(gl)vao=gl.createVertexArray();}
- return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes}),
+ return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size}),
   retry(){sequence++;pending=false;key='';resetContext();},resetContext,
   ensure(){if(!map.getLayer(id))map.addLayer(layer,map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);},get pending(){return pending;},
   prepareHighlights,clearHighlights,
@@ -272,5 +273,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
     gridBatch=batchFor(next.filter(row=>row.loadingRole==='grid'));
     retire(previous);retire(previousGrid);pending=false;onChange();
    },error=>{if(!disposed&&version===sequence){pending=false;key='';failed=error?.name!=='AbortError';onError(error);}});
-  },dispose(){disposed=true;sequence++;if(map.getLayer(id))map.removeLayer(id);else release();}};
+  },dispose(){if(disposed)return;disposed=true;sequence++;highlightSequence++;pending=false;key='';
+   staticBatch=gridBatch=overlayBatch=highlightBatch=stagedHighlights=emptyBatch;loadingSurface=null;
+   if(map.getLayer(id))map.removeLayer(id);else release();}};
 }

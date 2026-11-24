@@ -7,7 +7,7 @@ import '../../assets/js-vendor/polygon-clipping.min.js';
 // Project water identity/periods remain owned by the common C++ document.
 export function createPhysicalWaterPresentation() {
   let previousKey=null,previous=null;
-  return (context,replacement,visible)=>{
+  const present=(context,replacement,visible)=>{
     if(!replacement)return visible?context:{...context,water:null};
     const ref=geometryReferenceFor(replacement.geometry);
     if(!ref)throw new Error('A copied water mask requires an admitted geometry version.');
@@ -25,4 +25,6 @@ export function createPhysicalWaterPresentation() {
     previousKey=key;previous=Object.freeze({...context,geometry:{type:'MultiPolygon',coordinates:[...unchanged,...changed]},revision:key,water:null});
     return previous;
   };
+  present.clear=()=>{previousKey=null;previous=null;};
+  return present;
 }

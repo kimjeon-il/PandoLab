@@ -167,6 +167,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   resetStyle(){hydroInputs=null;hydroStateKey=null;hydroEditsKey=null;},
   invalidateVisibility(){hydroStateKey='';},
   resetProject(){hydroPresentation?.suspend();cancelHydroStartup();},
-  dispose(){hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();hydroLoader=null;hydroPresentation=null;}
+  dispose(){hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();hydroLoader=null;hydroPresentation=null;
+   hydroFeatures=[];hydroManifest=null;hydroAppliedSource=null;hydroInputs=null;hydroMinZoomByStage.clear();hydroStateKey=hydroEditsKey='';}
  });
 }
