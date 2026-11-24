@@ -122,38 +122,77 @@ struct Change {
     bool add;
 };
 using Slots=std::array<std::map<std::string,std::string>,6>;
-void inspect(const std::map<ObjectRef,Slots>& active) {
-    for(const auto& [ref,slots]:active) {
-        for(const auto& slot:slots) if(slot.size()>1)
-            fail("TIMELINE_OVERLAP","Concurrent records for "+ref.domain+":"+ref.id+".");
-    }
+// Each boundary is atomic: the preceding graph was validated, so only
+// changed slots, changed parent edges and dependents of a removed parent
+// need inspection. Property-only events never walk the territorial graph.
+struct ParentGraph {
     std::map<std::string,std::string> parents;
-    for(const auto& [ref,slots]:active) {
-        const auto& life=slots[0]; const auto& geometry=slots[1]; const auto& parent=slots[2];
-        if(life.empty()&&(!geometry.empty()||!parent.empty()))
-            fail("TIMELINE_OUTSIDE_LIFETIME","Records outside the lifetime of "+ref.domain+":"+ref.id+".");
-        if(life.empty())for(std::size_t i=3;i<slots.size();++i)if(!slots[i].empty())
-            fail("TIMELINE_OUTSIDE_LIFETIME","Properties outside the lifetime of "+ref.domain+":"+ref.id+".");
-        if(!life.empty()) {
-            if(ref.domain=="territorial" && geometry.empty()!=parent.empty()) fail("TIMELINE_GAP","Geometry and parent coverage differ for "+ref.domain+":"+ref.id+".");
-            if(!parent.empty()) parents.emplace(ref.id,parent.begin()->second);
+    std::map<std::string,std::set<std::string>> children;
+    void inspect(const std::map<ObjectRef,Slots>& active,const std::set<ObjectRef>& touched) {
+        for(const auto& ref:touched) {
+            const auto& slots=active.at(ref);
+            for(const auto& slot:slots)if(slot.size()>1)
+                fail("TIMELINE_OVERLAP","Concurrent records for "+ref.domain+":"+ref.id+".");
+        }
+        std::set<std::string> changed;
+        for(const auto& ref:touched) {
+            const auto& slots=active.at(ref);
+            const auto& life=slots[0];const auto& geometry=slots[1];const auto& parent=slots[2];
+            if(life.empty()&&(!geometry.empty()||!parent.empty()))
+                fail("TIMELINE_OUTSIDE_LIFETIME","Records outside the lifetime of "+ref.domain+":"+ref.id+".");
+            if(life.empty())for(std::size_t i=3;i<slots.size();++i)if(!slots[i].empty())
+                fail("TIMELINE_OUTSIDE_LIFETIME","Properties outside the lifetime of "+ref.domain+":"+ref.id+".");
+            if(ref.domain!="territorial")continue;
+            if(!life.empty()&&geometry.empty()!=parent.empty())
+                fail("TIMELINE_GAP","Geometry and parent coverage differ for "+ref.domain+":"+ref.id+".");
+            const auto prior=parents.find(ref.id);
+            const bool present=!life.empty()&&!parent.empty();
+            const auto next=present?parent.begin()->second:std::string{};
+            if(prior==parents.end()&&!present)continue;
+            if(prior!=parents.end()&&present&&prior->second==next)continue;
+            changed.insert(ref.id);
+            if(prior!=parents.end()){
+                if(!prior->second.empty()){
+                    auto reverse=children.find(prior->second);
+                    if(reverse!=children.end()){
+                        reverse->second.erase(ref.id);
+                        if(reverse->second.empty())children.erase(reverse);
+                    }
+                }
+                parents.erase(prior);
+            }
+            if(present){
+                parents.emplace(ref.id,next);
+                if(!next.empty())children[next].insert(ref.id);
+            }
+        }
+        // Inspect only after every parent edit at this boundary is installed.
+        for(const auto& id:changed){
+            const auto current=parents.find(id);
+            if(current!=parents.end()){
+                const auto& parent=current->second;
+                if(!parent.empty()&&!parents.count(parent))
+                    fail("TIMELINE_PARENT_INACTIVE","Inactive parent "+parent+" for "+id+".");
+            }else{
+                const auto remaining=children.find(id);
+                if(remaining!=children.end()&&!remaining->second.empty())
+                    fail("TIMELINE_PARENT_INACTIVE","Inactive parent "+id+" for "+*remaining->second.begin()+".");
+            }
+        }
+        // A new cycle must contain an edge changed at this boundary.
+        std::set<std::string> settled;
+        for(const auto& id:changed){
+            if(!parents.count(id))continue;
+            std::set<std::string> path;
+            auto cursor=id;
+            while(!cursor.empty()&&!settled.count(cursor)){
+                if(!path.insert(cursor).second)fail("TIMELINE_CYCLE","Parent cycle at "+cursor+".");
+                cursor=parents.at(cursor);
+            }
+            settled.insert(path.begin(),path.end());
         }
     }
-    for(const auto& [id,parent]:parents) {
-        if(!parent.empty()&&!parents.count(parent))
-            fail("TIMELINE_PARENT_INACTIVE","Inactive parent "+parent+" for "+id+".");
-    }
-    std::set<std::string> settled;
-    for(const auto& entry:parents) {
-        std::set<std::string> path;
-        auto cursor=entry.first;
-        while(!cursor.empty()&&!settled.count(cursor)) {
-            if(!path.insert(cursor).second) fail("TIMELINE_CYCLE","Parent cycle at "+cursor+".");
-            cursor=parents.at(cursor);
-        }
-        settled.insert(path.begin(),path.end());
-    }
-}
+};
 }
 
 TimelineRecords normalizeTimelineRecords(const TimelineRecords& input,const TimelineValidationContext& context) {
@@ -253,14 +292,17 @@ TimelineRecords normalizeTimelineRecords(const TimelineRecords& input,const Time
         row.value=value.encode();
     }
     for(const auto& entry:entities) if(!hasLife.count(entry.first)) fail("TIMELINE_LIFETIME","No lifetime for "+entry.first.id+".");
+    ParentGraph graph;
     for(const auto& boundary:events) {
+        std::set<ObjectRef> touched;
         // Inspect only after every simultaneous change has been applied.
         for(const auto& change:boundary.second) {
             auto& slot=active.at(change.objectRef)[change.slot];
             if(change.add) slot.emplace(change.id,change.parentId);
             else slot.erase(change.id);
+            touched.insert(change.objectRef);
         }
-        inspect(active);
+        graph.inspect(active,touched);
     }
     return result;
 }
