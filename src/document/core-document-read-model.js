@@ -186,6 +186,14 @@ export function createCoreDocumentReadModel(initialProject) {
         invalid('A world delta requires a valid object reference.');
       return timelineObjectKey(ref);
     };
+    if(!delta.upserts.length&&!delta.removed.length){
+      if(delta.entityCount!==world.entities.length)invalid('World delta entity count differs.');
+      if(delta.month===world.month&&worldSourceProject===project){
+        world=Object.freeze({...world,sourceEpoch:state.epoch});
+        return world;
+      }
+      return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities:world.entities},state.epoch);
+    }
     const prior=new Map(world.entities.map(row=>[key(row.objectRef),row]));
     const touched=new Set(), positions=new Map();
     for(const ref of delta.removed){

@@ -521,10 +521,15 @@ std::uint32_t temporalHandle(const val& input,const char* code) {
         fail(code,"Invalid Core-owned temporal handle.");
     return static_cast<std::uint32_t>(n);
 }
+std::uint64_t geometryCacheBudget(const val& options) {
+    if(options["geometryCacheBytes"].isUndefined())return 64ull*1024*1024;
+    const auto budget=integer(options["geometryCacheBytes"],"INVALID_GEOMETRY_CACHE_BUDGET");
+    if(budget<0)fail("INVALID_GEOMETRY_CACHE_BUDGET","A nonnegative byte budget is required.");
+    return static_cast<std::uint64_t>(budget);
+}
 class WasmDocumentSession {
 public:
-    explicit WasmDocumentSession(val options):ports_(documentPorts(options)),session_(ports_,
-        options["geometryCacheBytes"].isUndefined()?64ull*1024*1024:static_cast<std::uint64_t>(integer(options["geometryCacheBytes"],"INVALID_GEOMETRY_CACHE_BUDGET"))){}
+    explicit WasmDocumentSession(val options):ports_(documentPorts(options)),session_(ports_,geometryCacheBudget(options)){}
     val documentLoad(const std::string& input,const std::string& currentMonth){return boundary([&]{return documentState(session_.documentLoad(input,currentMonth));});}
     val storageBaselineLoad(val input,std::uint32_t epoch) {
         return boundary([&]{const auto kind=text(input["kind"],"CORE_STORAGE_BASELINE");

@@ -100,6 +100,29 @@ test('timeline preparation retries when another operation advances the Core epoc
  }finally{client.dispose();}
 });
 
+test('another geometry admission invalidates an otherwise same-epoch preparation receipt',async()=>{
+ const calls=[],state={epoch:1,timelineCursor:'2026-12'};
+ const worker={postMessage(message){
+  calls.push([message.operation,message.payload.month]);
+  let result;
+  if(message.operation==='core.document-load')result={state};
+  else if(message.operation==='core.document-geometry-requirements')result={sourceEpoch:1,resources:[]};
+  else if(message.operation==='core.document-geometry-admit')result={state,geometryDelta:{admitted:[],removed:[]}};
+  else if(message.operation==='core.document-timeline-cursor')result={state:{epoch:2,timelineCursor:message.payload.month},worldDelta:{baseEpoch:1,sourceEpoch:2,month:message.payload.month,entityCount:0,upserts:[],removed:[]},geometryDelta:{admitted:[],removed:[]}};
+  queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
+   type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker});
+ try{
+  await client.load('{}');
+  const receipt=await client.prepareTimelineGeometry('1922-12');
+  await client.admitGeometryResources([]);
+  await client.setTimelineCursor('1922-12',{geometryPreparation:receipt});
+  assert.equal(calls.filter(([operation])=>operation==='core.document-geometry-requirements').length,2);
+  assert.equal(client.state().timelineCursor,'1922-12');
+ }finally{client.dispose();}
+});
+
 test('unchanged builtin water identities do not re-enter Core until the project changes',async()=>{
  const calls=[];
  const project=createProjectDomain({productMode:'viewer',readOnly:true,

@@ -468,7 +468,8 @@ bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t e
     // The immutable result is shared by selection, projection and transport.
     if(resolvedForResponse)*resolvedForResponse=world;
     const bool cursorChanged=project_.timelineCursor()!=month;
-    if(!project_.setTimelineCursor(month,true,world.get(),evictedResources,geometryCacheBudget_))return false;
+    std::vector<GeometryRef> discarded;
+    if(!project_.setTimelineCursor(month,true,world.get(),evictedResources?evictedResources:&discarded,geometryCacheBudget_))return false;
     sourceEpoch_=++epoch_;selection_=std::move(nextSelection);return cursorChanged;
 }
 void DocumentSession::requireEpoch(std::uint32_t expectedEpoch) const {
