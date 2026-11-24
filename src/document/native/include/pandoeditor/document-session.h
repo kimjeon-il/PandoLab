@@ -17,6 +17,9 @@ struct DocumentSessionState {
     std::vector<std::string> dirtyTerritorialIds;
     std::uint32_t storageBaselineId=0;
 };
+struct GeometryResourceAdmission {
+    std::vector<GeometryRef> admitted,evicted;
+};
 struct DocumentSessionOutcome {
     CommandResult result;
     std::uint32_t candidateId=0;
@@ -56,7 +59,7 @@ constexpr std::uint64_t TEMPORAL_SOURCE_MAX_DECODED_BYTES=64ull*1024*1024;
 // second JSON document, a JS-computed candidate, or another undo ledger.
 class DocumentSession {
 public:
-    explicit DocumentSession(projectcodec::PlatformPorts);
+    explicit DocumentSession(projectcodec::PlatformPorts,std::uint64_t resourceBudget=64ull*1024*1024);
     DocumentSessionState adoptPreparedProject(Project&&);
     DocumentSessionState documentLoad(const std::string& currentWebJson,const std::string& currentMonth);
     DocumentSessionState documentLoadBaseline(std::uint32_t baselineId,const codecjson::Value& setup,const std::string& documentId);
@@ -85,7 +88,8 @@ public:
     DocumentSessionState temporalCandidateAdopt(std::uint32_t candidateId,
         std::uint32_t sourceId,const std::string& targetMonth,
         const std::string& sourceFingerprint,const std::string& worldSha256,
-        std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta=nullptr);
+        std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta=nullptr,
+        std::shared_ptr<const ResolvedWorld>* previousWorld=nullptr);
     bool temporalCandidateDiscard(std::uint32_t candidateId,std::uint32_t expectedEpoch);
     DocumentSessionState admitExternalBaseline(std::uint32_t expectedEpoch);
     std::uint32_t captureReplacement(std::uint32_t expectedEpoch);
@@ -96,12 +100,14 @@ public:
     const Project& project() const { return project_; }
     DocumentSessionOutcome presentationCatalogLoad(PresentationCatalog,std::uint32_t expectedEpoch);
     ResolvedWorld resolveWorld(const std::string& month) const;
+    std::shared_ptr<const ResolvedWorld> resolveWorldShared(const std::string& month) const;
     std::vector<GeometryRef> geometryRequirements(const std::string&,std::uint32_t expectedEpoch) const;
-    std::string admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>&,std::uint32_t expectedEpoch);
-    bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,ResolvedWorld* resolvedForResponse=nullptr);
+    GeometryResourceAdmission admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>&,std::uint32_t expectedEpoch,const std::string& targetMonth={});
+    bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse=nullptr,std::vector<GeometryRef>* evictedResources=nullptr);
     SelectionState& selection() { return selection_; }
     const SelectionState& selection() const { return selection_; }
-    DocumentSessionOutcome selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>&,std::uint32_t expectedEpoch);
+    DocumentSessionOutcome selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>&,std::uint32_t expectedEpoch,
+        const std::vector<SelectionRef>* removed=nullptr);
     void requireEpoch(std::uint32_t expectedEpoch) const;
     bool selectionRefExists(const SelectionRef&) const;
 private:
@@ -142,6 +148,7 @@ private:
     std::unique_ptr<TemporalCandidateEntry> temporalCandidate_;
     std::uint32_t temporalCandidateSequence_=0;
     projectcodec::PlatformPorts ports_;
+    std::uint64_t geometryCacheBudget_;
     std::uint32_t epoch_=0,stateRevision_=0,sourceEpoch_=0;
     bool loaded_=false;
     std::optional<Replacement> replacement_;

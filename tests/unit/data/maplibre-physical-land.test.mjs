@@ -36,19 +36,27 @@ test('physical display stops between connected components when its request is su
  assert.equal(calls,1);
 });
 
-test('prepared display loads in parallel while canonical land remains unchanged',async()=>{
+test('verified display replaces the raw land download and falls back when unavailable',async()=>{
  const original=geometry([square(0,0),square(1,0)]),display=geometry(union(original.coordinates));
  const hash=bytes=>createHash('sha256').update(bytes).digest('hex'),bytes=value=>new TextEncoder().encode(JSON.stringify(value));
  const raw=bytes(original),decoded=bytes(display),prepared=gzipSync(decoded),sourceHash=hash(raw),displayHash=hash(prepared),calls=[];
  const source={url:'assets/data/test-land.json',sha256:sourceHash,encoding:'identity',compressedBytes:raw.length,decodedBytes:raw.length};
  const spec={url:'assets/data/display-land/sha256-'+displayHash+'.json.gz',sha256:displayHash,encoding:'gzip',compressedBytes:prepared.length,decodedBytes:decoded.length,
   sourceSha256:sourceHash,algorithmVersion:'physical-display-union-v1',algorithmSha256:'a'.repeat(64)};
- const reader=createPhysicalAssetReader({buildMeta:{dataRevision:'fixture',physicalLand:source,physicalLandDisplays:{[sourceHash]:spec}},resolveBaseUrl:()=>new URL('https://fixture.test/assets/data/'),
-  createLoader:options=>createStoredAssetLoader({...options,cacheStorage:null,fetchFn:async url=>{calls.push(String(url));return new Response(String(url).includes('display-land')?prepared:raw);}})});
- const canonical=await reader.loadPhysicalLandMask();const result=await reader.loadPhysicalLandDisplay(sourceHash);
- assert.deepEqual(canonical.geometry,original);assert.deepEqual(result,display);
- assert.strictEqual(await reader.loadPhysicalLandDisplay(sourceHash),result);
- assert.equal(calls.length,2);assert.equal(await reader.loadPhysicalLandDisplay('b'.repeat(64)),null);
+ let notifications=0;
+ const createReader=(preparedBytes=prepared)=>createPhysicalAssetReader({buildMeta:{dataRevision:'fixture',physicalLand:source,physicalLandDisplays:{[sourceHash]:spec}},
+  onLandReady:()=>notifications++,resolveBaseUrl:()=>new URL('https://fixture.test/assets/data/'),
+  createLoader:options=>createStoredAssetLoader({...options,cacheStorage:null,fetchFn:async url=>{calls.push(String(url));return new Response(String(url).includes('display-land')?preparedBytes:raw);}})});
+ const reader=createReader();
+ const [first,second]=await Promise.all([reader.loadPhysicalLand(),reader.loadPhysicalLand(source)]);
+ assert.deepEqual(first,{geometry:display,revision:sourceHash,displayPrepared:true});
+ assert.strictEqual(second,first);assert.strictEqual(reader.physicalLand,first);
+ assert.deepEqual(calls,['https://fixture.test/assets/data/'+spec.url.slice('assets/data/'.length)]);
+ assert.equal(notifications,1);
+ const fallback=await createReader(Buffer.alloc(prepared.length)).loadPhysicalLand();
+ assert.deepEqual(fallback,{geometry:original,revision:sourceHash,displayPrepared:false});
+ assert.equal(calls.at(-1),'https://fixture.test/assets/data/test-land.json');
+ assert.equal(calls.filter(url=>url.endsWith('/test-land.json')).length,1);
 });
 
 test('external archive routing permits only the explicitly published display asset',async()=>{
@@ -164,4 +172,23 @@ test('geometry Worker transfers compact cap rows and complete full-extent highli
  assert.deepEqual(full.packets[0].packet.positions,positions);
  assert.deepEqual(full.packets[0].packet.indices,indices);
  assert.equal(full.stats.transferBytes,108);
+});
+
+
+test('mesh aliases are evicted with the payload and return fresh detached arrays',async()=>{
+ const {createPreparedPolygonMeshStore}=await import('../../../src/rendering/prepared-polygon-mesh.js');
+ const {encodePolygonMesh}=await import('../../../src/rendering/polygon-mesh-codec.js');
+ const packet={algorithmVersion:6,maxEdgeDegrees:.4,positions:new Float32Array([0,-88,1,-88,0,-87]),indices:new Uint32Array([0,1,2]),
+  featureIds:new Uint32Array([0,0,0]),boundaryIndices:new Uint32Array([0,1,1,2,2,0]),ringCoordinates:new Float64Array(),ringOffsets:new Uint32Array(),polygonOffsets:new Uint32Array()};
+ let builds=0;
+ const store=createPreparedPolygonMeshStore({engine:{MESH_ALGORITHM_REVISION:6,buildPolygonGeometryPacket(){builds++;return packet;}},
+  byteBudget:encodePolygonMesh(packet).byteLength});
+ const context={throwIfCancelled(){}},first={cacheKey:'a',geometry:{type:'Polygon',coordinates:square(0,-88)}};
+ await store.prepare(first,context);
+ await store.prepare({...first,cacheKey:'alias'},context);
+ assert.equal(builds,1);
+ await store.prepare({cacheKey:'b',geometry:{type:'Polygon',coordinates:square(2,-88)}},context);
+ assert.equal(builds,2);
+ await store.prepare({...first,cacheKey:'alias'},context);
+ assert.equal(builds,3);
 });

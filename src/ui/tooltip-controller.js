@@ -137,7 +137,7 @@ export function createTooltipController({
     });
     listen(document, 'focusin', event => {
       const target = event.target.closest?.('[data-tooltip]');
-      if (target && document.documentElement.classList.contains('keyboard-navigation')) show(target, 'keyboard');
+      if (target?.matches(':focus-visible')) show(target, 'keyboard');
     });
     listen(document, 'focusout', event => {
       if (event.target.closest?.('[data-tooltip]')) hide();

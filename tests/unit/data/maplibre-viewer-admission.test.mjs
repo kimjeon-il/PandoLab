@@ -28,6 +28,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
   const page=await browser.newPage();page.on('pageerror',error=>console.error('Fixture page error:',error));await page.goto('http://127.0.0.1:'+server.address().port);
   const result=await page.evaluate(async()=>{
    const {createMapLibreViewerRenderer}=await import('/src/rendering/maplibre-viewer-renderer.js');
+   const {createRingHitTester}=await import('/src/geometry/ring-hit-test.js');
    const square=(id,left)=>({type:'Feature',id,properties:{entityKind:'general',parentId:null,style:{color:'#66aa44'}},geometry:{type:'Polygon',coordinates:[[[left,-5],[left+8,-5],[left+8,5],[left,5],[left,-5]]]}});
    const before=square('old',-8),after=square('current:상태%2',18),entities=new Map([[before.id,before],[after.id,after]]),errors=[];let visible=true,loadingPalette={ocean:'#4477aa',land:'#aaaaaa'};
    const state={size:{width:800,height:600},projection:'globe',view:{globeRotation:[0,0,0],zoom:1},layerVisibility:{objects:true},layerPresentation:{},hydroFeatureCache:new Map(),hydroEdits:[],genericFeatures:[],distributionEntries:[],labels:[]};
@@ -35,7 +36,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    let landAvailable=false,hydroEnabled=false;
    const renderer=createMapLibreViewerRenderer({projectState:{state},physicalConfig:{},countryLabelModel:{labelLayoutMetrics:{}},layerPresentation:{isLayerItemVisible:()=>true},
     preferences:{mapPalette:()=>({loadingSurface:loadingPalette,ocean:'#4477aa',defaultLand:'#aaaaaa',countryColorAlpha:1,borderAlpha:1,strokes:{country:{color:'#ffffff',width:1},river:{width:1}}})},
-    surfaces:{isMobile:()=>false},physicalResources:{get physicalLand(){return landAvailable?land:null;},physicalContextState:{ready:true},hydroVisibilityThreshold:()=>0,hydroDetailEnabled:()=>hydroEnabled,prepareHydroFeature:feature=>feature,admitHydroFeatures:async()=>true},physicalServices:{isHydroFeatureVisible:()=>true},hydroPresentation:{hydroDisplayColor:()=> '#4477aa'},objectRefVisible:()=>visible,territorialModel:{entityRepository:{get:id=>entities.get(id),parent:id=>entities.get(entities.get(id)?.properties.parentId)}},
+    surfaces:{isMobile:()=>false},physicalResources:{get physicalLand(){return landAvailable?land:null;},physicalContextState:{ready:true},hydroActivityView:()=>null,hydroVisibilityThreshold:()=>0,hydroDetailEnabled:()=>hydroEnabled,prepareHydroFeature:feature=>feature,admitHydroFeatures:async()=>true},physicalServices:{isHydroFeatureVisible:()=>true},hydroPresentation:{hydroDisplayColor:()=> '#4477aa'},objectRefVisible:()=>visible,containsGeometry:createRingHitTester(ring=>ring).containsGeometry,territorialModel:{entityRepository:{get:id=>entities.get(id),parent:id=>entities.get(entities.get(id)?.properties.parentId)}},
     platform:{d3:globalThis.d3,runtimeAssetUrl:path=>{const url=new URL('/src/rendering/'+path,globalThis.location.href);url.searchParams.set('v','fixture');url.searchParams.set('dataRevision','fixture');return url;}},domains:{renderingDomain:{invalidateView(){},beginInteraction(){},endInteraction(){}}},feedback:{reportOperationError:error=>errors.push(error.message)}});
    renderer.attach(globalThis.document.getElementById('map'));await renderer.initialize();
    if(!renderer.map.isStyleLoaded())await new Promise(resolve=>renderer.map.once('load',resolve));
@@ -128,6 +129,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const shownHighlight=async(key=null)=>{
     for(let time=0;time<100;time++){
      const status=renderer.getStats().highlight;
+     if(key===null&&!status?.sourceId&&!status?.pending)return [];
      if(status?.sourceId&&!status.pending){
       const source=renderer.map.getSource(status.sourceId);
       if(source){
@@ -139,8 +141,9 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
     }
     throw new Error('Expected highlight was not displayed: '+key);
    };
-   renderer.setSelection(interactionSnapshot([]));await settle();await shownHighlight();
-   const prototype=Object.getPrototypeOf(renderer.map.getSource('interaction')),writeInteraction=prototype.setData;
+   renderer.setSelection(interactionSnapshot([]));await settle();
+   if(renderer.getStats().highlight?.sourceId)throw new Error('An empty selection activated highlight tiles');
+   const prototype=Object.getPrototypeOf(renderer.map.getSource('territories')),writeInteraction=prototype.setData;
    const writes=[];
    let beginWrite,releaseWrite;
    const began=new Promise(resolve=>beginWrite=resolve);
@@ -372,6 +375,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const lake={type:'Feature',id:'lake-fixture',properties:{featureId:'lake-fixture',logicalId:'lake-fixture',__logicalFid:42,category:'lake',stage:1},
     geometry:{type:'Polygon',coordinates:[[[1,-2],[2,-2],[2,-1],[1,-1],[1,-2]]]}};
    const features=[river('river-fixture',0,0),river('detail-3',1,1),river('detail-4',2,2),river('detail-5',3,3),river('polar-river',1,86),lake];
+   const {packHydroFeatures}=await import('/src/rendering/geometry-transfer-codec.js');
    const BrowserWorker=globalThis.Worker;
    globalThis.Worker=class {
     constructor(url,options){if(!new URL(url).pathname.endsWith('/hydro-tile-worker.js'))return new BrowserWorker(url,options);}
@@ -379,7 +383,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
      if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
      if(message.type==='view')queueMicrotask(()=>{
       const {revision}=message;
-      this.onmessage({data:{type:'pack',revision,packId:1,features}});
+      this.onmessage({data:{type:'pack',revision,packId:1,packed:packHydroFeatures(features)}});
       this.onmessage({data:{type:'view-ready',revision,packIds:[1]}});
      });
     }
@@ -491,9 +495,15 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    if(!renderer.map.style.tileManagers[inactiveCountry]?.used)
     throw new Error('A stationary resize event must not retire the warm dated slot');
    renderer.map.panBy([1,0],{animate:false});await settle();
-   const inactiveLayers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
-   if(!inactiveLayers.length||inactiveLayers.some(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')!=='none')||
-    renderer.map.style.tileManagers[inactiveCountry]?.used)
+   const isInactiveSourceRetained=()=>{
+    const layers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
+    return layers.length&&layers.every(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')==='none')&&
+     !renderer.map.style.tileManagers[inactiveCountry]?.used;
+   };
+   const retirementDeadline=performance.now()+8000;
+   while(!isInactiveSourceRetained()&&performance.now()<retirementDeadline)
+    await new Promise(resolve=>setTimeout(resolve,50));
+   if(!isInactiveSourceRetained())
     throw new Error('The inactive dated slot is still used for native tiling');
    await new Promise(resolve=>setTimeout(resolve,100));const optionalStillLoading=!renderer.map.areTilesLoaded();renderer.map.removeLayer('optional-fixture');renderer.map.removeSource('optional-fixture');
    const first=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();const retained=globalThis.document.querySelector('#map > div:last-child');
@@ -570,9 +580,18 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const propertyOnly=updates[0].update.every(row=>!row.newGeometry);
    visible=false;renderer.setSelection({selection:{items:[{domain:'territorial',type:'entity',id:after.id,key:'territorial:entity:'+encodeURIComponent(after.id)}],primaryKey:'territorial:entity:'+encodeURIComponent(after.id)},hover:null});await settle();const hiddenHighlight=(await shownHighlight()).length;
    const boundaryRefresh=renderer.setTerritorialFeatures([after,adjacent]);
-   renderer.setSceneDomains(new Map([['top-overlay',{polygons:[{key:'top-overlay',geometryRevision:'top-overlay-v1',geometry:{type:'Polygon',coordinates:[[[24,-2],[28,-2],[28,2],[24,2],[24,-2]]]},order:5000,style:{color:'#1234ff',fillAlpha:1},blendMode:'normal'}],strokes:[]}]]));
+   const overlayGeometry={type:'Polygon',coordinates:[[[24,-2],[28,-2],[28,2],[24,2],[24,-2]]]};
+   const overlayScene=color=>new Map([['top-overlay',{polygons:[{key:'top-overlay',geometryRevision:'top-overlay-v1',geometry:overlayGeometry,order:5000,style:{color,fillAlpha:1},blendMode:'normal'}],strokes:[]}]]);
+   renderer.setSceneDomains(overlayScene('#1234ff'));
    await boundaryRefresh;await settle();point=renderer.projection.projectCoordinate([26,0]);const topPixel=await sample();
    if(![18,52,255].every((value,index)=>Math.abs(topPixel[index]-value)<=3))throw new Error('An asynchronously completed country boundary covered a later overlay: '+topPixel);
+   const overlaySource=map.getSource('scene-fill-5000-independent'),applyOverlayDiff=overlaySource.updateData.bind(overlaySource);
+   let overlayDiff;
+   overlaySource.updateData=diff=>{overlayDiff=diff;return applyOverlayDiff(diff);};
+   renderer.setSceneDomains(overlayScene('#7034ff'));await settle();
+   if(overlayDiff?.add.length!==0||overlayDiff?.remove.length!==0||overlayDiff?.update.length!==1||
+    overlayDiff.update[0].newGeometry||overlayDiff.update[0].addOrUpdateProperties?.[0]?.value!=='#7034ff')
+    throw new Error('An overlay color change resubmitted the geometry');
    renderer.setSceneDomains(new Map());await settle();
    const optionalStroke={key:'optional-hydro',role:'hydro-detail',geometryRevision:'one',geometry:{type:'LineString',coordinates:[[24,0],[26,0]]},order:200,style:{color:'#1234ff',width:1,alpha:1}};
    const optionalScene=()=>new Map([['water-detail',{polygons:[],strokes:[optionalStroke]}]]);

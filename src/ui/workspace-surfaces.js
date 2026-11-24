@@ -114,6 +114,7 @@ export function createWorkspaceSurfaces() {
 
   function syncOverlayState() {
     const view = surfaceController.render();
+    if (!view.detailsOpen) dependencies.domains.objectDetailsPanel?.clearHover();
     if (!surfaceController.isOpen('search')) {
       dependencies.domains.objectSearchController?.cancelSearch();
       cancelAnimationFrame(searchFocusFrame);
@@ -129,9 +130,7 @@ export function createWorkspaceSurfaces() {
   }
 
   function focusSurfaceTrigger(surface) {
-    const ids = isMobile()
-      ? { search: 'map',details: 'map' }
-      : { search: 'objectSearchBtn',details: 'objectDetailCloseBtn' };
+    const ids = { search: isMobile() ? 'map' : 'objectSearchBtn',details: 'map' };
     const panelId = { search: 'objectSearchSurface',details:'objectDetailSurface' }[surface];
     const rememberedTrigger = !isMobile()&&lastOverlayTrigger?.isConnected
       && lastOverlayTrigger.getClientRects().length > 0

@@ -3,6 +3,7 @@ import { normalizeTemporalInterval, parseTemporal } from "../../src/document/tem
 import { normalizeCountryCollection } from "../../src/document/country-feature.js";
 import {classifyBuiltinCountries} from '../gis/builtin-country-classification.mjs';
 import { builtinSubunitSourceId } from "../../src/document/territorial-display-identity.js";
+import { normalizeAffiliationMetadata } from "../../src/document/territorial-affiliation.js";
 import {loadBuiltinDisplayPolicy} from "../gis/builtin-display-policy.mjs";
 import { createTerritorialFeature, normalizeTerritorialIdentities, TERRITORIAL_IDENTITY_FIELDS } from "../../src/document/territorial-units.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../../src/geometry/geometry-version-store.js";
@@ -116,16 +117,38 @@ export function replaceBuiltinWorldCountryNames(country,entity,formalName) {
   return result;
 }
 
+export function applyBuiltinAffiliation(target,metadata={}) {
+  const keys=['affiliationType','affiliationTypeHistory'];
+  const fields=normalizeAffiliationMetadata(Object.fromEntries(keys.filter(key=>Object.hasOwn(metadata,key))
+    .map(key=>[key,metadata[key]])));
+  for(const key of keys)delete target[key];
+  Object.assign(target,fields);
+}
+
 export function readBuiltinWorldFormalNames(input) {
-  if(input?.schema!=='pandolab-builtin-formal-names'||input.schemaVersion!==1||!Array.isArray(input.names))
+  if(input?.schema!=='pandolab-builtin-formal-names'||input.schemaVersion!==1||!Array.isArray(input.names)
+    ||(input.deferred!==undefined&&!Array.isArray(input.deferred)))
     throw Error('Invalid builtin formal name source');
+  const validId=id=>typeof id==='string'&&/^[a-z]+:[A-Za-z0-9_-]+$/.test(id);
+  const nonempty=text=>typeof text==='string'&&text.trim().length>0;
+  const validPrecision=value=>['month','date'].includes(parseTemporal(value,{nullable:false}).precision);
+  // The restored Nov 21 registry predates per-record date evidence. Preserve exactly
+  // its reviewed snapshot, while requiring direct evidence for every other edition.
+  const restoredRegistry=createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    === 'e37f069e5ff214118b2ffdbdfa4476e444c1de74ca801b88e818190ebaabb704';
   const formalNames=new Map();
   for(const row of input.names) {
-    if(!/^[a-z]+:[A-Za-z0-9_-]+$/.test(row?.entityId??'')
+    if(!validId(row?.entityId)
       ||typeof row.ko!=='string'||!row.ko||row.ko.trim()!==row.ko
-      ||parseTemporal(row.validFrom,{nullable:false}).precision!=='date'
-      ||(row.validTo!=null&&parseTemporal(row.validTo,{nullable:false}).precision!=='date'))
+      ||!validPrecision(row.validFrom)
+      ||(row.validTo!=null&&!validPrecision(row.validTo)))
       throw Error('Invalid builtin formal name: '+row?.entityId);
+    const evidence=row.dateEvidence;
+    if(!['effective-date','documented-use'].includes(row.dateBasis)
+      ||(!restoredRegistry&&(evidence?.date!==row.validFrom||!nonempty(evidence.statement)
+      ||typeof evidence.sourceUrl!=='string'||!/^https?:\/\/\S+$/i.test(evidence.sourceUrl)
+      ||!Array.isArray(row.sources)||!row.sources.includes(evidence.sourceUrl))))
+      throw Error('Missing direct formal name date evidence: '+row.entityId);
     const names=formalNames.get(row.entityId)??[];
     const period=bounds(row);
     names.push({ko:row.ko,...period});
@@ -139,6 +162,13 @@ export function readBuiltinWorldFormalNames(input) {
       if(prior.end&&compare(prior.end,current.start)>=0)throw Error('Overlapping builtin formal names: '+entityId);
       prior.end??=shiftDay(current.start,-1);
     }
+  }
+  // An explicitly deferred identity can replace a previously generated formal
+  // interval with its underlying name binding during a scoped rebuild.
+  for(const row of input.deferred??[]){
+    if(!validId(row?.entityId)||!nonempty(row.reason))
+      throw Error('Invalid deferred builtin formal name: '+row?.entityId);
+    if(!formalNames.has(row.entityId))formalNames.set(row.entityId,[]);
   }
   return formalNames;
 }
@@ -226,6 +256,7 @@ export function compileBuiltinWorldCatalog({ entities, view, currentWorld = null
     if(!version)throw new Error(`Missing selected geometry: ${primary.entityId}`);
     const normalized = identity(feature);
     applyNameBaseline(normalized,primary);
+    if (builtinSubunitSourceId(feature)) applyBuiltinAffiliation(normalized.properties.metadata,primary.metadata);
     normalized.properties.metadata.historicalTimeline = { entityId: primary.entityId, sourceEntityIds: info.sourceEntityIds,
       lifetime: structuredClone(primary.lifetime), geometryVersions: primary.geometryVersions.map(withoutGeometry), geometryBindings: [] };
     const windows=primary.geometryVersions.flatMap(row=>lifetimes.map(lifetime=>{

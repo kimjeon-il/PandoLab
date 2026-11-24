@@ -42,7 +42,8 @@ export function createMapLibreStyleController(map){
   }
   // Country hierarchy can create additional normal-fill batches. They use the
   // same centralized style rather than painting from the renderer.
-  for(const layer of map.getStyle()?.layers||[]){
+  for(const id of map.getLayersOrder()){
+   const layer=map.getLayer(id);
    const name=layer.id.split('--',1)[0];
    if(layer.id!==name&&style.paint[name]&&['territories','borders','physical-water','physical-land-fill'].includes(name))
     changed=paint(layer.id,style.paint[name])||changed;
@@ -75,9 +76,9 @@ export function createMapLibreStyleController(map){
    map.addLayer({id:'initial-map-land',type:'fill',source:'physical-land',paint:style.paint['initial-map-land']});
   paint('initial-map-ocean',style.paint['initial-map-ocean']);
   paint('initial-map-land',style.paint['initial-map-land']);
-  const layers=map.getStyle().layers;
-  const end=before?layers.findIndex(layer=>layer.id===before):layers.length;
-  if(layers[end-2]?.id!=='initial-map-ocean'||layers[end-1]?.id!=='initial-map-land'){
+  const layers=map.getLayersOrder();
+  const end=before?layers.indexOf(before):layers.length;
+  if(layers[end-2]!=='initial-map-ocean'||layers[end-1]!=='initial-map-land'){
    map.moveLayer('initial-map-ocean',before);map.moveLayer('initial-map-land',before);
   }
  }

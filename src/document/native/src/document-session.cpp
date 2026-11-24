@@ -12,7 +12,7 @@ namespace {
 // record; this small receipt never substitutes for the canonical resolver.
 std::string temporalWorldSha256(const ResolvedWorld& world) {
     std::string bytes;
-    bytes.reserve(world.entities.size()*180);
+    bytes.reserve(world.entities().size()*180);
     const auto append=[&](const std::string& value) {
         bytes+=std::to_string(value.size());bytes+=':';bytes+=value;
     };
@@ -21,22 +21,23 @@ std::string temporalWorldSha256(const ResolvedWorld& world) {
     };
     append("pando-core-temporal-world-v1");
     append(world.month);
-    append(std::to_string(world.entities.size()));
-    for(const auto& row:world.entities) {
+    append(std::to_string(world.entities().size()));
+    for(const auto& row:world.entities()) {
         append(row.objectRef.domain);append(row.objectRef.id);
         append(row.geometryRef.id);append(std::to_string(row.geometryRef.version));
         append(row.rendering);append(row.parentId);append(row.coverageMode);append(row.rootId);
         append(std::to_string(row.ancestors.size()));
         for(const auto& parent:row.ancestors)append(parent);
         opt(row.validity.from);opt(row.validity.to);
-        append(std::to_string(row.properties.size()));
-        for(const auto& [key,value]:row.properties){append(key);append(value);}
+        append(std::to_string(row.properties().size()));
+        for(const auto& [key,value]:row.properties()){append(key);append(value);}
     }
     return projectcodec::sha256Bytes(bytes);
 }
 } // namespace
 
-DocumentSession::DocumentSession(projectcodec::PlatformPorts ports):ports_(std::move(ports)) {
+DocumentSession::DocumentSession(projectcodec::PlatformPorts ports,std::uint64_t resourceBudget)
+    :ports_(std::move(ports)),geometryCacheBudget_(resourceBudget) {
     if(!ports_.validateFlagDataUrl)throw std::invalid_argument("CODEC_PLATFORM_REQUIRED: flag validator");
 }
 DocumentSessionState DocumentSession::adoptPreparedProject(Project&& project) {
@@ -205,7 +206,7 @@ TemporalCandidateReceipt DocumentSession::temporalCandidatePrepare(
     const auto sha=temporalWorldSha256(staged->world);
     const auto candidateId=temporalCandidateSequence_+1;
     staged->receipt={candidateId,sourceId,expectedEpoch,targetMonth,
-        sourceFingerprint,sha,staged->world.entities.size(),false};
+        sourceFingerprint,sha,staged->world.entities().size(),false};
     temporalCandidate_=std::move(staged);
     temporalCandidateSequence_=candidateId;
     return temporalCandidate_->receipt;
@@ -233,7 +234,8 @@ bool DocumentSession::temporalCandidateDiscard(std::uint32_t candidateId,std::ui
 DocumentSessionState DocumentSession::temporalCandidateAdopt(
     std::uint32_t candidateId,std::uint32_t sourceId,const std::string& targetMonth,
     const std::string& sourceFingerprint,const std::string& worldSha256,
-    std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta) {
+    std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta,
+    std::shared_ptr<const ResolvedWorld>* previousWorld) {
     requireEpoch(expectedEpoch);
     // Validate the *same* capsule that ProjectDomain already owns, before
     // changing any state. A missing or superseded capsule never commits.
@@ -255,7 +257,7 @@ DocumentSessionState DocumentSession::temporalCandidateAdopt(
     if(temporalCandidate_->project.timelineCursor()!=targetMonth
         ||temporalCandidate_->project.document().documentId!=temporalCandidate_->preparedDocumentId
         ||temporalWorldSha256(temporalCandidate_->world)!=worldSha256
-        ||temporalCandidate_->world.entities.size()!=receipt.resolvedEntityCount)
+        ||temporalCandidate_->world.entities().size()!=receipt.resolvedEntityCount)
         throw TimelineError("CORE_TEMPORAL_CANDIDATE_STALE","The prepared world no longer matches its verified receipt.");
     if(epoch_==std::numeric_limits<std::uint32_t>::max()
         ||storageBaselineSequence_==std::numeric_limits<std::uint32_t>::max())
@@ -264,6 +266,13 @@ DocumentSessionState DocumentSession::temporalCandidateAdopt(
     // and allocations above happen before this non-interruptible Core commit.
     // The old Project/selection/draft/baseline/history remain in replacement_.
     auto admittedSource=found->second.baseline;
+    // Pin the accepted old world before replacing its source. New-document
+    // adoption has no delta base and continues to publish a full snapshot.
+    if(previousWorld){
+        previousWorld->reset();
+        if(!temporalCandidate_->preparedDelta.empty())
+            *previousWorld=project_.resolveWorldShared(project_.timelineCursor());
+    }
     if(acceptedDelta)*acceptedDelta=std::move(temporalCandidate_->preparedDelta);
     project_=std::move(temporalCandidate_->project);
     storageBaseline_=admittedSource;
@@ -422,44 +431,65 @@ DocumentSessionOutcome DocumentSession::presentationCatalogLoad(PresentationCata
     project_.admitPresentation(std::move(candidate));++epoch_;
     DocumentSessionOutcome outcome;outcome.result.status=CommandStatus::Applied;outcome.result.impact=std::move(impact);outcome.delta=std::move(delta);return outcome;
 }
-ResolvedWorld DocumentSession::resolveWorld(const std::string& month) const { requireLoaded();return project_.resolveWorld(month); }
+std::shared_ptr<const ResolvedWorld> DocumentSession::resolveWorldShared(const std::string& month) const { requireLoaded();return project_.resolveWorldShared(month); }
+ResolvedWorld DocumentSession::resolveWorld(const std::string& month) const { return *resolveWorldShared(month); }
 std::vector<GeometryRef> DocumentSession::geometryRequirements(const std::string& month,std::uint32_t expectedEpoch) const {
     requireEpoch(expectedEpoch);return project_.missingGeometries(month);
 }
-std::string DocumentSession::admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>& payloads,std::uint32_t expectedEpoch) {
-    requireEpoch(expectedEpoch);GeometryStore admitted;ChangeImpact impact;auto candidate=project_.document();
+GeometryResourceAdmission DocumentSession::admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>& payloads,std::uint32_t expectedEpoch,const std::string& targetMonth) {
+    requireEpoch(expectedEpoch);auto candidate=project_.document().geometries;
+    GeometryResourceAdmission result;std::set<GeometryRef> received;
     for(const auto& [ref,bytes]:payloads) {
-        const auto found=candidate.geometries.resources().find(ref);
-        if(found==candidate.geometries.resources().end())throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: undeclared reference");
+        const auto found=candidate.resources().find(ref);
+        if(found==candidate.resources().end()||!received.insert(ref).second)
+            throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: undeclared or duplicate reference");
+        if(candidate.get(ref)){
+            if(bytes.size()!=found->second.decodedBytes||projectcodec::sha256Bytes(bytes)!=found->second.contentSha256)
+                throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: content mismatch");
+            continue;
+        }
         auto geometry=projectcodec::decodeGeometryResource(found->second,bytes);
-        admitted.declareResource(ref,found->second);
-        admitted.insertCanonical(ref,std::move(geometry));
-        if(!candidate.geometries.get(ref)){candidate.geometries.retainFrom(admitted,ref,ref);impact.changedGeometries.push_back(ref);}
+        candidate.insertCanonical(ref,std::move(geometry));
+        result.admitted.push_back(ref);
     }
-    const auto delta=projectcodec::encodeWebDelta(project_.document(),candidate,impact);
-    project_.admitGeometryResources(admitted);return delta;
+    // An explicit all-resource request (no month) is allowed to materialize
+    // the complete archive for export. Interactive preparation pins only
+    // the currently displayed and requested target months.
+    if(!targetMonth.empty()){
+        const auto current=project_.resolveTimelineMetadata(project_.timelineCursor());
+        const auto target=project_.resolveTimelineMetadata(targetMonth);
+        auto protectedRefs=project_.protectedGeometryResources(current.get(),target.get());
+        protectedRefs.insert(received.begin(),received.end());
+        result.evicted=candidate.trimResourceCache(protectedRefs,project_.resourceCache_,geometryCacheBudget_);
+        candidate.requireReady(target->requiredGeometries());
+    }
+    if(!result.admitted.empty()||!result.evicted.empty())project_.admitGeometryResources(std::move(candidate),!result.evicted.empty());
+    return result;
 }
-bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,ResolvedWorld* resolvedForResponse) {
+bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse,std::vector<GeometryRef>* evictedResources) {
     requireLoaded();if(expectedEpoch!=epoch_)throw std::invalid_argument("STALE_REVISION: session epoch changed");
     if(epoch_==std::numeric_limits<std::uint32_t>::max())throw std::overflow_error("CORE_SESSION_EPOCH_OVERFLOW");
     // Resolve exactly once. The same temporal result prunes selection, builds
     // the static view and forms the Worker response at the new session epoch.
-    const auto world=project_.resolveWorld(month);auto nextSelection=selection_;
-    nextSelection.prune([&](const SelectionRef& ref){return (ref.domain=="territorial"||ref.domain=="hydro")?world.find(ObjectRef{ref.domain,ref.id})!=nullptr:selectionRefExists(ref);});
-    // Construct the outbound copy before modifying Project, preserving the
-    // existing strong exception boundary if a large allocation fails.
+    const auto world=project_.resolveWorldShared(month);auto nextSelection=selection_;
+    nextSelection.prune([&](const SelectionRef& ref){return (ref.domain=="territorial"||ref.domain=="hydro")?world->find(ObjectRef{ref.domain,ref.id})!=nullptr:selectionRefExists(ref);});
+    // The immutable result is shared by selection, projection and transport.
     if(resolvedForResponse)*resolvedForResponse=world;
     const bool cursorChanged=project_.timelineCursor()!=month;
-    if(!project_.setTimelineCursor(month,true,&world))return false;
+    std::vector<GeometryRef> discarded;
+    if(!project_.setTimelineCursor(month,true,world.get(),evictedResources?evictedResources:&discarded,geometryCacheBudget_))return false;
     sourceEpoch_=++epoch_;selection_=std::move(nextSelection);return cursorChanged;
 }
 void DocumentSession::requireEpoch(std::uint32_t expectedEpoch) const {
     requireLoaded();if(expectedEpoch!=epoch_)throw std::invalid_argument("STALE_REVISION: session epoch changed");
 }
-DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>& refs,std::uint32_t expectedEpoch) {
+DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>& refs,std::uint32_t expectedEpoch,
+    const std::vector<SelectionRef>* removed) {
     requireEpoch(expectedEpoch);if(domain!="placeBuiltin"&&domain!="hydroBuiltin")throw std::invalid_argument("CORE_SELECTION_CATALOG: expected an external domain");
-    auto catalog=externalSelectionRefs_;
-    for(auto i=catalog.begin();i!=catalog.end();)if(i->first.domain==domain)i=catalog.erase(i);else ++i;
+    if(removed&&domain!="hydroBuiltin")throw std::invalid_argument("CORE_SELECTION_CATALOG: only hydro supports patches");
+    // Stage and validate the changed entries before touching the accepted
+    // catalog. Neither a full catalog copy nor a global diff is necessary.
+    std::map<SelectionRef,std::optional<std::string>> catalog;
     for(const auto& entry:refs) {
         const auto& ref=entry.ref;
         if(ref.domain!=domain||ref.id.empty()||ref.type.empty()||(entry.logicalId&&entry.logicalId->empty())||!catalog.emplace(ref,entry.logicalId).second)
@@ -468,9 +498,23 @@ DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& 
         for(const auto& source:entry.sourceIds)if(source.empty())throw std::invalid_argument("CORE_SELECTION_CATALOG: empty hydro source ID");
         if(!entry.sourceIds.empty()&&!entry.logicalId)throw std::invalid_argument("CORE_SELECTION_CATALOG: hydro aliases need explicit logical ID");
     }
-    auto selected=selection_;selected.prune([&](const SelectionRef& ref){return ref.domain!=domain||catalog.count(ref)!=0;});
-    auto candidate=project_.document();
-    if(domain=="hydroBuiltin"&&std::any_of(refs.begin(),refs.end(),[](const auto& row){return !row.sourceIds.empty();})) {
+    std::set<SelectionRef> removals;
+    if(removed)for(const auto& ref:*removed)
+        if(ref.domain!=domain||!externalSelectionRefs_.count(ref)||catalog.count(ref)||!removals.insert(ref).second)
+            throw std::invalid_argument("CORE_SELECTION_CATALOG: invalid patch removal");
+    auto selected=selection_;
+    selected.prune([&](const SelectionRef& ref){
+        return ref.domain!=domain||catalog.count(ref)!=0
+            ||(removed&&!removals.count(ref)&&externalSelectionRefs_.count(ref)!=0);
+    });
+    DocumentSessionOutcome outcome;outcome.result.status=CommandStatus::NoOp;
+    // Preserve the existing alias-presentation path, but do not copy the
+    // document for ordinary catalog admissions without visibility overrides.
+    const auto& visibility=project_.document().presentation.webPresentation.itemVisibility;
+    const auto hiddenGroup=visibility.find("hydro");
+    if(domain=="hydroBuiltin"&&hiddenGroup!=visibility.end()&&!hiddenGroup->second.empty()
+        &&std::any_of(refs.begin(),refs.end(),[](const auto& row){return !row.sourceIds.empty();})) {
+        auto candidate=project_.document();
         auto& hidden=candidate.presentation.webPresentation.itemVisibility["hydro"];
         for(const auto& entry:refs)if(entry.logicalId) {
             bool alias=false;for(const auto& row:hidden) {
@@ -479,15 +523,21 @@ DocumentSessionOutcome DocumentSession::selectionCatalogLoad(const std::string& 
             }
             if(alias)hidden[*entry.logicalId]=false;
         }
+        if(candidate.exchangeMetadata!=project_.document().exchangeMetadata) {
+            GeometryProvenanceCodecAccess::admitPresentationMetadata(project_.document(),candidate);
+            outcome.result.impact=calculateChangeImpact(project_.document(),candidate,{},project_.timelineCursor());
+            outcome.delta=projectcodec::encodeWebDelta(project_.document(),candidate,outcome.result.impact);
+            project_.admitPresentation(std::move(candidate),false);outcome.result.status=CommandStatus::Applied;
+        }
     }
-    DocumentSessionOutcome outcome;outcome.result.status=CommandStatus::NoOp;
-    if(candidate.exchangeMetadata!=project_.document().exchangeMetadata) {
-        GeometryProvenanceCodecAccess::admitPresentationMetadata(project_.document(),candidate);
-        outcome.result.impact=calculateChangeImpact(project_.document(),candidate,{},project_.timelineCursor());
-        outcome.delta=projectcodec::encodeWebDelta(project_.document(),candidate,outcome.result.impact);
-        project_.admitPresentation(std::move(candidate),false);outcome.result.status=CommandStatus::Applied;
+    if(removed){
+        for(const auto& ref:removals)externalSelectionRefs_.erase(ref);
+        for(const auto& [ref,logicalId]:catalog)externalSelectionRefs_.erase(ref);
+    }else{
+        for(auto it=externalSelectionRefs_.begin();it!=externalSelectionRefs_.end();)
+            if(it->first.domain==domain)it=externalSelectionRefs_.erase(it);else ++it;
     }
-    externalSelectionRefs_=std::move(catalog);selection_=std::move(selected);
+    externalSelectionRefs_.merge(catalog);selection_=std::move(selected);
     return outcome;
 }
 bool DocumentSession::selectionRefExists(const SelectionRef& ref) const {

@@ -19,7 +19,6 @@
   --accent-text: var(--design-color-accent-text);
   --selection-strong-bg: var(--accent-surface);
   --selection-strong-fg: var(--accent-text);
-  --selection-strong-muted: color-mix(in srgb, var(--accent-text) 88%, var(--accent-surface));
   --selection-soft-bg: color-mix(in srgb, var(--accent-surface) 24%, var(--surface-card));
   --selection-soft-border: color-mix(in srgb, var(--accent-border) 70%, var(--ui-card-border));
   --selection-soft-fg: var(--text-strong);

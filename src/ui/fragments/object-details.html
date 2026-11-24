@@ -1,23 +1,14 @@
-<aside id="objectDetailSurface" class="workspace-surface surface-details ui-sheet ui-surface--seamless" aria-labelledby="objectDetailSheetTitle" inert>
+<aside id="objectDetailSurface" class="workspace-surface surface-details ui-sheet ui-surface--seamless" aria-label="객체 정보" inert>
   <header class="surface-header">
     <button class="ui-button sheet-drag-handle" type="button" role="slider" data-sheet-handle="objectDetailSurface"
       aria-label="정보창 높이 조절" data-tooltip="정보창 높이 조절" aria-orientation="vertical"
       aria-valuemin="0" aria-valuemax="2" aria-valuenow="0" aria-valuetext="접힌 상태"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-chevron-right"/></svg></button>
-    <div class="surface-header-title"><strong id="objectDetailSheetTitle">객체 정보</strong></div>
-    <div class="surface-header-actions">
-      <button id="objectDetailCloseBtn" class="ui-button icon-btn sheet-close-btn" type="button" aria-label="객체 정보 닫기" data-tooltip="객체 정보 닫기">
-        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-close"/></svg>
-      </button>
-    </div>
   </header>
-  <div class="ui-object-context ui-panel object-details-context">
-    <div class="ui-object-context-main">
-      <img id="objectDetailFlag" class="object-details-flag" alt="" hidden />
-      <div class="ui-object-context-heading">
-        <h2 id="objectDetailObjectName">선택한 객체</h2>
-        <div id="objectDetailType" class="ui-status object-details-type" hidden></div>
-        <div id="objectDetailAffiliation" class="ui-status object-details-affiliation" hidden></div>
-      </div>
+  <div class="object-details-context">
+    <img id="objectDetailFlag" class="object-details-flag" alt="" hidden />
+    <div class="object-details-heading">
+      <h2 id="objectDetailObjectName">선택한 객체</h2>
+      <div id="objectDetailAffiliation" class="ui-status object-details-affiliation" hidden></div>
     </div>
   </div>
   <nav id="objectDetailTabs" class="ui-tabs surface-tabs" role="tablist" aria-label="선택 객체 정보 탭">

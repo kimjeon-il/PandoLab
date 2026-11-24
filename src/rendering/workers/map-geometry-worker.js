@@ -56,7 +56,8 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady().then((
       return runtimeDataAssetUrl(self.location.href, asset);
     } });
   const currentMesh=meta.projectCatalogs?.preparedMeshes?.current!==false;
-  return createPreparedPolygonMeshStore({ engine,
+  const {renderCacheBudget}=await import('../render-cache-budget.js');
+  return createPreparedPolygonMeshStore({ engine,byteBudget:renderCacheBudget().workerMeshBytes,
     loadManifest: meta.resourceProfile === 'test-fixture'||!currentMesh ? null : async () => {
       const result = await loadAsset(spec, 'mesh', 'polygon-manifest', 'Prepared polygon manifest',
         buffer => JSON.parse(new TextDecoder().decode(buffer)));
@@ -81,6 +82,14 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady().then((
   });
 }).catch(error=>{polygonPreparation=null;throw error;});
 let physicalDisplay=null;
+let workGates;
+function gates(){
+ return workGates ||= import('../geometry-work-gate.js').then(({createGeometryWorkGate})=>{
+  const memory=Number(self.navigator?.deviceMemory),cores=Number(self.navigator?.hardwareConcurrency);
+  const limit=memory>0&&memory<=4||cores>0&&cores<=4?1:2;
+  return {geometry:createGeometryWorkGate(limit),boundary:createGeometryWorkGate(1)};
+ });
+}
 
 async function prepareCountryBoundary(input,context){
   const [{createCountryBoundaryPreparation,visibleCountrySharedSegments},{countryBoundaryOwner}]=await Promise.all([
@@ -88,39 +97,62 @@ async function prepareCountryBoundary(input,context){
   ]);
   countryBoundary ||= createCountryBoundaryPreparation({loadSeed:loadBoundarySeed});
   const prepared=await countryBoundary.prepare(input,context);
-  return prepared&&{segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner};
+  if(!prepared)return null;
+  if(input.partitioned)return countryBoundary.prepareOutput(prepared,input);
+  return {segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner};
 }
 
+let geometryInputStorePromise;
+function geometryInputs(){
+ return geometryInputStorePromise ||= Promise.all([import('../geometry-input-transport.js'),import('../render-cache-budget.js')])
+  .then(([{createGeometryInputStore},{renderCacheBudget}])=>createGeometryInputStore({byteBudget:renderCacheBudget().workerGeometryInputBytes}));
+}
 self.PandoLabWorkerRpc.install({
   handlers: {
     'geometry.physical-land':async(payload,context)=>{
       context.throwIfCancelled();
+      const inputStore=await geometryInputs(),input=inputStore.hydrate('geometry.physical-land',payload);
+      if(input.missing)return {geometryInputMiss:input.missing,retainedGeometryInputs:inputStore.retained()};
+      payload=input.payload;
       if(typeof payload.sourceKey!=='string'||!payload.sourceKey)throw new TypeError('Physical display needs its effective source identity.');
-      if(physicalDisplay?.key===payload.sourceKey)return physicalDisplay.result;
+      if(physicalDisplay?.key===payload.sourceKey)return {...physicalDisplay.result,retainedGeometryInputs:inputStore.retained()};
       const [{dissolvePhysicalLand},core]=await Promise.all([import('../physical-land-display.js'),meshCoreReady()]);
       const started=performance.now();
-      const geometry=await dissolvePhysicalLand(payload.geometry,{
+      const {geometry:workGate}=await gates();
+      const geometry=await workGate.run(context,()=>dissolvePhysicalLand(payload.geometry,{
         union:coordinates=>core.polygonOperation('union',[coordinates],false),
         checkpoint:async()=>{context.throwIfCancelled();await new Promise(resolve=>setTimeout(resolve,0));context.throwIfCancelled();},
-      });
+      }));
       context.throwIfCancelled();
       const result={geometry,durationMs:performance.now()-started};
-      physicalDisplay={key:payload.sourceKey,result};return result;
+      physicalDisplay={key:payload.sourceKey,result};return {...result,retainedGeometryInputs:inputStore.retained()};
     },
     'geometry.prepare': async (payload, context) => {
       const startedAt=performance.now();
-      const boundary=payload.boundary?await prepareCountryBoundary(payload.boundary,context):null;
-      if(payload.boundary&&!boundary)return {boundaryMiss:true};
+      const inputStore=await geometryInputs(),input=inputStore.hydrate('geometry.prepare',payload);
+      if(input.missing)return {geometryInputMiss:input.missing,retainedGeometryInputs:inputStore.retained()};
+      payload=input.payload;context.throwIfCancelled();
+      const {geometry:workGate,boundary:boundaryGate}=await gates();
+      const boundary=payload.boundary?await boundaryGate.run(context,()=>prepareCountryBoundary(payload.boundary,context)):null;
+      if(payload.boundary&&!boundary)return {boundaryMiss:true,retainedGeometryInputs:inputStore.retained()};
       // A line-only overlay does not require the polygon prepared-mesh store,
       // immutable polygon catalogs or their initialization before it can draw.
       const requiresPolygons = payload.items.some(item => item.kind !== 'stroke');
       const store = requiresPolygons ? await preparedPolygonStore() : null;
-      const packets = new Array(payload.items.length), packetTimings=[];
+      // Snapshot the dirty owner partitions before yielding; later requests
+      // can advance the contact index without altering these segment arrays.
+      const items=[...payload.items,...(boundary?.changed??[]).map(group=>({
+        kind:'stroke',cacheKey:group.id,boundaryRevision:group.revision,
+        geometry:{type:'MultiLineString',coordinates:group.segments.map(segment=>[segment.start,segment.end])}
+      }))];
+      const packets = new Array(items.length), packetTimings=[];
+      let transferBytes=0;
+      const transfers=new Set();
       // Two independent immutable asset reads may overlap without growing
       // the mobile decode/triangulation working set beyond two packets.
-      for(let index=0;index<payload.items.length;index+=2){
-        const batch=payload.items.slice(index,index+2);
-        const rows=await Promise.all(batch.map(async sourceItem=>{let item=sourceItem;
+      for(let index=0;index<items.length;index+=2){
+        const batch=items.slice(index,index+2);
+        const rows=await Promise.all(batch.map(sourceItem=>workGate.run(context,async()=>{let item=sourceItem;
           context.throwIfCancelled();
           const started=performance.now(),before=store?.stats?.()||null;
           let prepared;
@@ -132,9 +164,9 @@ self.PandoLabWorkerRpc.install({
             }
             if(!['LineString','MultiLineString'].includes(item.geometry?.type))
               throw new TypeError('Only line strokes may use the geographic stroke Worker path');
-            const {geographicStrokeChains}=await import('../maplibre-vector-group.js');
+            const [{geographicStrokeChains},{encodeStrokeGeometry}]=await Promise.all([import('../maplibre-vector-group.js'),import('../geometry-transfer-codec.js')]);
             const values=[];for(const line of item.geometry.type==='LineString'?[item.geometry.coordinates]:item.geometry.coordinates)for(let i=1;i<line.length;i++)values.push(...line[i-1],...line[i]);
-            prepared={cacheKey:item.cacheKey,geometry:geographicStrokeChains(values)};
+            prepared={cacheKey:item.cacheKey,boundaryRevision:item.boundaryRevision,stroke:encodeStrokeGeometry(geographicStrokeChains(values))};
           }else{
             prepared=await store.prepare(item,context);
             if(item.polarCapOnly===true){
@@ -148,19 +180,26 @@ self.PandoLabWorkerRpc.install({
             durationMs:performance.now()-started,
             packetBytes:Object.values(prepared.packet||{}).reduce((n,value)=>n+(ArrayBuffer.isView(value)?value.byteLength:0),0),
             assetHitsBefore:before?.assetHits??null,assetHitsAfter:after?.assetHits??null}};
-        }));
+        })));
         await new Promise(resolve=>setTimeout(resolve,0));
         context.throwIfCancelled();
         for(let j=0;j<rows.length;j++){
-          packets[index+j]=rows[j].prepared;packetTimings.push(rows[j].timing);
+          const {prepared,timing}=rows[j];packets[index+j]=prepared;
+          // Keep only the diagnostic top eight, not one timing record for
+          // every object in a large historical scene.
+          packetTimings.push(timing);packetTimings.sort((a,b)=>b.durationMs-a.durationMs);
+          if(packetTimings.length>8)packetTimings.pop();
+          for(const value of [...Object.values(prepared.packet||{}),...Object.values(prepared.stroke||{})])
+           if(ArrayBuffer.isView(value)&&!transfers.has(value.buffer)){
+            transfers.add(value.buffer);transferBytes+=value.buffer.byteLength;
+           }
         }
       }
-      const buffers = [...new Set(packets.flatMap(({ packet }) => Object.values(packet||{})
-        .filter(ArrayBuffer.isView).map(value => value.buffer)))];
+      const buffers=[...transfers];
       const finishedAt=performance.now();
-      return self.PandoLabWorkerRpc.transferResult({packets,stats:{...store?.stats(),...countryBoundary?.stats(),
-        transferBytes:buffers.reduce((total,buffer)=>total+buffer.byteLength,0),startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
-        slowestPackets:packetTimings.sort((a,b)=>b.durationMs-a.durationMs).slice(0,8)}},buffers);
+      return self.PandoLabWorkerRpc.transferResult({packets,boundaryPartitions:boundary?.manifest,retainedGeometryInputs:inputStore.retained(),stats:{...store?.stats(),...countryBoundary?.stats(),...inputStore.stats(),
+        transferBytes,startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
+        slowestPackets:packetTimings}},buffers);
     },
   },
 });

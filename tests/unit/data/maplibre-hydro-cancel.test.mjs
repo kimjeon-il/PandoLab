@@ -1,3 +1,4 @@
+import {packHydroFeatures,geometryTransferBuffers} from '../../../src/rendering/geometry-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
@@ -182,10 +183,12 @@ test('failed or cancelled hydro recovery does not poison the next viewport',asyn
 test('a shifted viewport keeps its overlapping pack in the already active coalesced range',async()=>{
  const messages=[];
  const context=vm.createContext({AbortController,AbortSignal,DOMException,Response,TextDecoder,Uint8Array,
-  queueMicrotask,importScripts(){},onmessage:null,postMessage:message=>messages.push(structuredClone(message))});
+  queueMicrotask,importScripts(){},onmessage:null,fixturePackHydroFeatures:packHydroFeatures,fixtureGeometryTransferBuffers:geometryTransferBuffers,
+  postMessage:(message,transfer=[])=>messages.push(structuredClone(message,{transfer}))});
  context.self=context;
  for(const file of ['hydro-shard-store.js','hydro-tile-worker.js'])
   vm.runInContext(await readFile(new URL('../../../src/rendering/workers/'+file,import.meta.url),'utf8'),context);
+ vm.runInContext('packHydroFeatures=fixturePackHydroFeatures;geometryTransferBuffers=fixtureGeometryTransferBuffers',context);
  const start=vm.runInContext(`()=>{
   const pack=[65,87,72,70,4,0,0,0,0,0,0,0],bytes=new Uint8Array([...pack,...pack,...pack]);
   const reads=[];
@@ -224,9 +227,11 @@ test('a shifted viewport keeps its overlapping pack in the already active coales
 test('the hydro worker publishes successful ranges and retries failed ranges on the next view',async()=>{
  const messages=[];
  const context=vm.createContext({AbortController,TextDecoder,Uint8Array,clearTimeout,
-  importScripts(){},onmessage:null,postMessage:message=>messages.push(structuredClone(message))});
+  importScripts(){},onmessage:null,fixturePackHydroFeatures:packHydroFeatures,fixtureGeometryTransferBuffers:geometryTransferBuffers,
+  postMessage:(message,transfer=[])=>messages.push(structuredClone(message,{transfer}))});
  context.self=context;
  vm.runInContext(await readFile(new URL('../../../src/rendering/workers/hydro-tile-worker.js',import.meta.url),'utf8'),context);
+ vm.runInContext('packHydroFeatures=fixturePackHydroFeatures;geometryTransferBuffers=fixtureGeometryTransferBuffers',context);
  const run=vm.runInContext(`async()=>{
   rangeSupportPromise=Promise.resolve(true);
   tilePacks.set('0/0-0',[1,2]);
@@ -249,8 +254,8 @@ test('the hydro worker publishes successful ranges and retries failed ranges on 
  const ready=messages.filter(row=>row.type==='view-ready');
  assert.deepEqual(ready.map(row=>[row.packIds,row.failedPacks.map(pack=>pack.id)]),[[[1],[2]],[[1,2],[]]]);
  assert.deepEqual(messages,[
-  {type:'pack',revision:1,packId:1,features:[]},ready[0],
+  {type:'pack',revision:1,packId:1,packed:packHydroFeatures([])},ready[0],
   {type:'view-progress',revision:2,packIds:[1]},
-  {type:'pack',revision:2,packId:2,features:[]},ready[1],
+  {type:'pack',revision:2,packId:2,packed:packHydroFeatures([])},ready[1],
  ]);
 });

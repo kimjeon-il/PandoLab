@@ -1,4 +1,5 @@
 import {createBuiltinWorldLoader} from "../data/builtin-world-loader.js";
+import {createBuiltinAssetTasks} from '../data/builtin-asset-tasks.js';
 import {deviceCurrentMonth} from "./calendar-month.js";
 import {createBuiltinProjectSetup} from "./project-setup.js";
 import {mapProjectResourcePath} from "../data/map-project-manifest.js";
@@ -15,7 +16,7 @@ export function createProjectSourceRuntime({
   let projectBaseline = null,projectBaselineGeneration=null;
   const injectedWorldLoader=builtinWorldLoader!==null;
   let sourceIdentity=null,disposed=false;
-  const preparedSources=new WeakSet(),candidateIdentities=new WeakMap();
+  const preparedSources=new WeakMap(),assetTasks=createBuiltinAssetTasks();
   const staleBuiltin=()=>Object.assign(new Error('Builtin source request was superseded'),
     {name:'AbortError',cancelled:true,code:'PL-CORE-STALE'});
   const territorialSpec=()=>buildMeta?.mapProject
@@ -58,6 +59,7 @@ export function createProjectSourceRuntime({
       builtinWorldLoader=createSourceLoader({
         manifestUrl:new URL(selected,assetRoot).href,
         manifestSpec:spec,dataRevision:meta.dataRevision,assetRoot,startupGeometryPacks:meta.startupGeometryPacks,
+        historicalGeometryDeltas:meta.historicalGeometryDeltas,
       });
     }
     const {project}=await builtinWorldLoader.loadProject(month,{isCurrent});
@@ -65,16 +67,13 @@ export function createProjectSourceRuntime({
     const active=()=>!disposed&&isCurrent()&&domain.getGeneration()===expectedGeneration
       &&currentSourceIdentity()===identity;
     if(!active())throw staleBuiltin();
-    const bytes=new TextEncoder().encode(JSON.stringify(project));
-    if(!active())throw staleBuiltin();
-    const fingerprint=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))]
-      .map(value=>value.toString(16).padStart(2,'0')).join('');
+    const {bytes,fingerprint}=await assetTasks.serializeProject(project);
     if(!active())throw staleBuiltin();
     const prepared=Object.freeze({kind:'stored-asset',encoding:'identity',
       compressedBytes:bytes.byteLength,decodedBytes:bytes.byteLength,
       sourceMonth:month,baseDataset:dependencies.runtimeConfiguration.BASE_DATASET,
       fingerprint,expectedGeneration,get sourceBytes(){return bytes.slice();}});
-    preparedSources.add(prepared);candidateIdentities.set(prepared,identity);
+    preparedSources.set(prepared,{identity,bytes});
     return prepared;
   }
   async function loadGeometryResources(requirements,options){
@@ -85,10 +84,11 @@ export function createProjectSourceRuntime({
 
   async function admitPreparedProjectSource(prepared,{isCurrent=()=>true}={}) {
     const dependencies=getDependencies();
-    if(!preparedSources.has(prepared))throw new TypeError('A prepared builtin source candidate from this session is required.');
+    const record=preparedSources.get(prepared);
+    if(!record)throw new TypeError('A prepared builtin source candidate from this session is required.');
     const domain=dependencies.domains.projectDomain,expectedGeneration=prepared.expectedGeneration;
     if(disposed||!isCurrent()||domain.getGeneration()!==expectedGeneration
-      ||candidateIdentities.get(prepared)!==refreshSourceIdentity())throw staleBuiltin();
+      ||record.identity!==refreshSourceIdentity())throw staleBuiltin();
     if(projectBaseline?.queryKey===prepared.sourceMonth
       && projectBaselineGeneration===expectedGeneration
       && domain.state().storageBaselineId===projectBaseline.baselineId)return projectBaseline;
@@ -97,7 +97,7 @@ export function createProjectSourceRuntime({
       sourceMonth:prepared.sourceMonth,baseDataset:prepared.baseDataset,fingerprint:prepared.fingerprint};
     const accepted=await domain.admitStorageBaseline(facts,{expectedGeneration});
     if(disposed||!isCurrent()||domain.getGeneration()!==expectedGeneration
-      ||candidateIdentities.get(prepared)!==refreshSourceIdentity())throw staleBuiltin();
+      ||record.identity!==refreshSourceIdentity())throw staleBuiltin();
     if(!Number.isSafeInteger(accepted.storageBaselineId)||accepted.storageBaselineId<=0)
       throw new Error('Core rejected the assembled builtin source');
     projectBaselineGeneration=expectedGeneration;
@@ -118,14 +118,18 @@ export function createProjectSourceRuntime({
     const {isCurrent=()=>true}=options;
     const domain=dependencies.domains.projectDomain;
     const prepared=await prepareProjectSource(month,{isCurrent});
-    const facts={kind:prepared.kind,sourceBytes:prepared.sourceBytes,
+    // This prepared value remains private to this attempt. The Worker can
+    // take its buffer without detaching any cache or reusable prepared source.
+    const {bytes}=preparedSources.get(prepared);
+    preparedSources.delete(prepared);
+    const facts={kind:prepared.kind,sourceBytes:bytes,
       encoding:prepared.encoding,compressedBytes:prepared.compressedBytes,
       decodedBytes:prepared.decodedBytes,sourceMonth:prepared.sourceMonth,
       baseDataset:prepared.baseDataset,fingerprint:prepared.fingerprint};
     if(!isCurrent())throw staleBuiltin();
     const candidate=await domain.prepareTemporalBuiltin(facts,createBuiltinProjectSetup(month),{
       dataRevision:buildMeta.dataRevision,manifestSha256:territorialSpec().sha256,
-      expectedGeneration:prepared.expectedGeneration,isCurrent,transition:false});
+      expectedGeneration:prepared.expectedGeneration,isCurrent,transition:false,transferSource:true});
     if(!candidate||!isCurrent()){
       if(candidate?.kind==='temporal-candidate')await domain.discardTemporalBuiltin(candidate);
       throw staleBuiltin();

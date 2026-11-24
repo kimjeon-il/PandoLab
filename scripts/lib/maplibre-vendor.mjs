@@ -1,6 +1,8 @@
+import {patchMapLibreTopologyLod} from './maplibre-topology-lod.mjs';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
-import {createLabelGlyphMasks,createLabelGlyphCollision} from './maplibre-label-glyphs.mjs';
+import {createLabelGlyphMasks,createLabelGlyphCollision,createLabelGlyphPreparation} from './maplibre-label-glyphs.mjs';
+import {createLabelZoomWorker,createLabelZoomRenderer} from './maplibre-label-zoom.mjs';
 
 function replaceOnce(source,needle,replacement){
  const at=source.indexOf(needle);
@@ -45,6 +47,14 @@ function addLabelGlyphMasks(source){
  return 'const pandoLabelMasks=('+createLabelGlyphMasks.toString()+')();\n'+source;
 }
 
+function addLabelZoomStops(source){
+ const append='e.placedSymbolArray.emplaceBack(s.x,s.y,g,this.glyphOffsetArray.length-g,_,c,l,s.segment,n?n[0]:0,n?n[1]:0,r[0],r[1],o,0,!1,0,u,f)';
+ source=replaceOnce(source,append,append+
+  ';if(this.layerIds.includes(`viewer-label-country`)&&!this.iconsInText&&!i)pandoLabelZoom.add(this,e,'+
+  'e===this.text?`text-size`:`icon-size`,a,d,m.length,t.length*4,zoom=>new K(zoom))');
+ return 'const pandoLabelZoom=('+createLabelZoomWorker.toString()+')();\n'+source;
+}
+
 function addLabelGlyphCollision(source){
  const place='placeCollisionBox(e,t,n,r,i,a,o,s,c,l,u,d,f=0,p=!0)';
  source=replaceOnce(source,place,place.slice(0,-1)+',pandoText)');
@@ -59,16 +69,50 @@ function addLabelGlyphCollision(source){
  source=replaceOnce(source,insert,'pandoLabelCollision.inserted(s,e);'+insert);
  const bucket='!r.collisionArrays&&d&&r.deserializeCollisionBoxes(d);let D=';
  source=replaceOnce(source,bucket,bucket.replace('let D=',
-  'const pandoKind=r.layerIds.includes(`viewer-label-country`)?`country`:r.layerIds.includes(`viewer-label-text`)?`place`:null;let D='));
+  'const pandoKind=r.layerIds.includes(`viewer-label-country`)?`country`:r.layerIds.includes(`viewer-label-text`)?`place`:null;'+
+  'const pandoZoom=this.transform.zoom,pandoTextBand=pandoLabelZoom.band(r.text,r.textSizeData,pandoZoom),'+
+  'pandoIconBand=pandoLabelZoom.band(r.icon,r.iconSizeData,pandoZoom);let D='));
  const call='this.collisionIndex.placeCollisionBox(t,g,l,D,s,x,b,a,p.predicate,O,void 0,k,C,w)';
  source=replaceOnce(source,'let i='+call,
   'const pandoIndex=e.centerJustifiedTextSymbolIndex,pandoMask=n===1&&r.pandoLabelMasks?.[pandoIndex];'+
-  'let i='+call.slice(0,-1)+',pandoKind?{kind:pandoKind,mask:pandoMask,size:pandoMask?zv(r.textSizeData,f,r.text.placedSymbolArray.get(pandoIndex)):0}:null)');
- // Paint place names above country names, while preserving the old
- // placement priority for country flags and unrelated symbols.
- const placement='new rO(e,this.map.terrain,this._order,i,t,n,r,this.placement)';
- source=replaceOnce(source,placement,placement.replace('this._order','pandoLabelCollision.placementOrder(this._order)'));
+  'const pandoSize=n===1&&pandoLabelZoom.collision(r.text,pandoTextBand,pandoIndex,t,pandoZoom,Bv,zv);'+
+  'let i='+call.replace('placeCollisionBox(t,','placeCollisionBox(pandoSize?pandoSize.box:t,').slice(0,-1)+
+  ',pandoKind?{kind:pandoKind,mask:pandoMask,size:pandoMask?(pandoSize?.size??zv(r.textSizeData,f,r.text.placedSymbolArray.get(pandoIndex))):0}:null)');
+ const icon='if(d.iconFeatureIndex&&(le=d.iconFeatureIndex),d.iconBox){let e=e=>this.collisionIndex.placeCollisionBox(e,v,l,D,s,x,b,o,p.predicate,O,S&&te?te:void 0,k,C,w)';
+ source=replaceOnce(source,icon,'const pandoIconIndex=e.placedIconSymbolIndex;'+
+  icon.replace('placeCollisionBox(e,','placeCollisionBox(pandoLabelZoom.collision(r.icon,pandoIconBand,pandoIconIndex,e,pandoZoom,Bv,zv)?.box??e,').slice(0,-1)+
+  ',pandoKind?{kind:pandoKind}:null)');
  return 'const pandoLabelCollision=('+createLabelGlyphCollision.toString()+')();\n'+source;
+}
+
+function addLabelZoomDrawing(source){
+ // These two Viewer shaders share the same static attributes and native
+ // composite interpolation. Leave the mixed text-and-inline-icon shader alone.
+ const start=source.indexOf('symbolIcon:DO('),end=source.indexOf('symbolTextAndIcon:DO(');
+ if(start<0||end<=start)throw Error('MapLibre symbol shader boundary changed');
+ const shader=source.slice(start,end);
+ const attribute='layout(location=5) in float a_height_offset;';
+ const size='size=mix(a_size_min,a_size[1],u_size_t)/128.0;';
+ if(shader.split(attribute).length!==3||shader.split(size).length!==3)
+  throw Error('MapLibre symbol size shader hook changed');
+ source=source.slice(0,start)+shader.replaceAll(attribute,attribute+'layout(location=6) in vec2 a_pando_label_size;')
+  .replaceAll(size,'size=(a_pando_label_size.x>0.0?mix(a_pando_label_size.x,a_pando_label_size.y,u_size_t):'+
+   'mix(a_size_min,a_size[1],u_size_t))/128.0;')+source.slice(end);
+ const draw='k=Bv(S,h.zoom),A=f.getTerrainDataForTile(s)';
+ source=replaceOnce(source,draw,'k=Bv(pandoLabelZoom.prepare(u,S,h.zoom,f.context),h.zoom),A=f.getTerrainDataForTile(s)');
+ const buffers='e.dynamicLayoutVertexBuffer,e.opacityVertexBuffer)}function ZM';
+ source=replaceOnce(source,buffers,buffers.replace('e.opacityVertexBuffer)','e.opacityVertexBuffer,e.pandoActiveSizeBuffer)'));
+ const destroy='opacityVertexBuffer.destroy())}};G(`SymbolBuffers`';
+ source=replaceOnce(source,destroy,destroy.replace('opacityVertexBuffer.destroy())','opacityVertexBuffer.destroy(),pandoLabelZoom.destroy(this))'));
+ return 'const pandoLabelZoom=('+createLabelZoomRenderer.toString()+')();\n'+source;
+}
+
+function scheduleViewerGlyphRasterization(source){
+ const draw='async _drawGlyph(e,t,n,r){let i=await this._getTinySDF(e,t,n,r);return this._getRasterizedGlyph(i,n)}';
+ source=replaceOnce(source,draw,draw.replace('return this._getRasterizedGlyph(i,n)',
+  'return this.rasterizedGlyphs.get(i)?.[n]??((t===`Pando Pretendard`||t===`Pando Pretendard ExtraBold`)?'+
+  'pandoPrepareLabelGlyph(i,n,()=>this._getRasterizedGlyph(i,n)):this._getRasterizedGlyph(i,n))'));
+ return 'const pandoPrepareLabelGlyph=('+createLabelGlyphPreparation.toString()+')();\n'+source;
 }
 
 // Package the dependency from the installed, lockfile-selected distribution.
@@ -78,10 +122,17 @@ export function mapLibreVendorAssets(root){
  if(project.dependencies?.['maplibre-gl']!==dependency.version)throw Error('Installed MapLibre version differs from the pinned Viewer dependency');
  const files=['maplibre-gl.mjs','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs','maplibre-gl.css'];
  const output=new Map(files.map(name=>['assets/vendor/maplibre-gl/'+name,readFileSync(resolve(root,'node_modules/maplibre-gl/dist',name))]));
+ // Require exactly one native tile constructor across the pinned chunks.
+ let lodHooks=0;
+ for(const name of ['maplibre-gl-worker.mjs','maplibre-gl-shared.mjs','maplibre-gl.mjs']){
+  const path='assets/vendor/maplibre-gl/'+name,patched=patchMapLibreTopologyLod(output.get(path).toString('utf8'));
+  lodHooks+=patched.matches;if(patched.matches===1)output.set(path,Buffer.from(patched.source));
+ }
+ if(lodHooks!==1)throw Error('Pinned MapLibre topology LOD hook changed: '+lodHooks);
  const modulePath='assets/vendor/maplibre-gl/maplibre-gl.mjs';
  const workerPath='assets/vendor/maplibre-gl/maplibre-gl-worker.mjs';
- output.set(modulePath,Buffer.from(addLabelGlyphCollision(retainUnaffectedTiles(addHardLineEdges(output.get(modulePath).toString('utf8'))))));
- output.set(workerPath,Buffer.from(addLabelGlyphMasks(output.get(workerPath).toString('utf8'))));
+ output.set(modulePath,Buffer.from(scheduleViewerGlyphRasterization(addLabelZoomDrawing(addLabelGlyphCollision(retainUnaffectedTiles(addHardLineEdges(output.get(modulePath).toString('utf8'))))))));
+ output.set(workerPath,Buffer.from(addLabelZoomStops(addLabelGlyphMasks(output.get(workerPath).toString('utf8')))));
  output.set('assets/vendor/maplibre-gl/LICENSE.txt',readFileSync(resolve(root,'node_modules/maplibre-gl/LICENSE.txt')));
  return output;
 }

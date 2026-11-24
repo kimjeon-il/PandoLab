@@ -14,13 +14,19 @@ const comparisonCoverage={
 };
 
 const groupKey=row=>JSON.stringify([row.scenario,row.profile,row.zoom??null]);
+const hash=/^[a-f0-9]{64}$/;
+const commit=/^[a-f0-9]{40}$/;
 
 export function compareMapLibrePerformance(baseline,candidate,{allowWasmChange=false,scope='full'}={}){
  if(!Object.hasOwn(comparisonCoverage,scope))throw Error('Unknown performance comparison scope: '+scope);
  const rows=[];
  for(const side of [baseline,candidate]){
   if(side.some(row=>['sourceSha256','wasmManifestSha256','browserVersion'].some(key=>typeof row.identity?.[key]!=='string'||!row.identity[key])||['width','height','dpr'].some(key=>!Number.isFinite(row.identity?.viewport?.[key])||row.identity.viewport[key]<=0)))throw Error('Missing performance identities');
-  if(new Set(side.map(row=>row.identity.sourceSha256)).size!==1)throw Error('Performance source snapshots must not be mixed');
+  if(side.some(({identity})=>!commit.test(identity.sourceCommit||'')||
+   !hash.test(identity.mapLibre?.module||'')||!hash.test(identity.mapLibre?.worker||'')))throw Error('Missing performance source or MapLibre transfer identity');
+  if(new Set(side.map(({identity})=>identity.sourceCommit+'|'+identity.sourceSha256)).size!==1)throw Error('Performance source snapshots must not be mixed');
+  if(new Set(side.map(({identity})=>identity.mapLibre.module+'|'+identity.mapLibre.worker)).size!==1)
+   throw Error('Performance MapLibre transfers must not be mixed');
   if(new Set(side.map(row=>row.identity.wasmManifestSha256)).size!==1)throw Error('Performance WASM snapshots must not be mixed');
  }
  if(baseline[0].identity.sourceSha256===candidate[0].identity.sourceSha256)
@@ -60,7 +66,9 @@ export function compareMapLibrePerformance(baseline,candidate,{allowWasmChange=f
    rows.push({scenario,profile,zoom,metric,baseline:base,candidate:current,baselineVariation:cv,limit,status:cv>.1?'unstable':current>base*(1+limit)?'regression':'passed'});
   }
  }
- return {scope,ok:rows.every(row=>row.status==='passed'),wasmChanged:baseline[0].identity.wasmManifestSha256!==candidate[0].identity.wasmManifestSha256,rows};
+ const before=baseline[0].identity,after=candidate[0].identity;
+ return {scope,ok:rows.every(row=>row.status==='passed'),wasmChanged:before.wasmManifestSha256!==after.wasmManifestSha256,
+  mapLibre:{baseline:before.mapLibre,candidate:after.mapLibre,changed:before.mapLibre.module!==after.mapLibre.module||before.mapLibre.worker!==after.mapLibre.worker},rows};
 }
 function readCaptures(root){
  const output=[];

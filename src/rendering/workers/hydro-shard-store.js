@@ -1,13 +1,14 @@
 /* Verified shard and range reads for the hydro Worker. */
 'use strict';
 function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, digest,
-  sharedBundle = null, onWholeBundle = null }) {
+  sharedBundle = null, onWholeBundle = null,byteBudget=32*1024*1024 }) {
   const memory = new Map();
   const rangeReads = new Map(), recoveries = new Map(), fullReads = new Map();
   const queue = [], activeByShard = new Map();
   const now = () => globalThis.performance?.now() ?? Date.now();
   const stats = {queueMs: 0, fetchMs: 0, gunzipMs: 0, rangeRequests: 0, recoveryRequests: 0, fullResponses: 0};
-  let active = 0;
+  let active = 0,residentBytes=0;
+  function forget(id){const row=memory.get(id);if(row){residentBytes-=row.byteLength;memory.delete(id);}}
   const deadline = signal => signal
     ? globalThis.AbortSignal.any([signal, globalThis.AbortSignal.timeout(15000)])
     : globalThis.AbortSignal.timeout(15000);
@@ -28,6 +29,11 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     if (!inContainer(spec) || !sharedBundle) return null;
     const all = await sharedBundle();
     if (!all) return null;
+    if(typeof Blob==='function'&&all instanceof Blob){
+      if(all.size!==spec.fileBytes)throw invalid('통합 수계 전체 길이가 일치하지 않습니다.',diagnostic);
+      const bytes=new Uint8Array(await all.slice(spec.offset,spec.offset+spec.bytes).arrayBuffer());
+      return validate(spec,bytes,diagnostic);
+    }
     return validate(spec, containerBytes(spec, all, diagnostic), diagnostic);
   }
   function pump() {
@@ -158,9 +164,14 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     return Object.assign(new Error(message), { corrupt: true, diagnostic });
   }
   function remember(spec, bytes) {
-    memory.delete(spec.id);
-    memory.set(spec.id, bytes);
-    if (memory.size > 2) memory.delete(memory.keys().next().value);
+    forget(spec.id);
+    if(bytes.byteLength<=byteBudget){
+      // A subarray must not pin the entire downloaded hydro container.
+      const owned=bytes.byteLength===bytes.buffer.byteLength?bytes:bytes.slice();
+      memory.set(spec.id,owned);residentBytes+=owned.byteLength;
+      while(memory.size>2||residentBytes>byteBudget)forget(memory.keys().next().value);
+      return owned;
+    }
     return bytes;
   }
   async function validate(spec, bytes, diagnostic) {
@@ -226,7 +237,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
   }
   async function recover(spec, error, signal) {
     signal.throwIfAborted();
-    memory.delete(spec.id);
+    forget(spec.id);
     const cache = await openCache();
     try { await cache?.delete(cacheKey(spec)); } catch (_) { /* Memory recovery still works. */ }
     try { return await downloadRecoveryShard(spec, signal); }
@@ -288,7 +299,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
     });
   }
   return {
-    stats: () => ({...stats}),
+    stats: () => ({...stats,residentShardBytes:residentBytes,shardByteBudget:byteBudget}),
     async read(spec, rows, start, end, viewSignal = null) {
       const signal = deadline(viewSignal), key = cacheKey(spec);
       try {
@@ -309,7 +320,7 @@ function createHydroShardStore({ fetchResponse, openCache, resolveUrl, gunzip, d
         signal.throwIfAborted();
         try { return decode(spec, rows, bytes, 0, 'recovery'); }
         catch (failure) {
-          memory.delete(spec.id);
+          forget(spec.id);
           const cache = await openCache();
           try { await cache?.delete(cacheKey(spec)); } catch (_) {}
           throw failure;

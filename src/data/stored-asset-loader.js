@@ -1,5 +1,6 @@
 import { fetchWithRetry, isRetryableHttpStatus } from "../runtime/reliability-core.js";
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
+import {maintainStoredContent,touchStoredContent} from './stored-content-cache.js';
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
 export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',subtle=globalThis.crypto?.subtle}) {
  fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META,fetchFn});
@@ -11,6 +12,28 @@ export function createStoredAssetLoader({dataRevision, resolveUrl, report = () =
  const LEGACY_CORE_CACHE_PREFIX = 'pandolab-core-';
  let dataCachePromise = null;
  let oldCacheCleanupPromise = null;
+ const storedFlights=new Map();
+ function storedKey(spec,url){
+   if(cachePolicy!=='immutable'||! /^[a-f0-9]{64}$/.test(spec.sha256||''))return url;
+   try{return new URL('/.pandolab-cache/content/'+spec.sha256,url).href;}
+   catch{return url;}
+ }
+ async function findStored(cache,spec,url){
+   if(!cache)return null;
+   const key=storedKey(spec,url);
+   const response=await cache.match(key).catch(()=>null);
+   if(response)return {key,response};
+   if(String(key)===String(url))return null;
+   const legacy=await cache.match(url).catch(()=>null);
+   return legacy?{key:url,response:legacy}:null;
+ }
+ async function hasStoredAsset(spec){
+   const match=await findStored(await openDataCache(),spec,resolveAssetUrl(spec));
+   if(!match)return false;
+   // A cache hit here is only a planning hint. Actual reads always verify.
+   try{match.response.body?.cancel().catch(()=>{});}catch{}
+   return true;
+ }
 async function openDataCache() {
   if (!cacheStorage) return null;
   if (!dataCachePromise) dataCachePromise = cacheStorage.open(ACTIVE_CACHE_NAME).catch(() => null);
@@ -30,19 +53,21 @@ async function cleanupOldCoreCaches() {
   await oldCacheCleanupPromise;
 }
 
-async function cacheStoredBuffer(cache, url, storedBuffer, headers = null) {
-  if (!cache) return false;
-  try {
-    await cache.put(url, new Response(storedBuffer, { headers: headers || undefined }));
+async function cacheStoredBuffer(cache,url,storedBuffer,headers=null){
+  if(!cache)return false;
+  const immutable=cachePolicy==='immutable';
+  const write=async()=>{
+    const metadata=new Headers(headers||undefined);
+    if(immutable){metadata.set('x-pandolab-stored-bytes',String(storedBuffer.byteLength));metadata.set('x-pandolab-stored-at',String(Date.now()));}
+    await cache.put(url,new Response(storedBuffer,{headers:metadata}));
+    if(immutable){touchStoredContent(cache,url);await maintainStoredContent(cache);}
     return true;
-  } catch (_) {
+  };
+  try{return await write();}
+  catch(_){
     await cleanupOldCoreCaches();
-    try {
-      await cache.put(url, new Response(storedBuffer, { headers: headers || undefined }));
-      return true;
-    } catch (_) {
-      return false;
-    }
+    if(immutable)await maintainStoredContent(cache,{force:true});
+    try{return await write();}catch{return false;}
   }
 }
 
@@ -63,6 +88,7 @@ async function consumeStoredResponse(response, spec, phase, key, label, source, 
   if (response.body && typeof TransformStream === 'function') {
     const stream = countedStream(response.body, length => {
       storedBytes += length;
+      if(expectedStored>0&&storedBytes>expectedStored)throw Error(`${label} 저장 크기가 올바르지 않습니다.`);
       touch();
       report(phase, key, `${label}: ${source === 'cache' ? '저장된 데이터를 읽는' : '다운로드하는'} 중입니다.`, storedBytes, expectedStored);
     }, signal);
@@ -87,24 +113,27 @@ async function consumeStoredResponse(response, spec, phase, key, label, source, 
   };
 }
 
-async function decodeStoredBuffer(storedBuffer, spec, phase, key, label) {
+async function decodeStoredBuffer(storedBuffer, spec, phase, key, label, signal = null) {
+  signal?.throwIfAborted();
   const startedAt = performance.now();
   let buffer = storedBuffer;
   if (spec.encoding === 'gzip') {
     if (typeof DecompressionStream !== 'function') throw new Error(`이 브라우저는 ${label} 압축 해제를 지원하지 않습니다.`);
     report(phase, `${key}-decode`, `${label}: 압축을 해제하는 중입니다.`);
     let decoded = new Blob([storedBuffer]).stream().pipeThrough(new DecompressionStream('gzip'));
-    if(spec.maxDecodedBytes!==undefined){
-      if(!Number.isSafeInteger(spec.maxDecodedBytes)||spec.maxDecodedBytes<1)throw Error('Invalid decoded asset limit');
+    const limit=spec.maxDecodedBytes??(Number.isSafeInteger(spec.decodedBytes)&&spec.decodedBytes>0?spec.decodedBytes:undefined);
+    if(limit!==undefined||signal){
+      if(limit!==undefined&&(!Number.isSafeInteger(limit)||limit<1))throw Error('Invalid decoded asset limit');
       let bytes=0;
       decoded=decoded.pipeThrough(new TransformStream({transform(chunk,controller){
         bytes+=chunk.byteLength;
-        if(bytes>spec.maxDecodedBytes)throw Error(`${label} 압축 해제 크기가 허용된 한도를 초과합니다.`);
+        if(limit!==undefined&&bytes>limit)throw Error(`${label} 압축 해제 크기가 허용된 한도를 초과합니다.`);
         controller.enqueue(chunk);
-      }}));
+      }}),signal?{signal}:undefined);
     }
     buffer = await new Response(decoded).arrayBuffer();
   }
+  signal?.throwIfAborted();
   return {
     buffer,
     decodedBytes: buffer.byteLength,
@@ -135,14 +164,46 @@ function validateAssetLength(result, spec, label) {
   throw new Error(`${label} 압축 해제 크기가 올바르지 않습니다.`);
 }
 
-async function loadRepresentation(spec, phase, key, label, validate, signal, representation) {
+async function downloadStoredAsset({url,spec,phase,key,label,signal,attempt,cacheKey}) {
+  const download=async()=>{
+    let responseHeaders;
+    const read=await fetchWithRetry(url,{cache:attempt===1?'default':'reload',signal},{
+      fetchFn,maxAttempts:1,timeoutMs:30000,
+      consume:(response,{touch,signal:requestSignal})=>{
+        if(!response.ok)throw Object.assign(new Error(`${label} 요청에 실패했습니다. (${response.status})`),{httpStatus:response.status});
+        responseHeaders=response.headers;
+        return consumeStoredResponse(response,spec,phase,key,label,'network',touch,requestSignal);
+      },
+    });
+    await validateStoredAsset(read.storedBuffer,spec,label);
+    return {read,responseHeaders};
+  };
+  // Only non-cancellable immutable reads share a flight. Each consumer
+  // still verifies its own declared length/encoding and format.
+  const share=cachePolicy==='immutable'&&!signal&&/^[a-f0-9]{64}$/.test(spec.sha256||'');
+  const flightKey=String(cacheKey);
+  let flight=share?storedFlights.get(flightKey):null;
+  const joined=!!flight;
+  if(!flight){
+    flight=download();
+    if(share){storedFlights.set(flightKey,flight);const clear=()=>{if(storedFlights.get(flightKey)===flight)storedFlights.delete(flightKey);};flight.then(clear,clear);}
+  }
+  const received=await flight;
+  const read=joined?{...received.read,storedBuffer:received.read.storedBuffer.slice(0),transferredBytes:0}:received.read;
+  const responseHeaders=received.responseHeaders;
+  if(joined)await validateStoredAsset(read.storedBuffer,spec,label);
+  return {read,responseHeaders};
+}
+
+async function loadRepresentation(spec, phase, key, label, validate, signal, representation, cachedOnly=false) {
   signal?.throwIfAborted();
-  const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
+  const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
   const url = resolveAssetUrl(spec);
-  const cache = await openDataCache();
+  const cache = await openDataCache(),cacheKey=storedKey(spec,url);
   if (cache) {
-    const cached = await cache.match(url).catch(() => null);
-    if (cached) {
+    const match=await findStored(cache,spec,url);
+    if (match) {
+      const cached=match.response;
       try {
         signal?.throwIfAborted();
         const read = await consumeStoredResponse(cached, spec, phase, key, label, 'cache', () => {}, signal);
@@ -158,43 +219,49 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
         const value = await validate(result.buffer, label);
         signal?.throwIfAborted();
         report(phase, key, `${label}: 저장된 데이터를 확인했습니다.`, Number(spec.compressedBytes || result.storedBytes), Number(spec.compressedBytes || result.storedBytes), true, { source: 'cache' });
+        if(cachePolicy==='immutable')touchStoredContent(cache,match.key);
         return { ...result, value, cacheHit: true };
       } catch (error) {
         if (signal?.aborted || error?.name === 'AbortError') throw error;
-        await cache.delete(url).catch(() => false);
+        await cache.delete(match.key).catch(() => false);
         report(phase, `${key}-cache-repair`, `${label}: 손상된 저장 데이터를 지우고 다시 받습니다.`, 1, 1, true, { source: 'cache', recovered: true });
       }
     }
   }
 
+  if(cachedOnly)return null;
+  // Aborts and terminal HTTP errors propagate immediately.
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      let responseHeaders;
-      const read = await fetchWithRetry(url, { cache: attempt === 1 ? 'default' : 'reload', signal }, {
-        fetchFn, maxAttempts: 1, timeoutMs: 30000,
-        consume: (response, { touch, signal: requestSignal }) => {
-          if (!response.ok) throw Object.assign(new Error(`${label} 요청에 실패했습니다. (${response.status})`), { httpStatus: response.status });
-          responseHeaders = response.headers;
-          return consumeStoredResponse(response, spec, phase, key, label, 'network', touch, requestSignal);
-        },
-      });
-      await validateStoredAsset(read.storedBuffer, spec, label);
+      const {read,responseHeaders}=await downloadStoredAsset({url,spec,phase,key,label,signal,attempt,cacheKey});
       signal?.throwIfAborted();
       const cacheWriteStartedAt = performance.now();
       report(phase, `${key}-cache-write`, `${label}: 다운로드한 데이터를 저장하는 중입니다.`, 0, 1);
-      const cached = await cacheStoredBuffer(cache, url, read.storedBuffer, responseHeaders);
-      const cacheWriteMs = performance.now() - cacheWriteStartedAt;
-      report(phase, `${key}-cache-write`, `${label}: 저장을 마쳤습니다.`, 1, 1, true, { cached });
-      const decoded = await decode(read.storedBuffer);
+      // Verified stored bytes can be persisted while independent decoding
+      // proceeds. Settle both operations before retry/delete, even on failure.
+      const writing=cacheStoredBuffer(cache,cacheKey,read.storedBuffer,responseHeaders).then(cached=>{
+        const cacheWriteMs=performance.now()-cacheWriteStartedAt;
+        report(phase,`${key}-cache-write`,`${label}: 저장을 마쳤습니다.`,1,1,true,{cached});
+        return {cached,cacheWriteMs};
+      });
+      // Format validation (including independent content digest) can also
+      // run before persistent-cache I/O finishes. Await both on failure.
+      const decoding=decode(read.storedBuffer).then(async decoded=>{
+        if(representation==='decoded')validateAssetLength(decoded,spec,label);
+        const value=await validate(decoded.buffer,label);
+        signal?.throwIfAborted();return {decoded,value};
+      });
+      const [written,unpacked]=await Promise.allSettled([writing,decoding]);
+      if(written.status==='rejected')throw written.reason;
+      if(unpacked.status==='rejected')throw unpacked.reason;
+      const {cached,cacheWriteMs}=written.value,{decoded,value}=unpacked.value;
       const result = {
         ...read,
         ...decoded,
         cacheWriteMs,
         milliseconds: read.readMs + cacheWriteMs + decoded.decompressMs,
       };
-      if(representation==='decoded')validateAssetLength(result, spec, label);
-      const value = await validate(result.buffer, label);
       signal?.throwIfAborted();
       report(phase, key, `${label}: 다운로드를 완료했습니다.`, Number(spec.compressedBytes || result.storedBytes), Number(spec.compressedBytes || result.storedBytes), true, { source: 'network', cached, attempt });
       return { ...result, value, cacheHit: false };
@@ -202,7 +269,7 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
       lastError = error;
       if (signal?.aborted || error?.name === 'AbortError') throw error;
       if (Number.isFinite(error?.httpStatus) && !isRetryableHttpStatus(error.httpStatus)) throw error;
-      if (cache) await cache.delete(url).catch(() => false);
+      if (cache) await cache.delete(cacheKey).catch(() => false);
       if (attempt < 3) {
         report(phase, `${key}-retry`, `${label} 준비를 다시 시도합니다. (${attempt + 1}/3)`, attempt, 3, false, { attempt });
         await new Promise(resolve => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
@@ -218,11 +285,15 @@ const loadStoredAsset=(spec,phase,key,label,validateStoredBytes,signal=null)=>{
  if(typeof validateStoredBytes!=='function')throw new TypeError('A stored-byte format validator is required.');
  return loadRepresentation(spec,phase,key,label,validateStoredBytes,signal,'stored');
 };
-async function decodeStoredAsset(storedBuffer,spec,phase,key,label,validate) {
+const loadCachedAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresentation(spec,phase,key,label,validate,signal,'decoded',true);
+const loadCachedStoredAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresentation(spec,phase,key,label,validate,signal,'stored',true);
+async function decodeStoredAsset(storedBuffer,spec,phase,key,label,validate,{persist=false}={}) {
  await validateStoredAsset(storedBuffer,spec,label);
  const result=await decodeStoredBuffer(storedBuffer,spec,phase,key,label);
  validateAssetLength(result,spec,label);
- return {...result,value:await validate(result.buffer,label)};
+ const value=await validate(result.buffer,label);
+ if(persist)await cacheStoredBuffer(await openDataCache(),storedKey(spec,resolveAssetUrl(spec)),storedBuffer);
+ return {...result,value};
 }
-return Object.freeze({loadAsset,loadStoredAsset,decodeStoredAsset,cleanupOldCoreCaches});
+return Object.freeze({loadAsset,loadStoredAsset,loadCachedAsset,loadCachedStoredAsset,hasStoredAsset,decodeStoredAsset,cleanupOldCoreCaches});
 }

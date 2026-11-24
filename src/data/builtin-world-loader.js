@@ -1,9 +1,11 @@
 import {createStoredAssetLoader} from "./stored-asset-loader.js";
 import {parseTemporal,temporalContains,temporalMonthEnd,normalizeTemporalInterval,sharedCalculationCore} from "../document/temporal.js";
-import {builtinCountryAssets,validateBuiltinReadIndex} from "./builtin-country-files.js";
 import {createBuiltinProjectSetup} from "../document/project-setup.js";
 import {PROJECT_SCHEMA_VERSION} from "../runtime/version-contract.js";
 import {resolveBuiltinGeometryPacks} from './builtin-geometry-pack-receipt.js';
+import {createBuiltinAssetTasks} from './builtin-asset-tasks.js';
+import {readGeometryDeltaReceipt,reconstructGeometryBytes} from './historical-geometry-delta.js';
+import {renderCacheBudget} from '../rendering/render-cache-budget.js';
 
 // The verified country catalog provides source coverage. The project retains
 // every original temporal interval; C++ owns month-end selection.
@@ -66,27 +68,50 @@ export function resolveBuiltinWorldGeometry(index,read,month){
  return world.entities.map(row=>({owner:row.objectRef.id,asset:catalog.get(geometryKey(row.geometryRef))}));
 }
 
-export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches}){
+export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,historicalGeometryDeltas=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=renderCacheBudget().builtinGeometryBytes}){
  if(!manifestUrl||!manifestSpec?.sha256||!dataRevision)throw new Error('Builtin country catalog integrity metadata is required');
- const base=new URL(manifestUrl,globalThis.location?.href),parse=bytes=>JSON.parse(new TextDecoder().decode(bytes));
+ const base=new URL(manifestUrl,globalThis.location?.href),assetTasks=createBuiltinAssetTasks();
+ const memory=Number(globalThis.navigator?.deviceMemory),cores=Number(globalThis.navigator?.hardwareConcurrency);
+ const readLimit=memory>0&&memory<=2?2:memory>0&&memory<=4||cores>0&&cores<=4?4:6;
  const assetOptions={dataRevision,fetchFn,cacheStorage,resolveUrl:spec=>new URL(spec.url,base).href};
  // The mutable catalog belongs to a revision. Content-hashed countries do not:
  // unchanged files must survive a newer catalog/data revision without refetching.
  const catalogs=createStoredAssetLoader(assetOptions);
  const assets=createStoredAssetLoader({...assetOptions,cachePolicy:'immutable'});
- let indexPromise,readMetadata;
+ let indexPromise,readMetadata,geometryAssetsByRef,geometryDeltas=new Map();
+ if(!Number.isSafeInteger(geometryCacheBytes)||geometryCacheBytes<0)throw new RangeError('Invalid builtin geometry cache budget');
  const geometries=new Map(),pending=new Map(),geometryStates=new Map();
+ let geometryBytes=0,geometryEvictions=0;
+ function cachedGeometry(key){
+  const entry=geometries.get(key);
+  if(!entry)return undefined;
+  geometries.delete(key);geometries.set(key,entry);
+  return entry.source;
+ }
+ function rememberGeometry(asset,source){
+  const key=asset.file,bytes=Math.max(asset.decodedBytes,source.length*2);
+  const previous=geometries.get(key);
+  if(previous){geometryBytes-=previous.bytes;geometries.delete(key);}
+  if(bytes>geometryCacheBytes){geometryStates.delete(key);return source;}
+  while(geometryBytes+bytes>geometryCacheBytes&&geometries.size){
+   const oldest=geometries.keys().next().value;
+   geometryBytes-=geometries.get(oldest).bytes;geometries.delete(oldest);
+   geometryStates.delete(oldest);geometryEvictions++;
+  }
+  geometries.set(key,{source,bytes});geometryStates.set(key,'ready');geometryBytes+=bytes;
+  return source;
+ }
  let activeReads=0;
  const readQueue=[];
  async function limitedRead(operation){
-  if(activeReads===6)await new Promise(resolve=>readQueue.push(resolve));else activeReads++;
+  if(activeReads>=readLimit)await new Promise(resolve=>readQueue.push(resolve));else activeReads++;
   try{return await operation();}finally{if(readQueue.length)readQueue.shift()();else activeReads--;}
  }
- function parseIndex(bytes){
-  const value=parse(bytes);builtinCountryAssets(value);
+ async function parseIndex(bytes){
+  const value=await assetTasks.parseIndex(bytes);
   if(value.template?.schemaVersion!==PROJECT_SCHEMA_VERSION||value.template?.format!=='pandolab-project-state'
     ||Object.hasOwn(value.template,'projectSetup'))throw new Error('Invalid builtin world index');
-  const read=validateBuiltinReadIndex(value);
+  const read=value.readIndex;
   const freeze=value=>{if(value&&typeof value==='object'&&!Object.isFrozen(value)){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;};
   freeze(read);freeze(value.template);
   readMetadata={...value.template,territorialEntities:read.identities,timelineRecords:read.records,
@@ -98,6 +123,8 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     normalizeTemporalInterval(interval.validFrom,interval.validTo);
    }
   }
+  geometryAssetsByRef=new Map(value.geometryAssets.map(asset=>[geometryKey(asset),asset]));
+  geometryDeltas=readGeometryDeltaReceipt(historicalGeometryDeltas,manifestSpec.sha256,value.geometryAssets);
   return value;
  }
  async function loadIndex(){
@@ -107,90 +134,140 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  }
  async function loadGeometry(asset){
   const key=asset.file;
-  if(geometries.has(key))return geometries.get(key);
+  if(geometries.has(key))return cachedGeometry(key);
   const existing=pending.get(key);
   if(existing)return (await existing)??loadGeometry(asset);
   geometryStates.set(key,'loading');
-  const reading=limitedRead(()=>assets.loadAsset({...asset,url:asset.file},
-   'builtin-world',asset.id,'국가 형상',buffer=>decodeGeometryContent(buffer,asset)))
-   .then(({value})=>{geometries.set(key,value);geometryStates.set(key,'ready');return value;})
+  const reading=limitedRead(()=>readGeometryAsset(asset)).then(({value})=>rememberGeometry(asset,value))
    .catch(error=>{geometryStates.set(key,'error');throw error;}).finally(()=>pending.delete(key));
   pending.set(key,reading);
   return reading;
  }
+ async function readGeometryAsset(asset){
+   const spec={...asset,url:asset.file},validate=buffer=>decodeGeometryContent(buffer,asset);
+   const delta=geometryDeltas.get(asset.sha256);
+   if(delta){
+    // Only use a local base. Never download an additional geometry merely
+    // to decode an optional historical patch; never follow delta chains.
+    const hit=await assets.loadCachedAsset(spec,'builtin-world',asset.id,'국가 형상',validate);
+    if(hit)return hit;
+    try{
+     const {base,replacement}=delta,source=cachedGeometry(base.file);
+     const local=source===undefined?await assets.loadCachedAsset({...base,url:base.file},'builtin-world',base.id,'기준 형상',async buffer=>{
+      await decodeGeometryContent(buffer,base);return buffer;
+     }):null;
+     const bytes=source===undefined?local?.value:new TextEncoder().encode(source).buffer;
+     if(bytes){
+      await decodeGeometryContent(bytes,base);
+      const patch=await assets.loadAsset({...replacement,url:new URL(replacement.url,assetRoot).href},
+       'builtin-world',asset.id,'역사 형상 변경분',buffer=>buffer);
+      const original=reconstructGeometryBytes(bytes,patch.value,asset);
+      return {value:await validate(original)};
+     }
+    }catch(error){if(error?.name==='AbortError')throw error;/* canonical full asset is the recovery path */}
+   }
+   return assets.loadAsset(spec,'builtin-world',asset.id,'국가 형상',validate);
+   }
  async function decodeGeometryContent(buffer,asset){
   const digest=await globalThis.crypto.subtle.digest('SHA-256',buffer);
   const actual=[...new Uint8Array(digest)].map(n=>n.toString(16).padStart(2,'0')).join('');
   if(actual!==asset.contentSha256)throw Error('Builtin geometry content hash mismatch: '+asset.id);
   return new TextDecoder('utf-8',{fatal:true}).decode(buffer);
  }
- function loadPack({spec,members}){
-  const missing=members.filter(({asset})=>!geometries.has(asset.file)&&!pending.has(asset.file));
+ function loadPack({spec,members},{resolved=null,cachedOnly=false,requiredFiles=null}={}){
+  const missing=members.filter(({asset})=>(!requiredFiles||requiredFiles.has(asset.file))&&!resolved?.has(asset.file)&&!geometries.has(asset.file)&&!pending.has(asset.file));
   if(!missing.length)return;
-  const done=limitedRead(()=>assets.loadStoredAsset({...spec,url:new URL(spec.url,assetRoot).href},
+  const readPack=cachedOnly?assets.loadCachedStoredAsset:assets.loadStoredAsset;
+  const done=limitedRead(()=>readPack({...spec,url:new URL(spec.url,assetRoot).href},
    'builtin-world',spec.sha256,'국가 형상 묶음',async buffer=>{
-    const rows=[];
-    for(const {asset,start,end} of missing){
-     const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,maxDecodedBytes:asset.decodedBytes},
-      'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset));
-     rows.push({asset,value});
-    }
+    const rows=new Array(missing.length);
+    // Two bounded independent gzip members per pack; never launch all
+    // members at once or abandon an in-flight decode on a sibling failure.
+    let cursor=0,failed=false;
+    const workers=Array.from({length:Math.min(readLimit<=2?1:2,missing.length)},async()=>{
+     try{
+      while(!failed&&cursor<missing.length){
+       const i=cursor++,{asset,start,end}=missing[i];
+       const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,url:asset.file,maxDecodedBytes:asset.decodedBytes},
+        'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset),{persist:true});
+       rows[i]={asset,value};
+      }
+     }catch(error){failed=true;throw error;}
+    });
+    const settled=await Promise.allSettled(workers);
+    const failure=settled.find(row=>row.status==='rejected');
+    if(failure)throw failure.reason;
     return rows;
-   })).then(({value})=>{
-    for(const {asset,value:source} of value){geometries.set(asset.file,source);geometryStates.set(asset.file,'ready');}
+   })).then(result=>{
+    const value=result?.value;
+    return new Map((value||[]).map(({asset,value:source})=>[asset.file,rememberGeometry(asset,source)]));
    }).catch(()=>{
     // The individual catalog assets remain the recovery path for this group.
     for(const {asset} of missing)geometryStates.delete(asset.file);
-   }).finally(()=>{for(const {asset} of missing)pending.delete(asset.file);});
+   }).finally(()=>{for(const {asset} of missing){pending.delete(asset.file);if(geometryStates.get(asset.file)==='loading')geometryStates.delete(asset.file);}});
   for(const {asset} of missing){
-   pending.set(asset.file,done.then(()=>geometries.get(asset.file)));
+   pending.set(asset.file,done.then(values=>values?.get(asset.file)));
    geometryStates.set(asset.file,'loading');
   }
   return done;
  }
+ // Superseded requests can leave shared reads running for the next query.
+ // Other failures must settle every lane before a retry can start.
+ async function readAll(items, read, {concurrency, assertCurrent, waitForIdle=null, checkAfterRead=false}) {
+  let cursor=0, failed=false;
+  const workers=Array.from({length:Math.min(concurrency,items.length)},async()=>{
+   try {
+    while(!failed&&cursor<items.length) {
+     assertCurrent();
+     if(waitForIdle){await waitForIdle();assertCurrent();}
+     if(failed||cursor>=items.length)break;
+     const index=cursor++;
+     await read(items[index],index);
+     if(checkAfterRead)assertCurrent();
+    }
+   } catch(error) {
+    failed=true;
+    throw error;
+   }
+  });
+  try{await Promise.all(workers);}
+  catch(error){
+   if(error?.name!=='AbortError')await Promise.allSettled(workers);
+   throw error;
+  }
+ }
+ function requireCurrent(isCurrent,message){
+  if(!isCurrent())throw Object.assign(new Error(message),{name:'AbortError',cancelled:true});
+ }
+ function requireGeometryAsset(requirement){
+  const asset=geometryAssetsByRef.get(geometryKey(requirement));
+  if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))
+   throw Error('Builtin geometry requirement does not match pinned catalog');
+  return asset;
+ }
  async function loadGeometryResources(requirements,{isCurrent=()=>true}={}){
-  const index=await loadIndex(),byRef=new Map(index.geometryAssets.map(asset=>[JSON.stringify([asset.id,asset.version]),asset]));
-  const rows=await Promise.all(requirements.map(async requirement=>{
-   if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
-   const asset=byRef.get(JSON.stringify([requirement.id,requirement.version]));
-   if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))throw Error('Builtin geometry requirement does not match pinned catalog');
-   return {id:asset.id,version:asset.version,source:await loadGeometry(asset)};
-  }));
-  if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
+  await loadIndex();
+  const assertCurrent=()=>requireCurrent(isCurrent,'Builtin geometry request superseded');
+  const rows=new Array(requirements.length);
+  await readAll(requirements,async(requirement,index)=>{
+   const asset=requireGeometryAsset(requirement);
+   rows[index]={id:asset.id,version:asset.version,source:await loadGeometry(asset)};
+  },{concurrency:readLimit,assertCurrent});
+  assertCurrent();
   return rows;
  }
  async function geometryState(ref){
-  const index=await loadIndex(),asset=index.geometryAssets.find(asset=>asset.id===ref.id&&asset.version===ref.version);
+  await loadIndex();
+  const asset=geometryAssetsByRef.get(geometryKey(ref));
   if(!asset)throw Error('Unknown builtin geometry reference');
   return geometryStates.get(asset.file)||'unloaded';
  }
  async function loadProject(month,{isCurrent=()=>true,concurrency=6,waitForIdle=null}={}){
   if(!Number.isInteger(concurrency)||concurrency<1||concurrency>6)throw new RangeError('Builtin country read concurrency must be 1-6.');
-  const assertCurrent=()=>{if(!isCurrent())throw Object.assign(new Error('Builtin query superseded'),{name:'AbortError',cancelled:true});};
+  const assertCurrent=()=>requireCurrent(isCurrent,'Builtin query superseded');
   assertCurrent();
   const index=await loadIndex();assertCurrent();
-  async function loadAll(selected,read){
-  const loaded=new Array(selected.length);
-  let next=0,failed=false;
-  const workers=Array.from({length:Math.min(concurrency,selected.length)},async()=>{
-   try{
-    while(!failed&&next<selected.length){
-     assertCurrent();
-     if(waitForIdle){await waitForIdle();assertCurrent();}
-     if(failed||next>=selected.length)break;
-     const i=next++;loaded[i]=await read(selected[i]);assertCurrent();
-    }
-   }catch(error){failed=true;throw error;}
-  });
-  try{await Promise.all(workers);}
-  catch(error){
-   // An immediate retry must not join another worker's still-pending failure.
-   // Superseded queries do not wait: their shared reads may serve the next query.
-   if(error?.name!=='AbortError')await Promise.allSettled(workers);
-   throw error;
-  }
-  return loaded;
-  }
+  const loadAll=(selected,read)=>readAll(selected,read,{concurrency,assertCurrent,waitForIdle,checkAfterRead:true});
   // Published metadata is immutable. Only active geometry is loaded; no
   // country-document reconstruction or parallel runtime model is retained.
   queryMonthEnd(month);
@@ -202,17 +279,43 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
    catch{ /* An invalid acceleration receipt leaves individual assets available. */ }
   }
   const files=new Map([...required.values()].map(asset=>[asset.file,asset]));
-  const eligible=packs.filter(pack=>pack.members.every(({asset})=>files.has(asset.file)));
-  if(eligible.length){
-   const packed=new Set(eligible.flatMap(pack=>pack.members.map(({asset})=>asset.file)));
-   const reads=eligible.map(pack=>()=>loadPack(pack));
-   for(const asset of files.values())if(!packed.has(asset.file))reads.push(()=>loadGeometry(asset));
-   await loadAll(reads,read=>read());
+  // Never download a partially needed pack. Already cached packs may
+  // supply their required members even outside the startup month.
+  const eligible=packs.filter(pack=>pack.members.some(({asset})=>files.has(asset.file)));
+  // The request owns its assembly independently of the bounded reusable
+  // cache; a whole active world may itself exceed the cache budget.
+  const resolved=new Map();
+  for(const asset of files.values())if(geometries.has(asset.file))resolved.set(asset.file,cachedGeometry(asset.file));
+  const readGeometry=async asset=>{resolved.set(asset.file,await loadGeometry(asset));};
+  const packed=new Set(),reads=[];
+  // Cache presence is only a download selection hint; the loader still
+  // checks every member's SHA and length. A bad cached pack falls back.
+  for(const pack of eligible){
+   const needed=pack.members.filter(({asset})=>files.has(asset.file)&&!resolved.has(asset.file));
+   if(!needed.length)continue;
+   const packedSpec={...pack.spec,url:new URL(pack.spec.url,assetRoot).href};
+   const cachedPack=await assets.hasStoredAsset(packedSpec);
+   assertCurrent();
+   const coldComplete=needed.length===pack.members.length
+    &&!(await Promise.all(needed.map(({asset})=>pending.has(asset.file)||assets.hasStoredAsset({...asset,url:asset.file})))).some(Boolean);
+   assertCurrent();
+   if(!cachedPack&&!coldComplete)continue;
+   for(const {asset}of needed)packed.add(asset.file);
+   reads.push(async()=>{
+    const values=await loadPack(pack,{resolved,cachedOnly:cachedPack,requiredFiles:files});
+    for(const [file,source]of values||[])resolved.set(file,source);
+   });
   }
-  project.geometries=await loadAll([...required.values()],async asset=>({id:asset.id,version:asset.version,source:await loadGeometry(asset)}));
+  for(const asset of files.values())if(!packed.has(asset.file)&&!resolved.has(asset.file))reads.push(()=>readGeometry(asset));
+  await loadAll(reads,read=>read());
+  // A failed pack or a concurrent pack reader may leave individual members outstanding.
+  const outstanding=[...files.values()].filter(asset=>!resolved.has(asset.file));
+  await loadAll(outstanding,readGeometry);
+  project.geometries=Array.from(required.values(),asset=>({id:asset.id,version:asset.version,source:resolved.get(asset.file)}));
   if(waitForIdle)await waitForIdle();
   assertCurrent();
   return {project,fingerprint:`${manifestSpec.sha256}:complete-timeline`};
  }
- return Object.freeze({loadIndex,loadProject,loadGeometryResources,geometryState});
+ return Object.freeze({loadIndex,loadProject,loadGeometryResources,geometryState,
+  geometryCacheStats:()=>({bytes:geometryBytes,budget:geometryCacheBytes,entries:geometries.size,evictions:geometryEvictions})});
 }

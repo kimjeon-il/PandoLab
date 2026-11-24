@@ -3,7 +3,7 @@ import { resolveTerritorialColor } from "../ui/color-adapter.js";
 
 // One material contract for all objects. Independent regions never claim land
 // ownership or inherit the general hierarchy's paint.
-export function createTerritorialFillResolver({ state, entityRepository, mapSubstrate = null, neutralColor = null, resolveStoredColors = false }) {
+export function createTerritorialFillResolver({ state, entityRepository, mapSubstrate = null, neutralColor = null, resolveStoredColors = false, previousResults = null }) {
   const cache = new Map();
   const original = state.layerPresentation;
   const presentation = resolveStoredColors
@@ -22,6 +22,11 @@ export function createTerritorialFillResolver({ state, entityRepository, mapSubs
     const independent = properties.entityKind === 'regional';
     const parent = independent ? null : entityRepository.parent(id);
     const inherited = parent ? resolve(parent, visiting) : null;
+    const reusable=previousResults?.get(entity);
+    if(reusable&&reusable.presentation===original&&reusable.inherited===inherited
+      &&reusable.resolveStoredColors===resolveStoredColors&&reusable.mapSubstrate===mapSubstrate&&reusable.neutralColor===neutralColor){
+      visiting.delete(id);cache.set(id,reusable.result);return reusable.result;
+    }
     const style = layerStyle(presentation, group, `territorial:entity:${id}`);
     const explicit = presentation?.objectStyles?.[`territorial:entity:${id}`] || {};
     const groupStyle = presentation?.styles?.[group] || {};
@@ -39,6 +44,8 @@ export function createTerritorialFillResolver({ state, entityRepository, mapSubs
       ownerId: independent ? '' : inherited?.ownerId || id, parentId: String(properties.parentId || '') });
     visiting.delete(id);
     cache.set(id, result);
+    if(Object.isFrozen(entity)&&Object.isFrozen(entity.properties)&&Object.isFrozen(original))
+      previousResults?.set(entity,{presentation:original,inherited,resolveStoredColors,mapSubstrate,neutralColor,result});
     return result;
   }
   return resolve;

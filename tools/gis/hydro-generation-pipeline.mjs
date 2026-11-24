@@ -9,9 +9,10 @@ import {validateIndependentHydronyms} from './hydro-independent-name-policy.mjs'
 import {encodeHydroRepairPlan} from './hydro-encoding-native.mjs';
 import {buildHydroPack} from './hydro-pack-layout.mjs';
 import {buildHydroGenerationManifest} from './hydro-generation-manifest.mjs';
+import {hydroDisplayReview} from './hydro-display-review.mjs';
 
 export async function generateHydroFromSources({sources,countries,references,lakes,sampleWater,aliases,systemOverrides,
-  independentDocument,source}={},options={}){
+  independentDocument,displayReview,source}={},options={}){
   options.signal?.throwIfAborted();if(!Array.isArray(sources)||!sources.length||!Array.isArray(countries)||!countries.length||
     !Array.isArray(references)||!Array.isArray(lakes)||typeof sampleWater!=='function'||!source)
     throw Error('Explicit Hydro generation sources and references required');
@@ -20,16 +21,19 @@ export async function generateHydroFromSources({sources,countries,references,lak
   const expectedIndependent=validateIndependentHydronyms(structuredClone(independentDocument)),pointScreen={...options.pointScreen},
     connectivity={...options.connectivity},encoding={...options.encoding};
   if(options.signal){pointScreen.signal=options.signal;connectivity.signal=options.signal;encoding.signal=options.signal;}
+  const review=hydroDisplayReview(displayReview,sources);
   const borders=await findHydroSharedCountryBorders(countries,pointScreen),features=[],sourceRows=[],applied=new Set();
   let fid=0,logicalFid=0,namedSystems=0,unnamedSystems=0,osmMatches=0;
   for(const item of sources){options.signal?.throwIfAborted();if(!Array.isArray(item.sourceFiles))throw Error('Hydro source file receipts required');
     const reader=await openHydroRiverShapeReader(item.files,{signal:options.signal});
     try{await withHydroSourceSelection({files:item.files,specification:item.specification},async selection=>{
+      const reviewed=review.get(item.specification.datasetCode);
       const region=await prepareHydroRegion({selection,reader,references,countries,borders,lakes:lakes.map(row=>row.geometry),sampleWater,
-        region:item.specification.datasetCode},{pointScreen,connectivity,signal:options.signal});
+        region:item.specification.datasetCode},{pointScreen,connectivity,review:reviewed,signal:options.signal});
       const rivers=await buildHydroRiverFeatures({chains:region.chains,borders,neNames:region.neNames,aliases,systemOverrides,
         independentDocument,fidStart:fid,logicalFidStart:logicalFid},{pointScreen,connectivity,signal:options.signal});
-      for(const feature of rivers.features)features.push(feature);fid=rivers.nextFid;logicalFid=rivers.nextLogicalFid;namedSystems+=rivers.namedSystems;
+      for(const feature of rivers.features)features.push(feature);
+      fid=rivers.nextFid;logicalFid=rivers.nextLogicalFid;namedSystems+=rivers.namedSystems;
       unnamedSystems+=rivers.systemCount-rivers.namedSystems;osmMatches+=rivers.osmMatches;
       for(const id of rivers.appliedIndependent)applied.add(id);
       sourceRows.push({datasetCode:item.specification.datasetCode,files:structuredClone(item.sourceFiles),...region.stats,...region.borderStats,

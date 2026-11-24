@@ -7,9 +7,10 @@ for (const name of ['timelineInitialMonth', 'timelineResolveWorld']) {
       { code: 'PL-CORE-WASM-CAPABILITY' });
 }
 
-function freeze(value) {
+function freeze(value,alreadyFrozen=false) {
   if (value && typeof value === 'object') {
-    for (const child of Object.values(value)) freeze(child);
+    if(alreadyFrozen&&Object.isFrozen(value))return value;
+    for (const child of Object.values(value)) freeze(child,alreadyFrozen);
     Object.freeze(value);
   }
   return value;
@@ -20,13 +21,13 @@ export function initialTimelineMonth(records, currentMonth) {
 }
 
 /** Map the C++ resolved typed values onto the current Web presentation DTO. */
-export function projectTimelineIdentity(identity, values) {
+export function projectTimelineIdentity(identity, values,{immutableSource=false}={}) {
   if (!Object.keys(values).length) return identity;
   if(identity.properties?.pandolab_domain==='hydro') {
     const properties={...identity.properties};
     if(values.name)properties.name=values.name.name;
     if(values.color)properties.editorColor='#'+values.color.color.toString(16).padStart(6,'0');
-    return freeze({...identity,properties});
+    return freeze({...identity,properties},immutableSource);
   }
   const properties = { ...identity.properties, style: { ...identity.properties.style }, metadata: { ...identity.properties.metadata } };
   if (values.name) {
@@ -43,7 +44,7 @@ export function projectTimelineIdentity(identity, values) {
     if (values.flag.policy === 'default') delete properties.metadata.flagDataUrl;
     else properties.metadata.flagDataUrl = values.flag.policy === 'none' ? null : values.flag.embeddedDataUrl;
   }
-  return freeze({ ...identity, properties });
+  return freeze({ ...identity, properties },immutableSource);
 }
 
 /** Only attach Web identities and immutable geometry allocations to C++ world results. */

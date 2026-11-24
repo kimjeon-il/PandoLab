@@ -7,6 +7,7 @@ import {findHydroSharedCountryBorders} from './hydro-point-screen-native.mjs';
 import {alignHydroBorderChains} from './hydro-border-alignment.mjs';
 import {normalizeHydroChains} from './hydro-chain-normalization.mjs';
 import {normalizeHydroNetwork} from './hydro-network-normalization.mjs';
+import {applyReviewedHydroReaches} from './hydro-display-review.mjs';
 
 export async function prepareHydroRegion({selection,reader,references,countries,borders:providedBorders,lakes,sampleWater,region}={},options={}){
   options.signal?.throwIfAborted();if(!selection||selection.region!==region||!reader||!Array.isArray(references)||
@@ -15,7 +16,9 @@ export async function prepareHydroRegion({selection,reader,references,countries,
   const pointScreen={...options.pointScreen},connectivity={...options.connectivity};
   if(options.signal){pointScreen.signal=options.signal;connectivity.signal=options.signal;}
   const topology=await selectHydroSourceTopology({selection,reader,references},{pointScreen,signal:options.signal});
-  const selected=await buildHydroSelectedReaches({selection,reader,selected:new Set(topology.ids)},connectivity);
+  const selected=applyReviewedHydroReaches(
+    await buildHydroSelectedReaches({selection,reader,selected:new Set(topology.ids)},connectivity),
+    options.review);
   const bounds=[Infinity,Infinity,-Infinity,-Infinity];for(const reach of selected)for(const part of reach.parts)for(const point of part){
     let lon=((point[0]+180)%360+360)%360-180;if(lon===-180)lon=180;
     bounds[0]=Math.min(bounds[0],lon);bounds[1]=Math.min(bounds[1],point[1]);bounds[2]=Math.max(bounds[2],lon);bounds[3]=Math.max(bounds[3],point[1]);}
@@ -30,6 +33,9 @@ export async function prepareHydroRegion({selection,reader,references,countries,
   const borders=providedBorders??await findHydroSharedCountryBorders(countries,pointScreen);
   if(!Array.isArray(borders))throw Error('Invalid prepared Hydro shared borders');
   const aligned=await alignHydroBorderChains({chains,borders},{pointScreen,connectivity,signal:options.signal});
+  if(options.review?.replacements.size&&aligned.chains.some(chain=>chain.some(
+    reach=>reach.borderPair&&options.review.replacements.has(reach.id))))
+    throw Error('Reviewed Hydro centerline intersects a protected shared border');
   const normalized=await normalizeHydroChains({chains:aligned.chains,borders},{pointScreen,connectivity,signal:options.signal});
   const repaired=await normalizeHydroNetwork({chains:normalized.chains,raw,sourceOrder,region},connectivity);
   for(const chain of repaired.chains){if(!chain.length)continue;const last=chain.at(-1),chainIds=new Set(chain.map(row=>row.id));

@@ -141,7 +141,7 @@ test('project overlays stay installed when the camera leaves and respect explici
     content.renderTerritorialUnits();content.renderGenericFeatures();content.renderDistributions();
     return [...scenes.values()].map(scene=>[...(scene.polygons||[]),...(scene.strokes||[])].map(row=>row.key));
   };
-  assert.deepEqual(render().map(rows=>rows.length),[1,1,1]);
+  assert.deepEqual(render().map(rows=>rows.length),[2,2,2]);
   visible='east';
   assert.deepEqual(render().map(rows=>rows.length),[2,2,2]);
   hidden.add('west');state.distributionEntries=state.distributionEntries.filter(row=>row.id!=='west');

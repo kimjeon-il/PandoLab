@@ -1,7 +1,9 @@
+#include <cstdint>
 #include <pandoeditor/timeline-resolver.h>
 #include <pandoeditor/temporal.h>
 #include <algorithm>
 #include <map>
+#include <set>
 
 namespace pandoeditor {
 bool validityContainsAtEnd(const Validity& validity,const TemporalValue& point) {
@@ -27,57 +29,170 @@ std::optional<std::size_t> selectTimelineVersion(const Validity& lifetime,
     return selected;
 }
 namespace {
+// Records own their normalized strings. Indexes retain only inclusive
+// calendar keys, rather than two complete parsed date objects per row.
+struct IndexedInterval {
+    std::optional<TemporalKey> start,end;
+};
+IndexedInterval indexedInterval(const Validity& validity){
+    const auto dates=normalizeTemporalInterval(validity.from,validity.to);
+    return {dates.start?std::optional<TemporalKey>{dates.start->startKey}:std::nullopt,
+            dates.end?std::optional<TemporalKey>{dates.end->endKey}:std::nullopt};
+}
 template<class Row> struct IndexedRow {
     const Row* value;
-    TemporalInterval validity;
+    IndexedInterval validity;
 };
 template<class Row> using RowsByEntity=std::map<ObjectRef,std::vector<IndexedRow<Row>>>;
+template<class Row> void sortIntervals(std::vector<IndexedRow<Row>>& rows) {
+    std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){
+        if(!a.validity.start)return bool(b.validity.start);
+        if(!b.validity.start)return false;
+        return *a.validity.start<*b.validity.start;
+    });
+}
 template<class Row> RowsByEntity<Row> indexRows(const std::vector<Row>& rows) {
     RowsByEntity<Row> index;
     for(const auto& row:rows)
-        index[row.objectRef].push_back({&row,normalizeTemporalInterval(row.validity.from,row.validity.to)});
+        index[row.objectRef].push_back({&row,indexedInterval(row.validity)});
+    for(auto& [ref,entries]:index)sortIntervals(entries);
     return index;
 }
-bool active(const TemporalInterval& interval,const TemporalKey& atEnd) {
-    return (!interval.start||!(atEnd<interval.start->startKey))
-        &&(!interval.end||!(interval.end->endKey<atEnd));
+using PropertyRows=std::map<ObjectRef,std::map<std::string,std::vector<IndexedRow<TimelinePropertyBinding>>>>;
+PropertyRows indexProperties(const std::vector<TimelinePropertyBinding>& rows) {
+    PropertyRows result;
+    for(const auto& row:rows)
+        result[row.objectRef][row.property].push_back({&row,indexedInterval(row.validity)});
+    for(auto& [ref,properties]:result)for(auto& [name,entries]:properties)sortIntervals(entries);
+    return result;
+}
+bool active(const IndexedInterval& interval,const TemporalKey& atEnd) {
+    return (!interval.start||!(atEnd<*interval.start))
+        &&(!interval.end||!(*interval.end<atEnd));
+}
+template<class Row> const Row* selectedInterval(const std::vector<IndexedRow<Row>>& rows,
+                                                  const TemporalKey& atEnd) {
+    // Validation guarantees disjoint intervals within each owner/slot.
+    // Only the latest start not after this date can contain it.
+    auto it=std::upper_bound(rows.begin(),rows.end(),atEnd,[](const auto& date,const auto& row){
+        return row.validity.start&&date<*row.validity.start;
+    });
+    if(it==rows.begin())return nullptr;
+    --it;return active(it->validity,atEnd)?it->value:nullptr;
 }
 template<class Row> const Row* selected(const RowsByEntity<Row>& index,const ObjectRef& id,
                                        const TemporalKey& atEnd) {
     const auto found=index.find(id);
-    if(found==index.end())return nullptr;
-    const auto& rows=found->second;
-    const auto it=std::find_if(rows.begin(),rows.end(),[&](const auto& row){
-        return active(row.validity,atEnd);
-    });
-    return it==rows.end()?nullptr:it->value;
+    return found==index.end()?nullptr:selectedInterval(found->second,atEnd);
 }
 }
 struct PreparedTimelineWorld::Data {
     TimelineRecords records;
     std::vector<TimelineEntityIdentity> entities;
+    std::map<ObjectRef,std::size_t> catalogOrder;
     RowsByEntity<TimelineLifetime> lifetimes;
     RowsByEntity<TimelineGeometryBinding> geometries;
     RowsByEntity<TimelineParentRelation> parents;
-    RowsByEntity<TimelinePropertyBinding> properties;
+    PropertyRows properties;
+    // Inclusive interval starts and the day after inclusive ends are the
+    // only dates on which an identity's direct projection can change.
+    struct Event {TemporalKey date;std::size_t owner;};
+    std::vector<Event> events;
+    // A cold resolution needs only owners with a covering geometry. The
+    // compact interval tree indexes catalog ranks, not duplicate identities.
+    struct CoverageNode {
+        std::size_t owner;
+        IndexedInterval interval;
+        std::optional<TemporalKey> maxEnd;
+        std::size_t left=0,right=0;
+    };
+    std::vector<CoverageNode> coverage;
+    std::size_t coverageRoot=0;
+    std::size_t buildCoverage(std::vector<CoverageNode>& rows,std::size_t begin,std::size_t end){
+        if(begin==end)return 0;
+        const auto middle=begin+(end-begin)/2;
+        const auto id=coverage.size();coverage.push_back(rows[middle]);
+        const auto left=buildCoverage(rows,begin,middle),right=buildCoverage(rows,middle+1,end);
+        auto& node=coverage[id];node.left=left;node.right=right;
+        node.maxEnd=node.interval.end;
+        for(const auto child:{left,right})if(child){
+            const auto& bound=coverage[child].maxEnd;
+            if(!bound||!node.maxEnd)node.maxEnd.reset();
+            else if(*node.maxEnd<*bound)node.maxEnd=bound;
+        }
+        return id;
+    }
+    void collectCoverage(std::size_t id,const TemporalKey& date,std::vector<std::size_t>& owners) const {
+        if(!id)return;
+        const auto& node=coverage[id];
+        if(node.maxEnd&&*node.maxEnd<date)return;
+        collectCoverage(node.left,date,owners);
+        if(node.interval.start&&date<*node.interval.start)return;
+        if(active(node.interval,date))owners.push_back(node.owner);
+        collectCoverage(node.right,date,owners);
+    }
+    auto after(const TemporalKey& date) const {
+        return std::upper_bound(events.begin(),events.end(),date,[](const auto& key,const Event& event){return key<event.date;});
+    }
 };
 PreparedTimelineWorld::PreparedTimelineWorld(const TimelineRecords& records,const TimelineValidationContext& context) {
     auto next=std::make_shared<Data>();
     next->records=normalizeTimelineRecords(records,context);
     next->entities=context.entities;
+    for(std::size_t i=0;i<next->entities.size();++i)next->catalogOrder.emplace(next->entities[i].objectRef,i);
     next->lifetimes=indexRows(next->records.lifetimes);
     next->geometries=indexRows(next->records.geometryBindings);
     next->parents=indexRows(next->records.parentRelations);
-    next->properties=indexRows(next->records.propertyBindings);
+    next->properties=indexProperties(next->records.propertyBindings);
+    const auto addEvents=[&](const ObjectRef& ref,const auto& entries){
+        const auto rank=next->catalogOrder.at(ref);
+        for(const auto& entry:entries){
+            if(entry.validity.start)next->events.push_back({*entry.validity.start,rank});
+            if(entry.validity.end)next->events.push_back({temporalFollowingDay(*entry.validity.end),rank});
+        }
+    };
+    const auto indexEvents=[&](const auto& rows){for(const auto& [ref,entries]:rows)addEvents(ref,entries);};
+    indexEvents(next->lifetimes);indexEvents(next->geometries);indexEvents(next->parents);
+    for(const auto& [ref,properties]:next->properties)
+        for(const auto& [name,entries]:properties)addEvents(ref,entries);
+    auto& events=next->events;
+    std::sort(events.begin(),events.end(),[](const auto& a,const auto& b){
+        return a.date==b.date?a.owner<b.owner:a.date<b.date;
+    });
+    events.erase(std::unique(events.begin(),events.end(),[](const auto& a,const auto& b){
+        return a.date==b.date&&a.owner==b.owner;
+    }),events.end());
+    events.shrink_to_fit();
+    std::vector<Data::CoverageNode> coverage;
+    coverage.reserve(next->records.geometryBindings.size());
+    for(const auto& [ref,entries]:next->geometries){
+        const auto owner=next->catalogOrder.at(ref);
+        // Merge consecutive coverage for the same owner without changing
+        // its independently indexed geometry versions.
+        std::optional<IndexedInterval> combined;
+        for(const auto& entry:entries){
+            if(combined&&combined->end&&entry.validity.start
+                &&temporalFollowingDay(*combined->end)<*entry.validity.start){
+                coverage.push_back({owner,*combined,{}});combined.reset();
+            }
+            if(!combined)combined=entry.validity;
+            else combined->end=entry.validity.end;
+        }
+        if(combined)coverage.push_back({owner,*combined,{}});
+    }
+    std::sort(coverage.begin(),coverage.end(),[](const auto& a,const auto& b){
+        if(!a.interval.start)return bool(b.interval.start);
+        if(!b.interval.start)return false;
+        return *a.interval.start<*b.interval.start;
+    });
+    next->coverage.reserve(coverage.size()+1);
+    next->coverage.push_back({0,{},{}});
+    next->coverageRoot=next->buildCoverage(coverage,0,coverage.size());
     data_=std::move(next);
 }
 const ResolvedEntity* ResolvedWorld::find(const ObjectRef& id) const {
-    if(!offsets.empty()) {
-        const auto found=offsets.find(id);
-        return found==offsets.end()||found->second>=entities.size()?nullptr:&entities[found->second];
-    }
-    const auto it=std::find_if(entities.begin(),entities.end(),[&](const auto& row){return row.objectRef==id;});
-    return it==entities.end()?nullptr:&*it;
+    const auto found=offsets().find(id);
+    return found==offsets().end()?nullptr:&entities()[found->second];
 }
 std::string initialTimelineMonth(const TimelineRecords& records,const std::string& currentMonth) {
     const auto fallback=parseTemporal(currentMonth);
@@ -125,41 +240,244 @@ Validity timelineMapCoverageAtMonth(const TimelineRecords& records,const ObjectR
     }
     throw TimelineError("TIMELINE_INACTIVE","No map coverage for "+id.domain+":"+id.id+" at "+month);
 }
-ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month) const {
+std::size_t PreparedTimelineWorld::intervalId(const TemporalKey& date) const {
+    return static_cast<std::size_t>(data_->after(date)-data_->events.begin());
+}
+namespace {
+using FreshResolvedRows = std::map<ObjectRef,std::shared_ptr<ResolvedEntity>>;
+using GeometryCountChanges = std::map<GeometryRef,std::int64_t>;
+
+// Only an ownership or direct parent change can invalidate descendants.
+bool hierarchyChanged(const ResolvedEntity* before,const ResolvedEntity* after) {
+    return (before!=nullptr)!=(after!=nullptr)
+        || (before&&after&&before->parentId!=after->parentId);
+}
+
+void includeAffectedDescendants(const ResolvedChildren& children,
+                               std::vector<ObjectRef>& pending,
+                               std::set<ObjectRef>& affected) {
+    std::set<ObjectRef> visited;
+    for(std::size_t i=0;i<pending.size();++i) {
+        const auto ref=pending[i];
+        if(ref.domain!="territorial"||!visited.insert(ref).second)continue;
+        const auto found=children.find(ref.id);
+        if(found==children.end())continue;
+        for(const auto& child:found->second) {
+            affected.insert(child);
+            pending.push_back(child);
+        }
+    }
+}
+
+void mergeActiveRows(ResolvedWorldProjection& projection,const ResolvedWorld& previous,
+                     const FreshResolvedRows& fresh,
+                     const std::map<ObjectRef,std::size_t>& catalogOrder) {
+    // The input rows and added owners use the same canonical catalog order.
+    std::vector<std::pair<std::size_t,std::shared_ptr<const ResolvedEntity>>> added;
+    for(const auto& [ref,row]:fresh)
+        if(row&&!previous.find(ref))added.emplace_back(catalogOrder.at(ref),row);
+    std::sort(added.begin(),added.end(),[](const auto& a,const auto& b){return a.first<b.first;});
+    auto offsets=std::make_shared<ResolvedOffsets>();
+    projection.entities.reserve(previous.entities().size()+added.size());
+    const auto append=[&](const auto& row){
+        offsets->emplace(row->objectRef,projection.entities.size());
+        projection.entities.push_back(row);
+    };
+    std::size_t nextAdded=0;
+    for(const auto& row:previous.projection->entities) {
+        const auto rank=catalogOrder.at(row->objectRef);
+        while(nextAdded<added.size()&&added[nextAdded].first<rank)append(added[nextAdded++].second);
+        const auto found=fresh.find(row->objectRef);
+        if(found==fresh.end())append(row);
+        else if(found->second)append(found->second);
+    }
+    while(nextAdded<added.size())append(added[nextAdded++].second);
+    projection.offsets=std::move(offsets);
+}
+
+void applyGeometryCountChanges(ResolvedWorldProjection& projection,
+                               const GeometryCountChanges& changes,bool requiredChanged) {
+    // Opposing ownership changes cancel before copying the reference index.
+    std::shared_ptr<ResolvedGeometryUsers> geometryUsers;
+    for(const auto& [ref,delta]:changes) {
+        if(!delta)continue;
+        if(!geometryUsers) {
+            geometryUsers=std::make_shared<ResolvedGeometryUsers>(*projection.geometryUsers);
+            projection.geometryUsers=geometryUsers;
+        }
+        const auto found=geometryUsers->find(ref);
+        const auto oldCount=found==geometryUsers->end()?std::int64_t(0):static_cast<std::int64_t>(found->second);
+        const auto count=oldCount+delta;
+        if(count<0)throw TimelineError("TIMELINE_GEOMETRY","Invalid geometry reference count.");
+        requiredChanged=requiredChanged||((oldCount==0)!=(count==0));
+        if(count==0)geometryUsers->erase(ref);
+        else (*geometryUsers)[ref]=static_cast<std::size_t>(count);
+    }
+    if(!requiredChanged)return;
+    auto required=std::make_shared<std::vector<GeometryRef>>();
+    required->reserve(projection.geometryUsers->size());
+    for(const auto& [ref,count]:*projection.geometryUsers)required->push_back(ref);
+    projection.requiredGeometries=std::move(required);
+}
+
+void rebuildAffectedAncestry(ResolvedWorldProjection& projection,const ResolvedWorld& world,
+                             const FreshResolvedRows& fresh,const std::set<ObjectRef>& affected) {
+    // Direct rows and offsets must all be installed before traversing parents.
+    for(const auto& ref:affected) {
+        const auto offset=world.offsets().find(ref);
+        if(offset==world.offsets().end())continue;
+        auto& slot=projection.entities[offset->second];
+        const auto found=fresh.find(ref);
+        auto entity=found!=fresh.end()&&found->second?found->second:std::make_shared<ResolvedEntity>(*slot);
+        entity->ancestors.clear();
+        auto parent=entity->parentId;
+        while(!parent.empty()) {
+            entity->ancestors.push_back(parent);
+            const auto* resolvedParent=world.find(ObjectRef{"territorial",parent});
+            if(!resolvedParent)throw TimelineError("TIMELINE_PARENT_INACTIVE","Inactive parent "+parent);
+            parent=resolvedParent->parentId;
+        }
+        entity->rootId=entity->ancestors.empty()?entity->objectRef.id:entity->ancestors.back();
+        slot=std::move(entity);
+    }
+}
+}
+
+ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const ResolvedWorld* previous) const {
     const auto cursor=parseTemporal(month);
     const auto point=cursor.precision=="month"?temporalMonthEnd(cursor.canonical):cursor;
     const TemporalKey atEnd=point.endKey;
     const auto& index=*data_;
-    ResolvedWorld result;result.month=cursor.canonical;
-    result.entities.reserve(index.entities.size());
-    for(const auto& [ref,properties]:index.properties)
-        for(const auto& property:properties)if(active(property.validity,atEnd))
-            result.activeProperties[ref][property.value->property]=property.value->value;
-    for(const auto& identity:index.entities) {
-        const auto* lifetime=selected(index.lifetimes,identity.objectRef,atEnd);
-        if(!lifetime)continue;
-        const auto* geometry=selected(index.geometries,identity.objectRef,atEnd);
-        const auto* parent=selected(index.parents,identity.objectRef,atEnd);
-        if(!geometry)continue; // Validated paired coverage may be absent during a lifetime.
-        result.entities.push_back({identity.objectRef,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
-        auto& entity=result.entities.back();
-        entity.validity=lifetime->validity;
-        result.offsets.emplace(identity.objectRef,result.entities.size()-1);
-        const auto found=result.activeProperties.find(identity.objectRef);
-        if(found!=result.activeProperties.end())entity.properties=found->second;
-    }
-    std::map<std::string,std::size_t> resolvedById;
-    for(std::size_t i=0;i<result.entities.size();++i)
-        if(result.entities[i].objectRef.domain=="territorial")
-            resolvedById.emplace(result.entities[i].objectRef.id,i);
-    for(auto& entity:result.entities) {
-        auto parent=entity.parentId;
-        while(!parent.empty()) {
-            entity.ancestors.push_back(parent);
-            parent=result.entities.at(resolvedById.at(parent)).parentId;
+    const auto boundary=index.after(atEnd);
+    const auto intervalId=static_cast<std::size_t>(boundary-index.events.begin());
+    // Compare only projections of the same immutable source; event-free
+    // intervals can share a projection even when revisited nonconsecutively.
+    if(previous&&previous->projection->sourceIdentity.lock()!=data_)previous=nullptr;
+    if(previous&&previous->projection->intervalId==intervalId)return {cursor.canonical,previous->projection};
+    std::set<ObjectRef> changed;
+    if(previous){
+        const auto old=parseTemporal(previous->month);
+        const auto oldEnd=(old.precision=="month"?temporalMonthEnd(old.canonical):old).endKey;
+        const auto& low=std::min(oldEnd,atEnd);
+        const auto& high=std::max(oldEnd,atEnd);
+        const auto first=index.after(low),last=index.after(high);
+        // Use the smaller active-world scale, not the growing archive size.
+        // Stop collecting once the cold path is preferable. This also bounds
+        // the cost of large backwards jumps through many repeated events.
+        const auto activeScale=previous->entities().size()+previous->activeProperties().size();
+        const auto threshold=std::max<std::size_t>(32,std::min(index.entities.size()/2,activeScale/2));
+        const auto eventBudget=std::max<std::size_t>(256,threshold*16);
+        if(static_cast<std::size_t>(last-first)>eventBudget)previous=nullptr;
+        else for(auto event=first;event!=last;++event){
+            changed.insert(index.entities[event->owner].objectRef);
+            if(changed.size()>threshold){previous=nullptr;changed.clear();break;}
         }
-        entity.rootId=entity.ancestors.empty()?entity.objectRef.id:entity.ancestors.back();
+        if(previous&&changed.empty())return {cursor.canonical,previous->projection};
     }
+    auto projection=std::make_shared<ResolvedWorldProjection>();
+    ResolvedWorld result{cursor.canonical,projection};
+    projection->sourceIdentity=data_;projection->intervalId=intervalId;
+    if(previous){
+        projection->deltaBase=previous->projection;
+        projection->offsets=previous->projection->offsets;
+        projection->activeProperties=previous->projection->activeProperties;
+        projection->geometryUsers=previous->projection->geometryUsers;
+        projection->children=previous->projection->children;
+        projection->requiredGeometries=previous->projection->requiredGeometries;
+    }
+    // Copy an index only when one of its keys actually changes. Property
+    // payloads stay immutable, and property-only dates retain the geometry
+    // and hierarchy indexes by identity.
+    std::shared_ptr<ResolvedPropertyIndex> properties;
+    const auto updateProperties=[&](const ObjectRef& ref){
+        ResolvedProperties values;
+        const auto found=index.properties.find(ref);
+        if(found!=index.properties.end())for(const auto& [name,entries]:found->second)
+            if(const auto* property=selectedInterval(entries,atEnd))values.emplace(name,property->value);
+        const auto& current=*projection->activeProperties;
+        const auto old=current.find(ref);
+        if(old==current.end()?values.empty():*old->second==values)return;
+        if(!properties){properties=std::make_shared<ResolvedPropertyIndex>(current);projection->activeProperties=properties;}
+        if(values.empty())properties->erase(ref);
+        else (*properties)[ref]=std::make_shared<const ResolvedProperties>(std::move(values));
+    };
+    if(previous){for(const auto& ref:changed)updateProperties(ref);}
+    else for(const auto& [ref,entries]:index.properties)updateProperties(ref);
+    const auto makeRow=[&](const ObjectRef& ref)->std::shared_ptr<ResolvedEntity>{
+        const auto* lifetime=selected(index.lifetimes,ref,atEnd);
+        const auto* geometry=selected(index.geometries,ref,atEnd);
+        if(!lifetime||!geometry)return {};
+        const auto* parent=selected(index.parents,ref,atEnd);
+        auto row=std::make_shared<ResolvedEntity>(ResolvedEntity{ref,geometry->geometryRef,geometry->rendering,
+            parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
+        row->validity=lifetime->validity;
+        const auto found=result.activeProperties().find(ref);
+        if(found!=result.activeProperties().end())row->propertyValues=found->second;
+        return row;
+    };
+    FreshResolvedRows fresh;
+    std::set<ObjectRef> affected=changed;
+    GeometryCountChanges geometryCountChanges;
+    std::shared_ptr<ResolvedChildren> children;
+    bool requiredChanged=!previous,membershipChanged=!previous;
+    const auto updateResources=[&](const ObjectRef& ref,const ResolvedEntity* before,const ResolvedEntity* after){
+        if((before!=nullptr)!=(after!=nullptr))membershipChanged=true;
+        if(!before||!after||!(before->geometryRef==after->geometryRef)){
+            if(before)--geometryCountChanges[before->geometryRef];
+            if(after)++geometryCountChanges[after->geometryRef];
+        }
+        const auto oldParent=before?before->parentId:std::string{};
+        const auto newParent=after?after->parentId:std::string{};
+        if(oldParent!=newParent){
+            if(!children){children=std::make_shared<ResolvedChildren>(*projection->children);projection->children=children;}
+            if(!oldParent.empty()){
+                auto it=children->find(oldParent);
+                if(it!=children->end()){it->second.erase(ref);if(it->second.empty())children->erase(it);}
+            }
+            if(!newParent.empty())(*children)[newParent].insert(ref);
+        }
+    };
+    if(previous){
+        // Resolve only event owners. Discover descendants using the previous
+        // direct-child graph; no full ancestry scan across the active world.
+        std::vector<ObjectRef> descendants;
+        for(const auto& ref:changed){
+            const auto* before=previous->find(ref);
+            auto after=makeRow(ref);
+            if(ref.domain=="territorial"&&hierarchyChanged(before,after.get()))
+                descendants.push_back(ref);
+            updateResources(ref,before,after.get());
+            fresh.emplace(ref,std::move(after));
+        }
+        includeAffectedDescendants(*previous->projection->children,descendants,affected);
+        if(!membershipChanged){
+            // The ordered vector is a shallow copy of shared row handles;
+            // its offsets and resource indexes need not be rebuilt.
+            projection->entities=previous->projection->entities;
+            for(const auto& [ref,row]:fresh)if(row)projection->entities[previous->offsets().at(ref)]=row;
+        }else{
+            mergeActiveRows(*projection,*previous,fresh,index.catalogOrder);
+        }
+    }else{
+        auto offsets=std::make_shared<ResolvedOffsets>();
+        std::vector<std::size_t> activeOwners;
+        index.collectCoverage(index.coverageRoot,atEnd,activeOwners);
+        std::sort(activeOwners.begin(),activeOwners.end());
+        activeOwners.erase(std::unique(activeOwners.begin(),activeOwners.end()),activeOwners.end());
+        projection->entities.reserve(activeOwners.size());
+        for(const auto owner:activeOwners){
+            const auto& ref=index.entities[owner].objectRef;
+            auto row=makeRow(ref);
+            if(!row)continue;
+            updateResources(ref,nullptr,row.get());
+            offsets->emplace(ref,projection->entities.size());
+            projection->entities.push_back(row);fresh.emplace(ref,std::move(row));affected.insert(ref);
+        }
+        projection->offsets=std::move(offsets);
+    }
+    applyGeometryCountChanges(*projection,geometryCountChanges,requiredChanged);
+    rebuildAffectedAncestry(*projection,result,fresh,affected);
+    if(previous)projection->affected.assign(affected.begin(),affected.end());
     return result;
 }
 ResolvedWorld resolveWorld(const TimelineRecords& records,const TimelineValidationContext& context,

@@ -1,7 +1,11 @@
+import {countryPaintOnly,countryTileDiff} from '../../../src/rendering/maplibre-country-presentation.js';
+import {createMapLibreCountryDisplay} from '../../../src/rendering/maplibre-country-display.js';
+import {packHydroFeatures,unpackHydroFeatures,encodeStrokeGeometry,decodeStrokeGeometry,geometryTransferBuffers} from '../../../src/rendering/geometry-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
 import {createMapLibreHighlight,partitionHighlightLines} from '../../../src/rendering/maplibre-highlight.js';
+import {createMapLibreSourceWrites} from '../../../src/rendering/maplibre-source-lifecycle.js';
 
 test('long highlights share their split endpoints and preserve every original segment',()=>{
  const long=Array.from({length:18000},(_,index)=>[index/1000,(index%3)/1000]);
@@ -125,25 +129,29 @@ test('highlight preserves the complete previous frame until native and polar wor
   assert.equal(owner.stats().sourceId,null,'Clear a superseded hover when there is no confirmed selection');
   assert.equal(polar,null);
   assert.deepEqual(restored,['F']);
-  owner.reset();
+  submitHover('hover-C');await tick();draw();
+  const beforeClear=writes;
   owner.submit('[]',[],[],'[]','[]');
   assert.equal(owner.selectionPending(),false,'A fresh date with no confirmed selection must not wait for empty highlight tiles');
   await tick();draw();
+  assert.equal(writes,beforeClear,'Clearing hover hides the current highlight without writing empty tiles');
+  assert.equal(owner.stats().sourceId,null);
+  assert.equal(polar,null);
   block=true;submit('E');
   assert.equal(owner.selectionPending(),true,'An actual confirmed selection still gates the dated frame');
  }finally{owner.dispose();}
 });
 
 test('camera frames reuse MapLibre symbols; viewport and quality work are scoped',async()=>{
- const previous={requestAnimationFrame:globalThis.requestAnimationFrame,performance:globalThis.performance,document:globalThis.document};
- const queue=[];let time=0,labelRuns=0,placeQueries=0,contentRuns=0,overlayRuns=0,sceneSubmissions=0,prepared=0;
+ const previous={requestAnimationFrame:globalThis.requestAnimationFrame,document:globalThis.document};
+ const queue=[];let labelRuns=0,placeQueries=0,contentRuns=0,overlayRuns=0,sceneSubmissions=0,prepared=0;
  globalThis.requestAnimationFrame=callback=>{queue.push(callback);return queue.length;};
- Object.defineProperty(globalThis,'performance',{configurable:true,value:{now:()=>time}});
  globalThis.document={baseURI:'https://fixture.test/',documentElement:{dataset:{}}};
  const sources=new Map(),layers=new Map(),frames=[];
+ let moving=false,zoom=4;
  const map={
-  getZoom:()=>4,
-  getStyle:()=>({'font-faces':{}}),setFontFaces(){},
+  getZoom:()=>zoom,isMoving:()=>moving,
+  getFontFaces:()=>({}),setFontFaces(){},
   getSource:id=>sources.get(id)||null,
   addSource(id){sources.set(id,{on(){},off(){},async setData(){},async updateData(){}});},
   removeSource:id=>sources.delete(id),
@@ -176,7 +184,7 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},
   mapPalette:()=>({defaultLand:'#ffffff'}),syncMapScene(){sceneSubmissions++;},
   territorialResources:{getState:()=>state,displayEntities:()=>features,visibleMapObjectCandidates:()=>[],
-   isLayerItemVisible:()=>true,entityRepository:{},replaceSceneDomain(){}},
+   isLayerItemVisible:()=>true,entityRepository:{get:()=>null},replaceSceneDomain(){}},
   genericResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){overlayRuns++;}},
   distributionResources:{getState:()=>state,visibleMapObjectCandidates:()=>[],replaceSceneDomain(){}},
   territorialBoundaryResources:{getState:()=>state,geometryToken:()=> 'region-v1',
@@ -206,7 +214,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(labelRuns,1);assert.equal(contentRuns,1);
   assert.equal(frames[0].withBounds,true);
   const baselineQueries=placeQueries,baselineFrames=prepared;
-  for(let i=0;i<25;i++){time+=16;domain.invalidateView('maplibre-camera');await flush();}
+  moving=true;
+  domain.beginInteraction();
+  zoom=3.2;
+  for(let i=0;i<25;i++){domain.invalidateView('maplibre-camera');await flush();}
   assert.equal(labelRuns,1,'Native camera movement cannot rebuild unchanged labels');
   assert.equal(contentRuns,1,'Native camera movement cannot rebuild the geographic scene');
   assert.equal(prepared,baselineFrames,'Unchanged camera display bands do not schedule application frames');
@@ -217,11 +228,15 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(labelRuns,1,'Native source completion must not recompile the unchanged symbol source');
   assert.equal(contentRuns,1,'Native source completion must not rebuild unrelated geometry');
   assert.ok(frames.slice(1).every(frame=>frame.withBounds===false),'Camera frames must not query geographic bounds');
-  assert.ok(placeQueries-baselineQueries>=3&&placeQueries-baselineQueries<=4,'Viewport worker queries are throttled during movement');
+  assert.equal(placeQueries,baselineQueries,'Ordinary motion keeps the current place snapshot');
+  domain.invalidateLabels('motion-time-worker-result');await flush();
+  assert.equal(labelRuns,1,'A viewport result cannot replace the symbols mid-gesture');
+  moving=false;
   domain.endInteraction('map-move-settled');await flush();
+  assert.equal(placeQueries,baselineQueries+1,'Only the settled viewport is queried');
   assert.equal(labelRuns,2,'Settled camera may change the candidate budget and zoom policy');
-  assert.equal(overlayRuns,2,'Settled camera still re-evaluates spatial overlays');
-  assert.equal(sceneSubmissions,2,'Settled camera submits the updated spatial overlays');
+  assert.equal(overlayRuns,1,'Settled camera leaves project overlays installed');
+  assert.equal(sceneSubmissions,1,'Settled camera must not resubmit the project scene');
   assert.equal(contentRuns,1,'Settled camera must reuse the geographic base');
   assert.equal(frames.at(-1).withBounds,true);
   domain.invalidateQuality('quality-tier-change');await flush();
@@ -279,7 +294,120 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(failure?.message,'boundary worker failed','The same failed boundary input must reject a later dated transition');
  }finally{
   domain.dispose();globalThis.requestAnimationFrame=previous.requestAnimationFrame;
-  Object.defineProperty(globalThis,'performance',{configurable:true,value:previous.performance});
   globalThis.document=previous.document;
  }
+});
+
+test('native source writes serialize and reject queued work from an obsolete generation',async()=>{
+ let generation=1,release,started,dirty=0;
+ const ready=new Promise(resolve=>{started=resolve;});
+ const source={on(){},off(){}},map={getSource:()=>source,triggerRepaint(){}};
+ const writes=createMapLibreSourceWrites({getMap:()=>map,getGeneration:()=>generation,getContextRevision:()=>0,
+  isDisposed:()=>false,requiredSource:()=>true,dirty:()=>{dirty++;},track:(_name,run)=>run(),onError:error=>{throw error;}});
+ const first=writes.update(()=>new Promise(resolve=>{release=resolve;started();}),'territories');
+ const obsolete=writes.update(()=>{throw Error('obsolete source write ran');},'territories');
+ await ready;assert.equal(writes.pendingCount(),2);
+ generation++;assert.equal(writes.pendingCount(),0);release();
+ assert.equal(await first,true);assert.equal(await obsolete,false);
+ assert.equal(dirty,2);
+ assert.equal(await writes.update(()=>{},'territories'),true);
+ assert.equal(writes.pendingCount(),0);
+});
+
+test('prepared stroke packets survive transferable binary round-trip',()=>{
+ const geometry={type:'MultiLineString',coordinates:[[[0,1],[2,3]],[],[[4,5],[6,7],[8,9]]]};
+ const packed=encodeStrokeGeometry(geometry);
+ const received=structuredClone(packed,{transfer:geometryTransferBuffers(packed)});
+ assert.equal(packed.coordinates.byteLength,0);
+ assert.equal(packed.offsets.byteLength,0);
+ assert.deepEqual(decodeStrokeGeometry(received),geometry);
+ assert.throws(()=>decodeStrokeGeometry({coordinates:new Float64Array(2),offsets:new Uint32Array([0,2])}),TypeError);
+});
+
+test('hydro worker transfers river and multipart lake geometry without coordinate cloning',()=>{
+ const features=[
+  {type:'Feature',id:'river',properties:{category:'river',stroke_widths:[[1.234,2.345]]},geometry:{type:'LineString',coordinates:[[0,1],[2,3]]}},
+  {type:'Feature',id:'lake',properties:{category:'lake'},geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,0]],[[2,2],[3,2],[2,2]]]}},
+  {type:'Feature',id:'islands',properties:{category:'lake'},geometry:{type:'MultiPolygon',coordinates:[[[[0,0],[1,1],[0,0]]],[[[2,2],[3,3],[2,2]],[[4,4],[5,5],[4,4]]]]}},
+ ];
+ const packed=packHydroFeatures(features);
+ const received=structuredClone(packed,{transfer:geometryTransferBuffers(packed)});
+ assert.equal(packed.coordinates.byteLength,0);
+ assert.equal(packed.widths.byteLength,0);
+ assert.equal(packed.widthOffsets.byteLength,0);
+ assert.equal(Object.hasOwn(received.metadata[0].properties,'stroke_widths'),false);
+ assert.deepEqual(unpackHydroFeatures(received),features);
+});
+
+test('country display owns its published rows, tiles and border caches',()=>{
+ const display=createMapLibreCountryDisplay();
+ const row={id:'territorial:A',geometry:{type:'Polygon',coordinates:[]},properties:{color:'#ffffff',paintOrder:0}};
+ const record={rows:new Map([[row.id,row]]),tiles:new Map([[row.id,row]]),borders:new Map([['border',{paths:{native:{type:'MultiLineString',coordinates:[]}}}]])};
+ display.publish(record,'revision');
+ assert.equal(display.rows.get(row.id),row);
+ assert.equal(display.borders.size,1);
+ display.clearTiles();
+ assert.equal(display.tiles.size,0);
+ assert.equal(display.borders.size,1);
+ display.clearSource();
+ assert.equal(display.borders.size,0);
+ assert.equal(display.key,'');
+});
+
+test('country paint-only detection and tile delta preserve unchanged geometry',()=>{
+ const geometry={type:'Polygon',coordinates:[]};
+ const previous={id:'territorial:A',geometry,properties:{color:'#000000',paintOrder:0}};
+ const recolored={id:previous.id,geometry,properties:{...previous.properties,color:'#ffffff'}};
+ assert.equal(countryPaintOnly({rows:new Map([[previous.id,previous]])},[recolored]),true);
+ const changed={...recolored,properties:{...recolored.properties,paintOrder:1}};
+ assert.equal(countryPaintOnly({rows:new Map([[previous.id,previous]])},[changed]),false);
+ const delta=countryTileDiff(new Map([[previous.id,previous]]),[recolored]);
+ assert.deepEqual(delta.remove,[]);
+ assert.deepEqual(delta.add,[]);
+ assert.deepEqual(delta.update,[{id:previous.id,addOrUpdateProperties:[{key:'color',value:'#ffffff'}]}]);
+ const removed=countryTileDiff(new Map([[previous.id,previous]]),[]);
+ assert.deepEqual(removed.remove,[previous.id]);
+});
+
+test('country source replacement preserves mandatory layers and resets owned state',()=>{
+ const display=createMapLibreCountryDisplay();
+ const sources=new Map([['territories',{}]]),layers=new Map([
+  ['territories',{id:'territories',source:'territories',type:'fill'}],
+  ['borders',{id:'borders',source:'territories',type:'line'}],
+ ]);
+ let active='territories',invalidated=0;
+ const map={
+  getStyle:()=>({layers:[...layers.values()]}),
+  getLayer:id=>layers.get(id),
+  getSource:id=>sources.get(id),
+  addSource:(id,source)=>sources.set(id,source),
+  removeSource:id=>sources.delete(id),
+  addLayer:layer=>layers.set(layer.id,layer),
+  removeLayer:id=>layers.delete(id),
+ };
+ const datedSources={active:()=>active,replaceActive:(_,id)=>{active=id;}};
+ display.publish({rows:new Map(),tiles:new Map(),borders:new Map([['cached',{}]])},'before');
+ display.markSourceStale();
+ display.replaceObsoleteCountrySource({map,datedSources,sourceLayer:(id,source)=>id,sourceLayers:['territories','borders'],
+  countryTileSource:()=>({type:'geojson'}),onCountrySourceRemoved:()=>{},
+  onStyleInvalidated:()=>{invalidated++;},dirty:()=>{}});
+ assert.equal(active,'territories-generation-1');
+ assert.equal(layers.get('territories').source,active);
+ assert.equal(layers.get('borders').source,active);
+ assert.equal(sources.has('territories'),false);
+ assert.equal(display.needsSwap,false);
+ assert.equal(display.borders.size,0);
+ assert.equal(invalidated,1);
+});
+
+test('shared binary geometry rejects malformed offsets and inconsistent width profiles',()=>{
+ assert.throws(()=>decodeStrokeGeometry({offsets:Uint32Array.of(1,1),coordinates:Float64Array.of(1,2)}),TypeError);
+ assert.throws(()=>decodeStrokeGeometry({offsets:Uint32Array.of(0,2,1),coordinates:Float64Array.of(1,2)}),TypeError);
+ const river={type:'Feature',id:'r',properties:{stroke_widths:[[.25,1.125],[]]},geometry:{type:'MultiLineString',coordinates:[[[0,0],[1,1]],[]]}};
+ const packed=packHydroFeatures([river]);
+ assert.deepEqual(unpackHydroFeatures(packed),[river]);
+ assert.throws(()=>packHydroFeatures([{...river,properties:{stroke_widths:[[1],[]]}}]),/does not match/);
+ assert.throws(()=>unpackHydroFeatures({...packed,widthOffsets:Uint32Array.of(0,1,2)}),/width sample count/);
+ assert.throws(()=>unpackHydroFeatures({...packed,metadata:[]}),/Unused geometry packet parts/);
+ assert.deepEqual(unpackHydroFeatures(packHydroFeatures([])),[]);
 });

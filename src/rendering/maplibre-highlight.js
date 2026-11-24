@@ -1,3 +1,4 @@
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 const paintAlpha = ['get', 'alpha'];
 const layers = [
   {id: 'interaction-fill', type: 'fill', geometry: 'Polygon', paint: {
@@ -92,7 +93,7 @@ export function createMapLibreHighlight({map, write, preparePolar, clearPolar, o
   function ensure(slot, features) {
     const source = sourceId(slot);
     const before = map.getLayer('viewer-label-dot') ? 'viewer-label-dot' : undefined;
-    if (!map.getSource(source)) map.addSource(source, {type: 'geojson', data: empty(), tolerance: 0});
+    if (!map.getSource(source)) map.addSource(source, mapLibreGeoJsonSource('highlight',empty()));
     const opacities = [...new Set(features.map(feature => feature.properties?.splitOpacity).filter(Number.isFinite))];
     const nextLayers = layers.flatMap(layer => layer.type !== 'line' ? [layer] : [
       {...layer, filter:['!', ['has','splitOpacity']]},
@@ -219,6 +220,15 @@ export function createMapLibreHighlight({map, write, preparePolar, clearPolar, o
 
   function submit(key, features, polar, selectionKey, nativeKey=key) {
     if (disposed || key === pending?.key || (!pending && key === applied?.key)) return;
+    // Leaving a hovered object can coincide with the first camera frame.
+    // Hide the existing highlight without submitting an empty tile source.
+    if (!features.length && !polar.length) {
+      if (active !== null || pending) {
+        reset();
+        map.triggerRepaint();
+      }
+      return;
+    }
     clearTimers(pending);
     const reuseNative=active!==null&&applied?.nativeKey===nativeKey;
     const slot = reuseNative?active:active===0?1:0;

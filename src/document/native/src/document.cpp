@@ -87,6 +87,51 @@ bool GeometryStore::retainReadyFrom(const GeometryStore& source) {
     }
     return changed;
 }
+std::vector<GeometryRef> GeometryStore::resourceCacheEvictions(const std::set<GeometryRef>& protectedRefs,GeometryResourceCache& cache,std::uint64_t budget) const {
+    std::uint64_t bytes=0;
+    struct Entry {GeometryRef ref;std::uint64_t bytes,access;};
+    std::vector<Entry> inactive;
+    for(auto it=cache.entries.begin();it!=cache.entries.end();){
+        if(!versions_.count(it->first)||!resources_.count(it->first))it=cache.entries.erase(it);
+        else ++it;
+    }
+    for(const auto& [ref,geometry]:versions_){
+        const auto found=resources_.find(ref);if(found==resources_.end())continue;
+        const auto& resource=found->second;const auto& shape=*geometry;
+        // Conservative coordinate allocation estimate for the native and
+        // projected JS caches; not a process RSS or GPU memory measurement.
+        auto& entry=cache.entries[ref];
+        if(entry.hash!=resource.contentSha256){
+            std::uint64_t cost=64ull*shape.points.size();
+            for(const auto& line:shape.lines)cost+=64ull*line.size()+64;
+            for(const auto& polygon:shape.polygons)for(const auto& ring:polygon)cost+=64ull*ring.size()+64;
+            entry={resource.contentSha256,std::max(cost,resource.decodedBytes),0};
+        }
+        bytes+=entry.bytes;
+        if(protectedRefs.count(ref))entry.access=++cache.clock;
+        else inactive.push_back({ref,entry.bytes,entry.access});
+    }
+    if(bytes<=budget)return {};
+    std::sort(inactive.begin(),inactive.end(),[](const auto& a,const auto& b){
+        return std::tie(a.access,a.ref)<std::tie(b.access,b.ref);
+    });
+    std::vector<GeometryRef> evicted;
+    for(const auto& row:inactive){
+        if(bytes<=budget)break;
+        bytes-=row.bytes;cache.entries.erase(row.ref);evicted.push_back(row.ref);
+    }
+    return evicted;
+}
+void GeometryStore::evictResources(const std::vector<GeometryRef>& refs) {
+    for(const auto& ref:refs){
+        if(!resources_.count(ref))throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: cannot evict an authored version");
+        versions_.erase(ref);
+    }
+}
+std::vector<GeometryRef> GeometryStore::trimResourceCache(const std::set<GeometryRef>& protectedRefs,GeometryResourceCache& cache,std::uint64_t budget) {
+    auto evicted=resourceCacheEvictions(protectedRefs,cache,budget);
+    evictResources(evicted);return evicted;
+}
 std::vector<TimelineEntityIdentity> timelineEntityCatalog(const ProjectDocument& d) {
     std::vector<TimelineEntityIdentity> result;
     for(const auto& unit:d.units)result.push_back({territorialRef(unit.id),unit.kind==UnitKind::General?"general":"regional"});
@@ -94,24 +139,41 @@ std::vector<TimelineEntityIdentity> timelineEntityCatalog(const ProjectDocument&
     return result;
 }
 namespace {
-template<class Rows> bool staticRows(const Rows& rows,const ObjectRef& id) {
-    std::size_t count=0;
-    for(const auto& row:rows)if(row.objectRef==id) {
-        if(row.validity.from||row.validity.to)return false;
-        ++count;
+template<class Rows> auto staticRowStatus(const Rows& rows) {
+    std::map<ObjectRef,bool> result;
+    for(const auto& row:rows){
+        const auto [it,inserted]=result.emplace(row.objectRef,!row.validity.from&&!row.validity.to);
+        if(!inserted)it->second=false;
     }
-    return count==1;
+    return result;
 }
 template<class Rows> auto& staticRow(Rows& rows,const ObjectRef& id) {
-    if(!staticRows(rows,id))throw TimelineError("TIMELINE_ACTIVATION","Current editing requires a single unbounded record.");
-    return *std::find_if(rows.begin(),rows.end(),[&](const auto& row){return row.objectRef==id;});
+    auto found=rows.end();
+    for(auto it=rows.begin();it!=rows.end();++it)if(it->objectRef==id){
+        if(found!=rows.end()||it->validity.from||it->validity.to)
+            throw TimelineError("TIMELINE_ACTIVATION","Current editing requires a single unbounded record.");
+        found=it;
+    }
+    if(found==rows.end())throw TimelineError("TIMELINE_ACTIVATION","Current editing requires a single unbounded record.");
+    return *found;
 }
 }
 bool isStaticTimeline(const ProjectDocument& d) {
     if(!d.timelineRecords.propertyBindings.empty())return false;
-    for(const auto& unit:d.units)if(!staticRows(d.timelineRecords.lifetimes,territorialRef(unit.id))
-      ||!staticRows(d.timelineRecords.geometryBindings,territorialRef(unit.id))||!staticRows(d.timelineRecords.parentRelations,territorialRef(unit.id)))return false;
-    for(const auto& water:d.hydro)if(!staticRows(d.timelineRecords.lifetimes,{"hydro",water.id})||!staticRows(d.timelineRecords.geometryBindings,{"hydro",water.id}))return false;
+    const auto lifetimes=staticRowStatus(d.timelineRecords.lifetimes);
+    const auto geometries=staticRowStatus(d.timelineRecords.geometryBindings);
+    const auto parents=staticRowStatus(d.timelineRecords.parentRelations);
+    const auto single=[](const auto& rows,const ObjectRef& ref){
+        const auto it=rows.find(ref);return it!=rows.end()&&it->second;
+    };
+    for(const auto& unit:d.units){
+        const auto ref=territorialRef(unit.id);
+        if(!single(lifetimes,ref)||!single(geometries,ref)||!single(parents,ref))return false;
+    }
+    for(const auto& water:d.hydro){
+        const ObjectRef ref{"hydro",water.id};
+        if(!single(lifetimes,ref)||!single(geometries,ref))return false;
+    }
     return true;
 }
 void requireStaticTimeline(const ProjectDocument& d) {

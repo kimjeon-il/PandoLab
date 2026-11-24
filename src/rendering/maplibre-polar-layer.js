@@ -1,4 +1,7 @@
 import {riverWidthAtZoom} from './maplibre-hydro-presentation.js';
+import {createPolarDrawBatcher} from './maplibre-polar-batch.js';
+import {renderCacheBudget} from './render-cache-budget.js';
+import {createGeometryWorkGate} from './geometry-work-gate.js';
 
 // Hand over before Mercator's 85.051129-degree tile edge: a line ending on
 // that edge can still acquire a stretched polar segment during tile clipping.
@@ -102,11 +105,21 @@ function visiblePolarCaps(data){
 export const polarCapsVisible=data=>visiblePolarCaps(data)!==0;
 export function createPolarLayer({map,prepare,onChange,onError}){
  const id='pando-polar-caps',capCache=new WeakMap();
+ const cores=Number(globalThis.navigator?.hardwareConcurrency),memory=Number(globalThis.navigator?.deviceMemory);
+ const limit=memory>0&&memory<=4||cores>0&&cores<=4?1:2;
+ const meshGate=createGeometryWorkGate(limit);
+ let staticRequest=null,highlightRequest=null;
+ const cancelled=()=>new DOMException('Polar preparation superseded','AbortError');
+ function stop(request){request?.abort(cancelled());}
+ function contextFor(signal,priority){
+  return {signal,priority,throwIfCancelled(){signal.throwIfAborted();}};
+ }
  let key='',pending=false,sequence=0,disposed=false,gl,program,vao,bindings;
- const emptyBatch={rows:[],packets:new Set()};
+ const emptyBatch={rows:[],packets:new Set()},batcher=createPolarDrawBatcher({byteBudget:renderCacheBudget().polarBatchBytes});
+ const mainMatrix=new Float32Array(16),fallbackMatrix=new Float32Array(16);
  let staticBatch=emptyBatch,gridBatch=emptyBatch,overlayBatch=emptyBatch,highlightBatch=emptyBatch,stagedHighlights=emptyBatch,highlightSequence=0,contextGeneration=0;
  let loadingSurface=null;
- let culledFrames=0,drawCalls=0,submittedTriangles=0,uploadedBytes=0;
+ let culledFrames=0,drawCalls=0,submittedTriangles=0,uploadedBytes=0,residentBytes=0;
  const buffers=new Map();
  const shader=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const message=gl.getShaderInfoLog(s);gl.deleteShader(s);throw Error(message);}return s;};
  let variant='',preparations=0,failed=false;
@@ -153,8 +166,9 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,index);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,indices,gl.STATIC_DRAW);
   }catch(error){gl.deleteBuffer(vertex);gl.deleteBuffer(index);throw error;}
   finally{gl.bindBuffer(gl.COPY_WRITE_BUFFER,null);}
-  uploadedBytes+=values.byteLength+indices.byteLength;
-  const record={vertex,index,ranges:packet.ranges||[{cap:BOTH_CAPS,offset:0,count:indices.length}]};
+  const bytes=values.byteLength+indices.byteLength;
+  uploadedBytes+=bytes;residentBytes+=bytes;
+  const record={vertex,index,bytes,ranges:packet.ranges||[{cap:BOTH_CAPS,offset:0,count:indices.length}]};
   buffers.set(packet,record);return record;
  }
  function retire(batch){
@@ -162,32 +176,60 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    if(staticBatch.packets.has(packet)||gridBatch.packets.has(packet)||overlayBatch.packets.has(packet)
     ||highlightBatch.packets.has(packet)||stagedHighlights.packets.has(packet))continue;
    const b=buffers.get(packet);if(!b)continue;
-   gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);buffers.delete(packet);
+   gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);residentBytes-=b.bytes;buffers.delete(packet);
   }
  }
  function release(){
   contextGeneration++;stagedHighlights=emptyBatch;
   if(!gl)return;
   for(const b of buffers.values()){gl.deleteBuffer(b.vertex);gl.deleteBuffer(b.index);}
-  buffers.clear();if(program)gl.deleteProgram(program);if(vao)gl.deleteVertexArray(vao);program=null;vao=null;variant='';
+  buffers.clear();residentBytes=0;if(program)gl.deleteProgram(program);if(vao)gl.deleteVertexArray(vao);program=null;vao=null;variant='';
  }
- function presentBatch(batch,caps,zoom){
+ // Upload before publication, with the native renderer's VAO restored.
+ function prepareBuffers(...batches){
+  if(!gl||!vao||gl.isContextLost?.())return;
+  const missing=new Set();
+  for(const batch of batches)for(const packet of batch.packets)
+   if(packet.indices.length&&!buffers.has(packet))missing.add(packet);
+  if(!missing.size)return;
+  const prior=gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+  const copyBinding=gl.getParameter(gl.COPY_WRITE_BUFFER_BINDING);
+  gl.bindVertexArray(vao);
+  try{for(const packet of missing)upload(packet);}
+  finally{gl.bindBuffer(gl.COPY_WRITE_BUFFER,copyBinding);gl.bindVertexArray(prior);}
+ }
+ function presentBatch(batch,caps,zoom,drawState){
   for(const row of batch.rows){
    if(row.packet.ranges&&!row.packet.ranges.some(range=>range.cap&caps))continue;
    const color=loadingSurface?loadingSurface[row.loadingRole]:row.color;
    if(!color||!row.packet.indices.length)continue;
-   const b=upload(row.packet);gl.bindBuffer(gl.ARRAY_BUFFER,b.vertex);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b.index);
-   const pos=bindings.position,side=bindings.side;gl.enableVertexAttribArray(pos);gl.vertexAttribPointer(pos,4,gl.FLOAT,false,20,0);gl.enableVertexAttribArray(side);gl.vertexAttribPointer(side,1,gl.FLOAT,false,20,16);
-   const width=row.ref?.domain==='hydro'&&row.ref.type==='river'?riverWidthAtZoom(zoom,row.width):row.width||1;
-   gl.uniform1f(bindings.u_width,width);gl.uniform4fv(bindings.u_color,color);
-   gl.blendFunc(row.multiply?gl.DST_COLOR:gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
-   for(const {cap,offset,count} of b.ranges)if(cap&caps){
-    gl.drawElements(gl.TRIANGLES,count,gl.UNSIGNED_INT,offset*Uint32Array.BYTES_PER_ELEMENT);
-    drawCalls++;submittedTriangles+=count/3;
+   const b=buffers.get(row.packet);
+   if(!b)throw Error('Polar packet was not uploaded before publication.');
+   if(drawState.buffer!==b){
+    gl.bindBuffer(gl.ARRAY_BUFFER,b.vertex);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b.index);
+    const pos=bindings.position,side=bindings.side;
+    gl.vertexAttribPointer(pos,4,gl.FLOAT,false,20,0);gl.vertexAttribPointer(side,1,gl.FLOAT,false,20,16);
+    drawState.buffer=b;
    }
+   const width=row.ref?.domain==='hydro'&&row.ref.type==='river'?riverWidthAtZoom(zoom,row.width):row.width||1;
+   if(drawState.width!==width){gl.uniform1f(bindings.u_width,width);drawState.width=width;}
+   if(!drawState.color||!color.every((v,i)=>v===drawState.color[i])){gl.uniform4fv(bindings.u_color,color);drawState.color=color;}
+   const multiply=!!row.multiply;
+   if(drawState.multiply!==multiply){gl.blendFunc(multiply?gl.DST_COLOR:gl.ONE,gl.ONE_MINUS_SRC_ALPHA);drawState.multiply=multiply;}
+   // Consecutive visible ranges use one draw without changing primitive order.
+   let start=0,length=0;
+   const flush=()=>{if(length){gl.drawElements(gl.TRIANGLES,length,gl.UNSIGNED_INT,start*Uint32Array.BYTES_PER_ELEMENT);drawCalls++;submittedTriangles+=length/3;length=0;}};
+   for(const {cap,offset,count} of b.ranges){
+    if(!(cap&caps)){flush();continue;}
+    if(length&&start+length!==offset)flush();
+    if(!length)start=offset;
+    length+=count;
+   }
+   flush();
   }
  }
- const layer={id,type:'custom',renderingMode:'2d',onAdd(_map,context){gl=context;contextGeneration++;vao=gl.createVertexArray();},onRemove(){release();gl=null;},
+ const layer={id,type:'custom',renderingMode:'2d',onAdd(_map,context){gl=context;contextGeneration++;vao=gl.createVertexArray();
+   prepareBuffers(staticBatch,gridBatch,overlayBatch,highlightBatch);},onRemove(){release();gl=null;},
   render(context,options){
    if(disposed||failed||(!staticBatch.rows.length&&!highlightBatch.rows.length))return;
    const capsVisible=visiblePolarCaps(options.defaultProjectionData);
@@ -198,45 +240,64 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    try{
     compile(options);gl.bindVertexArray(vao);gl.useProgram(program);gl.disable(gl.DEPTH_TEST);gl.disable(gl.STENCIL_TEST);gl.disable(gl.CULL_FACE);gl.enable(gl.BLEND);gl.blendEquation(gl.FUNC_ADD);
     const uniform=name=>bindings[name],data=options.defaultProjectionData;
-    gl.uniformMatrix4fv(uniform('u_projection_matrix'),false,new Float32Array(data.mainMatrix));gl.uniformMatrix4fv(uniform('u_projection_fallback_matrix'),false,new Float32Array(data.fallbackMatrix));
+    mainMatrix.set(data.mainMatrix);fallbackMatrix.set(data.fallbackMatrix);
+    gl.uniformMatrix4fv(uniform('u_projection_matrix'),false,mainMatrix);gl.uniformMatrix4fv(uniform('u_projection_fallback_matrix'),false,fallbackMatrix);
     gl.uniform4fv(uniform('u_projection_clipping_plane'),data.clippingPlane);gl.uniform4fv(uniform('u_projection_tile_mercator_coords'),data.tileMercatorCoords);gl.uniform1f(uniform('u_projection_transition'),data.projectionTransition);gl.uniform4fv(uniform('u_clip'),data.clippingPlane);
-    gl.uniform2f(uniform('u_viewport'),map.getCanvas().clientWidth,map.getCanvas().clientHeight);gl.uniform1f(uniform('u_width'),1);
-    presentBatch(staticBatch,capsVisible);
-    if(!loadingSurface)presentBatch(overlayBatch,capsVisible,map.getZoom());
-    presentBatch(gridBatch,capsVisible);
-    if(!loadingSurface)presentBatch(highlightBatch,capsVisible);
+    const canvas=map.getCanvas(),drawState={};
+    gl.uniform2f(uniform('u_viewport'),canvas.clientWidth,canvas.clientHeight);
+    gl.enableVertexAttribArray(bindings.position);gl.enableVertexAttribArray(bindings.side);
+    presentBatch(staticBatch,capsVisible,undefined,drawState);
+    if(!loadingSurface)presentBatch(overlayBatch,capsVisible,map.getZoom(),drawState);
+    presentBatch(gridBatch,capsVisible,undefined,drawState);
+    if(!loadingSurface)presentBatch(highlightBatch,capsVisible,map.getZoom(),drawState);
    }catch(error){failed=true;onError(error);}finally{
     gl.bindVertexArray(null);
    }
   }};
  const background=capMesh();
- async function mesh(geometry){
-  if(!capCache.has(geometry)){
+ async function mesh(geometry,context){
+  // Share only completed immutable packets. A cancelled in-flight task
+  // must not poison the next generation's use of the same geometry.
+  const cached=capCache.get(geometry);
+  if(cached)return cached;
+  return meshGate.run(context,async()=>{
+   context.throwIfCancelled();
+   const prior=capCache.get(geometry);if(prior)return prior;
    preparations++;
-   capCache.set(geometry,prepare(geometry)
-    .catch(error=>{capCache.delete(geometry);throw error;}));
-  }
-  return capCache.get(geometry);
+   const packet=await prepare(geometry,context.signal);
+   context.throwIfCancelled();capCache.set(geometry,packet);return packet;
+  });
  }
- const batchFor=rows=>({rows,packets:new Set(rows.map(row=>row.packet))});
- const prepareRows=items=>Promise.all(items.map(async item=>({...item,packet:item.packet||await mesh(item.geometry)})));
+ const batchFor=rows=>batcher.batch(rows);
+ async function prepareRows(items,context){
+  const rows=new Array(items.length);let cursor=0,failed=false;
+  const lanes=Array.from({length:Math.min(limit,items.length)},async()=>{
+   try{
+    while(!failed&&cursor<items.length){
+     context.throwIfCancelled();
+     const index=cursor++,item=items[index];
+     rows[index]={...item,packet:item.packet||await mesh(item.geometry,context)};
+    }
+   }catch(error){failed=true;throw error;}
+  });
+  const settled=await Promise.allSettled(lanes),failure=settled.find(row=>row.status==='rejected');
+  if(failure)throw failure.reason;
+  context.throwIfCancelled();return rows;
+ }
  const obsoleteHighlight=()=>new DOMException('Polar highlights were superseded','AbortError');
  async function prepareHighlights(items){
   const request=++highlightSequence,generation=contextGeneration;
+  stop(highlightRequest);const controller=new AbortController();highlightRequest=controller;
   const previous=stagedHighlights;stagedHighlights=emptyBatch;retire(previous);
   const current=()=>!disposed&&request===highlightSequence&&generation===contextGeneration&&gl?.isContextLost?.()!==true;
-  const next=batchFor(await prepareRows(items));
+  let rows;
+  try{rows=await prepareRows(items,contextFor(controller.signal,100));}
+  finally{if(highlightRequest===controller)highlightRequest=null;}
   if(!current())throw obsoleteHighlight();
+  const next=batchFor(rows);
   stagedHighlights=next;
   try{
-   const missing=gl&&[...next.packets].filter(packet=>packet.indices.length&&!buffers.has(packet));
-   if(missing?.length){
-    // This path runs only for a new staged highlight, outside native drawing.
-    const previousVao=gl.getParameter(gl.VERTEX_ARRAY_BINDING);
-    gl.bindVertexArray(vao);
-    try{for(const packet of missing)upload(packet);}
-    finally{gl.bindVertexArray(previousVao);}
-   }
+   prepareBuffers(next);
   }
   catch(error){stagedHighlights=emptyBatch;retire(next);throw error;}
   if(!current()){stagedHighlights=emptyBatch;retire(next);throw obsoleteHighlight();}
@@ -247,30 +308,37 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   };
  }
  function clearHighlights(){
-  highlightSequence++;
+  highlightSequence++;stop(highlightRequest);highlightRequest=null;
   const previous=highlightBatch,staged=stagedHighlights;
   highlightBatch=stagedHighlights=emptyBatch;retire(previous);retire(staged);
   if(previous.rows.length)map.triggerRepaint?.();
  }
- function resetContext(){failed=false;release();if(gl)vao=gl.createVertexArray();}
- return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes}),
-  retry(){sequence++;pending=false;key='';resetContext();},resetContext,
+ function resetContext(){failed=false;release();if(gl){vao=gl.createVertexArray();prepareBuffers(staticBatch,gridBatch,overlayBatch,highlightBatch);}}
+ return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size,mergedCpuCache:batcher.stats()}),
+  retry(){sequence++;stop(staticRequest);staticRequest=null;pending=false;key='';resetContext();},resetContext,
   ensure(){if(!map.getLayer(id))map.addLayer(layer,map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);},get pending(){return pending;},
   prepareHighlights,clearHighlights,
   setOverlayLines(items){
-   const previous=overlayBatch;
-   overlayBatch=batchFor(items);
-   retire(previous);
+   const previous=overlayBatch,next=batchFor(items);
+   try{prepareBuffers(next);}catch(error){retire(next);onError(error);return;}
+   overlayBatch=next;retire(previous);
    map.triggerRepaint?.();
   },
   setLoadingSurface(surface){loadingSurface=surface;},
   update(nextKey,items,backgroundColor){if(nextKey===key)return;key=nextKey;pending=true;const version=++sequence;
-   prepareRows(items).then(next=>{
+   stop(staticRequest);const controller=new AbortController();staticRequest=controller;
+   prepareRows(items,contextFor(controller.signal,60)).then(next=>{
     if(disposed||version!==sequence)return;
     const previous=staticBatch,previousGrid=gridBatch;
-    staticBatch=batchFor([{packet:background,color:backgroundColor,loadingRole:'ocean'},...next.filter(row=>row.loadingRole!=='grid')]);
-    gridBatch=batchFor(next.filter(row=>row.loadingRole==='grid'));
+    const nextStatic=batchFor([{packet:background,color:backgroundColor,loadingRole:'ocean'},...next.filter(row=>row.loadingRole!=='grid')]);
+    const nextGrid=batchFor(next.filter(row=>row.loadingRole==='grid'));
+    try{prepareBuffers(nextStatic,nextGrid);}catch(error){retire(nextStatic);retire(nextGrid);throw error;}
+    staticBatch=nextStatic;gridBatch=nextGrid;
     retire(previous);retire(previousGrid);pending=false;onChange();
-   },error=>{if(!disposed&&version===sequence){pending=false;key='';failed=error?.name!=='AbortError';onError(error);}});
-  },dispose(){disposed=true;sequence++;if(map.getLayer(id))map.removeLayer(id);else release();}};
+   }).catch(error=>{if(!disposed&&version===sequence){pending=false;key='';failed=error?.name!=='AbortError';onError(error);}})
+    .finally(()=>{if(staticRequest===controller)staticRequest=null;});
+  },dispose(){if(disposed)return;disposed=true;sequence++;highlightSequence++;pending=false;key='';
+   stop(staticRequest);stop(highlightRequest);staticRequest=highlightRequest=null;
+   staticBatch=gridBatch=overlayBatch=highlightBatch=stagedHighlights=emptyBatch;loadingSurface=null;batcher.clear();
+   if(map.getLayer(id))map.removeLayer(id);else release();}};
 }

@@ -11,6 +11,7 @@ const ICON_REGISTRY = Object.freeze({
   focus: 'icon-focus-target',
   chevronDown: 'icon-chevron-down',
   check: 'icon-check',
+  flagOutline: 'icon-flag-outline',
 });
 
 /** Create a sprite-backed icon without duplicating inline SVG markup. */

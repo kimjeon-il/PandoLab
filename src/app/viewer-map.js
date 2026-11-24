@@ -309,7 +309,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     },
     ready:initialized,
     cancelSearch:()=>places().cancelSearch(),update,features:entityStore.snapshot,searchPlaces:query=>labelOwner.searchPlaces(query),renderer,
-    loadPhysicalResources:physicalResources.loadPhysicalData,loadPhysicalLandMask:physicalResources.loadPhysicalLandMask,viewState:state,objectPresentation,searchActive:()=>places().isSearchOpen(),
+    loadPhysicalResources:physicalResources.loadPhysicalData,loadPhysicalLand:physicalResources.loadPhysicalLand,viewState:state,objectPresentation,searchActive:()=>places().isSearchOpen(),
     prepareBuiltinProject:async(month,options)=>{
       // Parallel country/physical preparation must not orphan a native
       // candidate when only the physical half fails or is superseded.

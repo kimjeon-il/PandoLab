@@ -133,8 +133,6 @@
   background: var(--ui-search-result-hover, var(--ui-hover-fill, var(--surface-hover)));
 }
 
-/* Object details uses shared surface, tabs, panels, section and selectable-row styles.
-   Keep only the native disclosure affordance and long-name layout here. */
 .surface-details .object-details-groups {
   align-content: start;
 }
@@ -144,47 +142,36 @@
 }
 
 .surface-details .object-details-group-heading {
+  margin: 0;
   padding-block: var(--ui-space-2);
-  cursor: pointer;
-  list-style: none;
-}
-
-.surface-details .object-details-group-heading::-webkit-details-marker {
-  display: none;
-}
-
-.surface-details .object-details-group-heading::before {
-  content: "›";
-  display: inline-block;
-  color: var(--muted);
-  transform: rotate(0deg);
-  transition: transform 140ms ease;
-}
-
-.surface-details .object-details-group[open] > .object-details-group-heading::before {
-  transform: rotate(90deg);
-}
-
-.surface-details .object-details-group-count {
-  margin-inline-start: auto;
+  font-size: var(--ui-font-body);
+  font-weight: var(--design-weight-bold);
 }
 
 .surface-details .object-details-group-list {
+  --object-details-grid-gap: var(--ui-space-2);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, max(44px, calc((100% - 3 * var(--object-details-grid-gap)) / 4))), 1fr));
+  gap: var(--object-details-grid-gap);
   padding-inline-start: var(--ui-space-4);
 }
 
 .surface-details .object-details-child {
-  width: 100%;
+  min-width: 0;
+  min-height: var(--ui-control-height);
+  padding: var(--ui-space-1);
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  text-align: start;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  justify-content: center;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .surface-details .object-details-group-heading::before {
-    transition: none;
-  }
+.surface-details .object-details-child-flag {
+  width: 36px;
+  height: 24px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.surface-details .object-details-flag-fallback {
+  color: var(--muted);
 }

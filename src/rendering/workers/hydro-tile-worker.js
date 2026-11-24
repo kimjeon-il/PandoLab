@@ -3,6 +3,8 @@
 
 importScripts('../vendor/fflate/fflate.min.js', 'hydro-shard-store.js');
 
+let packHydroFeatures,geometryTransferBuffers;
+
 const textDecoder = new TextDecoder('utf-8');
 let manifest = null;
 let baseUrl = '';
@@ -89,7 +91,9 @@ async function saveWholeHydroBundle(bytes) {
   const spec = manifest.container;
   if (bytes.length !== spec.bytes || await hydroDigest(bytes) !== spec.sha256)
     throw new Error('통합 수계 파일의 길이 또는 SHA-256이 일치하지 않습니다.');
-  wholeHydroBundle = bytes;
+  // Keep the verified full container in a browser-managed Blob. Slice
+  // individual resources without retaining a large JS ArrayBuffer view.
+  wholeHydroBundle = typeof Blob==='function'?new Blob([bytes]):bytes;
 }
 
 async function fetchGzip(asset) {
@@ -106,7 +110,9 @@ async function fetchGzip(asset) {
     throw new Error('통합 수계 구성요소 범위가 올바르지 않습니다.');
   let content;
   if (wholeHydroBundle) {
-    content = wholeHydroBundle.subarray(offset, offset + length);
+    content = typeof Blob==='function'&&wholeHydroBundle instanceof Blob
+      ?new Uint8Array(await wholeHydroBundle.slice(offset,offset+length).arrayBuffer())
+      :wholeHydroBundle.subarray(offset, offset + length);
   } else {
     const response = await fetchWithRetry(resolveUrl(url),
       { signal, headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
@@ -393,10 +399,9 @@ async function loadPackRangeGroup(group, signal = null) {
   activeRanges.add(active);
   try {
     const rows = await shardStore.read(shard, group.rows, group.start, group.end, signal);
-    return rows.map(([id, bytes]) => {
-      try { return { id, features: readPack(bytes, id) }; }
-      catch(error){ return {id,error}; }
-    });
+    // Transfer one decoded feature pack at a time. Keep only the raw member
+    // bytes for the rest of this coalesced range, not all expanded features.
+    return rows.map(([id,bytes])=>({id,bytes}));
   } finally {
     activeRanges.delete(active);
   }
@@ -415,14 +420,18 @@ function postPack(packId, decodedFeatures, revision) {
       },
     };
   });
-  postMessage({ type: 'pack', revision, packId, features });
+  const packed=packHydroFeatures(features);
+  postMessage({type:'pack',revision,packId,packed},geometryTransferBuffers(packed));
   postedPacks.add(packId);
 }
 
 async function processView(message) {
   const controller = new AbortController();foregroundController=controller;
   latestRevision = Math.max(latestRevision, Number(message.revision || 0));
-  const packIds = [...new Set((message.tiles || []).flatMap(spec => tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`) || []))];
+  const uniquePacks=new Set();
+  for(const spec of message.tiles||[])
+    for(const id of tilePacks.get(`${spec.stage}/${spec.x}-${spec.y}`)||[])uniquePacks.add(id);
+  const packIds=[...uniquePacks];
   const needed = packIds.filter(packId => !postedPacks.has(packId));
   const failedPacks=[];
   const isCurrent=()=>message.revision>=latestRevision&&!controller.signal.aborted;
@@ -457,8 +466,14 @@ async function processView(message) {
               }else rows=group.rows.map(spec=>({id:spec.id,error}));
             }
             if(!isCurrent())return;
-            for(const {id,features,error} of rows){
-              if(error)recordFailure(id,error);else postPack(id,features,message.revision);
+            for(let i=0;i<rows.length;i++){
+              if(!isCurrent())return;
+              const {id,bytes,features:decoded,error}=rows[i];rows[i]=null;
+              if(error){recordFailure(id,error);continue;}
+              let features=decoded;
+              try{if(bytes)features=readPack(bytes,id);}
+              catch(cause){recordFailure(id,cause);continue;}
+              postPack(id,features,message.revision);
             }
           } finally {
             const count = activeShards.get(group.shard) - 1;
@@ -497,7 +512,7 @@ async function processView(message) {
   const workerStats = shardStore.stats?.();
   postMessage({ type: 'view-ready', revision: message.revision,
     packIds:packIds.filter(id=>postedPacks.has(id)),failedPacks,
-    stats:{...workerStats,parseMs:packParseMs+(workerStats?.gunzipMs||0),parsedPacks,fetchAttempts} });
+    stats:{...workerStats,wholeContainerBytes:wholeHydroBundle?.size??wholeHydroBundle?.byteLength??0,parseMs:packParseMs+(workerStats?.gunzipMs||0),parsedPacks,fetchAttempts} });
 }
 
 function startView(message) {
@@ -523,6 +538,7 @@ onmessage = async event => {
   const message = event.data || {};
   if (message.type === 'init') {
     try {
+      ({packHydroFeatures,geometryTransferBuffers}=await import('../geometry-transfer-codec.js'));
       manifest = message.manifest;
       if (manifest.container) {
         const isSourceIndependentHydro = manifest.version === '0.13.4'
@@ -546,7 +562,8 @@ onmessage = async event => {
       featureMetadata.clear();
       postedPacks.clear();
       activeRanges.clear();
-      shardStore = self.createHydroShardStore({
+      const {renderCacheBudget}=await import('../render-cache-budget.js');
+      shardStore = self.createHydroShardStore({byteBudget:renderCacheBudget().workerHydroShardBytes,
         fetchResponse: fetchWithRetry,
         openCache: openHydroCache,
         resolveUrl,
@@ -558,9 +575,17 @@ onmessage = async event => {
       for (const shard of manifest.shards || [])
         shardSpecs.set(Number(shard.id), manifest.container
           ? { ...shard, fileBytes: manifest.container.bytes } : shard);
-      readGlobalIndex(await fetchGzip(manifest.container ? manifest.index : manifest.index.url));
-      readFeatureMetadata(await fetchGzip(manifest.container
-        ? manifest.metadata.core : manifest.metadata?.core?.url || manifest.metadata?.url));
+      // A range-incapable container may return the whole bundle on the
+      // first request; retain sequential discovery there. Independent legacy
+      // files do not have that dependency and can download concurrently.
+      if(manifest.container){
+        readGlobalIndex(await fetchGzip(manifest.index));
+        readFeatureMetadata(await fetchGzip(manifest.metadata.core));
+      }else{
+        const [index,metadata]=await Promise.all([fetchGzip(manifest.index.url),
+          fetchGzip(manifest.metadata?.core?.url||manifest.metadata?.url)]);
+        readGlobalIndex(index);readFeatureMetadata(metadata);
+      }
       // The container reads already proved whether the host served ranges.
       rangeSupportPromise = manifest.container ? Promise.resolve(!wholeHydroBundle) : detectRangeSupport();
       postMessage({ type: 'ready' });

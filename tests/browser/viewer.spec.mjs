@@ -323,7 +323,7 @@ test('prepared land and country coverage remain visible while panning',async({pa
  expect(samples.filter(row=>row.missing.length)).toEqual([]);
 });
 
-test('rapid zoom keeps the previous frame until the shared inland boundary and land tiles draw',async({page,context})=>{
+for(const delayed of ['country','land'])test(`rapid zoom keeps the previous frame while the ${delayed} tiles are delayed`,async({page,context})=>{
  const devtools=await context.newCDPSession(page);
  await devtools.send('Network.enable');
  await devtools.send('Network.setCacheDisabled',{cacheDisabled:true});
@@ -350,19 +350,17 @@ test('rapid zoom keeps the previous frame until the shared inland boundary and l
   const map=window.__PANDOLAB_MAPLIBRE__;
   return map.getZoom()-Math.log2(Math.cos(map.getCenter().lat*Math.PI/180))-map.getMinZoom();
  })).toBeCloseTo(0,6);
- await page.evaluate(center=>{
+ await page.evaluate(({center,delayed})=>{
   const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas();
   const source=map.getSource(map.getLayer('territories').source),land=map.getSource('physical-land');
   if(map.getLayer('borders').source!==map.getLayer('territories').source)throw Error('Separate country tiles');
   const pending=[];
-  for(const item of [source,land]){
-   const load=item.loadTile.bind(item);
-   item.loadTile=async tile=>{
-    if(tile.tileID.overscaledZ>=18)await new Promise(resolve=>pending.push(resolve));
-    return load(tile);
-   };
-   pending.push(()=>{item.loadTile=load;});
-  }
+  const item=delayed==='country'?source:land;
+  const load=item.loadTile.bind(item);
+  item.loadTile=async tile=>{
+   if(tile.tileID.overscaledZ>=18)await new Promise(resolve=>pending.push(resolve));
+   return load(tile);
+  };
   const sampleCanvas=document.createElement('canvas');sampleCanvas.width=sampleCanvas.height=12;
   const ctx=sampleCanvas.getContext('2d',{willReadFrequently:true});
   const sample=frame=>{ctx.clearRect(0,0,12,12);ctx.drawImage(frame,0,0,12,12);return ctx.getImageData(0,0,12,12).data.join(',');};
@@ -376,13 +374,13 @@ test('rapid zoom keeps the previous frame until the shared inland boundary and l
    requestAnimationFrame(capture);
   };
   window.__rapidZoom={
-   pending:()=>pending.length-2,
-   release:()=>{for(const resolve of pending.splice(0))resolve();},
+   pending:()=>pending.length,
+   release:()=>{item.loadTile=load;for(const resolve of pending.splice(0))resolve();},
    finish:()=>{recording=false;return frames;},
   };
   map.jumpTo({center,zoom:map.getMaxZoom()});
   requestAnimationFrame(capture);
- },center);
+ },{center,delayed});
  await expect.poll(()=>page.evaluate(()=>window.__rapidZoom.pending())).toBeGreaterThan(0);
  await expect(page.locator('[data-map-preserved-frame]')).toBeVisible();
  const bounds=await page.locator('#map').boundingBox();
@@ -425,16 +423,18 @@ for(const mobile of [false,true])test(`ordinary camera gestures never preserve t
   const before=await page.evaluate(()=>{
    const map=window.__PANDOLAB_MAPLIBRE__,stats=window.__PANDOLAB_VIEWER__.rendererStats;
    const baseline=stats(),gaps=[];let previous,request,overlays=0,longTasks=0;
-   const tileRequests=new Map();
+   const tileRequests=new Map(),baseWrites=[];
    const tileSources=Object.values(baseline.datedSources).map(id=>map.getSource(id)).filter(Boolean);
    const restore=tileSources.map(source=>{
-    const load=source.loadTile;
+    const load=source.loadTile,setData=source.setData,updateData=source.updateData;
     source.loadTile=function(tile){
      const key=this.id+':'+tile.tileID.key;
      tileRequests.set(key,(tileRequests.get(key)||0)+1);
      return load.call(this,tile);
     };
-    return ()=>{source.loadTile=load;};
+    source.setData=function(...args){baseWrites.push(this.id);return setData.apply(this,args);};
+    source.updateData=function(...args){baseWrites.push(this.id);return updateData.apply(this,args);};
+    return ()=>{source.loadTile=load;source.setData=setData;source.updateData=updateData;};
    });
    const observer=new PerformanceObserver(list=>{longTasks+=list.getEntries().length;});observer.observe({entryTypes:['longtask']});
    const sample=now=>{if(previous!==undefined)gaps.push(now-previous);previous=now;
@@ -447,6 +447,7 @@ for(const mobile of [false,true])test(`ordinary camera gestures never preserve t
     return {center:map.getCenter().toArray(),zoom:map.getZoom(),overlays,longTasks,p95:percentile(.95),p99:percentile(.99),
      copies:after.preservedFrameCopies-baseline.preservedFrameCopies,sourceWrites:after.sourceWrites-baseline.sourceWrites,
      repeatedTiles:[...tileRequests.values()].reduce((total,count)=>total+count-1,0),
+     baseWrites,
      approvalAttempts:after.approvalAttempts-baseline.approvalAttempts};
    };
    return {center:map.getCenter().toArray(),zoom:map.getZoom()};
@@ -465,6 +466,8 @@ for(const mobile of [false,true])test(`ordinary camera gestures never preserve t
   console.log('[camera-gesture]',JSON.stringify({mobile,...result}));
   if(!mobile)expect(result.center).not.toEqual(before.center);
   expect(result.copies).toBe(0);expect(result.overlays).toBe(0);
+  expect(result.baseWrites).toEqual([]);
+  expect(result.repeatedTiles).toBe(0);
  }finally{await context.close();}
 });
 
@@ -554,7 +557,7 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
  }finally{await context.close();}
 });
 
-test('a place name is drawn above a country name where both labels overlap',async({page})=>{
+test('a country name is drawn above a place name where both labels overlap',async({page})=>{
  await page.setViewportSize({width:1084,height:642});
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({
   version:2,labels:{place:{showNativeNames:true}},
@@ -565,7 +568,7 @@ test('a place name is drawn above a country name where both labels overlap',asyn
   const map=window.__PANDOLAB_MAPLIBRE__,country='viewer-label-country',place='viewer-label-text';
   if(!map.getLayer(place)||!map.getLayer(country))return [];
   const order=map.getLayersOrder();
-  return [order.indexOf(place)>order.indexOf(country),
+  return [order.indexOf(country)>order.indexOf(place),
    map.queryRenderedFeatures({layers:[country]}).some(row=>row.properties.objectKey==='territorial:entity:POL'),
    map.queryRenderedFeatures({layers:[place]}).some(row=>row.properties.primary==='브로츠와프'&&row.properties.secondary==='Wrocław')];
  }),{timeout:30_000}).toEqual([true,true,true]);
@@ -594,6 +597,94 @@ test('country glyphs keep Jordan and Israel visible at the same anchors through 
    }
    return symbols;
   }),{timeout:30_000}).toEqual({JOR:true,ISR:true});
+ }
+});
+
+test('retained country symbols follow native size stops while replacement label tiles are blocked',async({page})=>{
+ await page.setViewportSize({width:1440,height:900});
+ await open(page);
+ const layer='viewer-label-country',sourceId='viewer-labels';
+ const center=[6.2,48.6];
+ await page.evaluate(center=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom:4.3});},center);
+ await expect.poll(()=>page.evaluate(sourceId=>window.__PANDOLAB_MAPLIBRE__.isSourceLoaded(sourceId),sourceId),{timeout:30_000}).toBe(true);
+ await page.evaluate(sourceId=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource(sourceId),load=source.loadTile.bind(source);
+  const context=map.painter.context,createBuffer=context.createVertexBuffer.bind(context),uploads=new WeakMap();
+  context.createVertexBuffer=(data,attributes,dynamic)=>{
+   const buffer=createBuffer(data,attributes,dynamic);
+   if(!attributes.some(attribute=>attribute.name==='a_pando_label_size'))return buffer;
+   const update=buffer.updateData.bind(buffer);
+   const record=data=>uploads.set(buffer,new Uint16Array(data.arrayBuffer.slice(0)));
+   record(data);
+   buffer.updateData=data=>{update(data);record(data);};
+   return buffer;
+  };
+  window.countryZoomSizeUploads=uploads;
+  const delayed=[];
+  source.loadTile=(tile,...args)=>tile.tileID.overscaledZ>=5?
+   new Promise(resolve=>delayed.push(()=>resolve(load(tile,...args)))):load(tile,...args);
+  window.releaseCountryZoomTiles=()=>{
+   source.loadTile=load;
+   context.createVertexBuffer=createBuffer;
+   for(const release of delayed)release();
+  };
+ },sourceId);
+ try{
+  const sample=zoom=>page.evaluate(({zoom,layer,sourceId})=>{
+   const map=window.__PANDOLAB_MAPLIBRE__,manager=map.style.tileManagers[sourceId],label=map.getLayer(layer);
+   const targets=new Set(['FRA','DEU','LUX']),seen={};
+   for(const key of manager.getRenderableIds(true)){
+    const tile=manager.getTileByID(key),bucket=tile.getBucket(label);
+    const index=Object.values(tile.latestFeatureIndex?.loadVTLayers()??{})[0];
+    if(!bucket||!index)continue;
+    for(let i=0;i<bucket.symbolInstances.length;i++){
+     const symbol=bucket.symbolInstances.get(i),feature=index.feature(symbol.featureIndex);
+     const id=feature.properties.objectKey?.split(':').at(-1);
+     if(!targets.has(id)||symbol.placedIconSymbolIndex<0||symbol.centerJustifiedTextSymbolIndex<0)continue;
+     const size=(kind,symbolIndex,property,scale)=>{
+      const buffers=bucket[kind],gpu=buffers.pandoActiveSizeBuffer;
+      let {minZoom,maxZoom}=bucket[kind+'SizeData'];
+      let {lowerSize,upperSize}=buffers.placedSymbolArray.get(symbolIndex);
+      if(gpu){
+       const packed=window.countryZoomSizeUploads.get(gpu);
+       if(!packed)return null;
+       const {first}=buffers.pandoZoomSizes.entries[symbolIndex],stops=buffers.pandoZoomSizes.stops;
+       const upper=stops.findIndex(stop=>stop>=zoom);
+       minZoom=stops[upper-1];maxZoom=stops[upper];
+       lowerSize=packed[first*2];upperSize=packed[first*2+1];
+      }
+      if(zoom<minZoom||zoom>maxZoom)return null;
+      const t=(zoom-minZoom)/(maxZoom-minZoom);
+      const actual=(lowerSize+(upperSize-lowerSize)*t)*scale/128;
+      const expected=label._unevaluatedLayout._values[property].expression.evaluate({zoom},feature)*scale;
+      return {corrected:Boolean(gpu),uploads:buffers.pandoSizeUploads,error:Math.abs(actual-expected)};
+     };
+     const text=size('text',symbol.centerJustifiedTextSymbolIndex,'text-size',1);
+     const icon=size('icon',symbol.placedIconSymbolIndex,'icon-size',12);
+     if(text&&icon)seen[id]={text,icon,tileZoom:tile.tileID.overscaledZ};
+    }
+   }
+   return seen;
+  },{zoom,layer,sourceId});
+  for(const zoom of [5.15,5.7,4.7,5.7]){
+   await page.evaluate(zoom=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom});},zoom);
+   await expect.poll(async()=>Object.entries(await sample(zoom))
+    .filter(([,row])=>row.text.corrected===(zoom>5)&&row.icon.corrected===(zoom>5))
+    .map(([id])=>id).sort(),{timeout:20_000}).toEqual(['DEU','FRA','LUX']);
+   for(const {text,icon,tileZoom} of Object.values(await sample(zoom))){
+    expect(tileZoom).toBe(4);
+    expect(text.corrected).toBe(zoom>5);
+    expect(icon.corrected).toBe(zoom>5);
+    if(zoom>5){
+     expect(text.uploads).toBe(1);
+     expect(icon.uploads).toBe(1);
+    }
+    expect(text.error).toBeLessThan(.15);
+    expect(icon.error).toBeLessThan(.15);
+   }
+  }
+ }finally{
+  await page.evaluate(()=>window.releaseCountryZoomTiles());
  }
 });
 
@@ -813,6 +904,84 @@ async function search(page,touch=false){
   await ready(page);
 }
 
+test('France details flag grid previews and navigates to its child territories',async({browser,baseURL})=>{
+  test.setTimeout(180_000);
+  for(const mobile of [false,true]){
+    const context=await browser.newContext({baseURL,viewport:mobile?{width:320,height:800}:{width:1200,height:900},
+      isMobile:mobile,hasTouch:mobile});
+    try{
+      const page=await context.newPage();
+      await open(page);
+      if(mobile)await page.locator('#objectSearchInput').tap();
+      else await page.locator('#objectSearchBtn').click();
+      await page.getByRole('searchbox',{name:'객체 검색'}).fill('프랑스');
+      await page.locator('#objectSearchResults button').filter({hasText:/^프랑스(?:\s|$)/}).first()[mobile?'tap':'click']();
+      const details=page.locator('#objectDetailSurface');
+      await expect(details.locator('#objectDetailObjectName')).toHaveText('프랑스');
+      if(mobile)await page.getByRole('slider',{name:'정보창 높이 조절'}).tap();
+      await expect(details.getByRole('button',{name:'객체 정보 닫기'})).toHaveCount(0);
+      await expect(details.getByText(/^\d+개$/)).toHaveCount(0);
+      const heading=page.getByRole('heading',{name:'해외집합체',exact:true});
+      const group=details.locator('section.object-details-group').filter({has:heading});
+      const tiles=group.locator('.object-details-child');
+      await expect(tiles).toHaveCount(5);
+      const boxes=await tiles.evaluateAll(nodes=>nodes.map(node=>{
+        const {x,y,width,height}=node.getBoundingClientRect();
+        return {x,y,width,height};
+      }));
+      expect(new Set(boxes.slice(0,4).map(box=>box.y)).size).toBe(1);
+      expect(boxes[4].y).toBeGreaterThan(boxes[0].y);
+      expect(boxes[4].x).toBe(boxes[0].x);
+      for(const box of boxes){
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBe(boxes[0].height);
+        expect(box.x+box.width).toBeLessThanOrEqual(mobile?320:1200);
+      }
+      const tile=tiles.first(),name=await tile.getAttribute('aria-label');
+      expect(name).toBe('생마르탱');
+      if(mobile)await tile.tap();
+      else {
+        const previewKeys=()=>page.evaluate(async()=>{
+          const {sourceId}=window.__PANDOLAB_VIEWER__.rendererStats().highlight||{};
+          const source=sourceId&&window.__PANDOLAB_MAPLIBRE__.getSource(sourceId);
+          const features=source?(await source.getData()).features:[];
+          return [...new Set(features.map(feature=>feature.properties.objectKey))].filter(key=>key!=='territorial:entity:FRA');
+        });
+        await tile.hover();
+        await expect(page.locator('#uiTooltip')).toHaveText(name);
+        await expect.poll(async()=>(await previewKeys()).length).toBe(1);
+        const firstPreview=await previewKeys();
+        const name2=await tiles.nth(1).getAttribute('aria-label');
+        await tiles.nth(1).hover();
+        await expect(page.locator('#uiTooltip')).toHaveText(name2);
+        await expect.poll(async()=>(await previewKeys()).filter(key=>!firstPreview.includes(key)).length).toBe(1);
+        await heading.hover();
+        await expect(page.locator('#uiTooltip')).toBeHidden();
+        await expect.poll(previewKeys).toEqual([]);
+        await tiles.nth(1).focus();
+        await page.keyboard.press('Shift+Tab');
+        await expect(tile).toBeFocused();
+        await expect(tile).toHaveCSS('outline-style','solid');
+        await expect(page.locator('#uiTooltip')).toHaveText(name);
+        await page.keyboard.press('Enter');
+      }
+      await expect(details.locator('#objectDetailObjectName')).toHaveText(name);
+      await expect.poll(()=>page.evaluate(()=>{
+        const map=window.__PANDOLAB_MAPLIBRE__,{lng,lat}=map.getCenter();
+        return Math.abs(lng+63.06)<3&&Math.abs(lat-18.08)<3&&map.getZoom()>5;
+      })).toBe(true);
+      if(mobile){
+        await page.evaluate(()=>window.history.back());
+        await expect(page.locator('#objectSearchInput')).toBeVisible();
+      }else{
+        await page.keyboard.press('Escape');
+        await expect(details).not.toHaveClass(/surface-open/);
+        await expect(page.locator('#map')).toBeFocused();
+      }
+    }finally{await context.close();}
+  }
+});
+
 test('external basemap preserves the dated map and restores it after failure',async({page})=>{
  test.setTimeout(180_000);await open(page);await search(page);
  const before=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,selection:window.__PANDOLAB_VIEWER__.selectionSnapshot(),camera:window.__PANDOLAB_MAP_HOST__.getViewState()}));
@@ -953,6 +1122,16 @@ test('dated physical water is restored across timeline changes',async({page})=>{
  const replaced=Object.keys(original).filter(kind=>historicalSources[kind]!==original[kind]);
  expect(replaced).toContain('territories');
  expect(replaced).toContain('water');
+ const stayedWarm=await page.evaluate(id=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter();
+  const layer=map.getLayersOrder().find(key=>map.getLayer(key)?.source===id);
+  if(!layer)return false;
+  map.jumpTo({center:[center.lng+.01,center.lat]});
+  const visible=map.getLayoutProperty(layer,'visibility')!=='none';
+  map.jumpTo({center});
+  return visible;
+ },original.territories);
+ expect(stayedWarm).toBe(true);
  const hitsBefore=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().retainedSourceHits);
  const tilesBefore=await page.evaluate(()=>Object.values(window.__datedTileProbe).map(probe=>probe.requests));
  await month(page,'2026-11');expect((await physical()).water).toBe(modern.water);
@@ -1165,6 +1344,31 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await handle.tap();
     await expect(handle).toHaveAttribute('aria-valuenow','2');
     expect((await details.boundingBox()).height).toBeGreaterThan(searchBounds.height);
+    const title=details.getByRole('heading',{level:2});
+    const flag=details.locator('#objectDetailFlag');
+    const infoTab=details.getByRole('tab',{name:'정보'});
+    await expect(details.getByText('객체 정보',{exact:true})).toHaveCount(0);
+    await expect(title).toHaveCSS('text-align','center');
+    await expect(flag).toBeVisible();
+    await expect(flag).toHaveCSS('height','96px');
+    await page.setViewportSize({width:320,height:690});
+    await expect.poll(()=>title.evaluate(node=>{
+      const originalTitle=node.textContent;
+      node.textContent='그레이트브리튼 및 북아일랜드 연합왕국';
+      try{
+        const box=node.getBoundingClientRect();
+        const style=getComputedStyle(node);
+        const range=document.createRange();
+        range.selectNodeContents(node);
+        const lines=[...range.getClientRects()];
+        return style.textOverflow!=='ellipsis'&&new Set(lines.map(line=>line.y)).size>1
+          &&lines.every(line=>line.left>=box.left-1&&line.right<=box.right+1&&line.bottom<=box.bottom+1);
+      }finally{node.textContent=originalTitle;}
+    })).toBe(true);
+    const flagRect=await flag.boundingBox(),titleRect=await title.boundingBox(),tabRect=await infoTab.boundingBox();
+    expect(flagRect.y+flagRect.height).toBeLessThan(titleRect.y);
+    expect(titleRect.y+titleRect.height).toBeLessThan(tabRect.y);
+    await page.setViewportSize({width:390,height:844});
     await handle.tap();
     await expect(handle).toHaveAttribute('aria-valuenow','0');
     expect(await details.boundingBox()).toEqual(searchBounds);
@@ -1172,6 +1376,7 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await expect(page.locator('#viewer')).toHaveAttribute('data-layout','compact');
     const tabletDetails=page.locator('#objectDetailSurface');
     await expect(tabletDetails).toBeVisible();
+    await expect(tabletDetails.locator('#objectDetailFlag')).toBeVisible();
     const tabletDetailsRect=await tabletDetails.boundingBox();
     expect(tabletDetailsRect.x).toBeGreaterThan(512);
     expect(tabletDetailsRect.y+tabletDetailsRect.height).toBeLessThan((await dateBar.boundingBox()).y);
@@ -1198,7 +1403,7 @@ test('touch Viewer searches, navigates and changes time in a mobile context',asy
     await expect(reset).toBeHidden();
     expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe(monthBeforeReset);
     expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain('KOR');
-    await page.getByRole('button',{name:'객체 정보 닫기'}).tap();
+    await page.evaluate(()=>window.history.back());
     await expect(searchBar).toBeVisible();
     expect(await searchBar.boundingBox()).toEqual(searchBounds);
     await expect.poll(()=>chrome(menuButton)).toEqual(normalMenu);
@@ -1481,7 +1686,7 @@ for(const viewport of [{width:1280,height:800},{width:390,height:844}])test('nat
  expect((await read()).counts.slice(1)).toEqual([0,0]);
 });
 
-test('the city marker gains and loses its capital ring at the recorded dates',async({page})=>{
+test('the city marker gains and loses its capital ring in one layer at the recorded dates',async({page})=>{
  await page.addInitScript(()=>{
   const handler=Object.getOwnPropertyDescriptor(Worker.prototype,'onmessage');
   Object.defineProperty(Worker.prototype,'onmessage',{...handler,set(callback){
@@ -1498,23 +1703,18 @@ test('the city marker gains and loses its capital ring at the recorded dates',as
  await open(page);
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[2.35,48.85],zoom:5.5}));
  const read=()=>page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,dot='viewer-label-dot',ring='viewer-label-capital-ring';
-  const find=layer=>map.queryRenderedFeatures({layers:[layer]}).find(row=>String(row.id).includes('2988507'));
-  const city=find(dot);
-  return city?{id:city.id,coordinates:city.geometry.coordinates,rank:city.properties.rank,ring:!!find(ring),
-   minZoom:map.getLayer(dot).minzoom,ringMinZoom:map.getLayer(ring).minzoom,
-   dotRadius:map.getPaintProperty(dot,'circle-radius'),ringRadius:map.getPaintProperty(ring,'circle-radius')}:null;
+  const map=window.__PANDOLAB_MAPLIBRE__,layer='viewer-label-dot';
+  const markers=map.queryRenderedFeatures({layers:[layer]}).filter(row=>String(row.properties.objectKey).includes('2988507'));
+  const city=markers.find(row=>!row.properties.markerRing),ring=markers.find(row=>row.properties.markerRing);
+  return city?{id:city.id,coordinates:city.geometry.coordinates,rank:city.properties.rank,
+   ring:ring?{sameObject:ring.properties.objectKey===city.properties.objectKey,coordinates:ring.geometry.coordinates}:null,
+   minZoom:map.getLayer(layer).minzoom,markerLayers:map.getStyle().layers.filter(row=>row.source==='viewer-labels'&&row.type==='circle').map(row=>row.id)}:null;
  });
  await month(page,'2026-09');
- await expect.poll(read).toMatchObject({ring:false,minZoom:3.5,ringMinZoom:3.5,
-  dotRadius:['interpolate',['linear'],['zoom'],
-   4,['case',['boolean',['get','urban'],false],2.5,2.5],
-   6,['case',['boolean',['get','urban'],false],3.5,2.5],
-   9,['case',['boolean',['get','urban'],false],5,2.5]],
-  ringRadius:['interpolate',['linear'],['zoom'],4,4,6,5,9,6.5]});
+ await expect.poll(read).toMatchObject({ring:null,minZoom:3.5,markerLayers:['viewer-label-dot']});
  const ordinary=await read();
  await month(page,'2026-10');
- await expect.poll(read).toEqual({...ordinary,ring:true});
+ await expect.poll(read).toEqual({...ordinary,ring:{sameObject:true,coordinates:ordinary.coordinates}});
  await month(page,'2026-11');
  await expect.poll(read).toEqual(ordinary);
 });
@@ -1540,7 +1740,7 @@ test('a delayed highlight keeps the previous outline and fill until both new fea
  await expect.poll(shown).toEqual(visiblePair(france));
  await page.evaluate(target=>{
   const map=window.__PANDOLAB_MAPLIBRE__;
-  const proto=Object.getPrototypeOf(map.getSource('interaction'));
+  const proto=Object.getPrototypeOf(map.getSource(map.getLayer('territories').source));
   const original=proto.setData;
   proto.setData=async function(data,...args){
    if(this.id.startsWith('interaction')&&data.features?.some(feature=>feature.properties.objectKey===target)){
@@ -1652,7 +1852,7 @@ test('first Antarctic hover colors both sides of the polar handoff in one frame'
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,-85],zoom:3}));await ready(page,'polar hover camera');
  const point=await page.evaluate(async()=>{
   const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas(),gl=canvas.getContext('webgl2');
-  const proto=Object.getPrototypeOf(map.getSource('interaction')),setData=proto.setData;
+  const proto=Object.getPrototypeOf(map.getSource(map.getLayer('territories').source)),setData=proto.setData;
   proto.setData=async function(data,...args){
    if(this.id.startsWith('interaction')&&data.features?.some(feature=>feature.properties.objectKey==='territorial:entity:ATA')){
     proto.setData=setData;

@@ -2,7 +2,7 @@
 // GPU resources, pixel buffers and canonical document state remain with their existing owners.
 export function createMapPresentationSession({
   getGeneration, getContextRevision, isDisposed, getReadiness,
-  invalidateFrame, prepareContentKey, isProjectBlocked,
+  invalidateFrame, prepareContentKey, sameContentKey=(a,b)=>a===b, isImmutableContentKey=()=>false, isProjectBlocked,
   isRecoveryFrameAdmissible, onTemporalFailure = () => {},
   onTemporalRetired = () => {}, waitForCanonicalFrame,
 }) {
@@ -10,18 +10,30 @@ export function createMapPresentationSession({
   let committedGeneration = -1;
   let temporalTicket = null;
   let viewSequence = 0;
+  let checkedTicket=null,checkedContent=null,checkedExpected=null,checkedMatch=false;
   const abortError = reason => Object.assign(new Error(reason), { name: 'AbortError', cancelled: true });
   const temporalPending = () => !!temporalTicket && !temporalTicket.presented;
 
   // Preparing a dated LOD precedes presentation. Waiting for the displayed
   // frame here would deadlock a capped source that needs that LOD to paint.
+  function matchesCountryContent(ticket,content){
+    const expected=ticket.countryContent;
+    if(expected===content)return true;
+    // The controller supplies immutable content identities. Never rescan the
+    // same frozen pair on every deferred frame approval.
+    const cacheable=isImmutableContentKey(expected)&&isImmutableContentKey(content);
+    if(cacheable&&checkedTicket===ticket&&checkedExpected===expected&&checkedContent===content)return checkedMatch;
+    const match=sameContentKey(expected,content);
+    if(cacheable){checkedTicket=ticket;checkedExpected=expected;checkedContent=content;checkedMatch=match;}
+    return match;
+  }
   function countrySourceAdmitted(content) {
     if (!temporalPending()) return true;
     return !temporalTicket.error && temporalTicket.sourceAdmitted !== false
       && temporalTicket.isCurrent() && temporalTicket.generation === getGeneration()
       && temporalTicket.context === getContextRevision()
-      && (temporalTicket.kind !== 'view' || !!temporalTicket.countryContent
-        && temporalTicket.countryContent === content);
+      && (temporalTicket.kind !== 'view' || temporalTicket.countryContent !== null
+        && matchesCountryContent(temporalTicket,content));
   }
 
   function rejectMapPresentationWaiters(error) {
@@ -51,6 +63,7 @@ export function createMapPresentationSession({
     });
   }
   function beginTemporalViewTransition(isCurrent = () => true, onPresented = () => {}) {
+    checkedTicket=checkedContent=checkedExpected=null;
     const token = ++viewSequence;
     temporalTicket = {
       kind: 'view', countryContent: null, token, generation: getGeneration(),
@@ -121,6 +134,14 @@ export function createMapPresentationSession({
       return Promise.reject(abortError('Temporal presentation superseded'));
     return waitForCanonicalFrame();
   }
+  // A restored GPU context needs a new draw for the same live date ticket.
+  function rebaseContext() {
+    if (!temporalPending() || !temporalTicket.isCurrent()
+      || temporalTicket.generation !== getGeneration()) return false;
+    temporalTicket.context = getContextRevision();
+    temporalTicket.frameId = null;
+    return true;
+  }
   function markTemporalFrame(frame) {
     if (temporalPending()) temporalTicket.frameId = frame.frameId;
   }
@@ -136,6 +157,7 @@ export function createMapPresentationSession({
     return true;
   }
   function resetForProject({ presentation = 'default', isCurrent = () => true, onPresented = () => {} } = {}) {
+    checkedTicket=checkedContent=checkedExpected=null;
     rejectMapPresentationWaiters(abortError('Project replaced before its map was presented.'));
     committedGeneration = -1;
     temporalTicket = presentation === 'temporal'
@@ -145,6 +167,7 @@ export function createMapPresentationSession({
   }
   function dispose() {
     temporalTicket = null;
+    checkedTicket=checkedContent=checkedExpected=null;
     rejectMapPresentationWaiters(abortError('Renderer disposed before map publication.'));
     committedGeneration = -1;
   }
@@ -155,6 +178,6 @@ export function createMapPresentationSession({
     prepareTemporalCountrySource, finishTemporalViewTransition,
     canPresentVisualFrame, failTemporalPresentation, waitForTemporalPresentation,
     waitForMapPresentation, rejectMapPresentationWaiters, settleMapPresentationWaiters,
-    markTemporalFrame, commitVisualFrame, resetForProject, dispose,
+    rebaseContext, markTemporalFrame, commitVisualFrame, resetForProject, dispose,
   });
 }

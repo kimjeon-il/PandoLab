@@ -169,7 +169,6 @@
   --ui-confirm-modal-width: var(--design-confirm-modal-width);
   --ui-coast-modal-width: var(--design-coast-modal-width);
   --ui-content-property-row-min-height: 36px;
-  --ui-object-context-name-lines: 2;
   --ui-radius-pill: var(--design-radius-pill);
 }
 

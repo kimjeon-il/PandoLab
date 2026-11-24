@@ -1,3 +1,4 @@
+import {unpackHydroFeatures} from '../rendering/geometry-transfer-codec.js';
 const packIdsFromKey=key=>new Set((key||'').split(',').filter(Boolean).map(Number));
 const tileKey=({stage,x,y})=>`${stage}/${x}/${y}`;
 const windowKey=tiles=>[...new Set(tiles.map(tileKey))].sort().join(',');
@@ -5,11 +6,18 @@ const wrappedDistance=(a,b)=>Math.abs((((a-b)+180)%360+360)%360-180);
 const windowLimit=16;
 
 export async function createHydroBrowserLoader({
- manifest,baseUrl,createWorker,tilesForView,dataRevision,packLimit=96,viewTimeoutMs=30000,signal,
+ manifest,baseUrl,createWorker,tilesForView,dataRevision,packLimit=96,byteLimit=64*1024*1024,viewTimeoutMs=30000,signal,
 }){
  if(!Number.isInteger(packLimit)||packLimit<1)throw new TypeError('A positive hydro pack limit is required');
+ if(!Number.isSafeInteger(byteLimit)||byteLimit<1)throw new TypeError('A positive hydro byte budget is required');
  signal?.throwIfAborted();
- const worker=createWorker(),packs=new Map(),pending=new Map(),completeWindows=new Map();
+ const worker=createWorker(),packs=new Map(),pending=new Map(),completeWindows=new Map(),packBytes=new Map();
+ // Estimate decoded heap footprint from transferred numeric data plus
+ // feature/array overhead. This is a soft budget, not measured JS heap.
+ let cachedBytes=0;
+ const estimateBytes=packet=>packet.coordinates.byteLength*4+packet.widths.byteLength*2+
+  (packet.offsets.byteLength+packet.widthOffsets.byteLength)*8+packet.metadata.length*512;
+ function forget(id){cachedBytes-=packBytes.get(id)||0;packBytes.delete(id);packs.delete(id);}
  const stages=new Map((manifest?.stages||[]).map((stage,index)=>[stage.id,{...stage,index}]));
  let viewRequests=0,windowHits=0;
  let workerStats={};
@@ -25,16 +33,21 @@ export async function createHydroBrowserLoader({
  }
  function stop(error){
   if(disposed)return;
-  disposed=true;clearTimeout(timeout);worker.terminate();packs.clear();completeWindows.clear();
+  disposed=true;clearTimeout(timeout);worker.terminate();packs.clear();packBytes.clear();cachedBytes=0;
+  completeWindows.clear();protectedPacks.clear();worker.onmessage=worker.onerror=worker.onmessageerror=null;
   readyReject(error);settleRequests(error);
  }
  function trim(){
   const released=[];
   for(const id of packs.keys()){
-   if(packs.size<=packLimit)break;
-   if(!protectedPacks.has(id)){packs.delete(id);released.push(id);}
+   if(packs.size<=packLimit&&cachedBytes<=byteLimit)break;
+   if(!protectedPacks.has(id)){forget(id);released.push(id);}
   }
-  if(released.length)worker.postMessage({type:'release',packIds:released});
+  if(released.length){
+   const removed=new Set(released);
+   for(const [window,ids]of completeWindows)if(ids.some(id=>removed.has(id)))completeWindows.delete(window);
+   worker.postMessage({type:'release',packIds:released});
+  }
  }
  function priorityTiles(tiles,center){
   if(!center?.every(Number.isFinite))return tiles;
@@ -56,8 +69,12 @@ export async function createHydroBrowserLoader({
   }
   // Keep already drawn offscreen packs in the source and the decoded cache.
   // Current coverage is protected first, even when it fills the whole budget.
-  if(current.size<packLimit)for(const id of [...packs.keys()].reverse()){
-   if(old.has(id))current.add(id);
+  let bytes=[...current].reduce((total,id)=>total+(packBytes.get(id)||0),0);
+  if(current.size<packLimit&&bytes<byteLimit)for(const id of [...packs.keys()].reverse()){
+   if(!old.has(id)||current.has(id))continue;
+   const cost=packBytes.get(id)||0;
+   if(bytes+cost>byteLimit)continue;
+   current.add(id);bytes+=cost;
    if(current.size>=packLimit)break;
   }
   protectedPacks=current;
@@ -83,7 +100,13 @@ export async function createHydroBrowserLoader({
   if(message.type==='ready'){readyResolve();return;}
   if(message.type==='init-error'){readyReject(Error(message.message));return;}
   if(message.type==='pack'){
-   const id=Number(message.packId);packs.delete(id);packs.set(id,message.features);
+   const id=Number(message.packId);
+   let features;
+   try{
+    if(!Number.isSafeInteger(id)||id<0)throw new TypeError('Invalid hydro pack ID');
+    features=unpackHydroFeatures(message.packed);
+   }catch(error){stop(error);return;}
+   forget(id);const bytes=estimateBytes(message.packed);packs.set(id,features);packBytes.set(id,bytes);cachedBytes+=bytes;
    reportProgress(pending.get(message.revision),[id]);
    if(!pending.size)trim();
    return;
@@ -144,7 +167,7 @@ export async function createHydroBrowserLoader({
    trim();
   },
   get disposed(){return disposed;},
-  stats:()=>({...workerStats,cached:packs.size,viewRequests,windowHits}),
+  stats:()=>({...workerStats,cached:packs.size,estimatedCacheBytes:cachedBytes,viewRequests,windowHits}),
   dispose(){stop(new DOMException('Hydro worker disposed','AbortError'));},
  };
 }

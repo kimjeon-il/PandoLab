@@ -176,7 +176,7 @@ val webWorld(const ResolvedWorld& world) {
     auto result=val::object(),entities=val::array();
     result.set("month",webText(world.month));
     unsigned index=0;
-    for(const auto& row:world.entities) {
+    for(const auto& row:world.entities()) {
         auto value=val::object(),ancestors=val::array();
         value.set("objectRef",webObjectRef(row.objectRef));value.set("geometryRef",webRef(row.geometryRef));
         value.set("rendering",val::global("JSON").call<val>("parse",row.rendering));
@@ -184,7 +184,7 @@ val webWorld(const ResolvedWorld& world) {
         value.set("rootId",webText(row.rootId));
         value.set("validFrom",webEndpoint(row.validity.from));value.set("validTo",webEndpoint(row.validity.to));
         unsigned j=0;for(const auto& ancestor:row.ancestors)ancestors.set(j++,webText(ancestor));
-        auto properties=val::object();for(const auto& [name,json]:row.properties)properties.set(name,val::global("JSON").call<val>("parse",json));
+        auto properties=val::object();for(const auto& [name,json]:row.properties())properties.set(name,val::global("JSON").call<val>("parse",json));
         value.set("properties",properties);value.set("ancestors",ancestors);entities.set(index++,value);
     }
     result.set("entities",entities);return result;

@@ -1,3 +1,5 @@
+import {sameRenderIdentity} from './render-identity.js';
+import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
 
 const layerFilter=(category,zoom,hiddenIds)=>['all',['==',['get','category'],category],['==',['get','viewerMinZoom'],zoom],
@@ -49,7 +51,7 @@ export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){
   lakes:{'fill-antialias':antiAlias,'fill-color':'#5aa9d6'},
   rivers:{'line-color':'#3b82c4','line-width':mapLibreRiverWidth()},
  };
- return {sources:{hydro:{type:'geojson',data:{type:'FeatureCollection',features:[]},promoteId:'featureId'}},
+ return {sources:{hydro:mapLibreGeoJsonSource('hydro',undefined,{promoteId:'featureId'})},
   layers:hydroLayers.map(({id,baseId,category,type,zoom})=>({
    id,type,source:'hydro',filter:layerFilter(category,zoom,[]),
    paint:mapLibreHydroPaint(paints[baseId],type,zoom),
@@ -60,7 +62,7 @@ export function mapLibreHydroStyle({antiAlias=true,stylePaint=null}={}){
 export function syncMapLibreHydroVisibility(map,hiddenIds,visibility){
  for(const {id,baseId,category,zoom}of hydroLayers){
   const filter=layerFilter(category,zoom,hiddenIds);
-  if(JSON.stringify(map.getFilter(id))!==JSON.stringify(filter))map.setFilter(id,filter);
+  if(!sameRenderIdentity(map.getFilter(id),filter))map.setFilter(id,filter);
   const value=visibility[baseId]===false?'none':'visible';
   if(map.getLayoutProperty(id,'visibility')!==value)map.setLayoutProperty(id,'visibility',value);
  }
@@ -89,24 +91,38 @@ export function prepareMapLibreHydroFeatures(features,prepare){
 }
 
 export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,load,cancel,onError,updateSource,
- beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true,viewportTiles}){
+ beforePublish=async()=>{},waitForSource=async()=>true,needsSourceRestore=()=>false,isEnabled=()=>true,viewportTiles,
+ preserveLogicalId=()=>false}){
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
- let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map();
- let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null;
+ let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map(),publishedPacks=new Map();
+ let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null,resumePublication=null,retirementQueued=false;
  const fragmentsById=new Map();
- const needsAdmission=new Set();
+ const needsAdmission=new Set(),retiredLogicalIds=new Set();
  let selectable=new Set(),lastFailureKey='';
  let presentedFeatures=()=>[];
  async function publish(version,key){
   const current=()=>!disposed&&version===generation&&isEnabled();
   if(await waitForSource(current)===false||!current())return;
-  const changed=[...needsAdmission].flatMap(id=>[...fragmentsById.get(id)?.values()||[]]);
-  if(changed.length&&await admitFeatures(changed,current)===false)return;
+  const changed=[],removed=[];
+  for(const id of needsAdmission){
+   const fragments=fragmentsById.get(id);
+   if(fragments?.size){changed.push(...fragments.values());retiredLogicalIds.delete(id);}
+   else retiredLogicalIds.add(id);
+  }
+  for(const id of retiredLogicalIds)if(!fragmentsById.has(id)&&!preserveLogicalId(id))removed.push(id);
+  if((changed.length||removed.length)&&await admitFeatures(changed,current,{removedIds:removed})===false)return;
   if(!current())return;
+  for(const id of removed)retiredLogicalIds.delete(id);
   const features=presentedFeatures();
   needsAdmission.clear();
-  selectable=new Set(features.map(feature=>String(feature.id)));
+  // Worker fragment IDs include their owning pack. Update only the changed
+  // packs after native-source and Core admission, never a superseded view.
+  for(const [id,rows] of publishedPacks)if(activePacks.get(id)!==rows)
+   for(const feature of rows)selectable.delete(String(feature.id));
+  for(const [id,rows] of activePacks)if(publishedPacks.get(id)!==rows)
+   for(const feature of rows)selectable.add(String(feature.id));
+  publishedPacks=activePacks;
   onFeatures(features);publishedKey=key;
  }
  async function applyView(version,result,{partial=false}={}){
@@ -119,7 +135,8 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
    if(failureKey&&failureKey!==lastFailureKey)onError(Object.assign(Error(failedPacks[0].message),{failedPacks,diagnostic:failedPacks[0].diagnostic}));
    lastFailureKey=failureKey;
   }
-  if(key===presentedKey&&!needsSourceRestore()&&publishedKey===key&&!needsAdmission.size)return;
+  if(key===presentedKey&&!needsSourceRestore()&&publishedKey===key&&!needsAdmission.size
+   &&![...retiredLogicalIds].some(id=>!preserveLogicalId(id)))return;
   await beforePublish(current);
   if(!current())return;
   if(key===presentedKey){
@@ -161,7 +178,8 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
    if(current())await publish(version,key);
   }
  }
- const suspend=()=>{generation++;currentWindow=null;windowFailed=false;flushProgress=null;clearTimeout(movementTimer);movementTimer=null;cancel?.();};
+ const releasePublication=()=>{const resume=resumePublication;resumePublication=null;resume?.();};
+ const suspend=()=>{generation++;currentWindow=null;windowFailed=false;flushProgress=null;releasePublication();clearTimeout(movementTimer);movementTimer=null;cancel?.();};
  function settle(force=false,retry=false){
   if(disposed||!isEnabled())return Promise.resolve();
   const center=map.getCenter(),canvas=map.getCanvas();
@@ -174,6 +192,10 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   }
   windowFailed=false;
   const version=++generation;
+  // An existing scene is the fallback while a new viewport loads. Only an
+  // empty initial scene benefits from progressive native source writes.
+  const progressive=presentedKey===null&&!map.isMoving?.();
+  releasePublication();
   const current=()=>!disposed&&version===generation&&isEnabled();
   let progress=[],progressTimer=null;
   const enqueue=(result,options)=>{
@@ -190,15 +212,19 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   };
   flushProgress=progressReady;
   const onProgress=({packs})=>{
-   if(!current())return;
+   if(!progressive||!current())return;
    progress.push(...packs);
    if(!progressTimer&&!map.isMoving?.())progressTimer=setTimeout(progressReady,16);
   };
   pending=Promise.resolve().then(()=>current()?load(view,current,{onProgress}):null)
-   .then(result=>{
+   .then(async result=>{
     clearTimeout(progressTimer);progressTimer=null;progress=[];
     if(flushProgress===progressReady)flushProgress=null;
-    if(result&&current()){windowFailed=!!result.failedPacks?.length;return enqueue(result);}
+    if(!result||!current())return;
+    // Keep the last rendered coverage while the camera is moving. A new
+    // viewport or suspension releases the waiter and invalidates its result.
+    while(current()&&map.isMoving?.())await new Promise(resolve=>{resumePublication=resolve;});
+    if(current()){windowFailed=!!result.failedPacks?.length;return enqueue(result);}
    })
    .catch(error=>{
     clearTimeout(progressTimer);
@@ -215,12 +241,32 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  const moveEnded=()=>{
   clearTimeout(movementTimer);movementTimer=null;
   const settled=settle(false,true);
+  releasePublication();
   flushProgress?.();
   return settled;
  };
  map.on('move',moving);
  map.on('moveend',moveEnded);
- return {refresh:()=>settle(true),suspend,ready:()=>pending,
+ function resetAdmission(){
+  suspend();publishedKey=null;publishedPacks=new Map();selectable.clear();
+  // The new Core document has cleared its external identity catalog even
+  // when its native map source and viewport are unchanged.
+  for(const id of fragmentsById.keys())needsAdmission.add(id);
+ }
+ function releaseRetired(){
+  if(disposed||!isEnabled()||retirementQueued||![...retiredLogicalIds].some(id=>!preserveLogicalId(id)))return;
+  retirementQueued=true;
+  const version=generation,current=()=>!disposed&&version===generation&&isEnabled();
+  const task=tail.then(async()=>{
+   if(!current())return;
+   const removed=[...retiredLogicalIds].filter(id=>!fragmentsById.has(id)&&!preserveLogicalId(id));
+   if(!removed.length)return;
+   if(await admitFeatures([],current,{removedIds:removed})===false||!current())return;
+   for(const id of removed)retiredLogicalIds.delete(id);
+  }).finally(()=>{retirementQueued=false;});
+  tail=task.catch(error=>{if(current()&&error?.name!=='AbortError')onError(error);});
+ }
+ return {refresh:()=>settle(true),suspend,resetAdmission,releaseRetired,ready:()=>pending,
   canPick:(id,logicalId)=>isEnabled()&&!needsSourceRestore()&&selectable.has(String(id))&&!needsAdmission.has(String(logicalId)),
-  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();presentedFeatures=()=>[];}};
+  dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();publishedPacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();retiredLogicalIds.clear();presentedFeatures=()=>[];}};
 }
