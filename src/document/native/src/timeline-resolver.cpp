@@ -33,25 +33,46 @@ template<class Row> struct IndexedRow {
     TemporalInterval validity;
 };
 template<class Row> using RowsByEntity=std::map<ObjectRef,std::vector<IndexedRow<Row>>>;
+template<class Row> void sortIntervals(std::vector<IndexedRow<Row>>& rows) {
+    std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){
+        if(!a.validity.start)return bool(b.validity.start);
+        if(!b.validity.start)return false;
+        return a.validity.start->startKey<b.validity.start->startKey;
+    });
+}
 template<class Row> RowsByEntity<Row> indexRows(const std::vector<Row>& rows) {
     RowsByEntity<Row> index;
     for(const auto& row:rows)
         index[row.objectRef].push_back({&row,normalizeTemporalInterval(row.validity.from,row.validity.to)});
+    for(auto& [ref,entries]:index)sortIntervals(entries);
     return index;
+}
+using PropertyRows=std::map<ObjectRef,std::map<std::string,std::vector<IndexedRow<TimelinePropertyBinding>>>>;
+PropertyRows indexProperties(const std::vector<TimelinePropertyBinding>& rows) {
+    PropertyRows result;
+    for(const auto& row:rows)
+        result[row.objectRef][row.property].push_back({&row,normalizeTemporalInterval(row.validity.from,row.validity.to)});
+    for(auto& [ref,properties]:result)for(auto& [name,entries]:properties)sortIntervals(entries);
+    return result;
 }
 bool active(const TemporalInterval& interval,const TemporalKey& atEnd) {
     return (!interval.start||!(atEnd<interval.start->startKey))
         &&(!interval.end||!(interval.end->endKey<atEnd));
 }
+template<class Row> const Row* selectedInterval(const std::vector<IndexedRow<Row>>& rows,
+                                                  const TemporalKey& atEnd) {
+    // Validation guarantees disjoint intervals within each owner/slot.
+    // Only the latest start not after this date can contain it.
+    auto it=std::upper_bound(rows.begin(),rows.end(),atEnd,[](const auto& date,const auto& row){
+        return row.validity.start&&date<row.validity.start->startKey;
+    });
+    if(it==rows.begin())return nullptr;
+    --it;return active(it->validity,atEnd)?it->value:nullptr;
+}
 template<class Row> const Row* selected(const RowsByEntity<Row>& index,const ObjectRef& id,
                                        const TemporalKey& atEnd) {
     const auto found=index.find(id);
-    if(found==index.end())return nullptr;
-    const auto& rows=found->second;
-    const auto it=std::find_if(rows.begin(),rows.end(),[&](const auto& row){
-        return active(row.validity,atEnd);
-    });
-    return it==rows.end()?nullptr:it->value;
+    return found==index.end()?nullptr:selectedInterval(found->second,atEnd);
 }
 }
 struct PreparedTimelineWorld::Data {
@@ -60,7 +81,7 @@ struct PreparedTimelineWorld::Data {
     RowsByEntity<TimelineLifetime> lifetimes;
     RowsByEntity<TimelineGeometryBinding> geometries;
     RowsByEntity<TimelineParentRelation> parents;
-    RowsByEntity<TimelinePropertyBinding> properties;
+    PropertyRows properties;
     // Inclusive interval starts and the day after inclusive ends are the
     // only dates on which an identity's direct projection can change.
     std::map<TemporalKey,std::set<ObjectRef>> events;
@@ -72,15 +93,17 @@ PreparedTimelineWorld::PreparedTimelineWorld(const TimelineRecords& records,cons
     next->lifetimes=indexRows(next->records.lifetimes);
     next->geometries=indexRows(next->records.geometryBindings);
     next->parents=indexRows(next->records.parentRelations);
-    next->properties=indexRows(next->records.propertyBindings);
-    const auto indexEvents=[&](const auto& rows){
-        for(const auto& [ref,entries]:rows)for(const auto& entry:entries){
+    next->properties=indexProperties(next->records.propertyBindings);
+    const auto addEvents=[&](const ObjectRef& ref,const auto& entries){
+        for(const auto& entry:entries){
             if(entry.validity.start)next->events[entry.validity.start->startKey].insert(ref);
             if(entry.validity.end)next->events[temporalFollowingDay(entry.validity.end->endKey)].insert(ref);
         }
     };
-    indexEvents(next->lifetimes);indexEvents(next->geometries);
-    indexEvents(next->parents);indexEvents(next->properties);
+    const auto indexEvents=[&](const auto& rows){for(const auto& [ref,entries]:rows)addEvents(ref,entries);};
+    indexEvents(next->lifetimes);indexEvents(next->geometries);indexEvents(next->parents);
+    for(const auto& [ref,properties]:next->properties)
+        for(const auto& [name,entries]:properties)addEvents(ref,entries);
     data_=std::move(next);
 }
 const ResolvedEntity* ResolvedWorld::find(const ObjectRef& id) const {
@@ -153,13 +176,17 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         if(changed.empty()){
             auto result=*previous;result.month=cursor.canonical;return result;
         }
+        // A broad jump should not copy the old property map or compare
+        // every prior row when most identities require reconstruction.
+        if(changed.size()>index.entities.size()/2){previous=nullptr;changed.clear();}
     }
     ResolvedWorld result;result.month=cursor.canonical;
     result.projectionIdentity=std::make_shared<const bool>(true);
     result.entities.reserve(index.entities.size());
     const auto propertiesFor=[&](const ObjectRef& ref,const auto& properties){
-        for(const auto& property:properties)if(active(property.validity,atEnd))
-            result.activeProperties[ref][property.value->property]=property.value->value;
+        for(const auto& [name,entries]:properties)
+            if(const auto* property=selectedInterval(entries,atEnd))
+                result.activeProperties[ref][name]=property->value;
     };
     if(previous){
         result.activeProperties=previous->activeProperties;

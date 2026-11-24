@@ -39,15 +39,17 @@ bool overlap(std::initializer_list<Validity> intervals) {
     return !start||!end||!(*end<*start);
 }
 void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
+    if(world.activeProperties.empty())return;
     std::map<std::string,TerritorialUnit*> units;for(auto& unit:document.units)units.emplace(unit.id,&unit);
+    std::map<std::string,HydroFeature*> waters;for(auto& water:document.hydro)waters.emplace(water.id,&water);
     for(const auto& [ref,properties]:world.activeProperties)
         for(const auto& [property,encoded]:properties) {
         if(ref.domain=="hydro") {
-            auto found=std::find_if(document.hydro.begin(),document.hydro.end(),[&](const auto& water){return water.id==ref.id;});
-            if(found==document.hydro.end())throw TimelineError("TIMELINE_ENTITY","Water identity missing.");
+            const auto found=waters.find(ref.id);
+            if(found==waters.end())throw TimelineError("TIMELINE_ENTITY","Water identity missing.");
             const auto value=codecjson::parse(encoded);
-            if(property=="name")found->name=value.object.at("name").string;
-            else if(property=="color")found->color=static_cast<std::uint32_t>(std::stod(value.object.at("color").raw));
+            if(property=="name")found->second->name=value.object.at("name").string;
+            else if(property=="color")found->second->color=static_cast<std::uint32_t>(std::stod(value.object.at("color").raw));
             continue;
         }
         auto& unit=*units.at(ref.id);const auto ref=territorialRef(unit.id);const auto value=codecjson::parse(encoded);
@@ -66,8 +68,28 @@ void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
 TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source,const ResolvedWorld& world) {
     TimelineDocumentProjection result;
     source.geometries.requireReady(world.requiredGeometries);
-    result.document=source;
-    result.document.timelineRecords={};
+    // Copy only the live document domains. The historical archive is not
+    // part of this static view and must not be copied just to discard it.
+    auto& document=result.document;
+    document.documentId=source.documentId;document.exchangeMetadata=source.exchangeMetadata;
+    document.units=source.units;document.dirtyTerritorialIds=source.dirtyTerritorialIds;
+    document.countryDetails=source.countryDetails;document.symbols=source.symbols;document.labels=source.labels;
+    document.hydro=source.hydro;document.distributionLayers=source.distributionLayers;
+    document.distributionEntries=source.distributionEntries;document.genericFeatures=source.genericFeatures;
+    document.physicalData=source.physicalData;document.geometries=source.geometries;
+    document.geometryProvenance=source.geometryProvenance;document.presentation=source.presentation;
+    document.extensions=source.extensions;
+    auto& records=document.timelineRecords;
+    records.lifetimes.reserve(source.units.size()+source.hydro.size());
+    records.geometryBindings.reserve(source.units.size()+source.hydro.size());
+    records.parentRelations.reserve(source.units.size());
+    std::set<ObjectRef> appended;
+    const auto append=[&](const ObjectRef& ref,GeometryRef geometry,const std::string& rendering="{}"){
+        if(!appended.insert(ref).second)throw TimelineError("TIMELINE_ENTITY","Duplicate static projection identity.");
+        const auto key=ref.domain+":"+ref.id;
+        records.lifetimes.push_back({"lifetime:"+key,ref,{}});
+        records.geometryBindings.push_back({"geometry:"+key,ref,{},std::move(geometry),rendering});
+    };
     std::map<ObjectRef,const TimelineGeometryBinding*> firstBindings;
     bool fallbackIndexed=false;
     const auto fallbackBinding=[&](const ObjectRef& ref)->const TimelineGeometryBinding& {
@@ -92,21 +114,18 @@ TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source
             result.inactiveIds.insert(territorialRef(unit.id));
             geometry=fallbackBinding(territorialRef(unit.id)).geometryRef;
         }
-        addStaticTerritorialRecords(result.document,unit.id,geometry,parent,coverage);
-    }
-    for(const auto& unit:source.units)if(result.inactiveIds.count(territorialRef(unit.id))) {
-        const std::string group="objects";
-        result.document.presentation.webPresentation.itemVisibility[group][unit.id]=false;
+        const auto ref=territorialRef(unit.id);
+        append(ref,geometry);
+        records.parentRelations.push_back({"parent:"+unit.id,ref,{},parent,coverage});
+        if(!active)document.presentation.webPresentation.itemVisibility["objects"][unit.id]=false;
     }
     for(const auto& water:source.hydro) {
         const ObjectRef ref{"hydro",water.id};const auto* active=world.find(ref);
         if(!active) {
             const auto& binding=fallbackBinding(ref);
-            addStaticObjectRecords(result.document,ref,binding.geometryRef);
-            staticGeometryBinding(result.document,ref).rendering=binding.rendering;
+            append(ref,binding.geometryRef,binding.rendering);
         } else {
-            addStaticObjectRecords(result.document,ref,active->geometryRef);
-            staticGeometryBinding(result.document,ref).rendering=active->rendering;
+            append(ref,active->geometryRef,active->rendering);
         }
         if(!active){result.inactiveIds.insert(ref);result.document.presentation.webPresentation.itemVisibility["hydro"][water.id]=false;}
     }

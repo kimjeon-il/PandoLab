@@ -571,3 +571,23 @@ test('incremental Core timeline resolution matches cold resolution in both direc
     }
   }finally{session.delete();}
 });
+
+
+test('native temporal interval lookup preserves gaps, overlapping property types and backward jumps',async()=>{
+  const source=readFixture();
+  source.timelineRecords.propertyBindings=[
+    {id:'b-name-old',objectRef:{domain:'territorial',id:'B'},validFrom:'1910-01-02',validTo:'1914-06',property:'name',value:{name:'Old',nameExplicit:true}},
+    {id:'b-name-new',objectRef:{domain:'territorial',id:'B'},validFrom:'1916',validTo:'1920-03',property:'name',value:{name:'New',nameExplicit:true}},
+    {id:'b-color',objectRef:{domain:'territorial',id:'B'},validFrom:'1914',validTo:'1920-03',property:'color',value:{color:12345,explicitColor:true}},
+  ];
+  const session=await sessionFor(source);
+  try{
+    const read=month=>session.resolveWorld(month,session.projectState().epoch).entities.find(row=>row.objectRef.id==='B');
+    assert.equal(read('1916-01').properties.name.name,'New');
+    assert.equal(read('1914-07').properties.name,undefined);
+    assert.equal(read('1914-07').properties.color.color,12345);
+    assert.equal(read('1914-06').properties.name.name,'Old');
+    assert.equal(read('1920-04'),undefined);
+    assert.equal(read('1916-02').properties.name.name,'New');
+  }finally{session.delete();}
+});

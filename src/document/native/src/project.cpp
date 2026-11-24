@@ -161,7 +161,19 @@ bool Project::setTimelineCursor(const std::string& month,bool activateEdits,cons
     if(next==timelineCursor_&&nextState==state_){
         timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return activates;
     }
-    auto view=next.empty()?std::shared_ptr<const detail::DocumentState>{}:projectedState(nextState->document,next,target);
+    std::shared_ptr<const detail::DocumentState> view;
+    bool sameProjection=false;
+    // A cached prior month certifies an unchanged view only within the
+    // same admitted document, with no archive eviction. The cursor itself
+    // is stored separately and must still advance.
+    if(target&&target->projectionIdentity&&viewState_&&nextState==state_
+        &&preparedTimeline_&&preparedTimelineSource_.lock()==state_){
+        for(const auto& prior:resolvedTimeline_)
+            if(prior&&prior->month==timelineCursor_&&prior->projectionIdentity==target->projectionIdentity){
+                sameProjection=true;break;
+            }
+    }
+    if(!next.empty())view=sameProjection?viewState_:projectedState(nextState->document,next,target);
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
     const bool changed=next!=timelineCursor_;
     state_=std::move(nextState);viewState_=std::move(view);
@@ -200,8 +212,20 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
     }
     // Only cached worlds from the same immutable prepared source may be
     // used as an incremental base. Replacing that source clears all slots.
-    auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month,
-        reuse?resolvedTimeline_[0].get():nullptr));
+    const ResolvedWorld* nearest=nullptr;
+    if(reuse){
+        const auto monthIndex=[](const TemporalValue& value)->std::int64_t {
+            return static_cast<std::int64_t>(value.year>0?value.year-1:value.year)*12+value.month.value_or(1)-1;
+        };
+        const auto wanted=monthIndex(requested);
+        auto distance=std::numeric_limits<std::int64_t>::max();
+        for(const auto& candidate:resolvedTimeline_)if(candidate){
+            const auto difference=monthIndex(parseTemporal(candidate->month))-wanted;
+            const auto absolute=difference<0?-difference:difference;
+            if(absolute<distance){distance=absolute;nearest=candidate.get();}
+        }
+    }
+    auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month,nearest));
     std::size_t slot=resolvedTimeline_.size()-1;
     while(slot>0&&resolvedTimeline_[slot]&&resolvedTimeline_[slot]->month==timelineCursor_)--slot;
     for(;slot>0;--slot)resolvedTimeline_[slot]=std::move(resolvedTimeline_[slot-1]);

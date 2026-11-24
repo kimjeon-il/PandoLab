@@ -139,24 +139,41 @@ std::vector<TimelineEntityIdentity> timelineEntityCatalog(const ProjectDocument&
     return result;
 }
 namespace {
-template<class Rows> bool staticRows(const Rows& rows,const ObjectRef& id) {
-    std::size_t count=0;
-    for(const auto& row:rows)if(row.objectRef==id) {
-        if(row.validity.from||row.validity.to)return false;
-        ++count;
+template<class Rows> auto staticRowStatus(const Rows& rows) {
+    std::map<ObjectRef,bool> result;
+    for(const auto& row:rows){
+        const auto [it,inserted]=result.emplace(row.objectRef,!row.validity.from&&!row.validity.to);
+        if(!inserted)it->second=false;
     }
-    return count==1;
+    return result;
 }
 template<class Rows> auto& staticRow(Rows& rows,const ObjectRef& id) {
-    if(!staticRows(rows,id))throw TimelineError("TIMELINE_ACTIVATION","Current editing requires a single unbounded record.");
-    return *std::find_if(rows.begin(),rows.end(),[&](const auto& row){return row.objectRef==id;});
+    auto found=rows.end();
+    for(auto it=rows.begin();it!=rows.end();++it)if(it->objectRef==id){
+        if(found!=rows.end()||it->validity.from||it->validity.to)
+            throw TimelineError("TIMELINE_ACTIVATION","Current editing requires a single unbounded record.");
+        found=it;
+    }
+    if(found==rows.end())throw TimelineError("TIMELINE_ACTIVATION","Current editing requires a single unbounded record.");
+    return *found;
 }
 }
 bool isStaticTimeline(const ProjectDocument& d) {
     if(!d.timelineRecords.propertyBindings.empty())return false;
-    for(const auto& unit:d.units)if(!staticRows(d.timelineRecords.lifetimes,territorialRef(unit.id))
-      ||!staticRows(d.timelineRecords.geometryBindings,territorialRef(unit.id))||!staticRows(d.timelineRecords.parentRelations,territorialRef(unit.id)))return false;
-    for(const auto& water:d.hydro)if(!staticRows(d.timelineRecords.lifetimes,{"hydro",water.id})||!staticRows(d.timelineRecords.geometryBindings,{"hydro",water.id}))return false;
+    const auto lifetimes=staticRowStatus(d.timelineRecords.lifetimes);
+    const auto geometries=staticRowStatus(d.timelineRecords.geometryBindings);
+    const auto parents=staticRowStatus(d.timelineRecords.parentRelations);
+    const auto single=[](const auto& rows,const ObjectRef& ref){
+        const auto it=rows.find(ref);return it!=rows.end()&&it->second;
+    };
+    for(const auto& unit:d.units){
+        const auto ref=territorialRef(unit.id);
+        if(!single(lifetimes,ref)||!single(geometries,ref)||!single(parents,ref))return false;
+    }
+    for(const auto& water:d.hydro){
+        const ObjectRef ref{"hydro",water.id};
+        if(!single(lifetimes,ref)||!single(geometries,ref))return false;
+    }
     return true;
 }
 void requireStaticTimeline(const ProjectDocument& d) {
