@@ -11,6 +11,7 @@ namespace pandoeditor::detail {
 struct DocumentState {
     ProjectDocument document;
     DocumentIndex index;
+    const bool staticTimeline=true;
     std::map<ObjectRef,ObjectPropertyView> properties;
     std::vector<CountryView> countries;
     std::map<std::string, std::size_t> countryIndex;
@@ -18,16 +19,16 @@ struct DocumentState {
 
     DocumentState() = default; // unloaded Project only
     explicit DocumentState(ProjectDocument candidate,std::set<ObjectRef> inactive={})
-        : document(std::move(candidate)), index(validateDocument(document)), inactiveIds(std::move(inactive))
+        : document(std::move(candidate)), index(validateDocument(document)), staticTimeline(isStaticTimeline(document)), inactiveIds(std::move(inactive))
     { initializeViews(); }
     struct VerifiedResources {};
     // Only Project's verified geometry-resource admission/eviction may use
     // this path. Identities, bindings, declarations and content are unchanged.
     DocumentState(ProjectDocument candidate,const DocumentState& previous,VerifiedResources)
-        :document(std::move(candidate)),index(previous.index),inactiveIds(previous.inactiveIds)
+        :document(std::move(candidate)),index(previous.index),staticTimeline(previous.staticTimeline),inactiveIds(previous.inactiveIds)
     { initializeViews(); }
     void initializeViews() {
-        if(!isStaticTimeline(document))return;
+        if(!staticTimeline)return;
         properties=objectPropertyViews(document);
         auto allCountries=countryViews(document,inactiveIds);
         countries.reserve(allCountries.size());

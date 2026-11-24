@@ -78,6 +78,7 @@ template<class Row> const Row* selected(const RowsByEntity<Row>& index,const Obj
 struct PreparedTimelineWorld::Data {
     TimelineRecords records;
     std::vector<TimelineEntityIdentity> entities;
+    std::map<ObjectRef,std::size_t> catalogOrder;
     RowsByEntity<TimelineLifetime> lifetimes;
     RowsByEntity<TimelineGeometryBinding> geometries;
     RowsByEntity<TimelineParentRelation> parents;
@@ -90,6 +91,7 @@ PreparedTimelineWorld::PreparedTimelineWorld(const TimelineRecords& records,cons
     auto next=std::make_shared<Data>();
     next->records=normalizeTimelineRecords(records,context);
     next->entities=context.entities;
+    for(std::size_t i=0;i<next->entities.size();++i)next->catalogOrder.emplace(next->entities[i].objectRef,i);
     next->lifetimes=indexRows(next->records.lifetimes);
     next->geometries=indexRows(next->records.geometryBindings);
     next->parents=indexRows(next->records.parentRelations);
@@ -178,76 +180,158 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
     }
     auto projection=std::make_shared<ResolvedWorldProjection>();
     ResolvedWorld result{cursor.canonical,projection};
-    if(previous)projection->deltaBase=previous->projection;
-    projection->entities.reserve(index.entities.size());
-    auto affected=changed;
-    const auto propertiesFor=[&](const ObjectRef& ref,const auto& properties){
+    if(previous){
+        projection->deltaBase=previous->projection;
+        projection->offsets=previous->projection->offsets;
+        projection->activeProperties=previous->projection->activeProperties;
+        projection->geometryUsers=previous->projection->geometryUsers;
+        projection->children=previous->projection->children;
+        projection->requiredGeometries=previous->projection->requiredGeometries;
+    }
+    // Copy an index only when one of its keys actually changes. Property
+    // payloads stay immutable, and property-only dates retain the geometry
+    // and hierarchy indexes by identity.
+    std::shared_ptr<ResolvedPropertyIndex> properties;
+    const auto updateProperties=[&](const ObjectRef& ref){
         ResolvedProperties values;
-        for(const auto& [name,entries]:properties)
-            if(const auto* property=selectedInterval(entries,atEnd))
-                values.emplace(name,property->value);
-        if(!values.empty())projection->activeProperties.emplace(ref,std::make_shared<const ResolvedProperties>(std::move(values)));
+        const auto found=index.properties.find(ref);
+        if(found!=index.properties.end())for(const auto& [name,entries]:found->second)
+            if(const auto* property=selectedInterval(entries,atEnd))values.emplace(name,property->value);
+        const auto& current=*projection->activeProperties;
+        const auto old=current.find(ref);
+        if(old==current.end()?values.empty():*old->second==values)return;
+        if(!properties){properties=std::make_shared<ResolvedPropertyIndex>(current);projection->activeProperties=properties;}
+        if(values.empty())properties->erase(ref);
+        else (*properties)[ref]=std::make_shared<const ResolvedProperties>(std::move(values));
+    };
+    if(previous){for(const auto& ref:changed)updateProperties(ref);}
+    else for(const auto& [ref,entries]:index.properties)updateProperties(ref);
+    const auto makeRow=[&](const ObjectRef& ref)->std::shared_ptr<ResolvedEntity>{
+        const auto* lifetime=selected(index.lifetimes,ref,atEnd);
+        const auto* geometry=selected(index.geometries,ref,atEnd);
+        if(!lifetime||!geometry)return {};
+        const auto* parent=selected(index.parents,ref,atEnd);
+        auto row=std::make_shared<ResolvedEntity>(ResolvedEntity{ref,geometry->geometryRef,geometry->rendering,
+            parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
+        row->validity=lifetime->validity;
+        const auto found=result.activeProperties().find(ref);
+        if(found!=result.activeProperties().end())row->properties=*found->second;
+        return row;
+    };
+    std::map<ObjectRef,std::shared_ptr<ResolvedEntity>> fresh;
+    std::set<ObjectRef> affected=changed;
+    std::shared_ptr<ResolvedGeometryUsers> geometryUsers;
+    std::shared_ptr<ResolvedChildren> children;
+    bool requiredChanged=!previous,membershipChanged=!previous;
+    const auto updateResources=[&](const ObjectRef& ref,const ResolvedEntity* before,const ResolvedEntity* after){
+        if((before!=nullptr)!=(after!=nullptr))membershipChanged=true;
+        if(!before||!after||!(before->geometryRef==after->geometryRef)){
+            if(before||after){
+                if(!geometryUsers){geometryUsers=std::make_shared<ResolvedGeometryUsers>(*projection->geometryUsers);projection->geometryUsers=geometryUsers;}
+                if(before){
+                    auto it=geometryUsers->find(before->geometryRef);
+                    if(it==geometryUsers->end())throw TimelineError("TIMELINE_GEOMETRY","Missing prior geometry reference count.");
+                    if(--it->second==0){geometryUsers->erase(it);requiredChanged=true;}
+                }
+                if(after){
+                    auto [it,inserted]=geometryUsers->emplace(after->geometryRef,0);
+                    ++it->second;requiredChanged=requiredChanged||inserted;
+                }
+            }
+        }
+        const auto oldParent=before?before->parentId:std::string{};
+        const auto newParent=after?after->parentId:std::string{};
+        if(oldParent!=newParent){
+            if(!children){children=std::make_shared<ResolvedChildren>(*projection->children);projection->children=children;}
+            if(!oldParent.empty()){
+                auto it=children->find(oldParent);
+                if(it!=children->end()){it->second.erase(ref);if(it->second.empty())children->erase(it);}
+            }
+            if(!newParent.empty())(*children)[newParent].insert(ref);
+        }
     };
     if(previous){
-        projection->activeProperties=previous->activeProperties();
+        // Resolve only event owners. Discover descendants using the previous
+        // direct-child graph; no full ancestry scan across the active world.
+        std::vector<ObjectRef> descendants;
         for(const auto& ref:changed){
-            projection->activeProperties.erase(ref);
-            const auto found=index.properties.find(ref);
-            if(found!=index.properties.end())propertiesFor(ref,found->second);
+            const auto* before=previous->find(ref);
+            auto after=makeRow(ref);
+            if(ref.domain=="territorial"&&
+                ((before!=nullptr)!=(after!=nullptr)||(before&&after&&before->parentId!=after->parentId)))
+                descendants.push_back(ref);
+            updateResources(ref,before,after.get());
+            fresh.emplace(ref,std::move(after));
         }
-    }else for(const auto& [ref,properties]:index.properties)propertiesFor(ref,properties);
-
-    // Keep canonical catalog order. Unchanged identities reuse their already
-    // resolved lifetime, geometry, direct parent and property projection.
-    std::vector<std::shared_ptr<ResolvedEntity>> freshRows;
-    if(previous)freshRows.reserve(changed.size());
-    else freshRows.reserve(index.entities.size());
-    for(const auto& identity:index.entities) {
-        const auto& ref=identity.objectRef;
-        if(previous&&!changed.count(ref)){
-            const auto prior=previous->offsets().find(ref);
-            if(prior!=previous->offsets().end()){
-                projection->offsets.emplace(ref,projection->entities.size());
-                projection->entities.push_back(previous->projection->entities.at(prior->second));
+        std::set<ObjectRef> visited;
+        for(std::size_t i=0;i<descendants.size();++i){
+            const auto ref=descendants[i];
+            if(ref.domain!="territorial"||!visited.insert(ref).second)continue;
+            const auto found=previous->projection->children->find(ref.id);
+            if(found==previous->projection->children->end())continue;
+            for(const auto& child:found->second){affected.insert(child);descendants.push_back(child);}
+        }
+        if(!membershipChanged){
+            // The ordered vector is a shallow copy of shared row handles;
+            // its offsets and resource indexes need not be rebuilt.
+            projection->entities=previous->projection->entities;
+            for(const auto& [ref,row]:fresh)if(row)projection->entities[previous->offsets().at(ref)]=row;
+        }else{
+            // Merge only the previously active rows and newly active owners
+            // in canonical catalog order, not every historical identity.
+            std::vector<std::pair<std::size_t,std::shared_ptr<const ResolvedEntity>>> added;
+            for(const auto& [ref,row]:fresh)if(row&&!previous->find(ref))added.emplace_back(index.catalogOrder.at(ref),row);
+            std::sort(added.begin(),added.end(),[](const auto& a,const auto& b){return a.first<b.first;});
+            auto offsets=std::make_shared<ResolvedOffsets>();
+            projection->entities.reserve(previous->entities().size()+added.size());
+            const auto append=[&](const auto& row){offsets->emplace(row->objectRef,projection->entities.size());projection->entities.push_back(row);};
+            std::size_t cursor=0;
+            for(const auto& row:previous->projection->entities){
+                const auto rank=index.catalogOrder.at(row->objectRef);
+                while(cursor<added.size()&&added[cursor].first<rank)append(added[cursor++].second);
+                const auto found=fresh.find(row->objectRef);
+                if(found==fresh.end())append(row);
+                else if(found->second)append(found->second);
             }
-            continue;
+            while(cursor<added.size())append(added[cursor++].second);
+            projection->offsets=std::move(offsets);
         }
-        const auto* lifetime=selected(index.lifetimes,ref,atEnd);
-        if(!lifetime)continue;
-        const auto* geometry=selected(index.geometries,ref,atEnd);
-        if(!geometry)continue;
-        const auto* parent=selected(index.parents,ref,atEnd);
-        auto entity=std::make_shared<ResolvedEntity>(ResolvedEntity{ref,geometry->geometryRef,geometry->rendering,parent?parent->parentId:"",parent?parent->coverageMode:"explicit"});
-        entity->validity=lifetime->validity;
-        projection->offsets.emplace(ref,projection->entities.size());
-        const auto found=projection->activeProperties.find(ref);
-        if(found!=projection->activeProperties.end())entity->properties=*found->second;
-        projection->entities.push_back(entity);
-        freshRows.push_back(std::move(entity));
+    }else{
+        auto offsets=std::make_shared<ResolvedOffsets>();
+        projection->entities.reserve(index.entities.size());
+        for(const auto& identity:index.entities){
+            const auto& ref=identity.objectRef;
+            auto row=makeRow(ref);
+            if(!row)continue;
+            updateResources(ref,nullptr,row.get());
+            offsets->emplace(ref,projection->entities.size());
+            projection->entities.push_back(row);fresh.emplace(ref,std::move(row));affected.insert(ref);
+        }
+        projection->offsets=std::move(offsets);
     }
-    std::set<GeometryRef> required;
-    for(const auto& row:result.entities())required.insert(row.geometryRef);
-    projection->requiredGeometries.assign(required.begin(),required.end());
-    std::size_t freshIndex=0;
-    for(auto& row:projection->entities) {
-        // Only newly created rows and descendants of changed parents need
-        // mutable ancestry reconstruction. Unaffected rows retain identity.
-        const bool fresh=!previous||changed.count(row->objectRef);
-        if(!fresh&&std::none_of(row->ancestors.begin(),row->ancestors.end(),[&](const auto& id){
-            return changed.count(ObjectRef{"territorial",id})!=0;
-        }))continue;
-        if(previous)affected.insert(row->objectRef);
-        auto entity=fresh?freshRows.at(freshIndex++):std::make_shared<ResolvedEntity>(*row);
+    if(requiredChanged){
+        auto required=std::make_shared<std::vector<GeometryRef>>();required->reserve(projection->geometryUsers->size());
+        for(const auto& [ref,count]:*projection->geometryUsers)required->push_back(ref);
+        projection->requiredGeometries=std::move(required);
+    }
+    // All direct rows and offsets are now installed. Compute ancestry only
+    // for the affected subgraph; other entity allocations are shared.
+    for(const auto& ref:affected){
+        const auto offset=result.offsets().find(ref);
+        if(offset==result.offsets().end())continue;
+        auto& slot=projection->entities[offset->second];
+        const auto found=fresh.find(ref);
+        auto entity=found!=fresh.end()&&found->second?found->second:std::make_shared<ResolvedEntity>(*slot);
         entity->ancestors.clear();
         auto parent=entity->parentId;
-        while(!parent.empty()) {
+        while(!parent.empty()){
             entity->ancestors.push_back(parent);
             const auto* resolvedParent=result.find(ObjectRef{"territorial",parent});
             if(!resolvedParent)throw TimelineError("TIMELINE_PARENT_INACTIVE","Inactive parent "+parent);
             parent=resolvedParent->parentId;
         }
         entity->rootId=entity->ancestors.empty()?entity->objectRef.id:entity->ancestors.back();
-        row=std::move(entity);
+        slot=std::move(entity);
     }
     if(previous)projection->affected.assign(affected.begin(),affected.end());
     return result;

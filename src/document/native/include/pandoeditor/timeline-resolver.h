@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <iterator>
+#include <set>
 
 namespace pandoeditor {
 struct ResolvedEntity {
@@ -17,6 +18,10 @@ struct ResolvedEntity {
 };
 using ResolvedEntityStorage=std::vector<std::shared_ptr<const ResolvedEntity>>;
 using ResolvedProperties=std::map<std::string,std::string>;
+using ResolvedOffsets=std::map<ObjectRef,std::size_t>;
+using ResolvedPropertyIndex=std::map<ObjectRef,std::shared_ptr<const ResolvedProperties>>;
+using ResolvedGeometryUsers=std::map<GeometryRef,std::size_t>;
+using ResolvedChildren=std::map<std::string,std::set<ObjectRef>>;
 // A read-only ordered range preserves the existing consumers' row interface
 // without making a second contiguous copy of shared entities.
 struct ResolvedEntityRange {
@@ -48,11 +53,12 @@ struct ResolvedEntityRange {
 // shared by every event-free month, view, and detached candidate that owns it.
 struct ResolvedWorldProjection {
     ResolvedEntityStorage entities;
-    std::map<ObjectRef,std::size_t> offsets;
-    // Includes identities without visible geometry. Unchanged property maps
-    // are shared too, including large embedded symbols and names.
-    std::map<ObjectRef,std::shared_ptr<const ResolvedProperties>> activeProperties;
-    std::vector<GeometryRef> requiredGeometries;
+    std::shared_ptr<const ResolvedOffsets> offsets=std::make_shared<const ResolvedOffsets>();
+    // Share the whole index when a cursor changes no corresponding entries.
+    std::shared_ptr<const ResolvedPropertyIndex> activeProperties=std::make_shared<const ResolvedPropertyIndex>();
+    std::shared_ptr<const ResolvedGeometryUsers> geometryUsers=std::make_shared<const ResolvedGeometryUsers>();
+    std::shared_ptr<const ResolvedChildren> children=std::make_shared<const ResolvedChildren>();
+    std::shared_ptr<const std::vector<GeometryRef>> requiredGeometries=std::make_shared<const std::vector<GeometryRef>>();
     // A weak receipt cannot pin previous months. Only a matching base may
     // use the affected owner set to skip the full wire comparison.
     std::weak_ptr<const ResolvedWorldProjection> deltaBase;
@@ -62,9 +68,9 @@ struct ResolvedWorld {
     std::string month;
     std::shared_ptr<const ResolvedWorldProjection> projection=std::make_shared<const ResolvedWorldProjection>();
     ResolvedEntityRange entities() const noexcept {return {projection->entities};}
-    const auto& offsets() const noexcept {return projection->offsets;}
-    const auto& activeProperties() const noexcept {return projection->activeProperties;}
-    const auto& requiredGeometries() const noexcept {return projection->requiredGeometries;}
+    const auto& offsets() const noexcept {return *projection->offsets;}
+    const auto& activeProperties() const noexcept {return *projection->activeProperties;}
+    const auto& requiredGeometries() const noexcept {return *projection->requiredGeometries;}
     const ResolvedEntity* find(const ObjectRef&) const;
 };
 
