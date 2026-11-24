@@ -9,6 +9,7 @@ import {resolveMapLibreMapStyle} from './maplibre-map-style.js';
 import {syncMapLibreBaseLayer} from './maplibre-base-layer.js';
 import {createMapLibreStyleController} from './maplibre-style-controller.js';
 import {sameRenderIdentity} from './render-identity.js';
+import {isPreparedSceneDomain} from './map-scene.js';
 import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
 const collection=features=>({type:'FeatureCollection',features});
 const countryFillFilter=batch=>['all',['==',['get','displayRole'],'country-fill'],['==',['get','paintBatch'],batch],['==',['get','blendMode'],'normal']];
@@ -18,12 +19,13 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
  isInitialMapLoading,getPolarLayer,getHighlight,isPhysicalPending,getPhysicalGeometry,getExternalBasemap,
  getSelectionSnapshot,setSelection,invalidatePickingLayers,preferences,state,datedSources,sourceWrites,
  sourceLayer,sourceGroups,dirty,invalidate,failMapPreparation,feedback}){
- let sceneKey=0,sceneIdentity=null,vectorRevision=0,interactionStyle=null,pendingSceneDomains=null,pendingInteractionStyle=null,sceneVectors=[],sceneOrder=[];
+ let sceneKey=0,sceneIdentity=null,sceneStyle=null,vectorRevision=0,interactionStyle=null,pendingSceneDomains=null,pendingInteractionStyle=null,sceneVectors=[],sceneOrder=[];
  const dynamicLayers=new Set(),dynamicSources=new Set(),sceneGroups=new Map(),vectorLayers=new Map(),strokeDomains=new Map(),strokeGroupCache=new Map();
  const countryFillGroups=new Map(),countryPaintState=new WeakMap();
  let sourceLayers=[],indexedStyle=null,requiredLayerCache=null,styleController=null;
  const getStyle=()=>resolveMapLibreMapStyle({palette:preferences.mapPalette(),
   antiAlias:interactionStyle?.antiAlias!==false,layerVisibility:state.layerVisibility});
+ const preparedDomainRows=new WeakMap();
  const identityFor=rows=>rows.map(row=>[row.key,row.objectKey,row.geometryRevision??geometryKey(row.geometry),row.order,row.role,row.kind,row.blendMode,JSON.stringify(row.style)]);
  const colorsEnabled=()=>layerStyle(state.layerPresentation,'objects').colorVisible;
  function invalidateLayerIndex(){indexedStyle=null;requiredLayerCache=null;invalidatePickingLayers();}
@@ -224,10 +226,25 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   if(!isLoaded())return;
   if(!isStyleReady()){pendingSceneDomains=domains;return;}
   const map=getMap();
-  const rows=[...domains].flatMap(([domain,value])=>domain==='physical-land'||domain==='physical-water'?[]:[...value.polygons.map(item=>({...item,kind:'fill'})),...value.strokes.map(item=>({...item,kind:'line'}))]);
+  // Domain snapshots are immutable and reused by the upstream scene owner.
+  // Prepare the per-object identities only for changed domains, not on each
+  // camera/style refresh. Raw callers still get value-based comparisons.
+  const prepared=[];
+  for(const [name,value]of domains){
+   if(name==='physical-land'||name==='physical-water')continue;
+   let entry=preparedDomainRows.get(value);
+   if(!entry){
+    const rows=[...value.polygons.map(item=>({...item,kind:'fill'})),...value.strokes.map(item=>({...item,kind:'line'}))];
+    entry={rows,identity:identityFor(rows)};
+    if(isPreparedSceneDomain(value))preparedDomainRows.set(value,entry);
+   }
+   prepared.push([name,entry]);
+  }
+  const identity=prepared.map(([name,entry])=>[name,entry.identity]);
+  if(sceneStyle===map.style&&sameRenderIdentity(sceneIdentity,identity))return;
+  sceneIdentity=identity;sceneStyle=map.style;sceneKey++;
+  const rows=prepared.flatMap(([,entry])=>entry.rows);
   const native=row=>row.kind==='line'||row.blendMode==='multiply'||row.style?.blendMode==='multiply';
-  const identity=identityFor(rows);
-  if(sameRenderIdentity(sceneIdentity,identity))return;sceneIdentity=identity;sceneKey++;
   sceneVectors=rows.filter(native).filter(row=>row.kind==='fill'?(row.style?.fillAlpha??1)>0:(row.style?.alpha??1)>0).map(row=>['Point','MultiPoint'].includes(row.geometry?.type)?{...row,kind:'point'}:row);
   const groups=new Map();
   rows.filter(row=>!native(row)).sort((a,b)=>a.order-b.order).forEach(row=>{const kind=['Point','MultiPoint'].includes(row.geometry?.type)?'circle':row.kind,band=row.role==='territorial-fill'?'territorial':row.order<0?'base':'independent';const id='scene-'+kind+'-'+row.order+'-'+band;if(!groups.has(id))groups.set(id,[]);groups.get(id).push({...row,kind});});
@@ -294,7 +311,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   get vectors(){return sceneVectors;},get key(){return sceneKey;},get interactionStyle(){return interactionStyle;},
   vectorRole:id=>vectorLayers.get(id)?.role,requiredVectorPending:()=>[...vectorLayers.values()].some(entry=>entry.role!=='hydro-detail'&&entry.layer.pending),
   removeCountryFillSource:id=>countryFillGroups.delete(id),
-  resetPendingDomains(){pendingSceneDomains=null;},
+  resetPendingDomains(){pendingSceneDomains=null;sceneIdentity=null;sceneStyle=null;},
   flushPendingInteractionStyle(){if(pendingInteractionStyle){const value=pendingInteractionStyle;pendingInteractionStyle=null;setInteractionStyle(value);}},
   flushPendingDomains(){if(pendingSceneDomains){const value=pendingSceneDomains;pendingSceneDomains=null;setSceneDomains(value);}},
   invalidateLayerIndex,
