@@ -56,10 +56,12 @@ export function createCountryBoundaryPreparation({loadSeed, seedWaitMs = 5_000})
         output.patch(state.changedEdges(),input.key);
         current={key:input.key,state,get segments(){return state.segments();},seedRows:null};
       }else{
+        const previousById=new Map((previous?.seedRows||[]).map(row=>[row.id,row]));
+        const nextById=new Map(upserts.map(row=>[row.id,row]));
         const options=previous?.seedRows?{
           cachedSegments:previous.segments,
           changedIds:new Set([...new Set([...previous.seedRows.map(row=>row.id),...upserts.map(row=>row.id)])].filter(id=>{
-            const before=previous.seedRows.find(row=>row.id===id),after=upserts.find(row=>row.id===id);
+            const before=previousById.get(id),after=nextById.get(id);
             return !before||!after||!before.boundaryGeometryRevision||before.boundaryGeometryRevision!==after.boundaryGeometryRevision;
           }))
         }:countryBoundarySeedOptions(upserts,seed);

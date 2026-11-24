@@ -24,7 +24,7 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
  const nativeGeometry=row=>{
   if(row.kind!=='line')return row.geometry;
   const cached=clippedLines.get(row.geometry);
-  if(cached?.revision===row.geometryRevision)return cached.geometry;
+  if(cached&&cached.revision===row.geometryRevision)return cached.geometry;
   const geometry=clipMercatorLines(row.geometry);clippedLines.set(row.geometry,{revision:row.geometryRevision,geometry});return geometry;
  };
  const feature=row=>({type:'Feature',id:row.key,geometry:nativeGeometry(row),properties:{key:row.key,objectKey:row.objectKey||''}});
