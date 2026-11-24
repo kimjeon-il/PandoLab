@@ -87,24 +87,27 @@ async function consumeStoredResponse(response, spec, phase, key, label, source, 
   };
 }
 
-async function decodeStoredBuffer(storedBuffer, spec, phase, key, label) {
+async function decodeStoredBuffer(storedBuffer, spec, phase, key, label, signal = null) {
+  signal?.throwIfAborted();
   const startedAt = performance.now();
   let buffer = storedBuffer;
   if (spec.encoding === 'gzip') {
     if (typeof DecompressionStream !== 'function') throw new Error(`이 브라우저는 ${label} 압축 해제를 지원하지 않습니다.`);
     report(phase, `${key}-decode`, `${label}: 압축을 해제하는 중입니다.`);
     let decoded = new Blob([storedBuffer]).stream().pipeThrough(new DecompressionStream('gzip'));
-    if(spec.maxDecodedBytes!==undefined){
-      if(!Number.isSafeInteger(spec.maxDecodedBytes)||spec.maxDecodedBytes<1)throw Error('Invalid decoded asset limit');
+    const limit=spec.maxDecodedBytes??(Number.isSafeInteger(spec.decodedBytes)&&spec.decodedBytes>0?spec.decodedBytes:undefined);
+    if(limit!==undefined||signal){
+      if(limit!==undefined&&(!Number.isSafeInteger(limit)||limit<1))throw Error('Invalid decoded asset limit');
       let bytes=0;
       decoded=decoded.pipeThrough(new TransformStream({transform(chunk,controller){
         bytes+=chunk.byteLength;
-        if(bytes>spec.maxDecodedBytes)throw Error(`${label} 압축 해제 크기가 허용된 한도를 초과합니다.`);
+        if(limit!==undefined&&bytes>limit)throw Error(`${label} 압축 해제 크기가 허용된 한도를 초과합니다.`);
         controller.enqueue(chunk);
-      }}));
+      }}),signal?{signal}:undefined);
     }
     buffer = await new Response(decoded).arrayBuffer();
   }
+  signal?.throwIfAborted();
   return {
     buffer,
     decodedBytes: buffer.byteLength,
@@ -137,7 +140,7 @@ function validateAssetLength(result, spec, label) {
 
 async function loadRepresentation(spec, phase, key, label, validate, signal, representation) {
   signal?.throwIfAborted();
-  const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
+  const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
   const url = resolveAssetUrl(spec);
   const cache = await openDataCache();
   if (cache) {
@@ -183,10 +186,17 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
       signal?.throwIfAborted();
       const cacheWriteStartedAt = performance.now();
       report(phase, `${key}-cache-write`, `${label}: 다운로드한 데이터를 저장하는 중입니다.`, 0, 1);
-      const cached = await cacheStoredBuffer(cache, url, read.storedBuffer, responseHeaders);
-      const cacheWriteMs = performance.now() - cacheWriteStartedAt;
-      report(phase, `${key}-cache-write`, `${label}: 저장을 마쳤습니다.`, 1, 1, true, { cached });
-      const decoded = await decode(read.storedBuffer);
+      // Verified stored bytes can be persisted while independent decoding
+      // proceeds. Settle both operations before retry/delete, even on failure.
+      const writing=cacheStoredBuffer(cache,url,read.storedBuffer,responseHeaders).then(cached=>{
+        const cacheWriteMs=performance.now()-cacheWriteStartedAt;
+        report(phase,`${key}-cache-write`,`${label}: 저장을 마쳤습니다.`,1,1,true,{cached});
+        return {cached,cacheWriteMs};
+      });
+      const [written,unpacked]=await Promise.allSettled([writing,decode(read.storedBuffer)]);
+      if(written.status==='rejected')throw written.reason;
+      if(unpacked.status==='rejected')throw unpacked.reason;
+      const {cached,cacheWriteMs}=written.value,decoded=unpacked.value;
       const result = {
         ...read,
         ...decoded,

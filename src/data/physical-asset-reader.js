@@ -34,6 +34,9 @@ export function createPhysicalAssetReader({
   async function loadPhysicalLand(spec=buildMeta?.physicalLand){
     if(!spec)throw new Error('Missing pinned physical land asset.');
     const key=spec.sha256;
+    if(preparedLand.has(key)){
+      const existing=preparedLand.get(key);preparedLand.delete(key);preparedLand.set(key,existing);return existing;
+    }
     if(!preparedLand.has(key))preparedLand.set(key,(async()=>{
       // Both render paths use the same verified coverage. Canonical patches
       // still read their original base when the display asset is unavailable.
@@ -47,7 +50,14 @@ export function createPhysicalAssetReader({
       if(key===buildMeta.physicalLand.sha256){physicalLand=context;onLandReady();}
       return context;
     })().catch(error=>{preparedLand.delete(key);throw error;}));
-    return preparedLand.get(key);
+    const task=preparedLand.get(key);
+    task.then(()=>{
+      for(const [id] of preparedLand){
+        if(preparedLand.size<=2)break;
+        if(id!==key&&id!==buildMeta?.physicalLand?.sha256)preparedLand.delete(id);
+      }
+    },()=>{});
+    return task;
   }
   return Object.freeze({storedPhysicalAssets,loadPhysicalLand,
     get physicalLand(){return physicalLand;}});

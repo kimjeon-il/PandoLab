@@ -541,3 +541,16 @@ test('Core builtin source adoption transmits changed world rows, with retained o
     assert.deepEqual(model.snapshot().territorialEntities,session.documentSnapshot().territorialEntities);
   }finally{session.delete();}
 });
+
+
+test('stored gzip assets enforce declared decoded byte bounds before admission',async()=>{
+  const raw=Buffer.from('{"coordinates":[1,2,3,4]}');
+  const compressed=(await import('node:zlib')).gzipSync(raw);
+  let validated=0;
+  const loader=createStoredAssetLoader({dataRevision:'gzip-limit',cacheStorage:null,subtle:webcrypto.subtle,
+    resolveUrl:()=> 'https://fixture.invalid/asset',fetchFn:async()=>new Response(compressed)});
+  await assert.rejects(loader.decodeStoredAsset(compressed.buffer.slice(compressed.byteOffset,compressed.byteOffset+compressed.byteLength),
+    {encoding:'gzip',compressedBytes:compressed.length,decodedBytes:4,sha256:hash(compressed)},'test','asset','asset',
+    ()=>{validated++;}),/압축 해제 크기/);
+  assert.equal(validated,0);
+});

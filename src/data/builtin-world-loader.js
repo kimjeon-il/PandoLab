@@ -151,12 +151,23 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   if(!missing.length)return;
   const done=limitedRead(()=>assets.loadStoredAsset({...spec,url:new URL(spec.url,assetRoot).href},
    'builtin-world',spec.sha256,'국가 형상 묶음',async buffer=>{
-    const rows=[];
-    for(const {asset,start,end} of missing){
-     const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,maxDecodedBytes:asset.decodedBytes},
-      'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset));
-     rows.push({asset,value});
-    }
+    const rows=new Array(missing.length);
+    // Two bounded independent gzip members per pack; never launch all
+    // members at once or abandon an in-flight decode on a sibling failure.
+    let cursor=0,failed=false;
+    const workers=Array.from({length:Math.min(2,missing.length)},async()=>{
+     try{
+      while(!failed&&cursor<missing.length){
+       const i=cursor++,{asset,start,end}=missing[i];
+       const {value}=await assets.decodeStoredAsset(buffer.slice(start,end),{...asset,maxDecodedBytes:asset.decodedBytes},
+        'builtin-world',asset.id,'국가 형상',decoded=>decodeGeometryContent(decoded,asset));
+       rows[i]={asset,value};
+      }
+     }catch(error){failed=true;throw error;}
+    });
+    const settled=await Promise.allSettled(workers);
+    const failure=settled.find(row=>row.status==='rejected');
+    if(failure)throw failure.reason;
     return rows;
    })).then(({value})=>{
     return new Map(value.map(({asset,value:source})=>[asset.file,rememberGeometry(asset,source)]));
