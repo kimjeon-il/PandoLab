@@ -5,7 +5,7 @@ export function createGeometryWorkGate(limit=2){
   while(active<limit&&waiting.length){
    waiting.sort((a,b)=>b.priority-a.priority||a.sequence-b.sequence);
    const entry=waiting.shift();entry.detach();
-   if(entry.context.signal?.aborted){entry.reject(entry.context.signal.reason);continue;}
+   if(entry.context.signal?.aborted){entry.reject(entry.context.signal.reason||new DOMException('Cancelled','AbortError'));continue;}
    active++;
    Promise.resolve().then(()=>{entry.context.throwIfCancelled();return entry.work();})
     .then(entry.resolve,entry.reject).finally(()=>{active--;pump();});

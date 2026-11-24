@@ -1,6 +1,7 @@
 import {riverWidthAtZoom} from './maplibre-hydro-presentation.js';
 import {createPolarDrawBatcher} from './maplibre-polar-batch.js';
 import {renderCacheBudget} from './render-cache-budget.js';
+import {createGeometryWorkGate} from './geometry-work-gate.js';
 
 // Hand over before Mercator's 85.051129-degree tile edge: a line ending on
 // that edge can still acquire a stretched polar segment during tile clipping.
@@ -104,6 +105,15 @@ function visiblePolarCaps(data){
 export const polarCapsVisible=data=>visiblePolarCaps(data)!==0;
 export function createPolarLayer({map,prepare,onChange,onError}){
  const id='pando-polar-caps',capCache=new WeakMap();
+ const cores=Number(globalThis.navigator?.hardwareConcurrency),memory=Number(globalThis.navigator?.deviceMemory);
+ const limit=memory>0&&memory<=4||cores>0&&cores<=4?1:2;
+ const meshGate=createGeometryWorkGate(limit);
+ let staticRequest=null,highlightRequest=null;
+ const cancelled=()=>new DOMException('Polar preparation superseded','AbortError');
+ function stop(request){request?.abort(cancelled());}
+ function contextFor(signal,priority){
+  return {signal,priority,throwIfCancelled(){signal.throwIfAborted();}};
+ }
  let key='',pending=false,sequence=0,disposed=false,gl,program,vao,bindings;
  const emptyBatch={rows:[],packets:new Set()},batcher=createPolarDrawBatcher({byteBudget:renderCacheBudget().polarBatchBytes});
  const mainMatrix=new Float32Array(16),fallbackMatrix=new Float32Array(16);
@@ -245,23 +255,46 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    }
   }};
  const background=capMesh();
- async function mesh(geometry){
-  if(!capCache.has(geometry)){
+ async function mesh(geometry,context){
+  // Share only completed immutable packets. A cancelled in-flight task
+  // must not poison the next generation's use of the same geometry.
+  const cached=capCache.get(geometry);
+  if(cached)return cached;
+  return meshGate.run(context,async()=>{
+   context.throwIfCancelled();
+   const prior=capCache.get(geometry);if(prior)return prior;
    preparations++;
-   capCache.set(geometry,prepare(geometry)
-    .catch(error=>{capCache.delete(geometry);throw error;}));
-  }
-  return capCache.get(geometry);
+   const packet=await prepare(geometry,context.signal);
+   context.throwIfCancelled();capCache.set(geometry,packet);return packet;
+  });
  }
  const batchFor=rows=>batcher.batch(rows);
- const prepareRows=items=>Promise.all(items.map(async item=>({...item,packet:item.packet||await mesh(item.geometry)})));
+ async function prepareRows(items,context){
+  const rows=new Array(items.length);let cursor=0,failed=false;
+  const lanes=Array.from({length:Math.min(limit,items.length)},async()=>{
+   try{
+    while(!failed&&cursor<items.length){
+     context.throwIfCancelled();
+     const index=cursor++,item=items[index];
+     rows[index]={...item,packet:item.packet||await mesh(item.geometry,context)};
+    }
+   }catch(error){failed=true;throw error;}
+  });
+  const settled=await Promise.allSettled(lanes),failure=settled.find(row=>row.status==='rejected');
+  if(failure)throw failure.reason;
+  context.throwIfCancelled();return rows;
+ }
  const obsoleteHighlight=()=>new DOMException('Polar highlights were superseded','AbortError');
  async function prepareHighlights(items){
   const request=++highlightSequence,generation=contextGeneration;
+  stop(highlightRequest);const controller=new AbortController();highlightRequest=controller;
   const previous=stagedHighlights;stagedHighlights=emptyBatch;retire(previous);
   const current=()=>!disposed&&request===highlightSequence&&generation===contextGeneration&&gl?.isContextLost?.()!==true;
-  const next=batchFor(await prepareRows(items));
+  let rows;
+  try{rows=await prepareRows(items,contextFor(controller.signal,100));}
+  finally{if(highlightRequest===controller)highlightRequest=null;}
   if(!current())throw obsoleteHighlight();
+  const next=batchFor(rows);
   stagedHighlights=next;
   try{
    prepareBuffers(next);
@@ -275,14 +308,14 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   };
  }
  function clearHighlights(){
-  highlightSequence++;
+  highlightSequence++;stop(highlightRequest);highlightRequest=null;
   const previous=highlightBatch,staged=stagedHighlights;
   highlightBatch=stagedHighlights=emptyBatch;retire(previous);retire(staged);
   if(previous.rows.length)map.triggerRepaint?.();
  }
  function resetContext(){failed=false;release();if(gl){vao=gl.createVertexArray();prepareBuffers(staticBatch,gridBatch,overlayBatch,highlightBatch);}}
  return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size,mergedCpuCache:batcher.stats()}),
-  retry(){sequence++;pending=false;key='';resetContext();},resetContext,
+  retry(){sequence++;stop(staticRequest);staticRequest=null;pending=false;key='';resetContext();},resetContext,
   ensure(){if(!map.getLayer(id))map.addLayer(layer,map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);},get pending(){return pending;},
   prepareHighlights,clearHighlights,
   setOverlayLines(items){
@@ -293,7 +326,8 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   },
   setLoadingSurface(surface){loadingSurface=surface;},
   update(nextKey,items,backgroundColor){if(nextKey===key)return;key=nextKey;pending=true;const version=++sequence;
-   prepareRows(items).then(next=>{
+   stop(staticRequest);const controller=new AbortController();staticRequest=controller;
+   prepareRows(items,contextFor(controller.signal,60)).then(next=>{
     if(disposed||version!==sequence)return;
     const previous=staticBatch,previousGrid=gridBatch;
     const nextStatic=batchFor([{packet:background,color:backgroundColor,loadingRole:'ocean'},...next.filter(row=>row.loadingRole!=='grid')]);
@@ -301,8 +335,10 @@ export function createPolarLayer({map,prepare,onChange,onError}){
     try{prepareBuffers(nextStatic,nextGrid);}catch(error){retire(nextStatic);retire(nextGrid);throw error;}
     staticBatch=nextStatic;gridBatch=nextGrid;
     retire(previous);retire(previousGrid);pending=false;onChange();
-   }).catch(error=>{if(!disposed&&version===sequence){pending=false;key='';failed=error?.name!=='AbortError';onError(error);}});
+   }).catch(error=>{if(!disposed&&version===sequence){pending=false;key='';failed=error?.name!=='AbortError';onError(error);}})
+    .finally(()=>{if(staticRequest===controller)staticRequest=null;});
   },dispose(){if(disposed)return;disposed=true;sequence++;highlightSequence++;pending=false;key='';
+   stop(staticRequest);stop(highlightRequest);staticRequest=highlightRequest=null;
    staticBatch=gridBatch=overlayBatch=highlightBatch=stagedHighlights=emptyBatch;loadingSurface=null;batcher.clear();
    if(map.getLayer(id))map.removeLayer(id);else release();}};
 }

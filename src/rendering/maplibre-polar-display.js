@@ -20,9 +20,9 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   if(before?layers[index+1]!==before:index!==layers.length-1)getMap().moveLayer(polarLayer.id,before);
  }
  function ensurePolar(){
-  polarLayer ||=createLayer({map:getMap(),prepare:async geometry=>(await prepareRenderGeometry([
+  polarLayer ||=createLayer({map:getMap(),prepare:async (geometry,signal)=>(await prepareRenderGeometry([
    {kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry,polarCapOnly:true},
-  ],getGeneration())).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:cause=>{if(cause.name==='AbortError'){polarInputs=[];invalidate('polar-cancelled');}else failMapPreparation(cause);}});
+  ],getGeneration(),undefined,signal)).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:cause=>{if(cause.name==='AbortError'){polarInputs=[];invalidate('polar-cancelled');}else failMapPreparation(cause);}});
   polarLayer.ensure();
   return polarLayer;
  }

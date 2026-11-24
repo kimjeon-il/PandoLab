@@ -146,6 +146,8 @@ self.PandoLabWorkerRpc.install({
         geometry:{type:'MultiLineString',coordinates:group.segments.map(segment=>[segment.start,segment.end])}
       }))];
       const packets = new Array(items.length), packetTimings=[];
+      let transferBytes=0;
+      const transfers=new Set();
       // Two independent immutable asset reads may overlap without growing
       // the mobile decode/triangulation working set beyond two packets.
       for(let index=0;index<items.length;index+=2){
@@ -182,15 +184,22 @@ self.PandoLabWorkerRpc.install({
         await new Promise(resolve=>setTimeout(resolve,0));
         context.throwIfCancelled();
         for(let j=0;j<rows.length;j++){
-          packets[index+j]=rows[j].prepared;packetTimings.push(rows[j].timing);
+          const {prepared,timing}=rows[j];packets[index+j]=prepared;
+          // Keep only the diagnostic top eight, not one timing record for
+          // every object in a large historical scene.
+          packetTimings.push(timing);packetTimings.sort((a,b)=>b.durationMs-a.durationMs);
+          if(packetTimings.length>8)packetTimings.pop();
+          for(const value of [...Object.values(prepared.packet||{}),...Object.values(prepared.stroke||{})])
+           if(ArrayBuffer.isView(value)&&!transfers.has(value.buffer)){
+            transfers.add(value.buffer);transferBytes+=value.buffer.byteLength;
+           }
         }
       }
-      const buffers = [...new Set(packets.flatMap(({ packet,stroke }) => [...Object.values(packet||{}),...Object.values(stroke||{})]
-        .filter(ArrayBuffer.isView).map(value => value.buffer)))];
+      const buffers=[...transfers];
       const finishedAt=performance.now();
       return self.PandoLabWorkerRpc.transferResult({packets,boundaryPartitions:boundary?.manifest,retainedGeometryInputs:inputStore.retained(),stats:{...store?.stats(),...countryBoundary?.stats(),...inputStore.stats(),
-        transferBytes:buffers.reduce((total,buffer)=>total+buffer.byteLength,0),startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
-        slowestPackets:packetTimings.sort((a,b)=>b.durationMs-a.durationMs).slice(0,8)}},buffers);
+        transferBytes,startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
+        slowestPackets:packetTimings}},buffers);
     },
   },
 });
