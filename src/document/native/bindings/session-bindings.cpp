@@ -671,7 +671,7 @@ public:
     std::string storageSnapshot() const{return boundary([&]{return session_.storageSnapshot();});}
     val projectState() const{return boundary([&]{return documentState(session_.projectState());});}
     val resolveWorld(const std::string& month,std::uint32_t epoch) const {
-        return boundary([&]{session_.requireEpoch(epoch);auto value=world(session_.resolveWorld(month));value.set("sourceEpoch",epoch);return value;});
+        return boundary([&]{session_.requireEpoch(epoch);auto value=world(*session_.resolveWorldShared(month));value.set("sourceEpoch",epoch);return value;});
     }
     val geometryRequirements(const std::string& month,std::uint32_t epoch) const {
         return boundary([&]{auto rows=val::array();unsigned i=0;
@@ -693,14 +693,14 @@ public:
     val setTimelineCursor(const std::string& month,std::uint32_t epoch) {
         return boundary([&]{
             session_.requireEpoch(epoch);
-            const auto before=session_.resolveWorld(session_.project().timelineCursor());
-            ResolvedWorld resolved;
+            const auto before=session_.resolveWorldShared(session_.project().timelineCursor());
+            std::shared_ptr<const ResolvedWorld> resolved;
             session_.setTimelineCursor(month,epoch,&resolved);
             const auto state=session_.projectState();
             auto result=val::object();
             result.set("state",documentState(state));
             result.set("selection",::selectionSnapshot(session_.selection()));
-            result.set("worldDelta",worldDelta(before,resolved,epoch,state.epoch));
+            result.set("worldDelta",worldDelta(*before,*resolved,epoch,state.epoch));
             return result;
         });
     }

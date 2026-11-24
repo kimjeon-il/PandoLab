@@ -51,9 +51,14 @@ std::shared_ptr<const detail::DocumentState> projectedState(const ProjectDocumen
                                                              const std::string& month,const ResolvedWorld* resolved=nullptr) {
     if(isStaticTimeline(document))return {};
     if(month.empty())throw TimelineError("TIMELINE_CURSOR_REQUIRED","dated view needs a month");
-    auto projection=timelineDocumentView(document,month,resolved);
-    return std::make_shared<const detail::DocumentState>(std::move(projection.document),
-        std::move(projection.inactiveIds));
+    if(resolved&&resolved->month!=month)
+        throw TimelineError("STALE_REVISION","Resolved timeline month differs from requested projection");
+    if(resolved){
+        auto projection=projectResolvedTimeline(document,*resolved);
+        return std::make_shared<const detail::DocumentState>(std::move(projection.document),std::move(projection.inactiveIds));
+    }
+    auto projection=timelineDocumentView(document,month);
+    return std::make_shared<const detail::DocumentState>(std::move(projection.document),std::move(projection.inactiveIds));
 }
 }
 struct ProjectReplacementState::Data {
@@ -86,10 +91,10 @@ void Project::admitPresentation(ProjectDocument document,bool advanceRevision) {
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_
         &&sameTimelineRecords(state_->document.timelineRecords,next->document.timelineRecords)
         &&sameTimelineCatalog(state_->document,next->document);
-    const ResolvedWorld* resolved=nullptr;
+    std::shared_ptr<const ResolvedWorld> resolved;
     if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(next->document))
-        resolved=&resolveTimelineMetadata(timelineCursor_);
-    auto view=projectedState(next->document,timelineCursor_,resolved);
+        resolved=resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(next->document,timelineCursor_,resolved.get());
     state_=std::move(next);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
     if(advanceRevision)++presentationRevision_;
@@ -106,10 +111,10 @@ void Project::admitTerritorialDirtyIds(const std::function<std::vector<std::stri
     // This path changes only the dirty-territory marker list. Both timeline
     // records and entity catalog remain unchanged, even when state_ is copied.
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
-    const ResolvedWorld* resolved=nullptr;
+    std::shared_ptr<const ResolvedWorld> resolved;
     if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))
-        resolved=&resolveTimelineMetadata(timelineCursor_);
-    auto view=projectedState(state->document,timelineCursor_,resolved);
+        resolved=resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(state->document,timelineCursor_,resolved.get());
     state_=std::move(state);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
 }
@@ -140,7 +145,8 @@ bool Project::setTimelineCursor(const std::string& month,bool activateEdits,cons
     }
     const bool activates=activateEdits&&!timelineEditsEnabled_;
     if(next==timelineCursor_){timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return activates;}
-    auto view=next.empty()?std::shared_ptr<const detail::DocumentState>{}:projectedState(document(),next,resolved);
+    const auto cached=(!resolved&&!next.empty()&&!isStaticTimeline(document()))?resolveTimelineMetadata(next):nullptr;
+    auto view=next.empty()?std::shared_ptr<const detail::DocumentState>{}:projectedState(document(),next,resolved?resolved:cached.get());
     viewState_=std::move(view);
     timelineCursor_.swap(next);timelineEditsEnabled_=timelineEditsEnabled_||activateEdits;return true;
 }
@@ -151,41 +157,46 @@ ProjectSnapshot Project::snapshotForView() const {
     }
     return snapshot();
 }
-const ResolvedWorld& Project::resolveTimelineMetadata(const std::string& month) const {
-    // Viewer/session time queries admit only canonical months. Source records
-    // retain their original year/date precision within their validity fields.
+std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std::string& month) const {
+    const auto& d=document();
+    const bool reuse=preparedTimelineSource_.lock()==state_&&preparedTimeline_;
+    if(reuse)for(std::size_t i=0;i<resolvedTimeline_.size();++i) {
+        if(resolvedTimeline_[i]&&resolvedTimeline_[i]->month==month) {
+            auto found=resolvedTimeline_[i];
+            for(;i>0;--i)resolvedTimeline_[i]=std::move(resolvedTimeline_[i-1]);
+            resolvedTimeline_[0]=found;
+            return found;
+        }
+    }
     const auto requested=parseTemporal(month);
     if(requested.precision!="month"||requested.canonical!=month)
         throw TimelineError("PL-TEMPORAL-001","World queries require a canonical month.");
-    const auto& d=document();
-    if(preparedTimelineSource_.lock()!=state_||!preparedTimeline_) {
-        auto prepared=std::make_shared<const PreparedTimelineWorld>(d.timelineRecords,
+    if(!reuse) {
+        preparedTimeline_=std::make_shared<const PreparedTimelineWorld>(d.timelineRecords,
             TimelineValidationContext{timelineEntityCatalog(d),
                 [&](const ObjectRef&,const GeometryRef& ref){return d.geometries.contains(ref);}});
-        preparedTimeline_=std::move(prepared);
         preparedTimelineSource_=state_;
         resolvedTimeline_={};
     }
-    for(std::size_t i=0;i<resolvedTimeline_.size();++i) {
-        if(resolvedTimeline_[i]&&resolvedTimeline_[i]->month==month) {
-            if(i!=0)std::swap(resolvedTimeline_[0],resolvedTimeline_[i]);
-            return *resolvedTimeline_[0];
-        }
-    }
     auto resolved=std::make_shared<const ResolvedWorld>(preparedTimeline_->resolve(month));
-    resolvedTimeline_[1]=std::move(resolvedTimeline_[0]);
-    resolvedTimeline_[0]=std::move(resolved);
-    return *resolvedTimeline_[0];
+    std::size_t slot=resolvedTimeline_.size()-1;
+    while(slot>0&&resolvedTimeline_[slot]&&resolvedTimeline_[slot]->month==timelineCursor_)--slot;
+    for(;slot>0;--slot)resolvedTimeline_[slot]=std::move(resolvedTimeline_[slot-1]);
+    resolvedTimeline_[0]=resolved;
+    return resolved;
+}
+std::shared_ptr<const ResolvedWorld> Project::resolveWorldShared(const std::string& month) const {
+    const auto world=resolveTimelineMetadata(month);
+    document().geometries.requireReady(world->requiredGeometries());
+    return world;
 }
 ResolvedWorld Project::resolveWorld(const std::string& month) const {
-    auto world=resolveTimelineMetadata(month);std::vector<GeometryRef> required;
-    for(const auto& row:world.entities)required.push_back(row.geometryRef);
-    document().geometries.requireReady(required);return world;
+    return *resolveWorldShared(month);
 }
 std::vector<GeometryRef> Project::missingGeometries(const std::string& month) const {
-    std::set<GeometryRef> required;
-    if(month.empty())for(const auto& [ref,resource]:document().geometries.resources())required.insert(ref);
-    else for(const auto& row:resolveTimelineMetadata(month).entities)required.insert(row.geometryRef);
+    std::vector<GeometryRef> required;
+    if(month.empty())for(const auto& [ref,resource]:document().geometries.resources())required.push_back(ref);
+    else required=resolveTimelineMetadata(month)->requiredGeometries();
     std::vector<GeometryRef> missing;for(const auto& ref:required)if(!document().geometries.get(ref))missing.push_back(ref);
     return missing;
 }
@@ -199,8 +210,8 @@ void Project::admitGeometryResources(const GeometryStore& resources) {
     };
     auto state=rebase(state_);
     const bool reuse=preparedTimeline_&&preparedTimelineSource_.lock()==state_;
-    const ResolvedWorld* resolved=nullptr;if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))resolved=&resolveTimelineMetadata(timelineCursor_);
-    auto view=projectedState(state->document,timelineCursor_,resolved);
+    std::shared_ptr<const ResolvedWorld> resolved;if(reuse&&!timelineCursor_.empty()&&!isStaticTimeline(state->document))resolved=resolveTimelineMetadata(timelineCursor_);
+    auto view=projectedState(state->document,timelineCursor_,resolved.get());
     state_=std::move(state);viewState_=std::move(view);
     if(reuse)preparedTimelineSource_=state_;
 }

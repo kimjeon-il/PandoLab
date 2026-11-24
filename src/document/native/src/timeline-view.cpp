@@ -63,18 +63,9 @@ void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
     }
 }
 }
-TimelineDocumentView timelineDocumentView(const ProjectDocument& source,const std::string& month,const ResolvedWorld* resolved) {
-    TimelineDocumentView result;
-    if(resolved) {
-        if(resolved->month!=parseTemporal(month).canonical)
-            throw TimelineError("STALE_REVISION","Resolved timeline month differs from requested projection");
-        result.world=*resolved;
-    } else {
-        result.world=resolveWorld(source.timelineRecords,
-            {timelineEntityCatalog(source),[&](const ObjectRef&,const GeometryRef& ref){return source.geometries.contains(ref);}},month);
-    }
-    std::vector<GeometryRef> required;for(const auto& row:result.world.entities)required.push_back(row.geometryRef);
-    source.geometries.requireReady(required);
+TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source,const ResolvedWorld& world) {
+    TimelineDocumentProjection result;
+    source.geometries.requireReady(world.requiredGeometries());
     result.document=source;
     result.document.timelineRecords={};
     std::map<ObjectRef,const TimelineGeometryBinding*> firstBindings;
@@ -90,7 +81,7 @@ TimelineDocumentView timelineDocumentView(const ProjectDocument& source,const st
         return *found->second;
     };
     for(const auto& unit:source.units) {
-        const auto* active=result.world.find(territorialRef(unit.id));
+        const auto* active=world.find(territorialRef(unit.id));
         GeometryRef geometry;
         std::string parent,coverage="explicit";
         if(active) {
@@ -108,7 +99,7 @@ TimelineDocumentView timelineDocumentView(const ProjectDocument& source,const st
         result.document.presentation.webPresentation.itemVisibility[group][unit.id]=false;
     }
     for(const auto& water:source.hydro) {
-        const ObjectRef ref{"hydro",water.id};const auto* active=result.world.find(ref);
+        const ObjectRef ref{"hydro",water.id};const auto* active=world.find(ref);
         if(!active) {
             const auto& binding=fallbackBinding(ref);
             addStaticObjectRecords(result.document,ref,binding.geometryRef);
@@ -119,8 +110,16 @@ TimelineDocumentView timelineDocumentView(const ProjectDocument& source,const st
         }
         if(!active){result.inactiveIds.insert(ref);result.document.presentation.webPresentation.itemVisibility["hydro"][water.id]=false;}
     }
-    applyProperties(result.document,result.world);
+    applyProperties(result.document,world);
     return result;
+}
+TimelineDocumentView timelineDocumentView(const ProjectDocument& source,const std::string& month,const ResolvedWorld* resolved) {
+    if(resolved&&resolved->month!=parseTemporal(month).canonical)
+        throw TimelineError("STALE_REVISION","Resolved timeline month differs from requested projection");
+    auto world=resolved?*resolved:resolveWorld(source.timelineRecords,
+        {timelineEntityCatalog(source),[&](const ObjectRef&,const GeometryRef& ref){return source.geometries.contains(ref);}},month);
+    auto projection=projectResolvedTimeline(source,world);
+    return {std::move(projection.document),std::move(world),std::move(projection.inactiveIds)};
 }
 void captureTimelinePropertyChanges(const ProjectDocument& source,const ProjectDocument& beforeView,
     ProjectDocument& candidate,const std::string& month) {

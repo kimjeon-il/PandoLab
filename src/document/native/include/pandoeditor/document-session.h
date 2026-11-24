@@ -96,9 +96,10 @@ public:
     const Project& project() const { return project_; }
     DocumentSessionOutcome presentationCatalogLoad(PresentationCatalog,std::uint32_t expectedEpoch);
     ResolvedWorld resolveWorld(const std::string& month) const;
+    std::shared_ptr<const ResolvedWorld> resolveWorldShared(const std::string& month) const;
     std::vector<GeometryRef> geometryRequirements(const std::string&,std::uint32_t expectedEpoch) const;
     std::string admitGeometryResources(const std::vector<std::pair<GeometryRef,std::string>>&,std::uint32_t expectedEpoch);
-    bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,ResolvedWorld* resolvedForResponse=nullptr);
+    bool setTimelineCursor(const std::string& month,std::uint32_t expectedEpoch,std::shared_ptr<const ResolvedWorld>* resolvedForResponse=nullptr);
     SelectionState& selection() { return selection_; }
     const SelectionState& selection() const { return selection_; }
     DocumentSessionOutcome selectionCatalogLoad(const std::string& domain,const std::vector<SelectionCatalogEntry>&,std::uint32_t expectedEpoch);

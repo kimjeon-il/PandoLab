@@ -47,6 +47,8 @@ public:
     bool setTimelineCursor(const std::string& month,bool activateEdits=true,const ResolvedWorld* resolved=nullptr);
     bool timelineEditsEnabled() const noexcept { return timelineEditsEnabled_; }
     ResolvedWorld resolveWorld(const std::string& month) const;
+    // A borrowed, immutable result remains valid across later cache lookups.
+    std::shared_ptr<const ResolvedWorld> resolveWorldShared(const std::string& month) const;
     std::vector<GeometryRef> missingGeometries(const std::string& month={}) const;
     std::uint64_t presentationRevision() const noexcept { return presentationRevision_; }
     Project();
@@ -77,7 +79,7 @@ private:
     void admitTerritorialSource(ProjectDocument,const std::string& month,bool activateEdits);
     void admitPresentation(ProjectDocument,bool advanceRevision=true);
     void admitGeometryResources(const GeometryStore&);
-    const ResolvedWorld& resolveTimelineMetadata(const std::string&) const;
+    std::shared_ptr<const ResolvedWorld> resolveTimelineMetadata(const std::string&) const;
     void admitTerritorialDirtyIds(const std::function<std::vector<std::string>(const ProjectDocument&)>&);
     // Capture snapshots and mutate Project only on the owner thread.
     // Workers may prepare against ProjectSnapshot, never against live Project.
@@ -86,8 +88,9 @@ private:
     // for a cursor-only transition. The source pin prevents address reuse.
     mutable std::weak_ptr<const detail::DocumentState> preparedTimelineSource_;
     mutable std::shared_ptr<const PreparedTimelineWorld> preparedTimeline_;
-    // Two immutable resolved months, invalidated with the prepared source.
-    mutable std::array<std::shared_ptr<const ResolvedWorld>,2> resolvedTimeline_{};
+    // The displayed month and recent target months share immutable results.
+    // Keep the displayed month when speculative preparation fills the cache.
+    mutable std::array<std::shared_ptr<const ResolvedWorld>,4> resolvedTimeline_{};
     std::string instanceId_;
     std::uint64_t revision_ = 0;
     std::uint64_t presentationRevision_ = 0;

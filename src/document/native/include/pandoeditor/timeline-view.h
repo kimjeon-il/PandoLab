@@ -4,11 +4,18 @@
 #include <set>
 
 namespace pandoeditor {
+struct TimelineDocumentProjection {
+    ProjectDocument document;
+    std::set<ObjectRef> inactiveIds;
+};
 struct TimelineDocumentView {
     ProjectDocument document;
     ResolvedWorld world;
     std::set<ObjectRef> inactiveIds;
 };
+// Project the document from an already admitted immutable resolution, without
+// allocating another copy of that resolution.
+TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument&,const ResolvedWorld&);
 
 // A read-only static projection for existing render and pick consumers. The
 // source document and its dated records remain the only persistent state.

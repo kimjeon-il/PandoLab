@@ -125,6 +125,10 @@ Validity timelineMapCoverageAtMonth(const TimelineRecords& records,const ObjectR
     }
     throw TimelineError("TIMELINE_INACTIVE","No map coverage for "+id.domain+":"+id.id+" at "+month);
 }
+std::vector<GeometryRef> ResolvedWorld::requiredGeometries() const {
+    std::set<GeometryRef> refs;for(const auto& row:entities)refs.insert(row.geometryRef);
+    return {refs.begin(),refs.end()};
+}
 ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month) const {
     const auto cursor=parseTemporal(month);
     const auto point=cursor.precision=="month"?temporalMonthEnd(cursor.canonical):cursor;
