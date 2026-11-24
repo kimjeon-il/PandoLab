@@ -75,6 +75,7 @@ void Project::restoreReplacement(const ProjectReplacementState& checkpoint) {
     if(!checkpoint.data_)throw std::invalid_argument("CORE_REPLACEMENT_ABSENT");const auto& data=*checkpoint.data_;
     auto instance=data.instanceId,month=data.month;
     state_=data.state;viewState_=data.view;instanceId_.swap(instance);timelineCursor_.swap(month);
+    resourceCache_={};
     revision_=data.revision;presentationRevision_=data.presentationRevision;
     timelineEditsEnabled_=data.timelineEditsEnabled;
 }
@@ -83,6 +84,7 @@ void Project::admitTerritorialSource(ProjectDocument document,const std::string&
     auto current=std::make_shared<const detail::DocumentState>(std::move(document));
     auto view=projectedState(current->document,month);auto cursor=month;
     state_=std::move(current);viewState_=std::move(view);timelineCursor_.swap(cursor);
+    resourceCache_={};
     timelineEditsEnabled_=activateEdits;++revision_;++presentationRevision_;
 }
 void Project::admitPresentation(ProjectDocument document,bool advanceRevision) {
@@ -132,10 +134,11 @@ void Project::replace(ProjectDocument document)
     auto identity=nextInstanceId();
     // No allocation or validation after this point: replace is all-or-nothing.
     state_=std::move(next); viewState_.reset(); instanceId_.swap(identity);
+    resourceCache_={};
     revision_=0; presentationRevision_=0;
     timelineCursor_.clear();timelineEditsEnabled_=!isStaticTimeline(state_->document);
 }
-bool Project::setTimelineCursor(const std::string& month,bool activateEdits,const ResolvedWorld* resolved,std::vector<GeometryRef>* evictedResources) {
+bool Project::setTimelineCursor(const std::string& month,bool activateEdits,const ResolvedWorld* resolved,std::vector<GeometryRef>* evictedResources,std::uint64_t resourceBudget) {
     const auto header=codecjson::parse(document().exchangeMetadata);if(header.object.count("projectSetup"))projectcodec::requireNavigationMonth(header.object.at("projectSetup"),month);
     std::string next;
     if(!month.empty()) {
@@ -149,7 +152,7 @@ bool Project::setTimelineCursor(const std::string& month,bool activateEdits,cons
     auto nextState=state_;
     std::vector<GeometryRef> evicted;
     if(evictedResources&&target&&!document().geometries.resources().empty()){
-        evicted=document().geometries.resourceCacheEvictions(protectedGeometryResources(target));
+        evicted=document().geometries.resourceCacheEvictions(protectedGeometryResources(target),resourceCache_,resourceBudget);
         if(!evicted.empty()){
             auto candidate=document();candidate.geometries.evictResources(evicted);
             nextState=std::make_shared<const detail::DocumentState>(std::move(candidate),*state_,detail::DocumentState::VerifiedResources{});

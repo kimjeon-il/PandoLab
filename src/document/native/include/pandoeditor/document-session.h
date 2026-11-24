@@ -59,7 +59,7 @@ constexpr std::uint64_t TEMPORAL_SOURCE_MAX_DECODED_BYTES=64ull*1024*1024;
 // second JSON document, a JS-computed candidate, or another undo ledger.
 class DocumentSession {
 public:
-    explicit DocumentSession(projectcodec::PlatformPorts);
+    explicit DocumentSession(projectcodec::PlatformPorts,std::uint64_t resourceBudget=64ull*1024*1024);
     DocumentSessionState adoptPreparedProject(Project&&);
     DocumentSessionState documentLoad(const std::string& currentWebJson,const std::string& currentMonth);
     DocumentSessionState documentLoadBaseline(std::uint32_t baselineId,const codecjson::Value& setup,const std::string& documentId);
@@ -146,6 +146,7 @@ private:
     std::unique_ptr<TemporalCandidateEntry> temporalCandidate_;
     std::uint32_t temporalCandidateSequence_=0;
     projectcodec::PlatformPorts ports_;
+    std::uint64_t geometryCacheBudget_;
     std::uint32_t epoch_=0,stateRevision_=0,sourceEpoch_=0;
     bool loaded_=false;
     std::optional<Replacement> replacement_;

@@ -229,6 +229,53 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
   } finally {session.delete();}
 });
 
+test('Core resource cache evicts only inactive reloadable versions and mirrors reference receipts in JS',async()=>{
+  const initial=readFixture(),source=readFixture(),setup={...source.projectSetup,sourceMode:'builtin',initialMonth:'1914-06'};
+  source.projectSetup=setup;
+  const assets=source.geometries.filter(row=>row.id==='shape').map(({id,version,geojson})=>{
+    const text=JSON.stringify(geojson);
+    return {id,version,type:geojson.type,source:text,decodedBytes:Buffer.byteLength(text),contentSha256:hash(text)};
+  });
+  source.geometryResources=assets.map(({source,...descriptor})=>descriptor);
+  source.geometries=assets.filter(row=>row.version===1).map(({id,version,source})=>({id,version,source}));
+  const bytes=new TextEncoder().encode(JSON.stringify(source));
+  // Zero inactive-cache budget intentionally keeps only the displayed/target
+  // resource sets; the active world may itself exceed this soft budget.
+  const session=new (await core()).DocumentSession({validateFlagDataUrl(){},geometryCacheBytes:0});
+  try{
+    session.documentLoad(JSON.stringify(initial),'1914-06');
+    const baseline=session.storageBaselineLoad({kind:'stored-asset',encoding:'identity',sourceBytes:bytes,
+      compressedBytes:bytes.length,decodedBytes:bytes.length,baseDataset:source.baseDataset,sourceMonth:'1914-06',fingerprint:hash(bytes)},session.projectState().epoch);
+    const state=session.documentLoadBaseline(baseline.storageBaselineId,setup);
+    const model=createCoreDocumentReadModel(session.documentSnapshot());
+    model.acceptWorld(session.resolveWorld('1914-06',state.epoch),state.epoch);
+    const query=session.geometryRequirements('1914-07',state.epoch);
+    assert.deepEqual(query.resources.map(({id,version})=>({id,version})),[{id:'shape',version:2}]);
+    const next=assets.find(row=>row.version===2);
+    const payload={id:next.id,version:next.version,source:next.source};
+    const admitted=session.admitGeometryResources([payload],state.epoch,'1914-07');
+    assert.deepEqual(admitted.geometryDelta.admitted,[{id:'shape',version:2}]);
+    assert.deepEqual(admitted.geometryDelta.removed,[]);
+    assert.equal(Object.hasOwn(admitted,'delta'),false,'geometry coordinates are not sent back to JS');
+    model.acceptTransition(admitted,'core.document-geometry-admit',{resources:[payload],descriptors:query.resources});
+    const forward=session.setTimelineCursor('1914-07',state.epoch);
+    model.acceptTransition(forward,'core.document-timeline-cursor');
+    assert.equal(model.world().byId.get('A').geometryRef.version,2);
+    // Move back to a month which no longer references shape version 2.
+    const back=session.setTimelineCursor('1914-06',forward.state.epoch);
+    assert.deepEqual(back.geometryDelta.removed,[{id:'shape',version:2}]);
+    model.acceptTransition(back,'core.document-timeline-cursor');
+    assert.equal(model.geometry({id:'shape',version:2}),null);
+    assert.equal(model.world().byId.get('A').geometryRef.version,1);
+    assert.deepEqual(session.geometryRequirements('1914-07',back.state.epoch).resources.map(({id,version})=>({id,version})),[{id:'shape',version:2}]);
+    const reload=session.admitGeometryResources([payload],back.state.epoch,'1914-07');
+    model.acceptTransition(reload,'core.document-geometry-admit',{resources:[payload],descriptors:query.resources});
+    const revisited=session.setTimelineCursor('1914-07',back.state.epoch);
+    model.acceptTransition(revisited,'core.document-timeline-cursor');
+    assert.equal(model.world().byId.get('A').geometryRef.version,2);
+  }finally{session.delete();}
+});
+
 test('Core preserves document identity, coordinates, time and provenance', async()=>{
   const project=readFixture(),session=await sessionFor(project);
   try {

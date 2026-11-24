@@ -38,6 +38,12 @@ struct GeometryUnavailable : std::runtime_error {
     explicit GeometryUnavailable(std::vector<GeometryRef> missing)
         :std::runtime_error("GEOMETRY_UNLOADED: required immutable resources are not ready"),refs(std::move(missing)){}
 };
+// Residency policy is owned by the live Project, never by immutable snapshots.
+struct GeometryResourceCache {
+    struct Entry {std::string hash;std::uint64_t bytes=0,access=0;};
+    std::map<GeometryRef,Entry> entries;
+    std::uint64_t clock=0;
+};
 class GeometryStore {
 public:
     void declareResource(GeometryRef,GeometryResource);
@@ -54,19 +60,16 @@ public:
     bool retainReadyFrom(const GeometryStore& verifiedSource);
     // Only hash-pinned, reloadable resources may be evicted. Declared
     // references and authored/non-resource geometry remain canonical.
-    std::vector<GeometryRef> resourceCacheEvictions(const std::set<GeometryRef>& protectedRefs,
+    std::vector<GeometryRef> resourceCacheEvictions(const std::set<GeometryRef>& protectedRefs,GeometryResourceCache&,
         std::uint64_t budget=64ull*1024*1024) const;
     void evictResources(const std::vector<GeometryRef>&);
-    std::vector<GeometryRef> trimResourceCache(const std::set<GeometryRef>& protectedRefs,
+    std::vector<GeometryRef> trimResourceCache(const std::set<GeometryRef>& protectedRefs,GeometryResourceCache&,
         std::uint64_t budget=64ull*1024*1024);
     std::shared_ptr<const Geometry> get(const GeometryRef& ref) const;
     const auto& versions() const { return versions_; }
 private:
     std::map<GeometryRef,GeometryResource> resources_;
     std::map<GeometryRef,std::shared_ptr<const Geometry>> versions_;
-    // Recency/cost are cache metadata only, never persisted document state.
-    mutable std::map<GeometryRef,std::uint64_t> resourceAccess_,resourceCosts_;
-    mutable std::uint64_t resourceClock_=0;
 };
 struct Validity { std::optional<std::string> from, to; };
 std::pair<std::int64_t,std::int64_t> temporalBounds(const Validity& validity);

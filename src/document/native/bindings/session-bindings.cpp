@@ -523,7 +523,8 @@ std::uint32_t temporalHandle(const val& input,const char* code) {
 }
 class WasmDocumentSession {
 public:
-    explicit WasmDocumentSession(val options):ports_(documentPorts(options)),session_(ports_){}
+    explicit WasmDocumentSession(val options):ports_(documentPorts(options)),session_(ports_,
+        options["geometryCacheBytes"].isUndefined()?64ull*1024*1024:static_cast<std::uint64_t>(integer(options["geometryCacheBytes"],"INVALID_GEOMETRY_CACHE_BUDGET"))){}
     val documentLoad(const std::string& input,const std::string& currentMonth){return boundary([&]{return documentState(session_.documentLoad(input,currentMonth));});}
     val storageBaselineLoad(val input,std::uint32_t epoch) {
         return boundary([&]{const auto kind=text(input["kind"],"CORE_STORAGE_BASELINE");

@@ -45,7 +45,7 @@ public:
     const std::string& timelineCursor() const noexcept { return timelineCursor_; }
     // Session month only: no content revision, dirty bit or history entry.
     bool setTimelineCursor(const std::string& month,bool activateEdits=true,const ResolvedWorld* resolved=nullptr,
-        std::vector<GeometryRef>* evictedResources=nullptr);
+        std::vector<GeometryRef>* evictedResources=nullptr,std::uint64_t resourceBudget=64ull*1024*1024);
     bool timelineEditsEnabled() const noexcept { return timelineEditsEnabled_; }
     ResolvedWorld resolveWorld(const std::string& month) const;
     // A borrowed, immutable result remains valid across later cache lookups.
@@ -93,6 +93,7 @@ private:
     // The displayed month and recent target months share immutable results.
     // Keep the displayed month when speculative preparation fills the cache.
     mutable std::array<std::shared_ptr<const ResolvedWorld>,4> resolvedTimeline_{};
+    GeometryResourceCache resourceCache_;
     std::string instanceId_;
     std::uint64_t revision_ = 0;
     std::uint64_t presentationRevision_ = 0;

@@ -87,25 +87,29 @@ bool GeometryStore::retainReadyFrom(const GeometryStore& source) {
     }
     return changed;
 }
-std::vector<GeometryRef> GeometryStore::resourceCacheEvictions(const std::set<GeometryRef>& protectedRefs,std::uint64_t budget) const {
+std::vector<GeometryRef> GeometryStore::resourceCacheEvictions(const std::set<GeometryRef>& protectedRefs,GeometryResourceCache& cache,std::uint64_t budget) const {
     std::uint64_t bytes=0;
     struct Entry {GeometryRef ref;std::uint64_t bytes,access;};
     std::vector<Entry> inactive;
-    for(const auto& [ref,resource]:resources_){
-        const auto found=versions_.find(ref);if(found==versions_.end())continue;
-        const auto& shape=*found->second;
+    for(auto it=cache.entries.begin();it!=cache.entries.end();){
+        if(!versions_.count(it->first)||!resources_.count(it->first))it=cache.entries.erase(it);
+        else ++it;
+    }
+    for(const auto& [ref,geometry]:versions_){
+        const auto found=resources_.find(ref);if(found==resources_.end())continue;
+        const auto& resource=found->second;const auto& shape=*geometry;
         // Conservative coordinate allocation estimate for the native and
         // projected JS caches; not a process RSS or GPU memory measurement.
-        auto costEntry=resourceCosts_.find(ref);
-        if(costEntry==resourceCosts_.end()){
+        auto& entry=cache.entries[ref];
+        if(entry.hash!=resource.contentSha256){
             std::uint64_t cost=64ull*shape.points.size();
             for(const auto& line:shape.lines)cost+=64ull*line.size()+64;
             for(const auto& polygon:shape.polygons)for(const auto& ring:polygon)cost+=64ull*ring.size()+64;
-            costEntry=resourceCosts_.emplace(ref,std::max(cost,resource.decodedBytes)).first;
+            entry={resource.contentSha256,std::max(cost,resource.decodedBytes),0};
         }
-        const auto cost=costEntry->second;bytes+=cost;
-        if(protectedRefs.count(ref))resourceAccess_[ref]=++resourceClock_;
-        else inactive.push_back({ref,cost,resourceAccess_[ref]});
+        bytes+=entry.bytes;
+        if(protectedRefs.count(ref))entry.access=++cache.clock;
+        else inactive.push_back({ref,entry.bytes,entry.access});
     }
     if(bytes<=budget)return {};
     std::sort(inactive.begin(),inactive.end(),[](const auto& a,const auto& b){
@@ -114,18 +118,18 @@ std::vector<GeometryRef> GeometryStore::resourceCacheEvictions(const std::set<Ge
     std::vector<GeometryRef> evicted;
     for(const auto& row:inactive){
         if(bytes<=budget)break;
-        bytes-=row.bytes;evicted.push_back(row.ref);
+        bytes-=row.bytes;cache.entries.erase(row.ref);evicted.push_back(row.ref);
     }
     return evicted;
 }
 void GeometryStore::evictResources(const std::vector<GeometryRef>& refs) {
     for(const auto& ref:refs){
         if(!resources_.count(ref))throw std::invalid_argument("INVALID_GEOMETRY_RESOURCE: cannot evict an authored version");
-        versions_.erase(ref);resourceAccess_.erase(ref);resourceCosts_.erase(ref);
+        versions_.erase(ref);
     }
 }
-std::vector<GeometryRef> GeometryStore::trimResourceCache(const std::set<GeometryRef>& protectedRefs,std::uint64_t budget) {
-    auto evicted=resourceCacheEvictions(protectedRefs,budget);
+std::vector<GeometryRef> GeometryStore::trimResourceCache(const std::set<GeometryRef>& protectedRefs,GeometryResourceCache& cache,std::uint64_t budget) {
+    auto evicted=resourceCacheEvictions(protectedRefs,cache,budget);
     evictResources(evicted);return evicted;
 }
 std::vector<TimelineEntityIdentity> timelineEntityCatalog(const ProjectDocument& d) {

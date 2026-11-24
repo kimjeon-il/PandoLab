@@ -36,9 +36,10 @@ test('timeline geometry can be prepared without changing the displayed cursor',a
   calls.push(message.operation);
   const result=message.operation==='core.document-load'?{state}:
    message.operation==='core.document-geometry-requirements'?{sourceEpoch:1,resources:[{id:'fixture'}]}:
-   message.operation==='core.document-geometry-admit'?{state}:
+   message.operation==='core.document-geometry-admit'?{state,geometryDelta:{admitted:[],removed:[]}}:
    message.operation==='core.document-timeline-cursor'?{state:{epoch:2,timelineCursor:message.payload.month},
-    worldDelta:{baseEpoch:message.payload.expectedEpoch,sourceEpoch:2,month:message.payload.month,entityCount:0,upserts:[],removed:[]}}:null;
+    worldDelta:{baseEpoch:message.payload.expectedEpoch,sourceEpoch:2,month:message.payload.month,entityCount:0,upserts:[],removed:[]},
+    geometryDelta:{admitted:[],removed:[]}}:null;
   queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
    type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
  },terminate(){}};
@@ -86,7 +87,7 @@ test('timeline preparation retries when another operation advances the Core epoc
   if(message.operation==='core.document-load')result={state};
   else if(message.operation==='core.document-geometry-requirements')result={sourceEpoch:epoch,resources:[{id:'fixture'}]};
   else if(message.operation==='core.document-presentation-catalog'){epoch++;result={state:{epoch,timelineCursor:'2026-12'}};}
-  else if(message.operation==='core.document-geometry-admit'){admissions.push(message.payload.expectedEpoch);result={state};}
+  else if(message.operation==='core.document-geometry-admit'){admissions.push(message.payload.expectedEpoch);result={state,geometryDelta:{admitted:[],removed:[]}};}
   queueMicrotask(()=>worker.onmessage({data:{rpc:message.rpc,protocolVersion:message.protocolVersion,
    type:'result',requestId:message.requestId,operation:message.operation,projectRevision:message.projectRevision,ok:true,result}}));
  },terminate(){}};

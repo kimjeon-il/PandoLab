@@ -36,7 +36,8 @@ std::string temporalWorldSha256(const ResolvedWorld& world) {
 }
 } // namespace
 
-DocumentSession::DocumentSession(projectcodec::PlatformPorts ports):ports_(std::move(ports)) {
+DocumentSession::DocumentSession(projectcodec::PlatformPorts ports,std::uint64_t resourceBudget)
+    :ports_(std::move(ports)),geometryCacheBudget_(resourceBudget) {
     if(!ports_.validateFlagDataUrl)throw std::invalid_argument("CODEC_PLATFORM_REQUIRED: flag validator");
 }
 DocumentSessionState DocumentSession::adoptPreparedProject(Project&& project) {
@@ -451,7 +452,7 @@ GeometryResourceAdmission DocumentSession::admitGeometryResources(const std::vec
         const auto target=project_.resolveTimelineMetadata(targetMonth);
         auto protectedRefs=project_.protectedGeometryResources(current.get(),target.get());
         protectedRefs.insert(received.begin(),received.end());
-        result.evicted=candidate.trimResourceCache(protectedRefs);
+        result.evicted=candidate.trimResourceCache(protectedRefs,project_.resourceCache_,geometryCacheBudget_);
         candidate.requireReady(target->requiredGeometries);
     }
     if(!result.admitted.empty()||!result.evicted.empty())project_.admitGeometryResources(std::move(candidate),!result.evicted.empty());
@@ -467,7 +468,7 @@ bool DocumentSession::setTimelineCursor(const std::string& month,std::uint32_t e
     // The immutable result is shared by selection, projection and transport.
     if(resolvedForResponse)*resolvedForResponse=world;
     const bool cursorChanged=project_.timelineCursor()!=month;
-    if(!project_.setTimelineCursor(month,true,world.get(),evictedResources))return false;
+    if(!project_.setTimelineCursor(month,true,world.get(),evictedResources,geometryCacheBudget_))return false;
     sourceEpoch_=++epoch_;selection_=std::move(nextSelection);return cursorChanged;
 }
 void DocumentSession::requireEpoch(std::uint32_t expectedEpoch) const {
