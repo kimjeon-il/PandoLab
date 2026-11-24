@@ -22,9 +22,8 @@ import {distributionEntriesForLayer,DISTRIBUTION_MODES} from '../document/distri
 import {createMapLibreVectorGroup} from './maplibre-vector-group.js';
 import {createMapLibreHighlight,partitionHighlightLines} from './maplibre-highlight.js';
 import {createMapLibreGeometryClient} from './maplibre-geometry-client.js';
-import {createMapObjectSpatialIndex} from '../map/map-object-spatial-index.js';
+import {createMapLibrePicking} from './maplibre-picking-controller.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
-import {projectedLineDistance} from '../geometry/geometry-screen-hit.js';
 import {layerObjectRank,layerStyle} from '../ui/layer-presentation.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
 import {createMapLibreSourceWrites,createMapLibreDatedSources} from './maplibre-source-lifecycle.js';
@@ -352,7 +351,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   track:(name,submit)=>metrics.track(name,()=>{stats.sourceWrites++;return submit();})});
  const requiredSource=id=>[datedSources.active('territories'),datedSources.active('physical-land'),datedSources.active('physical-water'),'hydro-edits','viewer-labels'].includes(id)
   ||dynamicSources.has(id)||(vectorLayers.has(id)&&vectorLayers.get(id).role!=='hydro-detail');
- let sourceLayers=[],indexedStyle=null,requiredLayerCache=null,pickLayerCache=null;
+ let sourceLayers=[],indexedStyle=null,requiredLayerCache=null;
  function mapSourceLayers(){
   if(indexedStyle!==map.style){
    indexedStyle=map.style;
@@ -361,7 +360,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
     return layer?.source?[{id,source:layer.source,visible:map.getLayoutProperty(id,'visibility')!=='none',
      minzoom:layer.minzoom??-Infinity,maxzoom:layer.maxzoom??Infinity}]:[];
    });
-   requiredLayerCache=pickLayerCache=null;
+   requiredLayerCache=null;picking.invalidateLayers();
   }
   return sourceLayers;
  }
@@ -1072,95 +1071,13 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   }
   highlight.submit(JSON.stringify(keys),native,polar,JSON.stringify(selectedKeys),JSON.stringify(nativeKeys));
  }
- const polarPicking=createMapObjectSpatialIndex(),polarFeatureBounds=new WeakMap();
- let indexedTerritories=null;
- const polarTerritories=new Map();
- function pickBounds(geometry){
-  if(polarFeatureBounds.has(geometry))return polarFeatureBounds.get(geometry);
-  const [west,south,east,north]=coordinateBounds(geometry.coordinates);
-  const wide=east-west>=180||south<=-89.999||north>=89.999;
-  const bounds=[west,south,east,north].every(Number.isFinite)?[
-   wide?-180:Math.max(-180,west-1e-3),Math.max(-90,south-1e-3),
-   wide?180:Math.min(180,east+1e-3),Math.min(90,north+1e-3),
-  ]:[-180,-90,180,90];
-  polarFeatureBounds.set(geometry,bounds);
-  return bounds;
- }
- function territorialPolarCandidates(coordinate){
-  if(indexedTerritories!==territories){
-   indexedTerritories=territories;polarTerritories.clear();polarPicking.clearDomain('territorial');
-   for(const feature of territories){
-    if(!feature.geometry)continue;
-    const bounds=pickBounds(feature.geometry);
-    if(bounds[1]>-POLAR_LATITUDE&&bounds[3]<POLAR_LATITUDE)continue;
-    const id=String(feature.id);polarTerritories.set(id,feature);
-    polarPicking.upsert({key:id,id,domain:'territorial',bounds});
-   }
-  }
-  const [lon,lat]=coordinate;
-  return polarPicking.query([lon,lat,lon,lat]).map(record=>polarTerritories.get(record.id));
- }
- function pickingLayers(zoom,includeHydro,includeLabels){
-  const sources=mapSourceLayers();
-  if(!pickLayerCache||zoom<pickLayerCache.min||zoom>=pickLayerCache.max){
-   const groups={map:[],hydro:[],labels:[]};
-   const border=sourceLayer('borders',datedSources.active('territories'));
-   let min=-Infinity,max=Infinity;
-   for(const layer of sources){
-    if(!layer.visible)continue;
-    for(const cutoff of [layer.minzoom,layer.maxzoom]){
-     if(cutoff<=zoom)min=Math.max(min,cutoff);else max=Math.min(max,cutoff);
-    }
-    if(!layerVisibleAtZoom(layer,zoom))continue;
-    const {id,source}=layer;
-    if(source==='viewer-labels')groups.labels.push(id);
-    else if(['hydro','hydro-edits',datedSources.active('physical-water')].includes(source)||vectorLayers.get(source)?.role==='project-hydro')groups.hydro.push(id);
-    else if(source!==datedSources.active('physical-land')&&!highlight?.owns(source)&&id!=='map-graticule'&&id!==border&&requiredSource(source))groups.map.push(id);
-   }
-   pickLayerCache={min,max,groups};
-  }
-  const groups=pickLayerCache.groups;
-  return includeHydro||includeLabels?[...groups.map,...(includeHydro?groups.hydro:[]),...(includeLabels?groups.labels:[])]:groups.map;
- }
- function queryObjectRefs(point,{includeHydro=true,includeLabels=true}={}){
-  if(!loaded||temporalOverlay||initialZoomHidden)return [];
-  const coordinate=projection.screenToGeo(point);
-  if(!coordinate)return [];
-  const zoom=map.getZoom();
-  if(Math.abs(coordinate[1])>=POLAR_LATITUDE){
-   const refs=[];
-   for(const feature of territorialPolarCandidates(coordinate)){
-    const ref=normalizeObjectRef({domain:'territorial',type:'entity',id:String(feature.id)});
-    if(deps.objectRefVisible(ref)&&deps.containsGeometry(coordinate,feature.geometry))refs.push(ref);
-   }
-   if(includeHydro)for(const feature of state.hydroFeatureCache.values()){
-    if(!feature.properties.physical_water||!feature.geometry||!deps.physicalServices.isHydroFeatureVisible(feature))continue;
-    const [west,south,east,north]=pickBounds(feature.geometry),[lon,lat]=coordinate;
-    if(lon>=west&&lon<=east&&lat>=south&&lat<=north&&deps.containsGeometry(coordinate,feature.geometry))
-     refs.push(normalizeObjectRef({domain:'hydro',type:feature.properties.category,id:String(feature.id)}));
-   }
-   for(const row of polarVisibleLines){
-    if(!row.ref||!isWithinDisplayZoom(zoom,row.displayMinZoom)||!deps.objectRefVisible(row.ref)||row.ref.domain==='hydro'&&(!includeHydro
-     ||row.packFeatureId!==null&&!hydroPresentation?.canPick(row.packFeatureId,row.ref.id)))continue;
-    if(projectedLineDistance(row.geometry,point,vertex=>projection.projectVisibleCoordinate(vertex,{allowOutsideViewport:true}))<=Math.max(4,row.width/2))
-     refs.push(row.ref);
-   }
-   return refs;
-  }
-  const refs=new Map();
-  const layers=pickingLayers(zoom,includeHydro,includeLabels);
-  if(!layers.length)return [];
-  for(const feature of map.queryRenderedFeatures(point,{layers})){
-   const p=feature.properties||{};if(p.displayRole==='country-border')continue;
-   if(feature.source==='hydro'&&(!isWithinDisplayZoom(zoom,p.viewerMinZoom)||!hydroPresentation?.canPick(p.featureId,p.logicalId)))continue;
-   if(feature.source==='viewer-labels'&&p.kind==='label'&&!isWithinDisplayZoom(zoom,p.viewerMinZoom))continue;
-   let ref;
-   if(p.objectKey)ref=objectKeyRef(p.objectKey);
-   else if(p.logicalId&&p.category)ref=normalizeObjectRef({domain:'hydro',type:p.category,id:String(p.logicalId)});
-   if(ref&&(includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))refs.set(ref.key,ref);
-  }
-  return [...refs.values()];
- }
+ const picking=createMapLibrePicking({getMap:()=>map,getProjection:()=>projection,getTerritories:()=>territories,
+ getHydroFeatures:()=>state.hydroFeatureCache.values(),getPolarLines:()=>polarVisibleLines,getVectorRole:source=>vectorLayers.get(source)?.role,
+ ownsHighlight:source=>highlight?.owns(source),canPick:()=>loaded&&!temporalOverlay&&!initialZoomHidden,
+ canPickHydro:(...args)=>hydroPresentation?.canPick(...args),objectRefVisible:ref=>deps.objectRefVisible(ref),
+ containsGeometry:(...args)=>deps.containsGeometry(...args),isHydroFeatureVisible:feature=>deps.physicalServices.isHydroFeatureVisible(feature),
+ mapSourceLayers,sourceLayer,datedSources,requiredSource,objectKeyRef});
+ const {queryObjectRefs}=picking;
  function renderFrame(frame){
   stats.approvalAttempts++;
   if(error){pendingFrame=null;return {succeeded:false,presentationReady:false,error};}
