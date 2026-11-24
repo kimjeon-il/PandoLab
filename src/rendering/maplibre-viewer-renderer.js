@@ -59,7 +59,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  const countryDisplay=createMapLibreCountryDisplay();
  let countrySequence=0,countryTail=Promise.resolve();
  const activeCountryTasks=new Set();
- let countryGeometryAbort=null;
  const geometryClient=createMapLibreGeometryClient({runtimeAssetUrl:path=>deps.platform.runtimeAssetUrl(path),isDisposed:()=>disposed,getGeneration:()=>generation,onRestart:()=>{borders.reset();},getStats:()=>stats,metrics});
  const {preparePhysicalDisplay,prepareRenderGeometry}=geometryClient;
  const borders=createMapLibreCountryBorders({getBoundaryGeometry:()=>countryDisplay.borders,prepareRenderGeometry,metrics,getStats:()=>stats});
@@ -358,8 +357,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    territories=features;acceptedCountryInputs=inputs;return Promise.resolve(true);
   }
   if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}
-  countryGeometryAbort?.abort();
-  const controller=new AbortController();countryGeometryAbort=controller;
+  const signal=geometryClient.startCountryRequest();
   territories=features;const sequence=++countrySequence,requestedGeneration=generation;countryGeneration=-1;
   const task=countryTail.then(async()=>{
    if(sequence!==countrySequence||requestedGeneration!==generation||disposed)return false;
@@ -370,7 +368,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    });
    activeCountryTasks.add(sequence);
    try{
-    const applied=await applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,controller.signal);
+    const applied=await applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal);
     if(applied&&sequence===countrySequence&&requestedGeneration===generation)
      acceptedCountryInputs={...inputs,source:map.getSource(datedSources.active('territories'))};
     return applied;
@@ -537,7 +535,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   resetProjectRenderState(options){if(options.presentation!=='temporal'){
    if(!initialMapLoading&&!initialFrameStaging&&camera.hasPresented()){preserveDisplayedFrame();projectFrameHeld=true;}
    zoomFramePending=false;camera.resetPresented();releaseTemporalFrame();hydroDisplay.resetProject();
-  }countryGeometryAbort?.abort();borders.reset();geometryClient.reset();physicalBase.resetProject();polarDisplay.resetProject();selection.reset();generation=options.generation;scene.resetPendingDomains();sourceWrites.reset();if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
+  }borders.reset();geometryClient.reset();physicalBase.resetProject();polarDisplay.resetProject();selection.reset();generation=options.generation;scene.resetPendingDomains();sourceWrites.reset();if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}countrySequence++;countryGeneration=-1;error=null;ready=false;preparedReady=false;presentation.resetForProject(options);},
   labelZoomVisibility,
   getRuntimeState:()=>({...stats,projectRenderBlocked:!!error,mapReady:ready,webglContextLost:contextLost,temporalPresentationPending:presentation.temporalPending(),temporalViewPending:presentation.temporalPending()&&presentation.ticket?.kind==='view',temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false,physicalContextRevision:physicalBase.revision}),
   getStats:()=>({...stats,datedSources:{territories:datedSources.active('territories'),land:datedSources.active('physical-land'),water:datedSources.active('physical-water')},performance:metrics.snapshot(),polar:polarDisplay.stats(),highlight:selection.stats(),hydro:hydroDisplay.stats,errorMessage:error?.message||null,generation,projectReplacing:!!state.projectReplacing,webglContextLost:contextLost,projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},hydroFeatureCount:hydroDisplay.features.length,sourceRevision,certifiedRevision,labelLayout:deps.countryLabelModel.labelLayoutMetrics,mapMoving:state.mapMoving}),
@@ -548,6 +546,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   setInteractionStyle,
   getRenderPixelRatio:()=>quality?.dprCap||window.devicePixelRatio||1,
   verifyLayout:()=>camera.verifyLayout(syncBaseLayer),failMapPreparation,retryMapPreparation,
-  dispose(){disposed=true;camera.dispose();datedSources.cancelRetirement();countryGeometryAbort?.abort();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();zoomFramePending=false;releaseTemporalFrame();presentation.dispose();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
+  dispose(){disposed=true;camera.dispose();datedSources.cancelRetirement();geometryClient.dispose();selection.dispose();polarDisplay.dispose();externalBasemap?.dispose();if(externalAttribution)map?.removeControl(externalAttribution);externalAttribution=null;for(const record of mapFeatures.values()){try{record.owner.dispose();}catch(cause){deps.feedback.reportOperationError(cause,'추가 지도 기능을 정리하지 못했습니다.','PL-MAPLIBRE-OPTIONAL-001');}}mapFeatures.clear();zoomFramePending=false;releaseTemporalFrame();presentation.dispose();hydroDisplay.dispose();physicalBase.dispose();scene.dispose();map?.remove();if(window.__PANDOLAB_MAPLIBRE__===map)delete window.__PANDOLAB_MAPLIBRE__;stylesheet?.remove();container?.remove();},
  });
 }

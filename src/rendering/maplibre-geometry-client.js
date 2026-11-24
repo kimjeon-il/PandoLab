@@ -1,16 +1,23 @@
 import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
 import {createWorkerRpcClient} from '../runtime/worker-rpc.js';
 import {decodeStrokeGeometry} from './stroke-transfer-codec.js';
-export function createMapGeometryRequester({getWorker,restartWorker,isDisposed=()=>false,
+export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWorker=worker=>worker===getWorker(),isDisposed=()=>false,
  track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100))}){
  return async (operation,payload,revision,signal)=>{
   let worker;
+  const requireLive=()=>{
+   signal?.throwIfAborted();
+   if(isDisposed())throw new DOMException('Geometry client disposed','AbortError');
+  };
   const request=async()=>{
-   signal.throwIfAborted();
+   requireLive();
    worker=getWorker();
-   try{return (await track(operation,()=>worker.request(operation,payload,{projectRevision:revision,signal}))).result;}
-   catch(cause){
-    if(cause.code==='PL-MAP-GEOMETRY-INITIALIZATION')restartWorker(worker);
+   try{
+    const response=await track(operation,()=>worker.request(operation,payload,{projectRevision:revision,signal}));
+    requireLive();
+    return response.result;
+   }catch(cause){
+    if(!isDisposed()&&cause.code==='PL-MAP-GEOMETRY-INITIALIZATION')restartWorker(worker);
     throw cause;
    }
   };
@@ -18,21 +25,31 @@ export function createMapGeometryRequester({getWorker,restartWorker,isDisposed=(
   catch(cause){
    // Retiring a failed transport also rejects the other requests it owns.
    // Their caller signals still determine whether the work is needed.
-   if(signal.aborted||isDisposed()||(cause.name==='AbortError'&&worker===getWorker()))throw cause;
+   if(signal?.aborted||isDisposed()||(cause.name==='AbortError'&&isCurrentWorker(worker)))throw cause;
    await waitBeforeRetry();
    if(isDisposed())throw cause;
    return request();
   }
  };
 }
-export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed,getGeneration,onRestart,getStats,metrics}){
- let geometryRpc=null,geometryAbort=new AbortController();
+export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>false,getGeneration,onRestart=()=>{},getStats,metrics,
+ createRpc=createWorkerRpcClient,createWorker=createVerifiedCoreWorker}){
+ let geometryRpc=null,geometryAbort=new AbortController(),countryAbort=null,closed=false;
+ const unavailable=()=>closed||isDisposed();
+ function requireOpen(){if(unavailable())throw new DOMException('Geometry client disposed','AbortError');}
+ function cancelCountryRequest(){countryAbort?.abort();countryAbort=null;}
+ function startCountryRequest(){
+  requireOpen();cancelCountryRequest();
+  countryAbort=new AbortController();return countryAbort.signal;
+ }
  const physicalDisplayCache=new Map();
  function geometryWorker(){
-  return geometryRpc ||=createWorkerRpcClient({createWorker:()=>createVerifiedCoreWorker(runtimeAssetUrl('workers/map-geometry-worker.js')),
-   isCurrent:({entry,message})=>entry.projectRevision===message.projectRevision});
+  requireOpen();
+  return geometryRpc ||=createRpc({createWorker:()=>createWorker(runtimeAssetUrl('workers/map-geometry-worker.js')),
+   isCurrent:({entry,message})=>entry.projectRevision===message.projectRevision,
+   onCrash:()=>{if(!unavailable())onRestart();}});
  }
- const requestMapGeometry=createMapGeometryRequester({getWorker:geometryWorker,isDisposed:isDisposed,
+ const requestMapGeometry=createMapGeometryRequester({getWorker:geometryWorker,isCurrentWorker:worker=>geometryRpc===worker,isDisposed:unavailable,
   restartWorker:worker=>{
    if(geometryRpc!==worker)return;
    geometryRpc=null;onRestart();worker.stop('geometry-initialization-retry');
@@ -40,6 +57,7 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed,getGene
   track:(operation,submit)=>{getStats().geometryWorkerRequests++;return metrics.track(operation,submit);},
  });
  function preparePhysicalDisplay(key,geometry){
+  requireOpen();
   const cached=physicalDisplayCache.get(key);
   if(cached){physicalDisplayCache.delete(key);physicalDisplayCache.set(key,cached);return cached.task;}
   if(physicalDisplayCache.size===2){
@@ -53,7 +71,8 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed,getGene
   return entry.task;
  }
  async function prepareRenderGeometry(items,revision,boundary,signal=geometryAbort.signal){
-  if(!items.length)return {packets:[]};
+  requireOpen();signal.throwIfAborted();
+  if(!items.length&&!boundary)return {packets:[]};
   const sentAt=performance.timeOrigin+performance.now();
   const result=await requestMapGeometry('geometry.prepare',{items,boundary},revision,signal);
   getStats().geometryWorkerTransferBytes+=result.stats?.transferBytes||0;
@@ -73,7 +92,12 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed,getGene
   return result;
  }
 
- return Object.freeze({preparePhysicalDisplay,prepareRenderGeometry,physicalGeometry:key=>physicalDisplayCache.get(key)?.geometry,
- reset(){geometryAbort.abort();geometryAbort=new AbortController();},
- dispose(){geometryAbort.abort();for(const entry of physicalDisplayCache.values())entry.controller.abort();physicalDisplayCache.clear();geometryRpc?.stop('maplibre-dispose');geometryRpc=null;}});
+ return Object.freeze({preparePhysicalDisplay,prepareRenderGeometry,startCountryRequest,cancelCountryRequest,
+ physicalGeometry:key=>physicalDisplayCache.get(key)?.geometry,
+ reset(){if(closed)return;cancelCountryRequest();geometryAbort.abort();geometryAbort=new AbortController();},
+ dispose(){
+  if(closed)return;closed=true;cancelCountryRequest();geometryAbort.abort();
+  for(const entry of physicalDisplayCache.values())entry.controller.abort();
+  physicalDisplayCache.clear();const worker=geometryRpc;geometryRpc=null;worker?.stop('maplibre-dispose');
+ }});
 }
