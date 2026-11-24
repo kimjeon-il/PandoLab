@@ -100,7 +100,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
    }
   },updateSource:async(diff,allFeatures,isCurrent)=>{
    const add=displayFeatures(diff.add);
-   while(!disposed&&isCurrent()){
+   while(!isDisposed()&&isCurrent()){
     if(!await waitForHydro(isCurrent,()=>!getBasemapRecovery()&&styleReady()))return false;
     const source=map.getSource('hydro');if(!source)throw new Error('Hydro source missing from current style');
     const full=source!==hydroAppliedSource;
