@@ -223,10 +223,9 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    groups.get(key).owners.push(id);
   }
   const rows=[...groups.values()].map(({owners,...paint},index)=>({
-   id:'country-border:'+index,paint,key:JSON.stringify([topologyKey,owners]),owners,
+   id:'country-border:'+index,paint,key:JSON.stringify([paint,owners]),owners,
   }));
-  const needed=rows.filter(row=>!countryBoundaryGeometry.has(row.key));
-  const prepared=needed.length?await prepareBoundaryGroups(countryFeatures,topologyKey,needed,revision,signal):null;
+  const prepared=await prepareBoundaryGroups(countryFeatures,topologyKey,rows,revision,signal);
   const geometries=new Map(prepared?.packets.map(({cacheKey,geometry})=>[
    cacheKey,{native:clipMercatorLines(geometry),polar:polarLinePacket(geometry.coordinates)},
   ]));
@@ -242,7 +241,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   const serial=++boundaryRequest;
   const versions=new Map(features.map(feature=>[feature.id,geometryKey(feature.geometry)]));
   const previous=acknowledgedBoundary;
-  const items=groups.map(row=>({kind:'stroke',cacheKey:row.key,countryVisibleIds:row.owners}));
+  const items=groups.map(row=>({kind:'stroke',cacheKey:row.key,countryVisibleIds:row.owners,
+    knownGeometry:countryBoundaryGeometry.has(row.key)}));
   const request=async(base)=>{
    const boundary=metrics.run('border.payload',()=>({
     key,baseKey:base?.key??null,

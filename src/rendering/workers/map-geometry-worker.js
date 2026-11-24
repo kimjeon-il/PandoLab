@@ -88,7 +88,8 @@ async function prepareCountryBoundary(input,context){
   ]);
   countryBoundary ||= createCountryBoundaryPreparation({loadSeed:loadBoundarySeed});
   const prepared=await countryBoundary.prepare(input,context);
-  return prepared&&{segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner};
+  return prepared&&{segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner,
+    affectedOwners:prepared.affectedOwners};
 }
 
 self.PandoLabWorkerRpc.install({
@@ -115,11 +116,15 @@ self.PandoLabWorkerRpc.install({
       // immutable polygon catalogs or their initialization before it can draw.
       const requiresPolygons = payload.items.some(item => item.kind !== 'stroke');
       const store = requiresPolygons ? await preparedPolygonStore() : null;
-      const packets = new Array(payload.items.length), packetTimings=[];
+      // Preserve unchanged stroke groups after topology patch.
+      const items=payload.items.filter(item=>!item.countryVisibleIds||!item.knownGeometry
+        ||!boundary?.affectedOwners
+        ||item.countryVisibleIds.some(id=>boundary.affectedOwners.has(countryBoundaryOwner(id))));
+      const packets = new Array(items.length), packetTimings=[];
       // Two independent immutable asset reads may overlap without growing
       // the mobile decode/triangulation working set beyond two packets.
-      for(let index=0;index<payload.items.length;index+=2){
-        const batch=payload.items.slice(index,index+2);
+      for(let index=0;index<items.length;index+=2){
+        const batch=items.slice(index,index+2);
         const rows=await Promise.all(batch.map(async sourceItem=>{let item=sourceItem;
           context.throwIfCancelled();
           const started=performance.now(),before=store?.stats?.()||null;
