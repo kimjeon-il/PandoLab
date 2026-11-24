@@ -266,7 +266,9 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month,const Reso
         // the cost of large backwards jumps through many repeated events.
         const auto activeScale=previous->entities().size()+previous->activeProperties().size();
         const auto threshold=std::max<std::size_t>(32,std::min(index.entities.size()/2,activeScale/2));
-        for(auto event=first;event!=last;++event){
+        const auto eventBudget=std::max<std::size_t>(256,threshold*16);
+        if(static_cast<std::size_t>(last-first)>eventBudget)previous=nullptr;
+        else for(auto event=first;event!=last;++event){
             changed.insert(index.entities[event->owner].objectRef);
             if(changed.size()>threshold){previous=nullptr;changed.clear();break;}
         }

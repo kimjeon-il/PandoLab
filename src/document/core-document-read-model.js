@@ -3,7 +3,8 @@ import { createCanonicalGeometryVersionStore as createGeometryVersionStore } fro
 import { projectTimelineIdentity } from "./timeline-resolver.js";
 import {rememberWorldViewChange} from './world-view-change.js';
 import {createWorldLookup} from './world-view-lookup.js';
-import { normalizeTemporalInterval,temporalContains, temporalMonthEnd,compareTemporalKeys } from "./temporal.js";
+import { normalizeTemporalInterval, temporalMonthEnd } from "./temporal.js";
+import {createWorldBindingIndex,sourceBindingCertificate} from './world-binding-index.js';
 
 const fields = Object.freeze({ territorial: 'territorialEntities', label: 'labels', hydro: 'hydroEdits',
   generic: 'genericFeatures', distributionLayer: 'distributionLayers', distributionEntry: 'distributionEntries' });
@@ -75,28 +76,11 @@ export function createCoreDocumentReadModel(initialProject) {
   function bindingInterval(row){
     return row.interval??=normalizeTemporalInterval(row.binding.validFrom,row.binding.validTo);
   }
-  function sourceBindingAt(candidates,date){
-    return candidates.find(row=>temporalContains(bindingInterval(row),date))??null;
-  }
-  // For a unique active source binding, the intersection of its date bounds
-  // certifies reuse of the same presentation rows at a later cursor. Ambiguous
-  // or inactive bindings remain explicit checks; no hash or month guess.
-  function includeBinding(window,candidates,selected){
-    if(!candidates.length)return;
-    if(candidates.length!==1||!selected){window.checks.push({candidates,selected});return;}
-    const {start,end}=bindingInterval(selected);
-    if(start&&(!window.start||compareTemporalKeys(window.start.startKey,start.startKey)<0))window.start=start;
-    if(end&&(!window.end||compareTemporalKeys(window.end.endKey,end.endKey)>0))window.end=end;
-  }
   function canReuseWorldAt(month){
     if(worldSourceProject!==project)return false;
     if(month===world.month)return true;
     const window=worldBindingWindows.get(world.entities);
-    if(!window)return false;
-    const date=temporalMonthEnd(month);
-    if(window.start&&compareTemporalKeys(date.endKey,window.start.startKey)<0
-      ||window.end&&compareTemporalKeys(window.end.endKey,date.endKey)<0)return false;
-    return window.checks.every(({candidates,selected})=>sourceBindingAt(candidates,date)===selected);
+    return !!window&&window.allows(temporalMonthEnd(month));
   }
   function acceptLoadedProject(value) {
     if (!value || !Array.isArray(value.geometries)) invalid('A complete accepted C++ storage snapshot is required after document load.');
@@ -136,22 +120,22 @@ export function createCoreDocumentReadModel(initialProject) {
     const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)};
     const referenceDate=temporalMonthEnd(responseWorld.month);
     const previousWorld = !detached ? world : null;
-    const bindingWindow={start:null,end:null,checks:[]};
+    const ranges=[];
     const lookup=createWorldLookup();
     const rows=responseWorld.entities.map(row=>{
       const key=timelineObjectKey(row.objectRef);
       if(lookup.has(key))invalid('Duplicate C++ world identity: '+row.objectRef.id);
-      const projected=projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,bindingWindow);
+      const projected=projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,range=>ranges.push(range));
       lookup.set(key,projected);return projected;
     });
-    return makeWorld(responseWorld,rows,lookup,bindingWindow,detached);
+    return makeWorld(responseWorld,rows,lookup,createWorldBindingIndex(ranges),detached);
   }
   function makeWorld(response,rows,lookup,window,detached=false){
     Object.freeze(rows);worldBindingWindows.set(rows,window);worldLookups.set(rows,lookup);
     return Object.freeze({month:response.month,...(detached?{}:{sourceEpoch:response.sourceEpoch}),entities:rows,
       byId:Object.freeze({get:id=>lookup.get(timelineObjectKey({domain:'territorial',id})),getObject:ref=>lookup.get(timelineObjectKey(ref))})});
   }
-  function projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,bindingWindow){
+  function projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,recordBinding){
       const identity=identities[row.objectRef.domain]?.get(row.objectRef.id),geometry=sourceGeometries.get(row.geometryRef);
       if (!identity || !geometry || !Array.isArray(row.ancestors))
         invalid(`The C++ world contains an unknown/duplicate identity or geometry: ${row.objectRef.id}`);
@@ -161,8 +145,8 @@ export function createCoreDocumentReadModel(initialProject) {
       // Identity and geometry are from the unchanged, immutable source snapshot.
       // Reuse a resolved row when only the cursor changed, not its visible data.
       const candidates=sourceBindingCandidates(identity,row.geometryRef);
-      const selectedBinding=sourceBindingAt(candidates,referenceDate);
-      includeBinding(bindingWindow,candidates,selectedBinding);
+      const {selected:selectedBinding,range}=sourceBindingCertificate(candidates,referenceDate,bindingInterval);
+      recordBinding(range);
       const sourceBinding=selectedBinding?.binding;
       const sourceVersion=sourceBinding?.sourceVersionId ?? String(identity.properties?.sourceGeometryVersion ?? '');
       const prior=previousWorld?.byId?.getObject?.(row.objectRef);
@@ -177,7 +161,7 @@ export function createCoreDocumentReadModel(initialProject) {
           && sameDisplayValue(prior.properties,row.properties)))) {
         return prior;
       }
-      const temporalIdentity=projectTimelineIdentity(identity,row.properties);
+      const temporalIdentity=projectTimelineIdentity(identity,row.properties,{immutableSource:true});
       const datedIdentity=sourceBinding
         ?freeze({...temporalIdentity,properties:{...temporalIdentity.properties,
           sourceGeometryVersion:sourceVersion}}):temporalIdentity;
@@ -231,18 +215,26 @@ export function createCoreDocumentReadModel(initialProject) {
     ({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties});
   function acceptStableWorldDelta(delta,positions){
     const prior=world,oldWindow=worldBindingWindows.get(prior.entities),lookup=worldLookups.get(prior.entities);
-    if(!oldWindow||!lookup||!canReuseWorldAt(delta.month))return null;
-    // Keep the prior date certificate conservatively. A changed binding may
-    // shrink it; a later request outside it uses the complete validated path.
-    // Do not let accumulated uncertain checks grow without bound.
-    if(oldWindow.checks.length+positions.size>Math.max(16,prior.entities.length))return null;
-    const window={...oldWindow,checks:oldWindow.checks.slice()};
+    if(!oldWindow||!lookup||worldSourceProject!==project)return null;
+    const referenceDate=temporalMonthEnd(delta.month);
+    const limit=Math.max(16,Math.floor(prior.entities.length/2));
+    if(positions.size>limit)return null;
+    // Core rows may be unchanged while their source-version metadata crosses
+    // a binding boundary. Reproject only those certified affected leaves.
+    const expired=oldWindow.changed(referenceDate,limit);
+    if(expired.length>limit)return null;
+    const affected=new Map(positions);
+    for(const index of expired)if(!affected.has(index))affected.set(index,prior.entities[index]);
+    if(affected.size>limit)return null;
+    const ranges=new Map();
     const identities={territorial:identityIndex(project.territorialEntities),hydro:identityIndex(project.hydroEdits)};
-    const referenceDate=temporalMonthEnd(delta.month),rows=prior.entities.slice(),updates=[];
+    let rows=prior.entities;
+    const updates=[];
     const territorialChanges=[],hydroChanges=[];
-    for(const [index,entity]of positions){
-      const row=projectRow(entity,identities,geometries,referenceDate,prior,window);
+    for(const [index,entity]of affected){
+      const row=projectRow(entity,identities,geometries,referenceDate,prior,range=>ranges.set(index,range));
       if(row===prior.entities[index])continue;
+      if(rows===prior.entities)rows=rows.slice();
       rows[index]=row;updates.push([timelineObjectKey(row.objectRef),row]);
       const isHydro=row.objectRef.domain==='hydro',before=isHydro?hydroViews:territorialViews;
       const offset=viewOffsets.get(before)?.get(row.id);
@@ -258,7 +250,10 @@ export function createCoreDocumentReadModel(initialProject) {
       rememberWorldViewChange(before,next,changed.map(([index])=>index));
       return next;
     };
-    const next=makeWorld(delta,rows,lookup.fork(updates),window);
+    // A new certificate cannot replace the one attached to a previous
+    // immutable row array. Share the rows themselves, not the array key.
+    if(rows===prior.entities&&ranges.size)rows=rows.slice();
+    const next=makeWorld(delta,rows,updates.length?lookup.fork(updates):lookup,oldWindow.fork(ranges));
     territorialViews=patchViews(territorialViews,territorialChanges);
     hydroViews=patchViews(hydroViews,hydroChanges);
     world=next;worldSourceProject=project;return next;
@@ -281,6 +276,8 @@ export function createCoreDocumentReadModel(initialProject) {
         world=Object.freeze({...world,month:delta.month,sourceEpoch:state.epoch});
         return world;
       }
+      const stable=acceptStableWorldDelta(delta,new Map());
+      if(stable)return stable;
       return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities:world.entities},state.epoch);
     }
     let retainedCount=world.entities.length;
