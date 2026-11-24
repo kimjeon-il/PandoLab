@@ -18,7 +18,7 @@ export function createMapLibreCountryDisplay(){
   if(map.getSource(oldId))map.removeSource(oldId);
   onStyleInvalidated();
   datedSources.replaceActive('territories',newId);countryFillGroups.delete(oldId);
-  clearSource();sourceNeedsSwap=false;dirty();
+  rows=new Map();tiles=new Map();borders=new Map();key='';sourceNeedsSwap=false;dirty();
  }
 
  return Object.freeze({
