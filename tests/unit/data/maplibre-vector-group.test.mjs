@@ -182,3 +182,27 @@ test('a failed vector source update can retry the same geometry without a stuck 
   assert.deepEqual(sources.get('retry').data.features[0].geometry,changed.geometry);
  }finally{group.dispose();}
 });
+
+
+test('vector queue keeps only the latest undispatched snapshot and clears pending on disposal',async()=>{
+ const sources=new Map(),layers=new Map(),writes=[];
+ let release;
+ const map={getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+  addSource(id,value){sources.set(id,{...value,async updateData(diff){
+   writes.push(diff.update[0].newGeometry.coordinates[0][0][0]);
+   if(writes.length===1)await new Promise(resolve=>{release=resolve;});
+  }});},
+  removeSource:id=>sources.delete(id),addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),
+  setPaintProperty(){},setLayoutProperty(){},setFilter(){}};
+ const group=createMapLibreVectorGroup(map,{id:'coalesced',onChange(){}});
+ const rows=n=>[{key:'a',kind:'fill',geometryRevision:String(n),geometry:{type:'Polygon',coordinates:[[[n,0],[n+1,0],[n,1],[n,0]]]},style:{color:'#ffffff'}}];
+ try{
+  await group.update(rows(0));const active=group.update(rows(1));
+  while(!release)await new Promise(resolve=>setImmediate(resolve));
+  const skipped=group.update(rows(2)),latest=group.update(rows(3));
+  await skipped;release();await Promise.all([active,latest]);
+  assert.deepEqual(writes,[1,3]);
+  const pending=group.update(rows(4));group.dispose();await pending;
+  assert.equal(group.pending,false);assert.equal(sources.size,0);
+ }finally{group.dispose();}
+});

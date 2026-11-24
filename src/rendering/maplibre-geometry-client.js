@@ -94,7 +94,9 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
 
  return Object.freeze({preparePhysicalDisplay,prepareRenderGeometry,startCountryRequest,cancelCountryRequest,
  physicalGeometry:key=>physicalDisplayCache.get(key)?.geometry,
- reset(){if(closed)return;cancelCountryRequest();geometryAbort.abort();geometryAbort=new AbortController();},
+ reset({retainPhysical=false}={}){if(closed)return;cancelCountryRequest();geometryAbort.abort();geometryAbort=new AbortController();
+  if(!retainPhysical){for(const entry of physicalDisplayCache.values())entry.controller.abort();physicalDisplayCache.clear();}
+ },
  dispose(){
   if(closed)return;closed=true;cancelCountryRequest();geometryAbort.abort();
   for(const entry of physicalDisplayCache.values())entry.controller.abort();

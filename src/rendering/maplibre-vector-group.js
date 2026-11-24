@@ -15,20 +15,31 @@ export function geographicStrokeChains(values){
  return {type:'MultiLineString',coordinates:lines};
 }
 export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource}){
- let version=0,disposed=false,pending=false,tail=Promise.resolve(),sourceOwner=null,sourceRows=null;
+ let version=0,disposed=false,pending=false,running=false,queued=null,sourceOwner=null,sourceRows=null;
  const noLayers=Object.freeze([]),definitions=new Map();
  let layerIds=noLayers;
  function clear(){for(const layer of [...layerIds].reverse())if(map.getLayer(layer))map.removeLayer(layer);layerIds=noLayers;definitions.clear();}
  function update(next){
+  if(disposed)return Promise.resolve();
   const request=++version;pending=true;
-  const task=tail.catch(()=>{}).then(()=>apply(next,request)).catch(error=>{
-   // A rejected native update can already have changed part of its data.
-   // The next live request must rebuild that source rather than diff it.
-   sourceOwner=null;sourceRows=null;
-   if(request===version)pending=false;
-   throw error;
-  });
-  tail=task;return task;
+  // Drop superseded, undispatched snapshots immediately. At most the
+  // running write and the latest request retain their geometry arrays.
+  queued?.resolve();
+  const task=new Promise((resolve,reject)=>{queued={next,request,resolve,reject};});
+  if(!running){running=true;queueMicrotask(drain);}
+  return task;
+ }
+ async function drain(){
+  while(queued&&!disposed){
+   const entry=queued;queued=null;
+   try{await apply(entry.next,entry.request);entry.resolve();}
+   catch(error){
+    sourceOwner=null;sourceRows=null;
+    if(entry.request===version)pending=false;
+    entry.reject(error);
+   }
+  }
+  running=false;
  }
  const clippedLines=new WeakMap();
  const nativeGeometry=row=>{
@@ -60,7 +71,7 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
     }
     if(add.length||update.length||remove.length)await source.updateData({add,update,remove});
    }
-   if(map.getSource(id)===source){sourceOwner=source;sourceRows=rows;}
+   if(!disposed&&map.getSource(id)===source){sourceOwner=source;sourceRows=rows;}
   }
   if(disposed||request!==version)return;
   const desired=new Map();
@@ -94,5 +105,6 @@ export function createMapLibreVectorGroup(map,{id,before,onChange,sharedSource})
   pending=false;onChange({structureChanged});
  }
  return {update,getLayerIds:()=>layerIds,get pending(){return pending;},
-  dispose(){disposed=true;version++;clear();if(!sharedSource&&map.getSource(id))map.removeSource(id);}};
+  dispose(){if(disposed)return;disposed=true;version++;pending=false;queued?.resolve();queued=null;
+   sourceOwner=null;sourceRows=null;clear();if(!sharedSource&&map.getSource(id))map.removeSource(id);}};
 }

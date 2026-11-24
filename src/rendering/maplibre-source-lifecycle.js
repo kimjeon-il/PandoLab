@@ -52,7 +52,12 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
  const active=kind=>activeIds.get(kind);
  function slots(kind){
   const map=getMap();
-  return [...retained].filter(([id,record])=>record.kind===kind&&map.getSource(id)===record.source);
+  const matches=[];
+  for(const [id,record]of retained){
+   if(map.getSource(id)!==record.source){retained.delete(id);retiring.delete(id);continue;}
+   if(record.kind===kind)matches.push([id,record]);
+  }
+  return matches;
  }
  function reuse(kind,key,equals=(a,b)=>a===b){return slots(kind).find(([,record])=>equals(record.key,key));}
  function show(id){
@@ -123,5 +128,6 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
   const old=active(kind);retiring.delete(old);retained.delete(old);activeIds.set(kind,id);
  }
  return Object.freeze({active,reuse,reserve,activate,replaceActive,cancelRetirement,scheduleRetirement,
-  get:id=>retained.get(id),set:(id,record)=>retained.set(id,record),has:id=>retained.has(id)});
+  get:id=>retained.get(id),set:(id,record)=>retained.set(id,record),has:id=>retained.has(id),
+  dispose(){cancelRetirement();retained.clear();retiring.clear();activeIds.clear();}});
 }

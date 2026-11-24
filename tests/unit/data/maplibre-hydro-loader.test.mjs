@@ -48,7 +48,8 @@ test('complete tile windows reuse decoded packs and emit live progress for misse
   assert.deepEqual(cacheHit.packIds,[1]);
   assert.equal(sent.filter(message=>message.type==='view').length,1);
   assert.equal(progress.length,1);
-  assert.deepEqual(loader.stats(),{cached:1,viewRequests:1,windowHits:1,rangeRequests:1,queueMs:.1,fetchMs:5,parseMs:1});
+  assert.deepEqual(loader.stats(),{cached:1,estimatedCacheBytes:loader.stats().estimatedCacheBytes,viewRequests:1,windowHits:1,rangeRequests:1,queueMs:.1,fetchMs:5,parseMs:1});
+  assert.ok(loader.stats().estimatedCacheBytes>0);
 
   const second=loader.view({knownKey:'1',tiles:[tile(2)]});
   const secondRevision=sent.at(-1).revision;
@@ -179,4 +180,33 @@ test('invalid binary hydro packet rejects the viewport and retires its worker',a
   assert.equal(stopped,true);
   assert.equal(loader.disposed,true);
  }finally{loader.dispose();}
+});
+
+
+test('byte budget releases offscreen packs even below the count limit and protects current coverage',async()=>{
+ const released=[];
+ class FakeWorker{
+  postMessage(message){
+   if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
+   if(message.type==='release')released.push(...message.packIds);
+   if(message.type==='view'){
+    const id=message.tiles[0].x+1,revision=message.revision;
+    queueMicrotask(()=>{
+     this.onmessage({data:{type:'pack',revision,packId:id,packed:packHydroFeatures([river(String(id))])}});
+     this.onmessage({data:{type:'view-ready',revision,packIds:[id]}});
+    });
+   }
+  }
+  terminate(){}
+ }
+ const loader=await createHydroBrowserLoader({manifest:{},baseUrl:'http://example/',tilesForView:view=>view.tiles,
+  packLimit:96,byteLimit:1,createWorker:()=>new FakeWorker()});
+ try{
+  const a=await loader.view({knownKey:'',tiles:[{stage:0,x:0,y:0}]});
+  assert.equal(a.key,'1');assert.ok(loader.stats().estimatedCacheBytes>1);
+  const b=await loader.view({knownKey:a.key,tiles:[{stage:0,x:1,y:0}]});
+  assert.equal(b.key,'2');assert.deepEqual(b.removePacks,[1]);assert.deepEqual(released,[1]);
+  assert.equal(loader.stats().cached,1);
+ }finally{loader.dispose();}
+ assert.equal(loader.stats().estimatedCacheBytes,0);
 });
