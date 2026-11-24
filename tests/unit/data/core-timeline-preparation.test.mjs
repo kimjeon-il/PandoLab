@@ -162,3 +162,25 @@ test('an obsolete prepared date cannot supersede a newer date intent',async()=>{
   assert.equal(calls.filter(operation=>operation==='core.document-timeline-cursor').length,1);
  }finally{client.dispose();}
 });
+
+
+test('owned hydro catalog changes bypass full list creation and reconcile after a reset',async()=>{
+ const calls=[];
+ const project=createProjectDomain({productMode:'viewer',readOnly:true,
+  commandOwner:{async selectionCatalogLoad(domain,refs){calls.push({domain,refs});return {ok:true};},
+   async selectionCatalogPatch(refs,removed){calls.push({refs,removed});return {ok:true};}},
+  publishCommand:async()=>{}});
+ const ref=id=>({domain:'hydroBuiltin',id,logicalId:id,type:'river',sourceIds:[id]});
+ try{
+  await project.admitSelectionCatalog('hydroBuiltin',[ref('a'),ref('b')]);
+  await project.admitSelectionCatalog('hydroBuiltin',assert.fail,{changes:()=>({refs:[ref('c')],removedIds:['a']})});
+  assert.deepEqual(calls[1],{refs:[ref('c')],removed:[ref('a')]});
+  await project.admitSelectionCatalog('hydroBuiltin',assert.fail,{changes:()=>({refs:[ref('c')],removedIds:[]})});
+  assert.equal(calls.length,2);
+  await project.resetRenderGeneration('replacement');
+  await project.admitSelectionCatalog('hydroBuiltin',[ref('c')],{changes:assert.fail});
+  assert.deepEqual(calls[2],{domain:'hydroBuiltin',refs:[ref('c')]});
+  await project.admitSelectionCatalog('hydroBuiltin',assert.fail,{isCurrent:()=>false,changes:assert.fail});
+  assert.equal(calls.length,3);
+ }finally{project.dispose();}
+});

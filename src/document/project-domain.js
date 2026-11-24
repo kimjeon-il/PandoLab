@@ -61,7 +61,44 @@ export function createProjectDomain({
     return {refs,removed};
   }
   function rememberCatalog(domain,refs,key,entries=null){
-    admittedSelectionCatalogs.set(domain,{key,entries:domain==='hydroBuiltin'?(entries??catalogEntries(refs)):null});
+    const known=domain==='hydroBuiltin'?(entries??catalogEntries(refs)):null;
+    let byId=known?new Map():null;
+    if(known)for(const entry of known.values()){
+      if(byId.has(entry.ref.id)){byId=null;break;}
+      byId.set(entry.ref.id,entry);
+    }
+    admittedSelectionCatalogs.set(domain,{key,entries:known,byId});
+  }
+  // A provider that owns the accepted cache can send its own logical-ID
+  // changes, avoiding a whole catalog construction and diff. Duplicate
+  // logical IDs in a full catalog intentionally disable this fast path.
+  function prepareCatalogChanges(previous,changes){
+    const {refs,removedIds}=changes;
+    if(!Array.isArray(refs)||!Array.isArray(removedIds))throw new TypeError('Hydro catalog changes require explicit arrays.');
+    const updates=catalogEntries(refs);
+    if(!updates)return null;
+    const touched=new Set(),deletes=new Map(),upserts=new Map();
+    for(const id of removedIds){
+      if(typeof id!=='string'||touched.has(id))return null;
+      touched.add(id);
+      const prior=previous.byId.get(id);
+      if(prior)deletes.set(id,prior);
+    }
+    for(const entry of updates.values()){
+      const {ref}=entry,id=ref.id;
+      if(ref.domain!=='hydroBuiltin'||typeof id!=='string'||touched.has(id))return null;
+      touched.add(id);
+      const prior=previous.byId.get(id);
+      if(prior?.key===entry.key)continue;
+      if(prior&&catalogEntryKey(prior.ref)!==catalogEntryKey(ref))deletes.set(id,prior);
+      upserts.set(id,entry);
+    }
+    return {deletes,upserts,refs:[...upserts.values()].map(entry=>entry.ref),removed:[...deletes.values()].map(entry=>entry.ref)};
+  }
+  function acceptCatalogChanges(previous,{deletes,upserts}){
+    for(const [id,entry]of deletes){previous.entries.delete(catalogEntryKey(entry.ref));previous.byId.delete(id);}
+    for(const [id,entry]of upserts){previous.entries.set(catalogEntryKey(entry.ref),entry);previous.byId.set(id,entry);}
+    previous.key=null;
   }
   // One admitted C++ document is active irrespective of its input reader.
   // projectId identifies content; documentId and generation isolate a session.
@@ -245,14 +282,26 @@ export function createProjectDomain({
     commandQueue=operation.catch(() => {});
     return operation;
   };
-  const admitSelectionCatalog = (domain,refsProducerOrArray,{ expectedEpoch,expectedGeneration = generation } = {}) => {
+  const admitSelectionCatalog = (domain,refsProducerOrArray,{ expectedEpoch,expectedGeneration = generation,changes,isCurrent=()=>true } = {}) => {
     const operation=commandQueue.then(async () => {
       assertActive();
       if(generation!==expectedGeneration)throw Object.assign(new Error('Builtin selection admission crossed a project replacement.'),{ code: 'PL-CORE-STALE' });
       if(typeof commandOwner?.selectionCatalogLoad!=='function' || typeof publishCommand!=='function')
         throw new TypeError('Canonical C++ builtin identity admission is required.');
-      const refs=typeof refsProducerOrArray==='function' ? refsProducerOrArray():refsProducerOrArray;
+      if(!isCurrent())return false;
       const previous=admittedSelectionCatalogs.get(domain);
+      if(domain==='hydroBuiltin'&&previous?.byId&&typeof changes==='function'&&typeof commandOwner.selectionCatalogPatch==='function'){
+        const supplied=changes(),delta=supplied&&prepareCatalogChanges(previous,supplied);
+        if(delta){
+          if(expectedEpoch===undefined&&!delta.refs.length&&!delta.removed.length)return false;
+          const result=await commandOwner.selectionCatalogPatch(delta.refs,delta.removed,expectedEpoch);
+          if(result?.ok===false)throw Object.assign(new Error(result.error?.message||'Core rejected hydro catalog patch.'),{code:result.error?.code});
+          if(generation===expectedGeneration)acceptCatalogChanges(previous,delta);
+          await publishCommand(result,{expectedGeneration,reason:'selection-catalog'});
+          return result;
+        }
+      }
+      const refs=typeof refsProducerOrArray==='function' ? refsProducerOrArray():refsProducerOrArray;
       const entries=domain==='hydroBuiltin'?catalogEntries(refs):null;
       const patch=entries&&previous?.entries&&typeof commandOwner.selectionCatalogPatch==='function';
       let key=null,result;
@@ -265,6 +314,7 @@ export function createProjectDomain({
         if(expectedEpoch===undefined&&previous?.key===key)return false;
         result=await commandOwner.selectionCatalogLoad(domain,refs,expectedEpoch);
       }
+      if(result?.ok===false)throw Object.assign(new Error(result.error?.message||'Core rejected selection catalog.'),{code:result.error?.code});
       // A native acknowledgement updates the accepted transport base even
       // if a subsequent presentation callback fails.
       if(generation===expectedGeneration)rememberCatalog(domain,refs,key,entries);

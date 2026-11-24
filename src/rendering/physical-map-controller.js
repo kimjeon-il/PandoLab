@@ -138,7 +138,13 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
       if(waterContexts.get(key)?.status==='error')waterContexts.delete(key);
       if(waterContexts.has(key))waterContexts.get(key).activation=null;
       // An old version cannot remain selectable while its successor loads.
-      for(const row of selected)dependencies.projectState.state.hydroFeatureCache?.delete(row.objectRef.id);
+      let changed=false;
+      for(const row of selected)if(dependencies.projectState.state.hydroFeatureCache?.delete(row.objectRef.id))changed=true;
+      if(changed){
+        hydroCatalogBase=null;
+        const state=dependencies.projectState.state;
+        state.hydroFeatureCatalogRevision=(state.hydroFeatureCatalogRevision||0)+1;
+      }
     }
     const entry=ensurePhysicalContext({rows:selected,key}),state=dependencies.projectState.state;
     activatePhysicalContext(entry,key);
@@ -235,7 +241,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     })).values()];
   }
 
-  let hydroAdmissionTail=Promise.resolve();
+  let hydroAdmissionTail=Promise.resolve(),hydroCatalogBase=null;
   function admitHydroFeatures(features=[],{isCurrent=()=>true,removedIds=[]}={}){
     const cache=dependencies.projectState.state.hydroFeatureCache,epoch=projectSourceEpoch;
     const sameScope=()=>activeSource==='builtin'&&epoch===projectSourceEpoch&&dependencies.projectState.state.hydroFeatureCache===cache;
@@ -251,19 +257,34 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     if(!(cache instanceof Map))throw new TypeError('The canonical hydro resource cache is required.');
     const additions=new Map(features.map(feature=>[String(feature.properties?.pandolab_id||feature.id),feature]));
     const removals=new Set(removedIds.map(String).filter(id=>cache.has(id)&&!additions.has(id)&&!cache.get(id)?.properties?.physical_water));
+    const state=dependencies.projectState.state,domain=dependencies.domains.projectDomain;
+    const generation=domain.getGeneration?.(),revision=state.hydroFeatureCatalogRevision||0;
+    const previous=hydroCatalogBase,epoch=projectSourceEpoch;
     let submitted=false;
-    await dependencies.domains.projectDomain.admitSelectionCatalog('hydroBuiltin',()=>{
-      if(!current())return builtinHydroSelectionReferences();
+    // Clear the receipt before dispatch. If native admission or its
+    // publisher throws, the next call reconciles with a complete catalog.
+    hydroCatalogBase=null;
+    await domain.admitSelectionCatalog('hydroBuiltin',()=>{
       submitted=true;
       const combined=[];
       for(const [id,feature]of cache)if(!removals.has(id))combined.push(additions.get(id)||feature);
       for(const [id,feature]of additions)if(!cache.has(id))combined.push(feature);
       return builtinHydroSelectionReferences(combined);
+    },{
+      isCurrent:current,
+      changes:()=>{
+        if(!current()||generation===undefined||!previous||previous.cache!==cache||previous.epoch!==epoch
+          ||previous.generation!==generation||previous.revision!==(state.hydroFeatureCatalogRevision||0)
+          ||previous.size!==cache.size)return null;
+        submitted=true;
+        return {refs:builtinHydroSelectionReferences([...additions.values()]),removedIds:[...removals]};
+      },
     });
     // A viewport can be superseded after its native catalog commit. Apply
     // the acknowledged cache change in the same project scope; the next
     // viewport then starts from the actual accepted catalog.
     if(!submitted||!sameScope())return false;
+    const stable=(state.hydroFeatureCatalogRevision||0)===revision;
     for(const id of removals)cache.delete(id);
     for(const feature of additions.values()) {
       const id=String(feature.properties?.pandolab_id || feature.id),existing=cache.get(id);
@@ -272,7 +293,8 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
       if(existing && existing!==feature)Object.assign(existing,feature);
       else cache.set(id,feature);
     }
-    if(removals.size||additions.size)dependencies.projectState.state.hydroFeatureCatalogRevision=(dependencies.projectState.state.hydroFeatureCatalogRevision||0)+1;
+    if(removals.size||additions.size)state.hydroFeatureCatalogRevision=(state.hydroFeatureCatalogRevision||0)+1;
+    if(stable&&generation===domain.getGeneration?.())hydroCatalogBase={cache,epoch,generation,revision:state.hydroFeatureCatalogRevision||0,size:cache.size};
     return current();
   }
 
