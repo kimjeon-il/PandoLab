@@ -1,3 +1,4 @@
+import {packHydroFeatures,unpackHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.mjs';
 import {encodeStrokeGeometry,decodeStrokeGeometry} from '../../../src/rendering/stroke-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -320,4 +321,16 @@ test('prepared stroke packets survive transferable binary round-trip',()=>{
  assert.equal(packed.offsets.byteLength,0);
  assert.deepEqual(decodeStrokeGeometry(received),geometry);
  assert.throws(()=>decodeStrokeGeometry({coordinates:new Float64Array(2),offsets:new Uint32Array([0,2])}),TypeError);
+});
+
+test('hydro worker transfers river and multipart lake geometry without coordinate cloning',()=>{
+ const features=[
+  {type:'Feature',id:'river',properties:{category:'river'},geometry:{type:'LineString',coordinates:[[0,1],[2,3]]}},
+  {type:'Feature',id:'lake',properties:{category:'lake'},geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,0]],[[2,2],[3,2],[2,2]]]}},
+  {type:'Feature',id:'islands',properties:{category:'lake'},geometry:{type:'MultiPolygon',coordinates:[[[[0,0],[1,1],[0,0]]],[[[2,2],[3,3],[2,2]],[[4,4],[5,5],[4,4]]]]}},
+ ];
+ const packed=packHydroFeatures(features);
+ const received=structuredClone(packed,{transfer:[packed.lengths.buffer,packed.coordinates.buffer]});
+ assert.equal(packed.coordinates.byteLength,0);
+ assert.deepEqual(unpackHydroFeatures(received),features);
 });
