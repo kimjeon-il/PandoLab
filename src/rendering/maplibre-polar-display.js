@@ -7,7 +7,7 @@ import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
 export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeometry,getGeneration,
  dirty,invalidate,failMapPreparation,getMapStyle,physicalResources,countryDisplay,state,
  isColorsEnabled,isInitialMapLoading,getPalette,hydro,getSceneKey,getSceneVectors,
- getPickBounds,resolveObjectKey,isHydroFeatureVisible,rgba}){
+ getPickBounds,resolveObjectKey,isHydroFeatureVisible,rgba,createLayer=createPolarLayer}){
  let polarLayer=null,polarInputs=[],polarLineInputs=[],polarVisibleLines=[];
  const polarGrid=polarGridPacket();
  const overlayLinePackets=new WeakMap();
@@ -18,7 +18,7 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   if(before?layers[index+1]!==before:index!==layers.length-1)getMap().moveLayer(polarLayer.id,before);
  }
  function ensurePolar(){
-  polarLayer ||=createPolarLayer({map:getMap(),prepare:async geometry=>(await prepareRenderGeometry([
+  polarLayer ||=createLayer({map:getMap(),prepare:async geometry=>(await prepareRenderGeometry([
    {kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry,polarCapOnly:true},
   ],getGeneration())).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:cause=>{if(cause.name==='AbortError'){polarInputs=[];invalidate('polar-cancelled');}else failMapPreparation(cause);}});
   polarLayer.ensure();
