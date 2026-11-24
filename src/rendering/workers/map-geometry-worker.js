@@ -1,3 +1,4 @@
+import {encodeStrokeGeometry} from '../stroke-transfer-codec.js';
 'use strict';
 
 const buildMetaUrl = new URL('../build-meta.js', self.location.href);
@@ -134,7 +135,7 @@ self.PandoLabWorkerRpc.install({
               throw new TypeError('Only line strokes may use the geographic stroke Worker path');
             const {geographicStrokeChains}=await import('../maplibre-vector-group.js');
             const values=[];for(const line of item.geometry.type==='LineString'?[item.geometry.coordinates]:item.geometry.coordinates)for(let i=1;i<line.length;i++)values.push(...line[i-1],...line[i]);
-            prepared={cacheKey:item.cacheKey,geometry:geographicStrokeChains(values)};
+            prepared={cacheKey:item.cacheKey,stroke:encodeStrokeGeometry(geographicStrokeChains(values))};
           }else{
             prepared=await store.prepare(item,context);
             if(item.polarCapOnly===true){
@@ -155,7 +156,7 @@ self.PandoLabWorkerRpc.install({
           packets[index+j]=rows[j].prepared;packetTimings.push(rows[j].timing);
         }
       }
-      const buffers = [...new Set(packets.flatMap(({ packet }) => Object.values(packet||{})
+      const buffers = [...new Set(packets.flatMap(({ packet,stroke }) => [...Object.values(packet||{}),...Object.values(stroke||{})]
         .filter(ArrayBuffer.isView).map(value => value.buffer)))];
       const finishedAt=performance.now();
       return self.PandoLabWorkerRpc.transferResult({packets,stats:{...store?.stats(),...countryBoundary?.stats(),

@@ -28,6 +28,7 @@ import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {projectedLineDistance} from '../geometry/geometry-screen-hit.js';
 import {layerObjectRank,layerStyle} from '../ui/layer-presentation.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
+import {decodeStrokeGeometry} from './stroke-transfer-codec.js';
 import {createMapLibreSourceWrites,createMapLibreDatedSources} from './maplibre-source-lifecycle.js';
 
 const collection=features=>({type:'FeatureCollection',features});
@@ -489,6 +490,10 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   stats.geometryWorkerTransferBytes+=result.stats?.transferBytes||0;
   const receivedAt=performance.timeOrigin+performance.now();
   if(result.boundaryMiss)return result;
+  for(const prepared of result.packets||[])if(prepared.stroke){
+   prepared.geometry=decodeStrokeGeometry(prepared.stroke);
+   delete prepared.stroke;
+  }
   if(result.stats){
    const {workerMs,startedAt,finishedAt}=result.stats;
    metrics.record('geometry.worker',workerMs);
