@@ -1,10 +1,12 @@
+import {readMapLibreCamera} from './maplibre-projection.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
 import {MAPLIBRE_LABEL_MIN_ZOOM} from './maplibre-label-presentation.js';
 export const ZOOM_EPSILON=1e-9;
 export const WORLD_VIEW_BOUNDS=[[-89.999,-85.0511287798066],[89.999,85.0511287798066]];
-export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,readSafeInsets,onWorldFitChange,onFarJump}){
+export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,readSafeInsets,onWorldFitChange,onFarJump=()=>{},onMove=()=>{},onMoveStart=()=>{},onMoveEnd=()=>{}}){
  let pendingCameraFit=null,worldFit=null,nativeMinZoom;
+ let lastCameraZoom=null,lastPresentedZoom=null,attachedMap=null;
  function fitMapBounds(bounds,safeInsets={}){
   pendingCameraFit={bounds,safeInsets};
   return applyCameraFit();
@@ -15,7 +17,7 @@ export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,read
   // With a large canvas, fitting the geographic samples alone can clip the
   // globe's silhouette. Provide extra fit padding only for the whole globe.
   const minimum=world?Math.max(24,(Math.min(width,height)-1024)*.18):24;
-  return Object.fromEntries(['left','right','top','bottom'].getMap()(side=>{
+  return Object.fromEntries(['left','right','top','bottom'].map(side=>{
    const extent=side==='left'||side==='right'?width:height;
    return [side,Math.min(extent/4,Math.max(minimum,Number(safeInsets[side])||0))];
   }));
@@ -86,7 +88,52 @@ export function createMapLibreCamera({getMap,isLoaded,getProjection,getView,read
   applyingCamera=true;try{jumpCamera({center,zoom,...orientation});}finally{applyingCamera=false;}
  }
 
- return Object.freeze({fitMapBounds,refreshWorldFit,applyCameraFit,isAtWorldView,labelZoomVisibility,jumpCamera,syncCameraFromState,
+ function fitGeometry(feature,padding){
+   const geometries=[];
+   const collect=value=>{if(value?.type==='FeatureCollection'){value.features.forEach(collect);return;}if(value?.type==='Feature'){collect(value.geometry);return;}if(value?.type==='GeometryCollection'){value.geometries.forEach(collect);return;}if(value?.coordinates)geometries.push(value);};collect(feature);
+   const boxes=geometries.map(geometry=>coordinateBounds(geometry.coordinates)).filter(box=>box.every(Number.isFinite));if(!boxes.length)return false;
+   const bounds=[[Math.min(...boxes.map(box=>box[0])),Math.min(...boxes.map(box=>box[1]))],[Math.max(...boxes.map(box=>box[2])),Math.max(...boxes.map(box=>box[3]))]];
+   if(bounds[0][0]===bounds[1][0]&&bounds[0][1]===bounds[1][1]){
+    jumpCamera({center:bounds[0],zoom:getMap().getZoom()});return true;
+   }
+   return fitMapBounds(bounds,padding);
+  }
+ function cameraSnapshot(){const map=getMap();return map&&isLoaded()?readMapLibreCamera(map):null;}
+ function cameraKey(){
+  const map=getMap();
+  return map?JSON.stringify([map.getCenter().lng,map.getCenter().lat,map.getZoom(),map.getBearing(),map.getPitch(),map.getRoll(),map.getCanvas().width,map.getCanvas().height]):'';
+ }
+ function handleMove(event={}){
+  const zoom=getMap().getZoom();
+  const largeJump=lastCameraZoom!==null&&Math.abs(zoom-lastCameraZoom)>=2-ZOOM_EPSILON;
+  lastCameraZoom=zoom;
+  onMove({userInitiated:!!event.originalEvent,largeJump,
+   farFromPresented:lastPresentedZoom===null||Math.abs(zoom-lastPresentedZoom)>=2-ZOOM_EPSILON,
+   applying:applyingCamera,hasPresented: lastPresentedZoom!==null});
+ }
+ function attachMovement(){
+  const map=getMap();
+  if(attachedMap===map)return;
+  detachMovement();attachedMap=map;lastCameraZoom=map.getZoom();
+  map.on('move',handleMove);map.on('movestart',onMoveStart);map.on('moveend',onMoveEnd);
+ }
+ function detachMovement(){
+  if(!attachedMap)return;
+  attachedMap.off('move',handleMove);attachedMap.off('movestart',onMoveStart);attachedMap.off('moveend',onMoveEnd);
+  attachedMap=null;lastCameraZoom=null;
+ }
+ function verifyLayout(onResize=()=>{}){
+  const map=getMap();if(!map)return;
+  map.resize();refreshWorldFit();onResize();applyCameraFit();
+ }
+ return Object.freeze({fitGeometry,cameraSnapshot,cameraKey,attachMovement,detachMovement,verifyLayout,
+  panBy(dx,dy){getMap().panBy([-dx,-dy],{animate:false});return true;},
+  fitWorld:padding=>fitMapBounds(WORLD_VIEW_BOUNDS,padding),
+  hasPresented:()=>lastPresentedZoom!==null,
+  markPresented(){lastPresentedZoom=getMap().getZoom();},
+  resetPresented(){lastPresentedZoom=null;},
+  dispose(){detachMovement();pendingCameraFit=null;worldFit=null;lastPresentedZoom=null;},
+  fitMapBounds,refreshWorldFit,applyCameraFit,isAtWorldView,labelZoomVisibility,jumpCamera,syncCameraFromState,
   captureNativeMinZoom(){nativeMinZoom=getMap().getMinZoom();worldFit=null;},
   hasPendingFit:()=>!!pendingCameraFit,isApplying:()=>applyingCamera});
 }
