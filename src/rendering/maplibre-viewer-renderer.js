@@ -190,7 +190,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   isDisposed:()=>disposed,requiredSource:id=>requiredSource(id),dirty,onError:failMapPreparation,
   track:(name,submit)=>metrics.track(name,()=>{stats.sourceWrites++;return submit();})});
  const scene=createMapLibreSceneController({getMap:()=>map,isLoaded:()=>loaded,isStyleReady:styleReady,isDisposed:()=>disposed,
- isTemporalOverlay:()=>!!temporalOverlay,isInitialMapLoading:()=>initialMapLoading,getPolarLayer:()=>polarDisplay.layer,
+ isTemporalOverlay:()=>!!temporalOverlay,isInitialMapLoading:()=>initialMapLoading,getPolarLayer:()=>polarDisplay.layer,getHighlight:()=>highlight,
  isPhysicalPending:kind=>physicalBase.isPending(kind),
  getPhysicalGeometry:()=>geometryClient.physicalGeometry(deps.physicalResources.physicalLand?.revision),
  getExternalBasemap:()=>externalBasemap,getSelectionSnapshot:()=>selectionSnapshot,setSelection,
@@ -251,7 +251,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
    if(disposed)return false;
    api.setWorkerUrl(new URL('maplibre-gl-worker.mjs',vendor).href);
    const initialStyle=currentMapStyle();
-   const hydroStyle=hydroDisplay.initialStyle({antiAlias:scene.scene.interactionStyle?.antiAlias!==false,stylePaint:initialStyle.paint});
+   const hydroStyle=hydroDisplay.initialStyle({antiAlias:scene.interactionStyle?.antiAlias!==false,stylePaint:initialStyle.paint});
    // MapLibre can draw a default-camera frame before its load event.
    if(initialCamera)container.style.visibility='hidden';
    // Draw native symbol placement with the tile's first frame so a published

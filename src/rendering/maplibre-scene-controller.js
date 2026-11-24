@@ -13,7 +13,7 @@ const countryFillFilter=batch=>['all',['==',['get','displayRole'],'country-fill'
 const layerVisibleAtZoom=(layer,zoom)=>layer.visible&&isWithinDisplayZoom(zoom,layer.minzoom,layer.maxzoom);
 /** Owns MapLibre scene source/layer order, vector groups, and style changes. */
 export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDisposed,isTemporalOverlay,
- isInitialMapLoading,getPolarLayer,isPhysicalPending,getPhysicalGeometry,getExternalBasemap,
+ isInitialMapLoading,getPolarLayer,getHighlight,isPhysicalPending,getPhysicalGeometry,getExternalBasemap,
  getSelectionSnapshot,setSelection,invalidatePickingLayers,preferences,state,datedSources,sourceWrites,
  sourceLayer,sourceGroups,dirty,invalidate,failMapPreparation,feedback}){
  let sceneKey='',interactionStyle=null,pendingSceneDomains=null,pendingInteractionStyle=null,sceneVectors=[],sceneOrder=[];
@@ -51,7 +51,6 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
 
  const requiredSource=id=>[datedSources.active('territories'),datedSources.active('physical-land'),datedSources.active('physical-water'),'hydro-edits','viewer-labels'].includes(id)
   ||dynamicSources.has(id)||(vectorLayers.has(id)&&vectorLayers.get(id).role!=='hydro-detail');
- let sourceLayers=[],indexedStyle=null,requiredLayerCache=null;
  function mapSourceLayers(){
   const map=getMap();
   if(indexedStyle!==map.style){
@@ -141,7 +140,7 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
   let before=water;
   for(const {id} of [...(countryFillGroups.get(datedSources.active('territories'))||[])].reverse())
    if(map.getLayer(id)){place(id,before);before=id;}
-  for(const id of ['map-graticule',...(highlight?.ids()||[]),...MAPLIBRE_LABEL_LAYERS,'initial-map-ocean','initial-map-land'])place(id);
+  for(const id of ['map-graticule',...(getHighlight()?.ids()||[]),...MAPLIBRE_LABEL_LAYERS,'initial-map-ocean','initial-map-land'])place(id);
   place(getPolarLayer()?.id,!isInitialMapLoading()&&map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);
   let moved=false;
   for(let index=desired.length-1;index>=0;index--){
