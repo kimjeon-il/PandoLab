@@ -16,7 +16,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
  styleReady,isDisposed,isZoomFramePending,getBasemapRecovery,getSelectionSnapshot,setSelection,
  sourceWrites,setData,strokeDomain,metrics,getStats,invalidate}){
  let hydroLoader=null,hydroPresentation=null,hydroFeatures=[],hydroManifest=null;
- let hydroStartup=null,hydroStartupAbort=null,hydroAppliedSource=null;
+ let hydroStartup=null,hydroStartupAbort=null,hydroAppliedSource=null,clearRequested=false,clearPending=null;
  let hydroStateKey='',hydroEditsKey='',hydroMinZoomByStage=new Map(),hydroInputs=null;
  const hydroDetailEnabled=()=>!isDisposed()&&physicalResources.hydroDetailEnabled();
  function cancelHydroStartup(){
@@ -40,7 +40,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   if(hydroManifest===manifest&&hydroPresentation){await hydroPresentation.refresh();return hydroDetailEnabled();}
   const stages=hydroDisplayStages(manifest.stages);
   hydroPresentation?.dispose();hydroPresentation=null;hydroLoader?.dispose();hydroLoader=null;cancelHydroStartup();
-  hydroManifest=manifest;hydroAppliedSource=null;
+  hydroManifest=manifest;hydroAppliedSource=null;clearRequested=false;
   await initialize();
   const map=getMap(),projection=getProjection(),presentation=getPresentation();
   if(hydroManifest!==manifest||!hydroDetailEnabled())return false;
@@ -145,6 +145,13 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
  function syncHydroState(){
   if(!styleReady())return;
   const map=getMap();
+  if(clearRequested&&!clearPending&&map.getSource('hydro')){
+   const source=map.getSource('hydro'),current=()=>!isDisposed()&&clearRequested&&!hydroManifest&&map.getSource('hydro')===source;
+   const task=sourceWrites.update(s=>s.setData(empty()),'hydro',current,{coalesce:true});
+   clearPending=task;
+   task.then(applied=>{if(applied&&current())clearRequested=false;},()=>{})
+    .finally(()=>{if(clearPending===task)clearPending=null;});
+  }
   const {rivers,lakes}=state.layerVisibility;
   const ocean=preferences.mapPalette().ocean||'#ffffff';
   const hydroEdits=state.hydroEdits||emptyHydroEdits;
@@ -179,7 +186,15 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   initialStyle:options=>mapLibreHydroStyle(options),
   resetStyle(){hydroInputs=null;hydroStateKey=null;hydroEditsKey=null;},
   invalidateVisibility(){hydroStateKey='';},
-  resetProject(){hydroPresentation?.resetAdmission();cancelHydroStartup();hydroInputs=null;},
+  selectionChanged(){hydroPresentation?.releaseRetired();},
+  resetProject({retain=false}={}){
+   if(retain)hydroPresentation?.resetAdmission();
+   else{
+    hydroPresentation?.dispose();hydroLoader?.dispose();hydroPresentation=hydroLoader=null;
+    hydroFeatures=[];hydroManifest=null;hydroAppliedSource=null;hydroMinZoomByStage=new Map();clearRequested=true;
+   }
+   cancelHydroStartup();hydroInputs=null;
+  },
   dispose(){hydroPresentation?.dispose();cancelHydroStartup();hydroLoader?.dispose();hydroLoader=null;hydroPresentation=null;
    hydroFeatures=[];hydroManifest=null;hydroAppliedSource=null;hydroInputs=null;hydroMinZoomByStage.clear();hydroStateKey=hydroEditsKey='';}
  });

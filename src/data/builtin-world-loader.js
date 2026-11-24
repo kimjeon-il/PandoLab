@@ -5,6 +5,7 @@ import {PROJECT_SCHEMA_VERSION} from "../runtime/version-contract.js";
 import {resolveBuiltinGeometryPacks} from './builtin-geometry-pack-receipt.js';
 import {createBuiltinAssetTasks} from './builtin-asset-tasks.js';
 import {readGeometryDeltaReceipt,reconstructGeometryBytes} from './historical-geometry-delta.js';
+import {renderCacheBudget} from '../rendering/render-cache-budget.js';
 
 // The verified country catalog provides source coverage. The project retains
 // every original temporal interval; C++ owns month-end selection.
@@ -67,7 +68,7 @@ export function resolveBuiltinWorldGeometry(index,read,month){
  return world.entities.map(row=>({owner:row.objectRef.id,asset:catalog.get(geometryKey(row.geometryRef))}));
 }
 
-export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,historicalGeometryDeltas=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=64*1024*1024}){
+export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,startupGeometryPacks=null,historicalGeometryDeltas=null,assetRoot,fetchFn=globalThis.fetch,cacheStorage=globalThis.caches,geometryCacheBytes=renderCacheBudget().builtinGeometryBytes}){
  if(!manifestUrl||!manifestSpec?.sha256||!dataRevision)throw new Error('Builtin country catalog integrity metadata is required');
  const base=new URL(manifestUrl,globalThis.location?.href),assetTasks=createBuiltinAssetTasks();
  const memory=Number(globalThis.navigator?.deviceMemory),cores=Number(globalThis.navigator?.hardwareConcurrency);

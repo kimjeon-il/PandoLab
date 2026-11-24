@@ -91,7 +91,9 @@ async function saveWholeHydroBundle(bytes) {
   const spec = manifest.container;
   if (bytes.length !== spec.bytes || await hydroDigest(bytes) !== spec.sha256)
     throw new Error('통합 수계 파일의 길이 또는 SHA-256이 일치하지 않습니다.');
-  wholeHydroBundle = bytes;
+  // Keep the verified full container in a browser-managed Blob. Slice
+  // individual resources without retaining a large JS ArrayBuffer view.
+  wholeHydroBundle = typeof Blob==='function'?new Blob([bytes]):bytes;
 }
 
 async function fetchGzip(asset) {
@@ -108,7 +110,9 @@ async function fetchGzip(asset) {
     throw new Error('통합 수계 구성요소 범위가 올바르지 않습니다.');
   let content;
   if (wholeHydroBundle) {
-    content = wholeHydroBundle.subarray(offset, offset + length);
+    content = typeof Blob==='function'&&wholeHydroBundle instanceof Blob
+      ?new Uint8Array(await wholeHydroBundle.slice(offset,offset+length).arrayBuffer())
+      :wholeHydroBundle.subarray(offset, offset + length);
   } else {
     const response = await fetchWithRetry(resolveUrl(url),
       { signal, headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
@@ -508,7 +512,7 @@ async function processView(message) {
   const workerStats = shardStore.stats?.();
   postMessage({ type: 'view-ready', revision: message.revision,
     packIds:packIds.filter(id=>postedPacks.has(id)),failedPacks,
-    stats:{...workerStats,parseMs:packParseMs+(workerStats?.gunzipMs||0),parsedPacks,fetchAttempts} });
+    stats:{...workerStats,wholeContainerBytes:wholeHydroBundle?.size??wholeHydroBundle?.byteLength??0,parseMs:packParseMs+(workerStats?.gunzipMs||0),parsedPacks,fetchAttempts} });
 }
 
 function startView(message) {
@@ -558,7 +562,8 @@ onmessage = async event => {
       featureMetadata.clear();
       postedPacks.clear();
       activeRanges.clear();
-      shardStore = self.createHydroShardStore({
+      const {renderCacheBudget}=await import('../render-cache-budget.js');
+      shardStore = self.createHydroShardStore({byteBudget:renderCacheBudget().workerHydroShardBytes,
         fetchResponse: fetchWithRetry,
         openCache: openHydroCache,
         resolveUrl,

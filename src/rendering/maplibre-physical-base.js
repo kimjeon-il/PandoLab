@@ -1,4 +1,5 @@
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
+import {createGeometryByteEstimator,estimateFeatureRows} from './geometry-residency.js';
 const collection=features=>({type:'FeatureCollection',features});
 // The native source writer stays with MapLibre, while its land/water
 // preparation, current-source identity and admission state live here.
@@ -6,7 +7,7 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
  physicalResources,datedSources,sourceWrites,setData,preparePhysicalDisplay,orderSceneLayers,
  dirty,invalidate,failMapPreparation,getStats}){
  let landRevision=null,physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null;
- const physicalPending=new Map();
+ const physicalPending=new Map(),geometryBytes=createGeometryByteEstimator();
  function preparePhysicalSource(kind,key,data,displayPrepared=false){
   const previous=physicalPending.get(kind);
   if(previous?.key===key&&previous.source===getMap().getSource(previous.id))return;
@@ -37,8 +38,13 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   // identities are left intact.
   const tagged=collection(data.features.map(feature=>({...feature,properties:{...feature.properties,displayRole:kind}})));
   const prepared=kind==='physical-land'&&!displayPrepared?preparePhysicalDisplay(key,tagged.features[0].geometry).then(geometry=>collection([{...tagged.features[0],geometry}])):Promise.resolve(tagged);
-  prepared.then(value=>current()?setData(id,value,current,{shareAcrossGenerations:true}):false,cause=>{if(current()){physicalPending.delete(kind);failMapPreparation(cause);}return false;})
-   .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){datedSources.set(id,{kind,source,key});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
+  let estimatedBytes=0;
+  prepared.then(value=>{
+   if(!current())return false;
+   estimatedBytes=estimateFeatureRows(value.features,geometryBytes);
+   return setData(id,value,current,{shareAcrossGenerations:true});
+  },cause=>{if(current()){physicalPending.delete(kind);failMapPreparation(cause);}return false;})
+   .then(applied=>{if(!current())return;physicalPending.delete(kind);if(applied){datedSources.set(id,{kind,source,key,estimatedBytes});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.delete(kind);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
  }
 
  function syncPhysicalContext(){

@@ -1,5 +1,6 @@
 import { fetchWithRetry, isRetryableHttpStatus } from "../runtime/reliability-core.js";
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
+import {maintainStoredContent,touchStoredContent} from './stored-content-cache.js';
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
 export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',subtle=globalThis.crypto?.subtle}) {
  fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META,fetchFn});
@@ -52,19 +53,21 @@ async function cleanupOldCoreCaches() {
   await oldCacheCleanupPromise;
 }
 
-async function cacheStoredBuffer(cache, url, storedBuffer, headers = null) {
-  if (!cache) return false;
-  try {
-    await cache.put(url, new Response(storedBuffer, { headers: headers || undefined }));
+async function cacheStoredBuffer(cache,url,storedBuffer,headers=null){
+  if(!cache)return false;
+  const immutable=cachePolicy==='immutable';
+  const write=async()=>{
+    const metadata=new Headers(headers||undefined);
+    if(immutable){metadata.set('x-pandolab-stored-bytes',String(storedBuffer.byteLength));metadata.set('x-pandolab-stored-at',String(Date.now()));}
+    await cache.put(url,new Response(storedBuffer,{headers:metadata}));
+    if(immutable){touchStoredContent(cache,url);await maintainStoredContent(cache);}
     return true;
-  } catch (_) {
+  };
+  try{return await write();}
+  catch(_){
     await cleanupOldCoreCaches();
-    try {
-      await cache.put(url, new Response(storedBuffer, { headers: headers || undefined }));
-      return true;
-    } catch (_) {
-      return false;
-    }
+    if(immutable)await maintainStoredContent(cache,{force:true});
+    try{return await write();}catch{return false;}
   }
 }
 
@@ -185,6 +188,7 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
         const value = await validate(result.buffer, label);
         signal?.throwIfAborted();
         report(phase, key, `${label}: 저장된 데이터를 확인했습니다.`, Number(spec.compressedBytes || result.storedBytes), Number(spec.compressedBytes || result.storedBytes), true, { source: 'cache' });
+        if(cachePolicy==='immutable')touchStoredContent(cache,match.key);
         return { ...result, value, cacheHit: true };
       } catch (error) {
         if (signal?.aborted || error?.name === 'AbortError') throw error;

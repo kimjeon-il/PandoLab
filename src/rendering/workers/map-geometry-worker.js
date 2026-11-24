@@ -56,7 +56,8 @@ const preparedPolygonStore = () => polygonPreparation ||= meshCoreReady().then((
       return runtimeDataAssetUrl(self.location.href, asset);
     } });
   const currentMesh=meta.projectCatalogs?.preparedMeshes?.current!==false;
-  return createPreparedPolygonMeshStore({ engine,
+  const {renderCacheBudget}=await import('../render-cache-budget.js');
+  return createPreparedPolygonMeshStore({ engine,byteBudget:renderCacheBudget().workerMeshBytes,
     loadManifest: meta.resourceProfile === 'test-fixture'||!currentMesh ? null : async () => {
       const result = await loadAsset(spec, 'mesh', 'polygon-manifest', 'Prepared polygon manifest',
         buffer => JSON.parse(new TextDecoder().decode(buffer)));

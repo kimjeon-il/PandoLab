@@ -96,7 +96,7 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
  if(!map||typeof admitFeatures!=='function'||typeof onFeatures!=='function'||typeof load!=='function'||typeof onError!=='function'||typeof updateSource!=='function')
   throw new TypeError('Hydro presentation requires the map, data and selection owners');
  let generation=0,disposed=false,pending=Promise.resolve(),tail=Promise.resolve(),presentedKey=null,publishedKey=null,activePacks=new Map(),publishedPacks=new Map();
- let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null,resumePublication=null;
+ let currentWindow=null,movementTimer=null,windowFailed=false,flushProgress=null,resumePublication=null,retirementQueued=false;
  const fragmentsById=new Map();
  const needsAdmission=new Set(),retiredLogicalIds=new Set();
  let selectable=new Set(),lastFailureKey='';
@@ -253,7 +253,20 @@ export function createMapLibreHydroPresentation({map,admitFeatures,onFeatures,lo
   // when its native map source and viewport are unchanged.
   for(const id of fragmentsById.keys())needsAdmission.add(id);
  }
- return {refresh:()=>settle(true),suspend,resetAdmission,ready:()=>pending,
+ function releaseRetired(){
+  if(disposed||!isEnabled()||retirementQueued||![...retiredLogicalIds].some(id=>!preserveLogicalId(id)))return;
+  retirementQueued=true;
+  const version=generation,current=()=>!disposed&&version===generation&&isEnabled();
+  const task=tail.then(async()=>{
+   if(!current())return;
+   const removed=[...retiredLogicalIds].filter(id=>!fragmentsById.has(id)&&!preserveLogicalId(id));
+   if(!removed.length)return;
+   if(await admitFeatures([],current,{removedIds:removed})===false||!current())return;
+   for(const id of removed)retiredLogicalIds.delete(id);
+  }).finally(()=>{retirementQueued=false;});
+  tail=task.catch(error=>{if(current()&&error?.name!=='AbortError')onError(error);});
+ }
+ return {refresh:()=>settle(true),suspend,resetAdmission,releaseRetired,ready:()=>pending,
   canPick:(id,logicalId)=>isEnabled()&&!needsSourceRestore()&&selectable.has(String(id))&&!needsAdmission.has(String(logicalId)),
   dispose(){disposed=true;suspend();map.off('move',moving);map.off('moveend',moveEnded);activePacks.clear();publishedPacks.clear();fragmentsById.clear();selectable.clear();needsAdmission.clear();retiredLogicalIds.clear();presentedFeatures=()=>[];}};
 }

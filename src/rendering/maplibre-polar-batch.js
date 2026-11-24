@@ -27,10 +27,20 @@ function mergePackets(packets,vertexCount,indexCount){
  }
  return line?{values,indices,ranges}:{positions:values,indices,ranges};
 }
-export function createPolarDrawBatcher(){
- // Weak first-packet identity and at most one recent run per first packet
- // avoid pinning an ever-growing set of historical batch combinations.
- let merged=new WeakMap();
+export function createPolarDrawBatcher({byteBudget=8*1024*1024}={}){
+ // Weak input tokens do not retain retired packet arrays. The merged output
+ // cache has an actual typed-array byte cap rather than a weak-key chain.
+ let identities=new WeakMap(),sequence=0,bytes=0,evictions=0;
+ const merged=new Map();
+ const token=packet=>{let id=identities.get(packet);if(!id){id=++sequence;identities.set(packet,id);}return id;};
+ function remember(key,entry){
+  if(merged.has(key)){bytes-=merged.get(key).bytes;merged.delete(key);}
+  if(entry.bytes>byteBudget)return;
+  merged.set(key,entry);bytes+=entry.bytes;
+  while(bytes>byteBudget||merged.size>128){
+   const oldest=merged.keys().next().value;bytes-=merged.get(oldest).bytes;merged.delete(oldest);evictions++;
+  }
+ }
  function batch(rows){
   const output=[];
   for(let i=0;i<rows.length;){
@@ -42,15 +52,16 @@ export function createPolarDrawBatcher(){
    }
    if(end===i+1)output.push(first);
    else{
-    const packets=rows.slice(i,end).map(row=>row.packet),prior=merged.get(first.packet);
-    const packet=prior&&prior.inputs.length===packets.length&&prior.inputs.every((value,j)=>value===packets[j])
+    const packets=rows.slice(i,end).map(row=>row.packet),key=token(first.packet),inputs=packets.map(token),prior=merged.get(key);
+    const packet=prior&&prior.inputs.length===inputs.length&&prior.inputs.every((value,j)=>value===inputs[j])
       ?prior.packet:mergePackets(packets,v,n);
-    merged.set(first.packet,{inputs:packets,packet});
+    remember(key,{inputs,packet,bytes:(packet.values||packet.positions).byteLength+packet.indices.byteLength});
     output.push({...first,packet});
    }
    i=end;
   }
   return {rows:output,packets:new Set(output.map(row=>row.packet))};
  }
- return {batch,clear(){merged=new WeakMap();}};
+ return {batch,stats:()=>({bytes,byteBudget,entries:merged.size,evictions}),
+  clear(){merged.clear();identities=new WeakMap();bytes=0;}};
 }

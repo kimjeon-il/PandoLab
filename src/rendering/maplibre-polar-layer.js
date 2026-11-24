@@ -1,5 +1,6 @@
 import {riverWidthAtZoom} from './maplibre-hydro-presentation.js';
 import {createPolarDrawBatcher} from './maplibre-polar-batch.js';
+import {renderCacheBudget} from './render-cache-budget.js';
 
 // Hand over before Mercator's 85.051129-degree tile edge: a line ending on
 // that edge can still acquire a stretched polar segment during tile clipping.
@@ -104,7 +105,7 @@ export const polarCapsVisible=data=>visiblePolarCaps(data)!==0;
 export function createPolarLayer({map,prepare,onChange,onError}){
  const id='pando-polar-caps',capCache=new WeakMap();
  let key='',pending=false,sequence=0,disposed=false,gl,program,vao,bindings;
- const emptyBatch={rows:[],packets:new Set()},batcher=createPolarDrawBatcher();
+ const emptyBatch={rows:[],packets:new Set()},batcher=createPolarDrawBatcher({byteBudget:renderCacheBudget().polarBatchBytes});
  const mainMatrix=new Float32Array(16),fallbackMatrix=new Float32Array(16);
  let staticBatch=emptyBatch,gridBatch=emptyBatch,overlayBatch=emptyBatch,highlightBatch=emptyBatch,stagedHighlights=emptyBatch,highlightSequence=0,contextGeneration=0;
  let loadingSurface=null;
@@ -280,7 +281,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   if(previous.rows.length)map.triggerRepaint?.();
  }
  function resetContext(){failed=false;release();if(gl){vao=gl.createVertexArray();prepareBuffers(staticBatch,gridBatch,overlayBatch,highlightBatch);}}
- return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size}),
+ return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size,mergedCpuCache:batcher.stats()}),
   retry(){sequence++;pending=false;key='';resetContext();},resetContext,
   ensure(){if(!map.getLayer(id))map.addLayer(layer,map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);},get pending(){return pending;},
   prepareHighlights,clearHighlights,

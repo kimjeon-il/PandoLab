@@ -1,7 +1,8 @@
+import {createGeometryByteEstimator,estimateFeatureRows} from './geometry-residency.js';
 // Owns native source writes and the two dated source slots. Rendering owns
 // frame admission; no document state or camera policy is stored here.
 export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevision,isDisposed,requiredSource,dirty,track,onError}) {
- const pending=new Set(),queues=new WeakMap(),handledErrors=new WeakSet();
+ const pending=new Set(),queues=new WeakMap(),liveLanes=new Set(),handledErrors=new WeakSet();
  function pendingCount(){
   const map=getMap(),generation=getGeneration(),context=getContextRevision();
   let count=0;
@@ -14,7 +15,7 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
  function pump(lane,source){
   if(lane.running)return;
   const entry=lane.waiting.shift();
-  if(!entry){if(queues.get(source)===lane)queues.delete(source);return;}
+  if(!entry){if(queues.get(source)===lane)queues.delete(source);liveLanes.delete(lane);return;}
   lane.running=true;
   const {map,generation,context,id,isCurrent,shareAcrossGenerations,start}=entry;
   const live=()=>!isDisposed()&&getMap()===map&&context===getContextRevision()&&map.getSource(id)===source;
@@ -53,7 +54,7 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   if(requiredSource(id))dirty();
   if(!source)return Promise.resolve(false);
   let lane=queues.get(source);
-  if(!lane){lane={running:false,waiting:[]};queues.set(source,lane);}
+  if(!lane){lane={running:false,waiting:[]};queues.set(source,lane);liveLanes.add(lane);}
   const entry={map,id,source,generation,context,start,isCurrent,shareAcrossGenerations,coalesce};
   if(coalesce){
    const last=lane.waiting.at(-1);
@@ -65,15 +66,45 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   pending.add(entry);lane.waiting.push(entry);pump(lane,source);
   return outcome;
  }
- return Object.freeze({update,pendingCount,hasPendingWrite:source=>queues.has(source),reset:()=>pending.clear(),handlesError:error=>handledErrors.has(error)});
+ function reset(){
+  // Running native writes cannot be interrupted safely. Queued snapshots
+  // are not native state; resolve them false and release their payloads.
+  for(const lane of liveLanes){
+   for(const entry of lane.waiting){pending.delete(entry);entry.resolve(false);}
+   lane.waiting.length=0;
+  }
+  pending.clear();
+ }
+ return Object.freeze({update,pendingCount,hasPendingWrite:source=>queues.has(source),reset,handlesError:error=>handledErrors.has(error)});
 }
 
 const slotOpacity=type=>type==='line'?'line-layer-opacity':'fill-layer-opacity';
 export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapSourceLayers,createCountrySource,createEmptySource,
- invalidateLayerIndex,dirty,canRetire,temporalPending,graceMs=5000}){
+ invalidateLayerIndex,dirty,canRetire,temporalPending,graceMs=5000,
+ standbyBudget=Infinity,hasPendingWrite:sourcePending=()=>false,onEvict=()=>{}}){
  const activeIds=new Map(Object.keys(sourceLayers).map(kind=>[kind,kind]));
- const retained=new Map(),retiring=new Set();
- let timer=null;
+ const retained=new Map(),retiring=new Set(),geometryBytes=createGeometryByteEstimator();
+ let timer=null,evictions=0;
+ function set(id,record){
+  if(record.estimatedBytes===undefined&&record.tiles)
+   record={...record,estimatedBytes:estimateFeatureRows(record.tiles.values(),geometryBytes)};
+  retained.delete(id);retained.set(id,record);
+ }
+ function residency(){
+  const current=new Set(activeIds.values());let activeBytes=0,standbyBytes=0;
+  for(const [id,record]of retained){if(current.has(id))activeBytes+=record.estimatedBytes||0;else standbyBytes+=record.estimatedBytes||0;}
+  return {activeBytes,standbyBytes,standbyBudget,evictions};
+ }
+ function trimStandby(){
+  const map=getMap(),current=new Set(activeIds.values());let bytes=residency().standbyBytes;
+  for(const [id,record]of retained){
+   if(bytes<=standbyBudget)break;
+   if(current.has(id)||sourcePending(record.source)||map.getSource(id)!==record.source)continue;
+   for(const layer of map.getStyle().layers.filter(layer=>layer.source===id))if(map.getLayer(layer.id))map.removeLayer(layer.id);
+   map.removeSource(id);retained.delete(id);retiring.delete(id);onEvict(record.kind,id);invalidateLayerIndex();
+   bytes-=record.estimatedBytes||0;evictions++;
+  }
+ }
  const active=kind=>activeIds.get(kind);
  function slots(kind){
   const map=getMap();
@@ -91,7 +122,7 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
    if(layer.source===id&&!layer.visible){map.setLayoutProperty(layer.id,'visibility','visible');invalidateLayerIndex();}
   }
  }
- function reserve(kind,hasPendingWrite=()=>false){
+ function reserve(kind,hasPendingWrite=sourcePending){
   const map=getMap(),current=active(kind);
   const standby=slots(kind).find(([id])=>id!==current);
   if(standby){
@@ -133,7 +164,7 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
     map.setLayoutProperty(layer.id,'visibility','none');invalidateLayerIndex();
    }
   }
-  retiring.clear();
+  retiring.clear();trimStandby();
  }
  function scheduleRetirement(){
   if(timer===null&&retiring.size&&!temporalPending())timer=setTimeout(retire,graceMs);
@@ -153,6 +184,6 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
   const old=active(kind);retiring.delete(old);retained.delete(old);activeIds.set(kind,id);
  }
  return Object.freeze({active,reuse,reserve,activate,replaceActive,cancelRetirement,scheduleRetirement,
-  get:id=>retained.get(id),set:(id,record)=>retained.set(id,record),has:id=>retained.has(id),
+  get:id=>retained.get(id),set,has:id=>retained.has(id),stats:residency,
   dispose(){cancelRetirement();retained.clear();retiring.clear();activeIds.clear();}});
 }
