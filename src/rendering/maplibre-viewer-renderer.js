@@ -661,7 +661,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(map.getSource(oldId))map.removeSource(oldId);
   indexedStyle=null;
   datedSources.replaceActive('territories',newId);countryFillGroups.delete(oldId);
-  countryDisplay.clearTiles();countrySourceNeedsSwap=false;dirty();
+  countryDisplay.clearSource();countrySourceNeedsSwap=false;dirty();
  }
  async function applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal){
   if(basemapRecovery)await basemapRecovery;

@@ -1,3 +1,5 @@
+import {countryPaintOnly,countryTileDiff} from '../../../src/rendering/maplibre-country-presentation.js';
+import {createMapLibreCountryDisplay} from '../../../src/rendering/maplibre-country-display.js';
 import {packHydroFeatures,unpackHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.mjs';
 import {encodeStrokeGeometry,decodeStrokeGeometry} from '../../../src/rendering/stroke-transfer-codec.js';
 import test from 'node:test';
@@ -333,4 +335,34 @@ test('hydro worker transfers river and multipart lake geometry without coordinat
  const received=structuredClone(packed,{transfer:[packed.lengths.buffer,packed.coordinates.buffer]});
  assert.equal(packed.coordinates.byteLength,0);
  assert.deepEqual(unpackHydroFeatures(received),features);
+});
+
+test('country display owns its published rows, tiles and border caches',()=>{
+ const display=createMapLibreCountryDisplay();
+ const row={id:'territorial:A',geometry:{type:'Polygon',coordinates:[]},properties:{color:'#ffffff',paintOrder:0}};
+ const record={rows:new Map([[row.id,row]]),tiles:new Map([[row.id,row]]),borders:new Map([['border',{paths:{native:{type:'MultiLineString',coordinates:[]}}}]])};
+ display.publish(record,'revision');
+ assert.equal(display.rows.get(row.id),row);
+ assert.equal(display.borders.size,1);
+ display.clearTiles();
+ assert.equal(display.tiles.size,0);
+ assert.equal(display.borders.size,1);
+ display.clearSource();
+ assert.equal(display.borders.size,0);
+ assert.equal(display.key,'');
+});
+
+test('country paint-only detection and tile delta preserve unchanged geometry',()=>{
+ const geometry={type:'Polygon',coordinates:[]};
+ const previous={id:'territorial:A',geometry,properties:{color:'#000000',paintOrder:0}};
+ const recolored={id:previous.id,geometry,properties:{...previous.properties,color:'#ffffff'}};
+ assert.equal(countryPaintOnly({rows:new Map([[previous.id,previous]])},[recolored]),true);
+ const changed={...recolored,properties:{...recolored.properties,paintOrder:1}};
+ assert.equal(countryPaintOnly({rows:new Map([[previous.id,previous]])},[changed]),false);
+ const delta=countryTileDiff(new Map([[previous.id,previous]]),[recolored]);
+ assert.deepEqual(delta.remove,[]);
+ assert.deepEqual(delta.add,[]);
+ assert.deepEqual(delta.update,[{id:previous.id,addOrUpdateProperties:[{key:'color',value:'#ffffff'}]}]);
+ const removed=countryTileDiff(new Map([[previous.id,previous]]),[]);
+ assert.deepEqual(removed.remove,[previous.id]);
 });
