@@ -127,7 +127,6 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
   await hydroPresentation.refresh();return hydroDetailEnabled()&&hydroManifest===manifest;
  }
  const emptyHydroEdits=[];
- let hydroInputs=null;
  function syncHydroState(){
   if(!styleReady())return;
   const map=getMap();
