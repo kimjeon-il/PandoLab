@@ -65,7 +65,6 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  let highlight=null;
  const highlightLines=new WeakMap();
  const mapFeatures=new Map();
- const colorsEnabled=()=>layerStyle(state.layerPresentation,'objects').colorVisible;
  let externalBasemap=null,externalAttribution=null,basemapRecovery=null;
  let pendingStyleRefresh=false,pendingCountryPaint=false,pendingSelection=false;
  const styleReady=()=>loaded&&!contextLost&&!basemapRecovery&&!!map&&loadedStyle===map.style;
