@@ -1,3 +1,4 @@
+import {renderCacheBudget} from './render-cache-budget.js';
 import {mapLibreGeoJsonSource} from './maplibre-source-spec.js';
 import {clipMercatorLines} from './maplibre-polar-layer.js';
 import {createMapLibreHydroPresentation,hiddenMapLibreHydroIds,syncMapLibreHydroVisibility,prepareMapLibreHydroFeatures,joinHydroLineParts,mapLibreHydroStyle} from './maplibre-hydro-presentation.js';
@@ -68,7 +69,9 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
    const bounds=projection.geographicBounds();
    return bounds?hydroTileSpecsForWindow(createHydroTileWindow({manifest:{stages},threshold:zoom,width,height,bounds})):[];
   };
+  const budget=renderCacheBudget();
   const createLoader=signal=>createHydroBrowserLoader({manifest,baseUrl:new URL('.',url).href,dataRevision:physicalConfig.DATA_REVISION,signal,
+   byteLimit:budget.hydroBytes,packLimit:budget.hydroPacks,
    createWorker:()=>new Worker(platform.runtimeAssetUrl('workers/hydro-tile-worker.js')),tilesForView:view=>view.tiles});
   const load=async (view,isCurrent,options)=>{
    if(!hydroLoader||hydroLoader.disposed){

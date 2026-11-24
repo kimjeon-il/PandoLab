@@ -6,13 +6,13 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
  if(!Array.isArray(features)||!features.length||options?.tolerance!==0
   ||options.cluster||(options.coordinates&&options.coordinates!=='lngLat')
   ||!Number.isInteger(z)||z<0||z>10||z>=options.maxZoom)return features;
- const physical=z<=4&&['physical-land','physical-water'].includes(features[0].tags?.displayRole);
+ const physical=z<=6&&['physical-land','physical-water'].includes(features[0].tags?.displayRole);
  if(!physical&&options.promoteId!=='objectKey')return features;
  const physicalRole=physical?features[0].tags.displayRole:null;
  const scale=2**z,px=1/(512*scale),tol2=(0.25*px)**2,cell=16*px;
  // Overview tiles can consider longer subpixel shortcuts and borderless
  // shared fill edges, without relaxing the existing error bound.
- const overview=z<=4,maxSpan=(overview?16:8)*px;
+ const overview=z<=4,extended=z<=6,maxSpan=(overview?16:8)*px;
  const west=tx/scale,east=(tx+1)/scale,north=ty/scale,south=(ty+1)/scale;
  const polar=0.5-Math.log((1+Math.sin(84*Math.PI/180))/(1-Math.sin(84*Math.PI/180)))/(4*Math.PI);
  const EPS=1e-14,MAX_POINTS=1000000,MAX_CANDIDATES=16384,MAX_CANDIDATES_PER_CELL=64,MAX_CHECKS=6000000;
@@ -52,7 +52,7 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
   for(let i=3;i+3<p.length;i+=3){
    if(!safeXY(p[i],p[i+1]))continue;
    const b=point(p,i),slot=Math.floor((b[1]-north)/cell)*32+Math.floor((b[0]-west)/cell);
-   if(candidates.size>=MAX_CANDIDATES||overview&&candidateCounts[slot]>=MAX_CANDIDATES_PER_CELL)continue;
+   if(candidates.size>=MAX_CANDIDATES||extended&&candidateCounts[slot]>=MAX_CANDIDATES_PER_CELL)continue;
    const id=key(b);
    if(candidates.has(id))continue;
    const a=point(p,i-3),c=point(p,i+3);
@@ -67,11 +67,11 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
    if(error>tol2||maxX-minX>maxSpan||maxY-minY>maxSpan)continue;
    // A single-owner shortcut preserves the exact projected segment.
    candidates.set(id,{id,a,b,c,error,collinear,minX,minY,maxX,maxY,invalid:false,fills:[],borders:0,occurrences:[]});
-   if(overview)candidateCounts[slot]++;
+   if(extended)candidateCounts[slot]++;
   }
  }
  for(const {ring,role} of records)if(role==='country-border')propose(ring);
- if(overview)for(const {ring,role,hole} of records)
+ if(extended)for(const {ring,role,hole} of records)
   if(role!=='country-border'&&!hole&&ring.points.length>=24&&ring.size>16*px*px)propose(ring);
  if(!candidates.size)return features;
  // Match every occurrence of the vertex, including endpoints, holes and
@@ -94,9 +94,9 @@ export function simplifySharedTileGeometry(features,z,tx,ty,options){
   }
  }
  const eligible=[...candidates.values()].filter(v=>!v.invalid&&(
-  (!physical&&(overview||v.borders>0)&&v.fills.length===2
+  (!physical&&(extended||v.borders>0)&&v.fills.length===2
    &&v.fills[0].id!==v.fills[1].id&&v.fills[0].forward!==v.fills[1].forward)
-  ||(overview&&v.collinear&&!v.borders&&v.fills.length===1)));
+  ||(extended&&v.collinear&&!v.borders&&v.fills.length===1)));
  if(!eligible.length)return features;
  // Spatially index the small changed rectangles, not the millions of
  // original edges. An unrelated edge entering one means no simplification.

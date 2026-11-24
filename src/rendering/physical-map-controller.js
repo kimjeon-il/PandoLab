@@ -8,6 +8,7 @@ import {mapProjectResourcePath} from '../data/map-project-manifest.js';
 import {resolvePhysicalWaterObjects,physicalWaterContextKey,physicalWaterReferenceView,composePhysicalWaterGeometry} from '../data/physical-water-model.js';
 import {createPhysicalWaterPresentation} from './physical-water-presentation.js';
 import {createPhysicalContextCache} from './physical-context-cache.js';
+import {renderCacheBudget} from './render-cache-budget.js';
 
 // Runtime coordinator: the data layer owns source reads and the C++ owner
 // owns admitted identities; this rendering layer owns visual preparation.
@@ -23,7 +24,8 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     onLandReady:()=>dependencies.domains.renderingDomain.invalidateProject('physical-land-ready')});
   const storedPhysicalAssets=()=>assetReader.storedPhysicalAssets();
   const loadPhysicalLand=assetReader.loadPhysicalLand;
-  const waterContexts=createPhysicalContextCache();
+  const budget=renderCacheBudget();
+  const waterContexts=createPhysicalContextCache({byteBudget:budget.physicalBytes,entryLimit:budget.physicalEntries});
   let requestedWaterKey=null,preparedWaterKey=null;
   const trimWaterContexts=()=>waterContexts.trim([requestedWaterKey,preparedWaterKey]);
   let physicalSelection=null;
