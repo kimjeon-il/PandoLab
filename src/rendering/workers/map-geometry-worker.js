@@ -1,4 +1,3 @@
-import {encodeStrokeGeometry} from '../stroke-transfer-codec.js';
 'use strict';
 
 const buildMetaUrl = new URL('../build-meta.js', self.location.href);
@@ -133,7 +132,7 @@ self.PandoLabWorkerRpc.install({
             }
             if(!['LineString','MultiLineString'].includes(item.geometry?.type))
               throw new TypeError('Only line strokes may use the geographic stroke Worker path');
-            const {geographicStrokeChains}=await import('../maplibre-vector-group.js');
+            const [{geographicStrokeChains},{encodeStrokeGeometry}]=await Promise.all([import('../maplibre-vector-group.js'),import('../stroke-transfer-codec.js')]);
             const values=[];for(const line of item.geometry.type==='LineString'?[item.geometry.coordinates]:item.geometry.coordinates)for(let i=1;i<line.length;i++)values.push(...line[i-1],...line[i]);
             prepared={cacheKey:item.cacheKey,stroke:encodeStrokeGeometry(geographicStrokeChains(values))};
           }else{
