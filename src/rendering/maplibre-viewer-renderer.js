@@ -16,6 +16,7 @@ import {createMapLibreSelection} from './maplibre-selection-controller.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
 import {renderCacheBudget} from './render-cache-budget.js';
 import {createRenderLifetime} from './render-lifetime.js';
+import {createRenderStatePorts} from './render-state-ports.js';
 import {createMapLibreSourceWrites,createMapLibreDatedSources} from './maplibre-source-lifecycle.js';
 
 const collection=features=>({type:'FeatureCollection',features});
@@ -30,7 +31,7 @@ export {createMapGeometryRequester} from './maplibre-geometry-client.js';
 /** MapLibre owns map pixels and picking. Core and the physical owner retain all data. */
 export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPreparationStatus,initialCamera,readSafeInsets=()=>({}),onWorldFitChange}={}) {
  if(typeof deps.objectRefVisible!=='function')throw new TypeError('MapLibre requires the canonical object visibility query.');
- const state=deps.projectState.state;
+ const state=deps.projectState.state,renderPorts=createRenderStatePorts(state);
  const metrics=createRenderingMetrics();
  const camera=createMapLibreCamera({getMap:()=>map,isLoaded:()=>loaded,getProjection:()=>projection,getView:()=>state.view,readSafeInsets,onWorldFitChange,
   onFarJump:()=>frame.onFarCameraJump(),onMove:event=>frame.onCameraMove(event),
@@ -122,21 +123,21 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  isPhysicalPending:kind=>physicalBase.isPending(kind),
  getPhysicalGeometry:()=>geometryClient.physicalGeometry(deps.physicalResources.physicalLand?.revision),
  getExternalBasemap:()=>externalBasemap,getSelectionSnapshot:()=>selection.snapshot,setSelection,
- invalidatePickingLayers:()=>selection.invalidateLayers(),preferences:deps.preferences,state,datedSources,sourceWrites,
+ invalidatePickingLayers:()=>selection.invalidateLayers(),preferences:deps.preferences,...renderPorts.scene,datedSources,sourceWrites,
  sourceLayer,sourceGroups:SOURCE_LAYERS,dirty,invalidate,failMapPreparation,feedback:deps.feedback});
  const physicalBase=createMapLibrePhysicalBase({lifetime,getMap:()=>map,getGeneration:()=>frame.generation,isDisposed:()=>disposed,
  isContextReady:styleReady,isTemporalPending:()=>frame.temporalPending(),
  physicalResources:deps.physicalResources,datedSources,sourceWrites,setData,preparePhysicalDisplay,orderSceneLayers,
  dirty,invalidate,failMapPreparation,getStats:()=>stats});
  const {syncPhysicalContext}=physicalBase;
- const hydroDisplay=createMapLibreHydroDisplay({state,physicalResources:deps.physicalResources,physicalServices:deps.physicalServices,
+ const hydroDisplay=createMapLibreHydroDisplay({...renderPorts.hydro,physicalResources:deps.physicalResources,physicalServices:deps.physicalServices,
  physicalConfig:deps.physicalConfig,preferences:deps.preferences,platform:deps.platform,feedback:deps.feedback,
  getMap:()=>map,getProjection:()=>projection,getPresentation:()=>frame,initialize,styleReady,isDisposed:()=>disposed,
  isZoomFramePending:()=>frame.zoomPending,getBasemapRecovery:()=>frame.basemapRecovery,getSelectionSnapshot:()=>selection.snapshot,setSelection,
  sourceWrites,setData,strokeDomain,metrics,getStats:()=>stats,invalidate});
  const {setHydroManifest,syncHydroState,refreshHydroDetail}=hydroDisplay;
  const polarDisplay=createMapLibrePolarDisplay({getMap:()=>map,isStyleReady:styleReady,prepareRenderGeometry,getGeneration:()=>frame.generation,
- dirty,invalidate,failMapPreparation,getMapStyle:currentMapStyle,physicalResources:deps.physicalResources,countryDisplay,state,
+ dirty,invalidate,failMapPreparation,getMapStyle:currentMapStyle,physicalResources:deps.physicalResources,countryDisplay,...renderPorts.polar,
  isColorsEnabled:colorsEnabled,isInitialMapLoading:()=>frame.initialMapLoading,getPalette:()=>deps.preferences.mapPalette(),
  hydro:hydroDisplay,getSceneKey:()=>scene.key,getSceneVectors:()=>scene.vectors,getPickBounds:geometry=>selection.pickBounds(geometry),
  resolveObjectKey:objectKeyRef,isHydroFeatureVisible:feature=>deps.physicalServices.isHydroFeatureVisible(feature),rgba});
@@ -226,10 +227,10 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  const country=createMapLibreCountryController({getMap:()=>map,getGeneration:()=>frame.generation,isDisposed:()=>disposed,
   styleReady,isFrameBlocked:()=>frame.blocked,getBasemapRecovery:()=>frame.basemapRecovery,waitForStyle:signal=>frame.waitForStyle(signal),
   isTemporalPending:()=>frame.temporalPending(),initialize,getEntityRepository:()=>deps.territorialModel.entityRepository,
-  state,layerPresentation:deps.layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
+  ...renderPorts.country,layerPresentation:deps.layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
   sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders});
  function setTerritorialFeatures(features){return country.setTerritorialFeatures(features);}
- const selection=createMapLibreSelection({getMap:()=>map,state,styleReady,ensurePolar,setData,orderSceneLayers,metrics,invalidate,
+ const selection=createMapLibreSelection({getMap:()=>map,...renderPorts.selection,styleReady,ensurePolar,setData,orderSceneLayers,metrics,invalidate,
  feedback:deps.feedback,suppressHover:frameSuppressHover,objectRefVisible:ref=>deps.objectRefVisible(ref),
  getTerritory:id=>deps.territorialModel.entityRepository.get(id),getHydroFeature:id=>deps.hydroModel.hydroFeatureById(id),
  getInteractionStyle:()=>scene.interactionStyle,rgba,pickingPorts:{
@@ -242,7 +243,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  function setSelection(snapshot){selection.setSelection(snapshot);hydroDisplay.selectionChanged();}
  function frameSuppressHover(){return frame.suppressHover();}
  const frame=createMapLibreFrameController({getMap:()=>map,getContainer:()=>container,isLoaded:()=>loaded,isDisposed:()=>disposed,
-  isStyleReady:styleReady,isStyleCurrent:()=>loadedStyle===map.style,state,metrics,stats,invalidate,
+  isStyleReady:styleReady,isStyleCurrent:()=>loadedStyle===map.style,...renderPorts.frame,metrics,stats,invalidate,
   presentMapPreparation,onMapPreparationStatus,camera,scene,selection,physicalBase,polarDisplay,physicalResources:deps.physicalResources,
   sourceWrites,datedSources,getExternalBasemap:()=>externalBasemap,flushStyleChanges,feedback:deps.feedback,renderQuality:deps.renderQuality,rgba,
   getCountryStatus:country.status});

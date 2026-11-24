@@ -9,7 +9,8 @@ import {createMapLibrePicking} from './maplibre-picking-controller.js';
 // remains authoritative for the actual selected object references.
 export function createMapLibreSelection({getMap,state,styleReady,ensurePolar,setData,orderSceneLayers,metrics,invalidate,
  feedback,suppressHover,objectRefVisible,getTerritory,getHydroFeature,getInteractionStyle,rgba,pickingPorts,
- createHighlight=createMapLibreHighlight}){
+ createHighlight=createMapLibreHighlight,getGeneric=id=>state.genericFeatures.find(value=>String(value.id)===id),
+ getLabel=id=>state.labels.find(value=>String(value.id)===id),readDistributionEntries=()=>state.distributionEntries}){
  let selectionSnapshot=null,highlight=null,pendingSelection=false;
  const highlightLines=new WeakMap();
  const picking=createMapLibrePicking({...pickingPorts,objectRefVisible,ownsHighlight:source=>highlight?.owns(source)});
@@ -36,8 +37,8 @@ export function createMapLibreSelection({getMap,state,styleReady,ensurePolar,set
   const interactionStyle=getInteractionStyle();
   for(const ref of refs){
    if(!objectRefVisible(ref))continue;
-   const feature=ref.domain==='territorial'?getTerritory(ref.id):ref.domain==='generic'?state.genericFeatures.find(value=>String(value.id)===ref.id):ref.domain==='hydro'?getHydroFeature(ref.id):ref.domain==='label'?state.labels.find(value=>String(value.id)===ref.id):null;
-   const geometries=ref.domain==='distribution'?distributionEntriesForLayer(state.distributionEntries,ref.id).map(entry=>entry.mode===DISTRIBUTION_MODES.TERRITORIAL?getTerritory(entry.territorialUnitId)?.geometry:entry.geometry):feature?.geometry?[feature.geometry]:feature?.coordinates?[{type:'Point',coordinates:feature.coordinates}]:[];
+   const feature=ref.domain==='territorial'?getTerritory(ref.id):ref.domain==='generic'?getGeneric(ref.id):ref.domain==='hydro'?getHydroFeature(ref.id):ref.domain==='label'?getLabel(ref.id):null;
+   const geometries=ref.domain==='distribution'?distributionEntriesForLayer(readDistributionEntries(),ref.id).map(entry=>entry.mode===DISTRIBUTION_MODES.TERRITORIAL?getTerritory(entry.territorialUnitId)?.geometry:entry.geometry):feature?.geometry?[feature.geometry]:feature?.coordinates?[{type:'Point',coordinates:feature.coordinates}]:[];
    const hovered=ref.key===hover&&!selected.some(item=>item.key===ref.key);
    const role=ref.key===primary?interactionStyle?.selection.primary:hovered?interactionStyle?.hover:interactionStyle?.selection.secondary;
    const color=(hovered?interactionStyle?.hover.color:interactionStyle?.selection.color)||'#ffd453';

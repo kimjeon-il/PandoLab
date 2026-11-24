@@ -11,7 +11,8 @@ const collection=features=>({type:'FeatureCollection',features});
 // The worker transport owns cancellation; the display cache owns tile rows.
 export function createMapLibreCountryController({getMap,getGeneration,isDisposed,styleReady,isFrameBlocked,getBasemapRecovery,waitForStyle,
  isTemporalPending,initialize,getEntityRepository,state,layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
- sourceLayer,sourceLayers,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders}){
+ sourceLayer,sourceLayers,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders,
+ readCountryPresentation=()=>state}){
  let countryGeneration=-1,countryContentKey='',territories=[],acceptedCountryInputs=null;
  let countrySequence=0,countryTail=Promise.resolve();
  const activeCountryTasks=new Set();
@@ -52,7 +53,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
  function setTerritorialFeatures(features){
   if(isDisposed())return Promise.resolve(false);
   const entities=getEntityRepository().list?.()??features;
-  const countryStyle=currentMapStyle();
+  const countryStyle=currentMapStyle(),state=readCountryPresentation();
   const inputs={entities,features,generation:getGeneration(),source:getMap()?.getSource(datedSources.active('territories')),
    presentation:state.layerPresentation,visibility:state.itemVisibility?.objects,
    visible:state.layerVisibility.objects,stroke:JSON.stringify([countryStyle.countryStroke,countryStyle.borderAlpha])};
@@ -88,7 +89,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(isDisposed())return false;
   if(requestedGeneration!==getGeneration()||sequence!==countrySequence)return false;
   const map=getMap();
-  const {presented,nextBatches,key}=prepareCountryPresentation(features,{state,entityRepository,style:currentMapStyle(),layerPresentation,
+  const {presented,nextBatches,key}=prepareCountryPresentation(features,{state:readCountryPresentation(),entityRepository,style:currentMapStyle(),layerPresentation,
    previousRows:countryDisplay.rows,fillCache});
   const cached=datedSources.reuse('territories',key,sameRenderIdentity);
   const current=()=>!isDisposed()&&!signal.aborted&&requestedGeneration===getGeneration()&&sequence===countrySequence&&getMap()===map;

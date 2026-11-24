@@ -7,7 +7,9 @@ import {isWithinDisplayZoom} from '../map/map-display-zoom.js';
 export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeometry,getGeneration,
  dirty,invalidate,failMapPreparation,getMapStyle,physicalResources,countryDisplay,state,
  isColorsEnabled,isInitialMapLoading,getPalette,hydro,getSceneKey,getSceneVectors,
- getPickBounds,resolveObjectKey,isHydroFeatureVisible,rgba,createLayer=createPolarLayer}){
+ getPickBounds,resolveObjectKey,isHydroFeatureVisible,rgba,createLayer=createPolarLayer,
+ readPolarPresentation=()=>({graticule:state.backgroundSettings?.graticule,graticuleAvailable:state.resourceCapabilities?.graticule,
+  rivers:state.layerVisibility.rivers,hydroEdits:state.hydroEdits})}){
  let polarLayer=null,polarInputs=[],polarLineInputs=[],polarVisibleLines=[];
  const polarGrid=polarGridPacket();
  const overlayLinePackets=new WeakMap();
@@ -27,7 +29,7 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
  function syncPolar(){
   if(!isStyleReady())return;
   ensurePolar();
-  const style=getMapStyle(),items=[];
+  const style=getMapStyle(),items=[],{graticule,graticuleAvailable}=readPolarPresentation();
   const add=(geometry,color,alpha=1,multiply=false,loadingRole)=>{
    if(!color||!(alpha>0))return;
    const shape=polarGeometry(geometry);
@@ -38,7 +40,7 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   if(!context||!physicalResources.physicalContextState.ready)return;
   const colored=isColorsEnabled(),land=style.paint['physical-land-fill']['fill-color'];
   const inputs=[getGeneration(),countryDisplay.key,colored,context.geometry,context.water,context.revision,
-   land,style.paint.ocean['background-color'],state.backgroundSettings?.graticule,state.resourceCapabilities?.graticule];
+   land,style.paint.ocean['background-color'],graticule,graticuleAvailable];
   if(inputs.length===polarInputs.length&&inputs.every((value,index)=>value===polarInputs[index]))return;
   polarInputs=inputs;
   add(context.geometry,style.paint['physical-land-fill']['fill-color'],1,false,'land');
@@ -49,7 +51,7 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
    const {borderColor,borderAlpha,borderWidth}=properties;
    items.push({packet:paths.polar,color:rgba(borderColor,borderAlpha),width:borderWidth});
   }
-  if(state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false){
+  if(graticule!==false&&graticuleAvailable!==false){
    items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5,loadingRole:'grid'});
   }
   polarLayer.update(Symbol('polar display revision'),items,rgba(style.paint.ocean['background-color']));
@@ -81,7 +83,8 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
    const style=row.style||{};
    add(row.geometry,{color:style.color,width:style.width??1,alpha:style.alpha??1},resolveObjectKey(row.objectKey));
   }
-  if(state.layerVisibility.rivers!==false){
+  const {rivers,hydroEdits}=readPolarPresentation();
+  if(rivers!==false){
    const paint={color:ocean,alpha:1,width:riverWidth};
    const visibleStageZooms=new Map(visibleStages);
    for(const feature of hydro.features){
@@ -90,7 +93,7 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
     if(!isHydroFeatureVisible({...feature,id:logicalId,properties:{...feature.properties,pandolab_id:logicalId,layer_id:layerId}}))continue;
     add(feature.geometry,paint,normalizeObjectRef({domain:'hydro',type:'river',id:String(logicalId)}),featureId??feature.id,visibleStageZooms.get(stage));
    }
-   for(const feature of state.hydroEdits||emptyHydroEdits){
+   for(const feature of hydroEdits||emptyHydroEdits){
     if(feature.properties.category!=='river'||!isHydroFeatureVisible(feature))continue;
     add(feature.geometry,{...paint,width:1},normalizeObjectRef({domain:'hydro',type:'river',id:String(feature.id)}));
    }

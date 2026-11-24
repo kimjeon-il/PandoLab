@@ -8,6 +8,7 @@ export function createMapLibreFrameController({
  getMap,getContainer,isLoaded,isDisposed=()=>false,isStyleReady,isStyleCurrent,state,metrics,stats,invalidate,
  presentMapPreparation,onMapPreparationStatus,camera,scene,selection,physicalBase,polarDisplay,physicalResources,
  sourceWrites,datedSources,getExternalBasemap,flushStyleChanges,feedback,renderQuality,rgba,getCountryStatus,
+ isProjectReplacing=()=>!!state.projectReplacing,markCanonicalFrame=()=>{state.countryVisualPhase='canonical';},
  createElement=tag=>document.createElement(tag),isDocumentHidden=()=>document.hidden
 }){
  let generation=0,contextRevision=0,contextLost=false,closed=false;
@@ -104,7 +105,7 @@ export function createMapLibreFrameController({
   initialMapLoading=value===true;syncInitialMapSkeleton();dirty();invalidate('initial-map-skeleton');
  }
  function onFarCameraJump(){
-  if(camera.hasPresented()&&!state.projectReplacing&&!contextLost){
+  if(camera.hasPresented()&&!isProjectReplacing()&&!contextLost){
    preserveDisplayedFrame();zoomFramePending=true;ready=false;preparedReady=false;approvedFrame=null;
   }
  }
@@ -112,13 +113,13 @@ export function createMapLibreFrameController({
   if(userInitiated&&zoomFramePending&&!initialMapLoading&&!initialFrameStaging){
    zoomFramePending=false;discardUnusedPreservedFrame();
   }
-  if(largeJump&&!userInitiated&&!zoomFramePending&&(!state.projectReplacing||initialMapLoading)&&farFromPresented){
+  if(largeJump&&!userInitiated&&!zoomFramePending&&(!isProjectReplacing()||initialMapLoading)&&farFromPresented){
    if(initialMapLoading){initialZoomHidden=true;getMap().getCanvas().style.visibility='hidden';}
    else if(hasPresented)preserveDisplayedFrame();
    zoomFramePending=true;
   }
   if(zoomFramePending){ready=false;preparedReady=false;approvedFrame=null;}
-  if(!applying&&!state.projectReplacing)invalidate('maplibre-camera');
+  if(!applying&&!isProjectReplacing())invalidate('maplibre-camera');
  }
  function invalidateCertificate(){
   certifiedRevision=-1;certifiedGeneration=-1;certifiedContext=-1;certifiedCamera='';
@@ -172,7 +173,7 @@ export function createMapLibreFrameController({
   presentation.markTemporalFrame(frame);preparedReady=true;approvedFrame=frame;
   const result={succeeded:true,presentationReady:true,frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
   if(presentation.canPresentVisualFrame(frame,result)){
-   state.countryVisualPhase='canonical';if(stats.firstCanonicalFrameMs===null)stats.firstCanonicalFrameMs=performance.now();
+   markCanonicalFrame();if(stats.firstCanonicalFrameMs===null)stats.firstCanonicalFrameMs=performance.now();
   }
   return result;
  }

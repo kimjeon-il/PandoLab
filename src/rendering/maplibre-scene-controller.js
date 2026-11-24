@@ -20,19 +20,20 @@ const layerVisibleAtZoom=(layer,zoom)=>layer.visible&&isWithinDisplayZoom(zoom,l
 export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDisposed,isTemporalOverlay,
  isInitialMapLoading,getPolarLayer,getHighlight,isPhysicalPending,getPhysicalGeometry,getExternalBasemap,
  getSelectionSnapshot,setSelection,invalidatePickingLayers,preferences,state,datedSources,sourceWrites,
- sourceLayer,sourceGroups,dirty,invalidate,failMapPreparation,feedback}){
+ sourceLayer,sourceGroups,dirty,invalidate,failMapPreparation,feedback,
+ readLayerVisibility=()=>state.layerVisibility,readLayerPresentation=()=>state.layerPresentation}){
  let sceneKey=0,sceneIdentity=null,sceneStyle=null,vectorRevision=0,interactionStyle=null,pendingSceneDomains=null,pendingInteractionStyle=null,sceneVectors=[],sceneOrder=[];
  const dynamicLayers=new Set(),dynamicSources=new Set(),sceneGroups=new Map(),vectorLayers=new Map(),strokeDomains=new Map(),strokeGroupCache=new Map();
  const countryFillGroups=new Map(),countryPaintState=new WeakMap();
  let sourceLayers=[],indexedStyle=null,requiredLayerCache=null,styleController=null;
  const getStyle=()=>resolveMapLibreMapStyle({palette:preferences.mapPalette(),
-  antiAlias:interactionStyle?.antiAlias!==false,layerVisibility:state.layerVisibility});
+  antiAlias:interactionStyle?.antiAlias!==false,layerVisibility:readLayerVisibility()});
  const preparedDomainRows=new WeakMap(),strokeContributions=new WeakMap();
  const {identityFor,prepareRow,featureFor,vectorRowFor}=createSceneRowPreparation();
  const sceneGroupIndex=createSceneGroupIndex(),vectorGroupIndex=createSceneGroupIndex();
  let vectorContributions=[],vectorDomainRows=[];
  const vectorId=row=>row.role==='graticule'?'map-graticule':'vector-'+(row.kind||'fill')+'-'+row.order+'-'+(row.role==='territorial-fill'?'territorial':row.role==='hydro-detail'?'hydro-detail':'independent');
- const colorsEnabled=()=>layerStyle(state.layerPresentation,'objects').colorVisible;
+ const colorsEnabled=()=>layerStyle(readLayerPresentation(),'objects').colorVisible;
  function invalidateLayerIndex(){indexedStyle=null;requiredLayerCache=null;invalidatePickingLayers();}
  function attachMap(){styleController=createMapLibreStyleController(getMap());invalidateLayerIndex();}
  function applyStyle(style,options){styleController?.apply(style,options);}

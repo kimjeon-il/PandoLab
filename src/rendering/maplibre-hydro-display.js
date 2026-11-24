@@ -14,7 +14,7 @@ const collection=features=>({type:'FeatureCollection',features}),empty=()=>colle
 export function createMapLibreHydroDisplay({state,physicalResources,physicalServices,physicalConfig,
  preferences,platform,feedback,getMap,getProjection,getPresentation,initialize,
  styleReady,isDisposed,isZoomFramePending,getBasemapRecovery,getSelectionSnapshot,setSelection,
- sourceWrites,setData,strokeDomain,metrics,getStats,invalidate}){
+ sourceWrites,setData,strokeDomain,metrics,getStats,invalidate,readHydroPresentation=()=>state}){
  let hydroLoader=null,hydroPresentation=null,hydroFeatures=[],hydroManifest=null;
  let hydroStartup=null,hydroStartupAbort=null,hydroAppliedSource=null,clearRequested=false,clearPending=null;
  let hydroStateKey='',hydroEditsKey='',hydroMinZoomByStage=new Map(),hydroInputs=null;
@@ -152,7 +152,7 @@ export function createMapLibreHydroDisplay({state,physicalResources,physicalServ
    task.then(applied=>{if(applied&&current())clearRequested=false;},()=>{})
     .finally(()=>{if(clearPending===task)clearPending=null;});
   }
-  const {rivers,lakes}=state.layerVisibility;
+  const state=readHydroPresentation(),{rivers,lakes}=state.layerVisibility;
   const ocean=preferences.mapPalette().ocean||'#ffffff';
   const hydroEdits=state.hydroEdits||emptyHydroEdits;
   const inputs=[map.style,hydroFeatures,hydroEdits,physicalResources.hydroActivityView(),state.hydroFeatureCatalogRevision,
