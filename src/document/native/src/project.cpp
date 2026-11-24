@@ -187,7 +187,7 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
 }
 std::shared_ptr<const ResolvedWorld> Project::resolveWorldShared(const std::string& month) const {
     const auto world=resolveTimelineMetadata(month);
-    document().geometries.requireReady(world->requiredGeometries());
+    document().geometries.requireReady(world->requiredGeometries);
     return world;
 }
 ResolvedWorld Project::resolveWorld(const std::string& month) const {
@@ -196,7 +196,7 @@ ResolvedWorld Project::resolveWorld(const std::string& month) const {
 std::vector<GeometryRef> Project::missingGeometries(const std::string& month) const {
     std::vector<GeometryRef> required;
     if(month.empty())for(const auto& [ref,resource]:document().geometries.resources())required.push_back(ref);
-    else required=resolveTimelineMetadata(month)->requiredGeometries();
+    else required=resolveTimelineMetadata(month)->requiredGeometries;
     std::vector<GeometryRef> missing;for(const auto& ref:required)if(!document().geometries.get(ref))missing.push_back(ref);
     return missing;
 }

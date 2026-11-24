@@ -2,6 +2,7 @@
 #include <pandoeditor/temporal.h>
 #include <algorithm>
 #include <map>
+#include <set>
 
 namespace pandoeditor {
 bool validityContainsAtEnd(const Validity& validity,const TemporalValue& point) {
@@ -125,10 +126,6 @@ Validity timelineMapCoverageAtMonth(const TimelineRecords& records,const ObjectR
     }
     throw TimelineError("TIMELINE_INACTIVE","No map coverage for "+id.domain+":"+id.id+" at "+month);
 }
-std::vector<GeometryRef> ResolvedWorld::requiredGeometries() const {
-    std::set<GeometryRef> refs;for(const auto& row:entities)refs.insert(row.geometryRef);
-    return {refs.begin(),refs.end()};
-}
 ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month) const {
     const auto cursor=parseTemporal(month);
     const auto point=cursor.precision=="month"?temporalMonthEnd(cursor.canonical):cursor;
@@ -152,6 +149,9 @@ ResolvedWorld PreparedTimelineWorld::resolve(const std::string& month) const {
         const auto found=result.activeProperties.find(identity.objectRef);
         if(found!=result.activeProperties.end())entity.properties=found->second;
     }
+    std::set<GeometryRef> required;
+    for(const auto& row:result.entities)required.insert(row.geometryRef);
+    result.requiredGeometries.assign(required.begin(),required.end());
     std::map<std::string,std::size_t> resolvedById;
     for(std::size_t i=0;i<result.entities.size();++i)
         if(result.entities[i].objectRef.domain=="territorial")

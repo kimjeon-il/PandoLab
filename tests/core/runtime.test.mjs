@@ -215,12 +215,13 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
     assert.deepEqual(model.world().entities,expected.entities);
     assert.equal(model.world().month,'1916-01');
     assert.throws(()=>model.acceptTransition(result,'core.document-timeline-cursor'),{code:'PL-CORE-RESPONSE'});
-    const rows=model.world().entities;
+    const rows=model.world().entities,views=model.territorialViews();
     const unchanged=session.setTimelineCursor('1916-01',result.state.epoch);
     assert.deepEqual(unchanged.worldDelta.upserts,[]);
     assert.deepEqual(unchanged.worldDelta.removed,[]);
     model.acceptTransition(unchanged,'core.document-timeline-cursor');
     assert.ok(model.world().entities.every((row,i)=>row===rows[i]));
+    assert.equal(model.territorialViews(),views);
     assert.equal(session.projectState().timelineCursor,'1916-01');
     const restored=session.rollbackReplacement(replacement,session.projectState().epoch);
     assert.equal(restored.timelineCursor,before.timelineCursor);

@@ -67,12 +67,12 @@ bool sameWorldEntity(const ResolvedEntity& a,const ResolvedEntity& b) {
 val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint32_t baseEpoch,std::uint32_t sourceEpoch) {
     auto value=val::object(),upserts=val::array(),removed=val::array();
     unsigned u=0,r=0;
-    for(unsigned i=0;i<after.entities.size();++i) {
+    if(&before!=&after)for(unsigned i=0;i<after.entities.size();++i) {
         const auto& row=after.entities[i];const auto* previous=before.find(row.objectRef);
         if(previous&&sameWorldEntity(*previous,row))continue;
         auto update=val::object();update.set("index",i);update.set("entity",worldEntity(row));upserts.set(u++,update);
     }
-    for(const auto& row:before.entities)if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
+    if(&before!=&after)for(const auto& row:before.entities)if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
     value.set("month",after.month);value.set("baseEpoch",baseEpoch);value.set("sourceEpoch",sourceEpoch);
     value.set("entityCount",double(after.entities.size()));value.set("upserts",upserts);value.set("removed",removed);
     return value;

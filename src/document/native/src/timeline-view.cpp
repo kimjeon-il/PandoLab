@@ -65,7 +65,7 @@ void applyProperties(ProjectDocument& document,const ResolvedWorld& world) {
 }
 TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source,const ResolvedWorld& world) {
     TimelineDocumentProjection result;
-    source.geometries.requireReady(world.requiredGeometries());
+    source.geometries.requireReady(world.requiredGeometries);
     result.document=source;
     result.document.timelineRecords={};
     std::map<ObjectRef,const TimelineGeometryBinding*> firstBindings;

@@ -1,7 +1,7 @@
 import { timelineObjectKey } from "./timeline-records.js";
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
 import { projectTimelineIdentity } from "./timeline-resolver.js";
-import { temporalContains, temporalMonthEnd } from "./temporal.js";
+import { normalizeTemporalInterval,temporalContains, temporalMonthEnd } from "./temporal.js";
 
 const fields = Object.freeze({ territorial: 'territorialEntities', label: 'labels', hydro: 'hydroEdits',
   generic: 'genericFeatures', distributionLayer: 'distributionLayers', distributionEntry: 'distributionEntries' });
@@ -45,6 +45,30 @@ export function createCoreDocumentReadModel(initialProject) {
   let worldSourceProject = null;
   let territorialViews = Object.freeze([]);
   let hydroViews = Object.freeze([]);
+  // Cache indexes by immutable source collections, not the whole project
+  // snapshot: a geometry-only delta does not invalidate object identities.
+  const identityIndexes=new WeakMap(),bindingIndexes=new WeakMap(),projectionSources=new WeakMap();
+  function identityIndex(identities){
+    let index=identityIndexes.get(identities);
+    if(!index){index=new Map(identities.map(identity=>[identity.id,identity]));identityIndexes.set(identities,index);}
+    return index;
+  }
+  function sourceBindingAt(identity,ref,date){
+    const bindings=identity.properties?.metadata?.historicalTimeline?.geometryBindings;
+    if(!Array.isArray(bindings))return null;
+    let index=bindingIndexes.get(bindings);
+    if(!index){
+      index=new Map();
+      for(const binding of bindings){
+        if(!binding.geometryRef)continue;
+        const key=refKey(binding.geometryRef);
+        if(!index.has(key))index.set(key,[]);
+        index.get(key).push({binding,interval:normalizeTemporalInterval(binding.validFrom,binding.validTo)});
+      }
+      bindingIndexes.set(bindings,index);
+    }
+    return (index.get(refKey(ref))||[]).find(({interval})=>temporalContains(interval,date))?.binding??null;
+  }
   function acceptLoadedProject(value) {
     if (!value || !Array.isArray(value.geometries)) invalid('A complete accepted C++ storage snapshot is required after document load.');
     for (const field of Object.values(fields)) if (!Array.isArray(value[field]))
@@ -80,43 +104,43 @@ export function createCoreDocumentReadModel(initialProject) {
       invalid('A detached import world must be distinct from an epoch-pinned active read model.');
     if (!detached && responseWorld.sourceEpoch !== expectedEpoch) throw Object.assign(new Error('The C++ world belongs to another document operation epoch.'),
       { code: 'PL-CORE-STALE', name: 'AbortError', cancelled: true });
-    const identities = new Map([...sourceProject.territorialEntities.map(identity=>[timelineObjectKey({domain:'territorial',id:identity.id}),identity]),...sourceProject.hydroEdits.map(identity=>[timelineObjectKey({domain:'hydro',id:identity.id}),identity])]), byId = new Map();
+    const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)},byId=new Map();
     const referenceDate=temporalMonthEnd(responseWorld.month);
-    const previousWorld = !detached && worldSourceProject === sourceProject ? world : null;
+    const previousWorld = !detached ? world : null;
     const rows = responseWorld.entities.map(row => {
-      const identity = identities.get(timelineObjectKey(row.objectRef)), geometry = sourceGeometries.get(row.geometryRef);
-      if (!identity || !geometry || byId.has(timelineObjectKey(row.objectRef)) || !Array.isArray(row.ancestors))
+      const key=timelineObjectKey(row.objectRef);
+      const identity = identities[row.objectRef.domain]?.get(row.objectRef.id), geometry = sourceGeometries.get(row.geometryRef);
+      if (!identity || !geometry || byId.has(key) || !Array.isArray(row.ancestors))
         invalid(`The C++ world contains an unknown/duplicate identity or geometry: ${row.objectRef.id}`);
       for (const field of ['parentId','coverageMode','validFrom','validTo','rootId'])
         if (!Object.hasOwn(row, field)) invalid(`Required C++ world field is missing: ${field}`);
       if (!row.properties || typeof row.properties !== 'object') invalid('C++ temporal property projection is required.');
       // Identity and geometry are from the unchanged, immutable source snapshot.
       // Reuse a resolved row when only the cursor changed, not its visible data.
-      const bindings=identity.properties?.metadata?.historicalTimeline?.geometryBindings;
-      const sourceBinding=Array.isArray(bindings)?bindings.find(binding=>
-        binding.geometryRef?.id===row.geometryRef.id
-        && binding.geometryRef?.version===row.geometryRef.version
-        && temporalContains(binding,referenceDate)):null;
+      const sourceBinding=sourceBindingAt(identity,row.geometryRef,referenceDate);
       const sourceVersion=sourceBinding?.sourceVersionId ?? String(identity.properties?.sourceGeometryVersion ?? '');
       const prior=previousWorld?.byId?.getObject?.(row.objectRef);
-      if(prior && prior.geometry===geometry
-        && String(prior.identity?.properties?.sourceGeometryVersion ?? '') === sourceVersion
-        && ['parentId','coverageMode','validFrom','validTo','rootId'].every(field=>prior[field]===row[field])
-        && sameDisplayValue(prior.geometryRef,row.geometryRef)
-        && sameDisplayValue(prior.ancestors,row.ancestors)
-        && sameDisplayValue(prior.rendering,row.rendering)
-        && sameDisplayValue(prior.properties,row.properties)) {
-        byId.set(timelineObjectKey(row.objectRef),prior);
+      const priorSource=projectionSources.get(prior);
+      if(prior && prior.geometry===geometry && priorSource?.identity===identity
+        && priorSource.version===sourceVersion
+        && (prior===row||(
+          ['parentId','coverageMode','validFrom','validTo','rootId'].every(field=>prior[field]===row[field])
+          && sameDisplayValue(prior.geometryRef,row.geometryRef)
+          && sameDisplayValue(prior.ancestors,row.ancestors)
+          && sameDisplayValue(prior.rendering,row.rendering)
+          && sameDisplayValue(prior.properties,row.properties)))) {
+        byId.set(key,prior);
         return prior;
       }
       const temporalIdentity=projectTimelineIdentity(identity,row.properties);
-      const datedIdentity=Array.isArray(bindings)&&sourceBinding
+      const datedIdentity=sourceBinding
         ?freeze({...temporalIdentity,properties:{...temporalIdentity.properties,
           sourceGeometryVersion:sourceVersion}}):temporalIdentity;
       const effectiveIdentity=row.objectRef.domain==='hydro'
         ?freeze({...datedIdentity,properties:{...datedIdentity.properties,...row.rendering}}):datedIdentity;
-      const projected = freeze({ ...structuredClone(row), id:row.objectRef.id, identity:effectiveIdentity, geometry });
-      byId.set(timelineObjectKey(row.objectRef), projected);
+      const projected = freeze({ ...structuredClone(worldEntityPayload(row)), id:row.objectRef.id, identity:effectiveIdentity, geometry });
+      projectionSources.set(projected,{identity,version:sourceVersion});
+      byId.set(key, projected);
       return projected;
     });
     return Object.freeze({ month: responseWorld.month,...(detached ? {} : { sourceEpoch: responseWorld.sourceEpoch }), entities: Object.freeze(rows),
@@ -128,6 +152,7 @@ export function createCoreDocumentReadModel(initialProject) {
     const previous=new Map((world?.entities || []).filter(row=>row.objectRef.domain===domain).map((row,index) => [row.id,{ row,view: oldViews[index] }]));
     const nextViews=Object.freeze(nextWorld.entities.filter(row=>row.objectRef.domain===domain).map(row => {
       const prior=previous.get(row.id);
+      if(prior?.row===row)return prior.view;
       if (prior && (prior.row.identity===row.identity || (prior.row.identity.id===row.identity.id && sameDisplayValue(prior.row.identity.properties,row.identity.properties))) && prior.row.geometry===row.geometry
         && ['parentId','coverageMode','validFrom','validTo'].every(field => prior.row[field]===row[field])) return prior.view;
       if(domain==='hydro')return freeze({...row.identity,geometry:row.geometry});
@@ -173,7 +198,7 @@ export function createCoreDocumentReadModel(initialProject) {
     }
     if(prior.size+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
     const unchanged=prior.values();
-    const entities=Array.from({length:delta.entityCount},(_,index)=>positions.get(index)??worldEntityPayload(unchanged.next().value));
+    const entities=Array.from({length:delta.entityCount},(_,index)=>positions.get(index)??unchanged.next().value);
     return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities},state.epoch);
   }
   function rebaseWorld(epoch) {
@@ -182,7 +207,7 @@ export function createCoreDocumentReadModel(initialProject) {
       world=Object.freeze({...world,sourceEpoch:epoch});
       return world;
     }
-    const entities=world.entities.map(worldEntityPayload);
+    const entities=world.entities;
     return acceptWorld({ month: world.month,sourceEpoch: epoch,entities },epoch);
   }
   function acceptTransition(result,operation,verifiedResources) {

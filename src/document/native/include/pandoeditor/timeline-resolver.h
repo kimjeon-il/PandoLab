@@ -22,7 +22,8 @@ struct ResolvedWorld {
     // Active values include identities without currently visible geometry.
     std::map<ObjectRef,std::map<std::string,std::string>> activeProperties;
     const ResolvedEntity* find(const ObjectRef&) const;
-    std::vector<GeometryRef> requiredGeometries() const;
+    // Populated by the resolver once, reused by admission and projection.
+    std::vector<GeometryRef> requiredGeometries;
 };
 
 // One inclusive as-of-boundary rule for project and library object histories.
