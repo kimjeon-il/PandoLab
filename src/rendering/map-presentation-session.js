@@ -121,6 +121,14 @@ export function createMapPresentationSession({
       return Promise.reject(abortError('Temporal presentation superseded'));
     return waitForCanonicalFrame();
   }
+  // A restored GPU context needs a new draw for the same live date ticket.
+  function rebaseContext() {
+    if (!temporalPending() || !temporalTicket.isCurrent()
+      || temporalTicket.generation !== getGeneration()) return false;
+    temporalTicket.context = getContextRevision();
+    temporalTicket.frameId = null;
+    return true;
+  }
   function markTemporalFrame(frame) {
     if (temporalPending()) temporalTicket.frameId = frame.frameId;
   }
@@ -155,6 +163,6 @@ export function createMapPresentationSession({
     prepareTemporalCountrySource, finishTemporalViewTransition,
     canPresentVisualFrame, failTemporalPresentation, waitForTemporalPresentation,
     waitForMapPresentation, rejectMapPresentationWaiters, settleMapPresentationWaiters,
-    markTemporalFrame, commitVisualFrame, resetForProject, dispose,
+    rebaseContext, markTemporalFrame, commitVisualFrame, resetForProject, dispose,
   });
 }
