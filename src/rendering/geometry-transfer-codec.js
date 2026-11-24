@@ -141,3 +141,14 @@ export function unpackHydroFeatures({metadata,offsets,coordinates,widthOffsets,w
   return {type:'Feature',id:row.id,properties,geometry};
  });
 }
+
+// This transport does not truncate altitude, other coordinate ordinates or
+// custom geometry fields. Unsupported input keeps the original object path.
+export function canPackExactGeometry(geometry){
+ if(!geometry||!['LineString','MultiLineString','Polygon','MultiPolygon'].includes(geometry.type)
+  ||Object.keys(geometry).some(key=>key!=='type'&&key!=='coordinates'))return false;
+ const line=points=>Array.isArray(points)&&points.length>0&&points.every(p=>Array.isArray(p)&&p.length===2&&Number.isFinite(p[0])&&Number.isFinite(p[1]));
+ const lines=parts=>Array.isArray(parts)&&parts.length>0&&parts.every(line);
+ return geometry.type==='LineString'?line(geometry.coordinates):geometry.type==='MultiPolygon'
+  ?Array.isArray(geometry.coordinates)&&geometry.coordinates.length>0&&geometry.coordinates.every(lines):lines(geometry.coordinates);
+}

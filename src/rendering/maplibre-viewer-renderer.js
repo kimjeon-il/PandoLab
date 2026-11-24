@@ -276,7 +276,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   getRuntimeState:()=>({...stats,...frame.runtimeState(),physicalContextRevision:physicalBase.revision}),
   getStats:()=>({...stats,...frame.stats(),datedSources:{territories:datedSources.active('territories'),land:datedSources.active('physical-land'),water:datedSources.active('physical-water')},
    performance:metrics.snapshot(),polar:polarDisplay.stats(),highlight:selection.stats(),hydro:hydroDisplay.stats,
-   physicalCache:deps.physicalResources.physicalCacheStats?.(),datedSourceMemory:datedSources.stats(),
+   physicalCache:deps.physicalResources.physicalCacheStats?.(),datedSourceMemory:datedSources.stats(),geometryClientMemory:geometryClient.cacheStats(),
    projectReplacing:!!state.projectReplacing,hydroFeatureCount:hydroDisplay.features.length,labelLayout:deps.countryLabelModel.labelLayoutMetrics,mapMoving:state.mapMoving}),
   setHydroManifest,
   invalidateCountryColors,invalidateCountryPalette:invalidateStyle,invalidatePhysicalStyle:invalidateStyle,

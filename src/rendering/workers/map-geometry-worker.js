@@ -102,12 +102,20 @@ async function prepareCountryBoundary(input,context){
   return {segments:prepared.segments,visibleCountrySharedSegments,countryBoundaryOwner};
 }
 
+let geometryInputStorePromise;
+function geometryInputs(){
+ return geometryInputStorePromise ||= Promise.all([import('../geometry-input-transport.js'),import('../render-cache-budget.js')])
+  .then(([{createGeometryInputStore},{renderCacheBudget}])=>createGeometryInputStore({byteBudget:renderCacheBudget().workerGeometryInputBytes}));
+}
 self.PandoLabWorkerRpc.install({
   handlers: {
     'geometry.physical-land':async(payload,context)=>{
       context.throwIfCancelled();
+      const inputStore=await geometryInputs(),input=inputStore.hydrate('geometry.physical-land',payload);
+      if(input.missing)return {geometryInputMiss:input.missing,retainedGeometryInputs:inputStore.retained()};
+      payload=input.payload;
       if(typeof payload.sourceKey!=='string'||!payload.sourceKey)throw new TypeError('Physical display needs its effective source identity.');
-      if(physicalDisplay?.key===payload.sourceKey)return physicalDisplay.result;
+      if(physicalDisplay?.key===payload.sourceKey)return {...physicalDisplay.result,retainedGeometryInputs:inputStore.retained()};
       const [{dissolvePhysicalLand},core]=await Promise.all([import('../physical-land-display.js'),meshCoreReady()]);
       const started=performance.now();
       const {geometry:workGate}=await gates();
@@ -117,13 +125,16 @@ self.PandoLabWorkerRpc.install({
       }));
       context.throwIfCancelled();
       const result={geometry,durationMs:performance.now()-started};
-      physicalDisplay={key:payload.sourceKey,result};return result;
+      physicalDisplay={key:payload.sourceKey,result};return {...result,retainedGeometryInputs:inputStore.retained()};
     },
     'geometry.prepare': async (payload, context) => {
       const startedAt=performance.now();
+      const inputStore=await geometryInputs(),input=inputStore.hydrate('geometry.prepare',payload);
+      if(input.missing)return {geometryInputMiss:input.missing,retainedGeometryInputs:inputStore.retained()};
+      payload=input.payload;context.throwIfCancelled();
       const {geometry:workGate,boundary:boundaryGate}=await gates();
       const boundary=payload.boundary?await boundaryGate.run(context,()=>prepareCountryBoundary(payload.boundary,context)):null;
-      if(payload.boundary&&!boundary)return {boundaryMiss:true};
+      if(payload.boundary&&!boundary)return {boundaryMiss:true,retainedGeometryInputs:inputStore.retained()};
       // A line-only overlay does not require the polygon prepared-mesh store,
       // immutable polygon catalogs or their initialization before it can draw.
       const requiresPolygons = payload.items.some(item => item.kind !== 'stroke');
@@ -177,7 +188,7 @@ self.PandoLabWorkerRpc.install({
       const buffers = [...new Set(packets.flatMap(({ packet,stroke }) => [...Object.values(packet||{}),...Object.values(stroke||{})]
         .filter(ArrayBuffer.isView).map(value => value.buffer)))];
       const finishedAt=performance.now();
-      return self.PandoLabWorkerRpc.transferResult({packets,boundaryPartitions:boundary?.manifest,stats:{...store?.stats(),...countryBoundary?.stats(),
+      return self.PandoLabWorkerRpc.transferResult({packets,boundaryPartitions:boundary?.manifest,retainedGeometryInputs:inputStore.retained(),stats:{...store?.stats(),...countryBoundary?.stats(),...inputStore.stats(),
         transferBytes:buffers.reduce((total,buffer)=>total+buffer.byteLength,0),startedAt:performance.timeOrigin+startedAt,finishedAt:performance.timeOrigin+finishedAt,workerMs:finishedAt-startedAt,
         slowestPackets:packetTimings.sort((a,b)=>b.durationMs-a.durationMs).slice(0,8)}},buffers);
     },

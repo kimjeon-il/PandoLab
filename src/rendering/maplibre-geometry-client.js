@@ -1,8 +1,13 @@
 import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
 import {createWorkerRpcClient} from '../runtime/worker-rpc.js';
 import {decodeStrokeGeometry} from './geometry-transfer-codec.js';
+import {immutableGeometryContentKey} from '../geometry/geometry-version-store.js';
+import {createGeometryInputTransport} from './geometry-input-transport.js';
+import {renderCacheBudget} from './render-cache-budget.js';
+import {createGeometryByteEstimator} from './geometry-residency.js';
 export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWorker=worker=>worker===getWorker(),isDisposed=()=>false,
- track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100))}){
+ track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100)),
+ inputTransport=null,onInput=()=>{}}){
  return async (operation,payload,revision,signal)=>{
   let worker;
   const requireLive=()=>{
@@ -14,9 +19,22 @@ export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWor
    worker=getWorker();
    try{
     const priority=payload.boundary?100:operation==='geometry.physical-land'?80:payload.items?.some(item=>item.polarCapOnly!==true)?60:70;
-    const response=await track(operation,()=>worker.request(operation,payload,{projectRevision:revision,signal,priority}));
-    requireLive();
-    return response.result;
+    const send=async force=>{
+     requireLive();
+     const encoded=inputTransport?.encode(operation,payload,worker,force)??{payload,transfer:[],bytes:0,refHits:0};
+     onInput(encoded);
+     const response=await track(operation,()=>worker.request(operation,encoded.payload,{projectRevision:revision,signal,priority,transfer:encoded.transfer}));
+     requireLive();inputTransport?.accept(worker,response.result);
+     return response.result;
+    };
+    let result=await send(false);
+    // A worker cache can be evicted or restarted after its acknowledgement.
+    // A miss is preflight-only: no topology mutation has occurred.
+    if(result?.geometryInputMiss){
+     inputTransport?.forget(worker);result=await send(true);
+     if(result?.geometryInputMiss)throw Error('Geometry input recovery failed');
+    }
+    return result;
    }catch(cause){
     if(!isDisposed()&&cause.code==='PL-MAP-GEOMETRY-INITIALIZATION')restartWorker(worker);
     throw cause;
@@ -43,7 +61,17 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   requireOpen();cancelCountryRequest();
   countryAbort=new AbortController();return countryAbort.signal;
  }
- const physicalDisplayCache=new Map();
+ const physicalDisplayCache=new Map(),physicalEstimate=createGeometryByteEstimator(),budget=renderCacheBudget();
+ const inputTransport=createGeometryInputTransport({stableKey:immutableGeometryContentKey});
+ function trimPhysical(pinned){
+  let bytes=0;
+  for(const row of physicalDisplayCache.values())bytes+=row.bytes||0;
+  for(const [key,row]of physicalDisplayCache){
+   if(bytes<=budget.physicalDisplayBytes&&physicalDisplayCache.size<=2)break;
+   if(key===pinned)continue;
+   row.controller.abort();physicalDisplayCache.delete(key);bytes-=row.bytes||0;
+  }
+ }
  function geometryWorker(){
   requireOpen();
   return geometryRpc ||=createRpc({createWorker:()=>createWorker(runtimeAssetUrl('workers/map-geometry-worker.js')),
@@ -54,6 +82,11 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   restartWorker:worker=>{
    if(geometryRpc!==worker)return;
    geometryRpc=null;onRestart();worker.stop('geometry-initialization-retry');
+  },
+  inputTransport,onInput:encoded=>{
+   const stats=getStats();
+   stats.geometryWorkerInputBytes=(stats.geometryWorkerInputBytes||0)+encoded.bytes;
+   stats.geometryWorkerReferenceHits=(stats.geometryWorkerReferenceHits||0)+encoded.refHits;
   },
   track:(operation,submit)=>{getStats().geometryWorkerRequests++;return metrics.track(operation,submit);},
  });
@@ -66,9 +99,11 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
    physicalDisplayCache.get(oldest).controller.abort();
    physicalDisplayCache.delete(oldest);
   }
-  const entry={controller:new AbortController(),geometry:null,task:null};physicalDisplayCache.set(key,entry);
+  const entry={controller:new AbortController(),geometry:null,task:null,bytes:0};physicalDisplayCache.set(key,entry);
   entry.task=requestMapGeometry('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},getGeneration(),entry.controller.signal)
-   .then(result=>{entry.geometry=result.geometry;getStats().physicalLandPreparations++;getStats().physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
+   .then(result=>{entry.geometry=result.geometry;entry.bytes=physicalEstimate(result.geometry);
+    if(physicalDisplayCache.get(key)===entry)trimPhysical(key);
+    getStats().physicalLandPreparations++;getStats().physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
   return entry.task;
  }
  async function prepareRenderGeometry(items,revision,boundary,signal=geometryAbort.signal){
@@ -95,6 +130,8 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
 
  return Object.freeze({preparePhysicalDisplay,prepareRenderGeometry,startCountryRequest,cancelCountryRequest,
  physicalGeometry:key=>physicalDisplayCache.get(key)?.geometry,
+ cacheStats:()=>({physicalDisplayBytes:[...physicalDisplayCache.values()].reduce((sum,row)=>sum+(row.bytes||0),0),
+  physicalDisplayBudget:budget.physicalDisplayBytes}),
  reset({retainPhysical=false}={}){if(closed)return;cancelCountryRequest();geometryAbort.abort();geometryAbort=new AbortController();
   if(!retainPhysical){for(const entry of physicalDisplayCache.values())entry.controller.abort();physicalDisplayCache.clear();}
  },

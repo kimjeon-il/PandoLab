@@ -107,6 +107,11 @@ function registerGeometryContent(value,hash){
     verifiedContent.set(hash,entry);removeCollectedAsset.register(accepted,{hash,entry});
   }
 }
+// A verified content identity is not a fallback fingerprint.
+export function immutableGeometryContentKey(value){
+ const content=contentByGeometry.get(value);
+ return content?'canonical:'+content.id:null;
+}
 export function admittedGeometryKey(value){
   const content=contentByGeometry.get(value);
   return content?'canonical:'+content.id:geometryRevisionKey(value);
