@@ -1,7 +1,6 @@
 import {countryPaintOnly,countryTileDiff} from '../../../src/rendering/maplibre-country-presentation.js';
 import {createMapLibreCountryDisplay} from '../../../src/rendering/maplibre-country-display.js';
-import {packHydroFeatures,unpackHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.js';
-import {encodeStrokeGeometry,decodeStrokeGeometry} from '../../../src/rendering/stroke-transfer-codec.js';
+import {packHydroFeatures,unpackHydroFeatures,encodeStrokeGeometry,decodeStrokeGeometry,geometryTransferBuffers} from '../../../src/rendering/geometry-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
@@ -318,7 +317,7 @@ test('native source writes serialize and reject queued work from an obsolete gen
 test('prepared stroke packets survive transferable binary round-trip',()=>{
  const geometry={type:'MultiLineString',coordinates:[[[0,1],[2,3]],[],[[4,5],[6,7],[8,9]]]};
  const packed=encodeStrokeGeometry(geometry);
- const received=structuredClone(packed,{transfer:[packed.coordinates.buffer,packed.offsets.buffer]});
+ const received=structuredClone(packed,{transfer:geometryTransferBuffers(packed)});
  assert.equal(packed.coordinates.byteLength,0);
  assert.equal(packed.offsets.byteLength,0);
  assert.deepEqual(decodeStrokeGeometry(received),geometry);
@@ -327,13 +326,16 @@ test('prepared stroke packets survive transferable binary round-trip',()=>{
 
 test('hydro worker transfers river and multipart lake geometry without coordinate cloning',()=>{
  const features=[
-  {type:'Feature',id:'river',properties:{category:'river'},geometry:{type:'LineString',coordinates:[[0,1],[2,3]]}},
+  {type:'Feature',id:'river',properties:{category:'river',stroke_widths:[[1.234,2.345]]},geometry:{type:'LineString',coordinates:[[0,1],[2,3]]}},
   {type:'Feature',id:'lake',properties:{category:'lake'},geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,0]],[[2,2],[3,2],[2,2]]]}},
   {type:'Feature',id:'islands',properties:{category:'lake'},geometry:{type:'MultiPolygon',coordinates:[[[[0,0],[1,1],[0,0]]],[[[2,2],[3,3],[2,2]],[[4,4],[5,5],[4,4]]]]}},
  ];
  const packed=packHydroFeatures(features);
- const received=structuredClone(packed,{transfer:[packed.lengths.buffer,packed.coordinates.buffer]});
+ const received=structuredClone(packed,{transfer:geometryTransferBuffers(packed)});
  assert.equal(packed.coordinates.byteLength,0);
+ assert.equal(packed.widths.byteLength,0);
+ assert.equal(packed.widthOffsets.byteLength,0);
+ assert.equal(Object.hasOwn(received.metadata[0].properties,'stroke_widths'),false);
  assert.deepEqual(unpackHydroFeatures(received),features);
 });
 
@@ -396,4 +398,16 @@ test('country source replacement preserves mandatory layers and resets owned sta
  assert.equal(display.needsSwap,false);
  assert.equal(display.borders.size,0);
  assert.equal(invalidated,1);
+});
+
+test('shared binary geometry rejects malformed offsets and inconsistent width profiles',()=>{
+ assert.throws(()=>decodeStrokeGeometry({offsets:Uint32Array.of(1,1),coordinates:Float64Array.of(1,2)}),TypeError);
+ assert.throws(()=>decodeStrokeGeometry({offsets:Uint32Array.of(0,2,1),coordinates:Float64Array.of(1,2)}),TypeError);
+ const river={type:'Feature',id:'r',properties:{stroke_widths:[[.25,1.125],[]]},geometry:{type:'MultiLineString',coordinates:[[[0,0],[1,1]],[]]}};
+ const packed=packHydroFeatures([river]);
+ assert.deepEqual(unpackHydroFeatures(packed),[river]);
+ assert.throws(()=>packHydroFeatures([{...river,properties:{stroke_widths:[[1],[]]}}]),/does not match/);
+ assert.throws(()=>unpackHydroFeatures({...packed,widthOffsets:Uint32Array.of(0,1,2)}),/width sample count/);
+ assert.throws(()=>unpackHydroFeatures({...packed,metadata:[]}),/Unused geometry packet parts/);
+ assert.deepEqual(unpackHydroFeatures(packHydroFeatures([])),[]);
 });

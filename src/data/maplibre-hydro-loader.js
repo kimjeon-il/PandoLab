@@ -1,4 +1,4 @@
-import {unpackHydroFeatures} from '../rendering/hydro-transfer-codec.js';
+import {unpackHydroFeatures} from '../rendering/geometry-transfer-codec.js';
 const packIdsFromKey=key=>new Set((key||'').split(',').filter(Boolean).map(Number));
 const tileKey=({stage,x,y})=>`${stage}/${x}/${y}`;
 const windowKey=tiles=>[...new Set(tiles.map(tileKey))].sort().join(',');

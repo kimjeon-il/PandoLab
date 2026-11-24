@@ -1,4 +1,4 @@
-import {packHydroFeatures} from '../../../src/rendering/hydro-transfer-codec.js';
+import {packHydroFeatures} from '../../../src/rendering/geometry-transfer-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHydroBrowserLoader} from '../../../src/data/maplibre-hydro-loader.js';
@@ -169,13 +169,13 @@ test('invalid binary hydro packet rejects the viewport and retires its worker',a
   postMessage(message){
    if(message.type==='init')queueMicrotask(()=>this.onmessage({data:{type:'ready'}}));
    if(message.type==='view')queueMicrotask(()=>this.onmessage({data:{type:'pack',revision:message.revision,packId:1,
-    packed:{metadata:[],lengths:Uint32Array.of(2),coordinates:Float64Array.of(0,0)}}}));
+    packed:{metadata:[],offsets:Uint32Array.of(0,2),coordinates:Float64Array.of(0,0),widthOffsets:Uint32Array.of(0),widths:new Float64Array()}}}));
   }
   terminate(){stopped=true;}
  }
  const loader=await createHydroBrowserLoader({manifest:{},baseUrl:'http://example/',tilesForView:()=>[],createWorker:()=>new FakeWorker()});
  try{
-  await assert.rejects(loader.view({knownKey:''}),/Invalid hydro coordinate lengths/);
+  await assert.rejects(loader.view({knownKey:''}),/Invalid geometry packet offsets or lengths/);
   assert.equal(stopped,true);
   assert.equal(loader.disposed,true);
  }finally{loader.dispose();}

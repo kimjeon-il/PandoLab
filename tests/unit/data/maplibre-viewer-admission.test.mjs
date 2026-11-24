@@ -375,7 +375,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const lake={type:'Feature',id:'lake-fixture',properties:{featureId:'lake-fixture',logicalId:'lake-fixture',__logicalFid:42,category:'lake',stage:1},
     geometry:{type:'Polygon',coordinates:[[[1,-2],[2,-2],[2,-1],[1,-1],[1,-2]]]}};
    const features=[river('river-fixture',0,0),river('detail-3',1,1),river('detail-4',2,2),river('detail-5',3,3),river('polar-river',1,86),lake];
-   const {packHydroFeatures}=await import('/src/rendering/hydro-transfer-codec.js');
+   const {packHydroFeatures}=await import('/src/rendering/geometry-transfer-codec.js');
    const BrowserWorker=globalThis.Worker;
    globalThis.Worker=class {
     constructor(url,options){if(!new URL(url).pathname.endsWith('/hydro-tile-worker.js'))return new BrowserWorker(url,options);}

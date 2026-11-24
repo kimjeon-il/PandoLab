@@ -3,7 +3,7 @@
 
 importScripts('../vendor/fflate/fflate.min.js', 'hydro-shard-store.js');
 
-let packHydroFeatures;
+let packHydroFeatures,geometryTransferBuffers;
 
 const textDecoder = new TextDecoder('utf-8');
 let manifest = null;
@@ -418,7 +418,7 @@ function postPack(packId, decodedFeatures, revision) {
     };
   });
   const packed=packHydroFeatures(features);
-  postMessage({type:'pack',revision,packId,packed},[packed.lengths.buffer,packed.coordinates.buffer]);
+  postMessage({type:'pack',revision,packId,packed},geometryTransferBuffers(packed));
   postedPacks.add(packId);
 }
 
@@ -526,7 +526,7 @@ onmessage = async event => {
   const message = event.data || {};
   if (message.type === 'init') {
     try {
-      ({packHydroFeatures}=await import('../hydro-transfer-codec.js'));
+      ({packHydroFeatures,geometryTransferBuffers}=await import('../geometry-transfer-codec.js'));
       manifest = message.manifest;
       if (manifest.container) {
         const isSourceIndependentHydro = manifest.version === '0.13.4'

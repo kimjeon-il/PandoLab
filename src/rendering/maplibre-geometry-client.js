@@ -1,6 +1,6 @@
 import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
 import {createWorkerRpcClient} from '../runtime/worker-rpc.js';
-import {decodeStrokeGeometry} from './stroke-transfer-codec.js';
+import {decodeStrokeGeometry} from './geometry-transfer-codec.js';
 export function createMapGeometryRequester({getWorker,restartWorker,isCurrentWorker=worker=>worker===getWorker(),isDisposed=()=>false,
  track=(_operation,submit)=>submit(),waitBeforeRetry=()=>new Promise(resolve=>setTimeout(resolve,100))}){
  return async (operation,payload,revision,signal)=>{
