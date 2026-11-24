@@ -164,6 +164,37 @@ function validateAssetLength(result, spec, label) {
   throw new Error(`${label} 압축 해제 크기가 올바르지 않습니다.`);
 }
 
+async function downloadStoredAsset({url,spec,phase,key,label,signal,attempt,cacheKey}) {
+  const download=async()=>{
+    let responseHeaders;
+    const read=await fetchWithRetry(url,{cache:attempt===1?'default':'reload',signal},{
+      fetchFn,maxAttempts:1,timeoutMs:30000,
+      consume:(response,{touch,signal:requestSignal})=>{
+        if(!response.ok)throw Object.assign(new Error(`${label} 요청에 실패했습니다. (${response.status})`),{httpStatus:response.status});
+        responseHeaders=response.headers;
+        return consumeStoredResponse(response,spec,phase,key,label,'network',touch,requestSignal);
+      },
+    });
+    await validateStoredAsset(read.storedBuffer,spec,label);
+    return {read,responseHeaders};
+  };
+  // Only non-cancellable immutable reads share a flight. Each consumer
+  // still verifies its own declared length/encoding and format.
+  const share=cachePolicy==='immutable'&&!signal&&/^[a-f0-9]{64}$/.test(spec.sha256||'');
+  const flightKey=String(cacheKey);
+  let flight=share?storedFlights.get(flightKey):null;
+  const joined=!!flight;
+  if(!flight){
+    flight=download();
+    if(share){storedFlights.set(flightKey,flight);const clear=()=>{if(storedFlights.get(flightKey)===flight)storedFlights.delete(flightKey);};flight.then(clear,clear);}
+  }
+  const received=await flight;
+  const read=joined?{...received.read,storedBuffer:received.read.storedBuffer.slice(0),transferredBytes:0}:received.read;
+  const responseHeaders=received.responseHeaders;
+  if(joined)await validateStoredAsset(read.storedBuffer,spec,label);
+  return {read,responseHeaders};
+}
+
 async function loadRepresentation(spec, phase, key, label, validate, signal, representation, cachedOnly=false) {
   signal?.throwIfAborted();
   const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
@@ -199,36 +230,11 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
   }
 
   if(cachedOnly)return null;
+  // Aborts and terminal HTTP errors propagate immediately.
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const download=async()=>{
-        let responseHeaders;
-        const read=await fetchWithRetry(url,{cache:attempt===1?'default':'reload',signal},{
-          fetchFn,maxAttempts:1,timeoutMs:30000,
-          consume:(response,{touch,signal:requestSignal})=>{
-            if(!response.ok)throw Object.assign(new Error(`${label} 요청에 실패했습니다. (${response.status})`),{httpStatus:response.status});
-            responseHeaders=response.headers;
-            return consumeStoredResponse(response,spec,phase,key,label,'network',touch,requestSignal);
-          },
-        });
-        await validateStoredAsset(read.storedBuffer,spec,label);
-        return {read,responseHeaders};
-      };
-      // Only non-cancellable immutable reads share a flight. Each consumer
-      // still verifies its own declared length/encoding and format.
-      const share=cachePolicy==='immutable'&&!signal&&/^[a-f0-9]{64}$/.test(spec.sha256||'');
-      const flightKey=String(cacheKey);
-      let flight=share?storedFlights.get(flightKey):null;
-      const joined=!!flight;
-      if(!flight){
-        flight=download();
-        if(share){storedFlights.set(flightKey,flight);const clear=()=>{if(storedFlights.get(flightKey)===flight)storedFlights.delete(flightKey);};flight.then(clear,clear);}
-      }
-      const received=await flight;
-      const read=joined?{...received.read,storedBuffer:received.read.storedBuffer.slice(0),transferredBytes:0}:received.read;
-      const responseHeaders=received.responseHeaders;
-      if(joined)await validateStoredAsset(read.storedBuffer,spec,label);
+      const {read,responseHeaders}=await downloadStoredAsset({url,spec,phase,key,label,signal,attempt,cacheKey});
       signal?.throwIfAborted();
       const cacheWriteStartedAt = performance.now();
       report(phase, `${key}-cache-write`, `${label}: 다운로드한 데이터를 저장하는 중입니다.`, 0, 1);

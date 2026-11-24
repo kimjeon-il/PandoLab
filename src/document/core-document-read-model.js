@@ -249,86 +249,133 @@ export function createCoreDocumentReadModel(initialProject) {
     hydroViews=patchViews(hydroViews,hydroChanges);
     world=next;worldSourceProject=project;return next;
   }
-  function acceptWorldDelta(delta,state) {
-    if (!world || delta.baseEpoch!==world.sourceEpoch || delta.sourceEpoch!==state.epoch
-      || delta.month!==state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
-      || !Number.isSafeInteger(delta.entityCount) || delta.entityCount<0
-      || delta.entityCount>world.entities.length+delta.upserts.length
-      || (Object.hasOwn(delta,'retainedOrder')&&!Array.isArray(delta.retainedOrder)))
+  const temporalPropertyNames = new Set(['name', 'color', 'flag']);
+
+  function worldObjectKey(ref) {
+    if (!ref || typeof ref.domain !== 'string' || typeof ref.id !== 'string')
+      invalid('A world delta requires a valid object reference.');
+    return timelineObjectKey(ref);
+  }
+
+  function validateWorldDelta(delta, state) {
+    if (!world || delta.baseEpoch !== world.sourceEpoch || delta.sourceEpoch !== state.epoch
+      || delta.month !== state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
+      || !Number.isSafeInteger(delta.entityCount) || delta.entityCount < 0
+      || delta.entityCount > world.entities.length + delta.upserts.length
+      || (Object.hasOwn(delta, 'retainedOrder') && !Array.isArray(delta.retainedOrder)))
       invalid('A world delta requires its accepted base epoch and target cursor.');
-    const key=ref=>{
-      if (!ref || typeof ref.domain!=='string' || typeof ref.id!=='string')
-        invalid('A world delta requires a valid object reference.');
-      return timelineObjectKey(ref);
-    };
-    if(!delta.upserts.length&&!delta.removed.length&&!Object.hasOwn(delta,'retainedOrder')){
-      if(delta.entityCount!==world.entities.length)invalid('World delta entity count differs.');
-      if(canReuseWorldAt(delta.month)){
-        world=Object.freeze({...world,month:delta.month,sourceEpoch:state.epoch});
-        return world;
-      }
-      const stable=acceptStableWorldDelta(delta,new Map());
-      if(stable)return stable;
-      return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities:world.entities},state.epoch);
+  }
+
+  function expandWorldUpsert(update) {
+    if (!update || typeof update !== 'object') invalid('Invalid world delta upsert.');
+    if (!Object.hasOwn(update, 'propertyPatch')) return update.entity;
+    const patch = update.propertyPatch;
+    if (Object.hasOwn(update, 'entity') || !patch || typeof patch !== 'object')
+      invalid('Invalid property-only world patch.');
+
+    const {objectRef, set, removed} = patch;
+    worldObjectKey(objectRef);
+    const prior = world.byId.getObject(objectRef);
+    if (!prior || !set || typeof set !== 'object' || Array.isArray(set) || !Array.isArray(removed))
+      invalid('Invalid property-only world patch.');
+
+    const validRemoval = name => typeof name === 'string' && temporalPropertyNames.has(name)
+      && Object.hasOwn(prior.properties, name) && !Object.hasOwn(set, name);
+    if (new Set(removed).size !== removed.length || !removed.every(validRemoval)
+      || Object.keys(set).some(name => !temporalPropertyNames.has(name)))
+      invalid('Invalid property-only world patch.');
+
+    const properties = {...prior.properties};
+    for (const name of removed) delete properties[name];
+    Object.assign(properties, set);
+    return {...worldEntityPayload(prior), properties};
+  }
+
+  function collectWorldChanges(delta) {
+    let retainedCount = world.entities.length;
+    const touched = new Set();
+    const positions = new Map();
+
+    for (const ref of delta.removed) {
+      const id = worldObjectKey(ref);
+      if (touched.has(id) || !world.byId.getObject(ref)) invalid('Invalid world delta removal.');
+      touched.add(id);
+      retainedCount--;
     }
-    let retainedCount=world.entities.length;
-    const touched=new Set(), positions=new Map();
-    for(const ref of delta.removed){
-      const id=key(ref);
-      if(touched.has(id)||!world.byId.getObject(ref))invalid('Invalid world delta removal.');
-      touched.add(id);retainedCount--;
+
+    for (const update of delta.upserts) {
+      const entity = expandWorldUpsert(update);
+      const {index} = update;
+      const id = worldObjectKey(entity?.objectRef);
+      const validIndex = Number.isSafeInteger(index) && index >= 0 && index < delta.entityCount;
+      if (touched.has(id) || !validIndex || positions.has(index)) invalid('Invalid world delta upsert.');
+      touched.add(id);
+      if (world.byId.getObject(entity.objectRef)) retainedCount--;
+      positions.set(index, entity);
     }
-    for(const update of delta.upserts){
-      if(!update||typeof update!=='object')invalid('Invalid world delta upsert.');
-      const {index,propertyPatch}=update;
-      let entity=update.entity;
-      if(Object.hasOwn(update,'propertyPatch')){
-        if(Object.hasOwn(update,'entity')||!propertyPatch||typeof propertyPatch!=='object')invalid('Invalid property-only world patch.');
-        const {objectRef,set,removed}=propertyPatch;
-        key(objectRef);
-        const prior=world.byId.getObject(objectRef);
-        if(!prior||!set||typeof set!=='object'||Array.isArray(set)||!Array.isArray(removed)
-          ||new Set(removed).size!==removed.length||removed.some(name=>typeof name!=='string'||!Object.hasOwn(prior.properties,name)||Object.hasOwn(set,name))
-          ||Object.keys(set).some(name=>!['name','color','flag'].includes(name))
-          ||removed.some(name=>!['name','color','flag'].includes(name)))
-          invalid('Invalid property-only world patch.');
-        const properties={...prior.properties};
-        for(const name of removed)delete properties[name];
-        Object.assign(properties,set);
-        entity={...worldEntityPayload(prior),properties};
-      }
-      const id=key(entity?.objectRef);
-      if(touched.has(id)||!Number.isSafeInteger(index)||index<0||index>=delta.entityCount||positions.has(index))
-        invalid('Invalid world delta upsert.');
-      touched.add(id);if(world.byId.getObject(entity.objectRef))retainedCount--;positions.set(index,entity);
+
+    if (retainedCount + positions.size !== delta.entityCount) invalid('World delta entity count differs.');
+    return {touched, positions, retainedCount};
+  }
+
+  function stableWorldOrder(delta, positions) {
+    if (delta.removed.length || Object.hasOwn(delta, 'retainedOrder')
+      || delta.entityCount !== world.entities.length) return false;
+    for (const [index, entity] of positions) {
+      if (worldObjectKey(world.entities[index].objectRef) !== worldObjectKey(entity.objectRef)) return false;
     }
-    if(retainedCount+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
-    if(!delta.removed.length&&!Object.hasOwn(delta,'retainedOrder')&&delta.entityCount===world.entities.length
-      &&[...positions].every(([index,entity])=>key(world.entities[index].objectRef)===key(entity.objectRef))){
-      const stable=acceptStableWorldDelta(delta,positions);
-      if(stable)return stable;
-    }
-    let retained=world.entities;
-    if(Object.hasOwn(delta,'retainedOrder')){
-      if(delta.retainedOrder.length!==retainedCount)invalid('Invalid retained world delta order count.');
-      const ordered=new Set();
-      retained=delta.retainedOrder.map(ref=>{
-        const id=key(ref),row=world.byId.getObject(ref);
-        if(!row||touched.has(id)||ordered.has(id))invalid('Invalid retained world delta order identity.');
-        ordered.add(id);return row;
+    return true;
+  }
+
+  function assembleWorldRows(delta, {touched, positions, retainedCount}) {
+    let retained = world.entities;
+    if (Object.hasOwn(delta, 'retainedOrder')) {
+      if (delta.retainedOrder.length !== retainedCount) invalid('Invalid retained world delta order count.');
+      const ordered = new Set();
+      retained = delta.retainedOrder.map(ref => {
+        const id = worldObjectKey(ref);
+        const row = world.byId.getObject(ref);
+        if (!row || touched.has(id) || ordered.has(id)) invalid('Invalid retained world delta order identity.');
+        ordered.add(id);
+        return row;
       });
     }
-    let cursor=0;
-    const entities=Array.from({length:delta.entityCount},(_,index)=>{
-      if(positions.has(index))return positions.get(index);
-      while(cursor<retained.length){
-        const row=retained[cursor++];
-        if(!touched.has(key(row.objectRef)))return row;
+
+    let cursor = 0;
+    return Array.from({length: delta.entityCount}, (_, index) => {
+      if (positions.has(index)) return positions.get(index);
+      while (cursor < retained.length) {
+        const row = retained[cursor++];
+        if (!touched.has(worldObjectKey(row.objectRef))) return row;
       }
       invalid('Missing retained world delta row.');
     });
-    return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities},state.epoch);
   }
+
+  function acceptWorldDelta(delta, state) {
+    validateWorldDelta(delta, state);
+    const hasChanges = delta.upserts.length || delta.removed.length || Object.hasOwn(delta, 'retainedOrder');
+    const acceptRows = entities => acceptWorld({
+      month: delta.month, sourceEpoch: delta.sourceEpoch, entities,
+    }, state.epoch);
+
+    if (!hasChanges) {
+      if (delta.entityCount !== world.entities.length) invalid('World delta entity count differs.');
+      if (canReuseWorldAt(delta.month)) {
+        world = Object.freeze({...world, month: delta.month, sourceEpoch: state.epoch});
+        return world;
+      }
+      return acceptStableWorldDelta(delta, new Map()) || acceptRows(world.entities);
+    }
+
+    const changes = collectWorldChanges(delta);
+    if (stableWorldOrder(delta, changes.positions)) {
+      const stable = acceptStableWorldDelta(delta, changes.positions);
+      if (stable) return stable;
+    }
+    return acceptRows(assembleWorldRows(delta, changes));
+  }
+
   function rebaseWorld(epoch) {
     if (!world) invalid('A current C++ world must be admitted before rebasing an unchanged timeline.');
     if(worldSourceProject===project){

@@ -138,7 +138,12 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   const existing=pending.get(key);
   if(existing)return (await existing)??loadGeometry(asset);
   geometryStates.set(key,'loading');
-  const reading=limitedRead(async()=>{
+  const reading=limitedRead(()=>readGeometryAsset(asset)).then(({value})=>rememberGeometry(asset,value))
+   .catch(error=>{geometryStates.set(key,'error');throw error;}).finally(()=>pending.delete(key));
+  pending.set(key,reading);
+  return reading;
+ }
+ async function readGeometryAsset(asset){
    const spec={...asset,url:asset.file},validate=buffer=>decodeGeometryContent(buffer,asset);
    const delta=geometryDeltas.get(asset.sha256);
    if(delta){
@@ -162,11 +167,7 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
     }catch(error){if(error?.name==='AbortError')throw error;/* canonical full asset is the recovery path */}
    }
    return assets.loadAsset(spec,'builtin-world',asset.id,'국가 형상',validate);
-  }).then(({value})=>rememberGeometry(asset,value))
-   .catch(error=>{geometryStates.set(key,'error');throw error;}).finally(()=>pending.delete(key));
-  pending.set(key,reading);
-  return reading;
- }
+   }
  async function decodeGeometryContent(buffer,asset){
   const digest=await globalThis.crypto.subtle.digest('SHA-256',buffer);
   const actual=[...new Uint8Array(digest)].map(n=>n.toString(16).padStart(2,'0')).join('');
@@ -210,22 +211,49 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
   }
   return done;
  }
- async function loadGeometryResources(requirements,{isCurrent=()=>true}={}){
-  await loadIndex();
-  const rows=new Array(requirements.length);let cursor=0,failed=false;
-  const workers=Array.from({length:Math.min(readLimit,requirements.length)},async()=>{
-   try{
-    while(!failed&&cursor<requirements.length){
-     if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
-     const i=cursor++,requirement=requirements[i],asset=geometryAssetsByRef.get(geometryKey(requirement));
-     if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))throw Error('Builtin geometry requirement does not match pinned catalog');
-     rows[i]={id:asset.id,version:asset.version,source:await loadGeometry(asset)};
+ // Superseded requests can leave shared reads running for the next query.
+ // Other failures must settle every lane before a retry can start.
+ async function readAll(items, read, {concurrency, assertCurrent, waitForIdle=null, checkAfterRead=false}) {
+  let cursor=0, failed=false;
+  const workers=Array.from({length:Math.min(concurrency,items.length)},async()=>{
+   try {
+    while(!failed&&cursor<items.length) {
+     assertCurrent();
+     if(waitForIdle){await waitForIdle();assertCurrent();}
+     if(failed||cursor>=items.length)break;
+     const index=cursor++;
+     await read(items[index],index);
+     if(checkAfterRead)assertCurrent();
     }
-   }catch(error){failed=true;throw error;}
+   } catch(error) {
+    failed=true;
+    throw error;
+   }
   });
   try{await Promise.all(workers);}
-  catch(error){if(error?.name!=='AbortError')await Promise.allSettled(workers);throw error;}
-  if(!isCurrent())throw Object.assign(Error('Builtin geometry request superseded'),{name:'AbortError',cancelled:true});
+  catch(error){
+   if(error?.name!=='AbortError')await Promise.allSettled(workers);
+   throw error;
+  }
+ }
+ function requireCurrent(isCurrent,message){
+  if(!isCurrent())throw Object.assign(new Error(message),{name:'AbortError',cancelled:true});
+ }
+ function requireGeometryAsset(requirement){
+  const asset=geometryAssetsByRef.get(geometryKey(requirement));
+  if(!asset||['type','contentSha256','decodedBytes'].some(key=>asset[key]!==requirement[key]))
+   throw Error('Builtin geometry requirement does not match pinned catalog');
+  return asset;
+ }
+ async function loadGeometryResources(requirements,{isCurrent=()=>true}={}){
+  await loadIndex();
+  const assertCurrent=()=>requireCurrent(isCurrent,'Builtin geometry request superseded');
+  const rows=new Array(requirements.length);
+  await readAll(requirements,async(requirement,index)=>{
+   const asset=requireGeometryAsset(requirement);
+   rows[index]={id:asset.id,version:asset.version,source:await loadGeometry(asset)};
+  },{concurrency:readLimit,assertCurrent});
+  assertCurrent();
   return rows;
  }
  async function geometryState(ref){
@@ -236,29 +264,10 @@ export function createBuiltinWorldLoader({manifestUrl,manifestSpec,dataRevision,
  }
  async function loadProject(month,{isCurrent=()=>true,concurrency=6,waitForIdle=null}={}){
   if(!Number.isInteger(concurrency)||concurrency<1||concurrency>6)throw new RangeError('Builtin country read concurrency must be 1-6.');
-  const assertCurrent=()=>{if(!isCurrent())throw Object.assign(new Error('Builtin query superseded'),{name:'AbortError',cancelled:true});};
+  const assertCurrent=()=>requireCurrent(isCurrent,'Builtin query superseded');
   assertCurrent();
   const index=await loadIndex();assertCurrent();
-  async function loadAll(selected,read){
-  let next=0,failed=false;
-  const workers=Array.from({length:Math.min(concurrency,selected.length)},async()=>{
-   try{
-    while(!failed&&next<selected.length){
-     assertCurrent();
-     if(waitForIdle){await waitForIdle();assertCurrent();}
-     if(failed||next>=selected.length)break;
-     const i=next++;await read(selected[i]);assertCurrent();
-    }
-   }catch(error){failed=true;throw error;}
-  });
-  try{await Promise.all(workers);}
-  catch(error){
-   // An immediate retry must not join another worker's still-pending failure.
-   // Superseded queries do not wait: their shared reads may serve the next query.
-   if(error?.name!=='AbortError')await Promise.allSettled(workers);
-   throw error;
-  }
-  }
+  const loadAll=(selected,read)=>readAll(selected,read,{concurrency,assertCurrent,waitForIdle,checkAfterRead:true});
   // Published metadata is immutable. Only active geometry is loaded; no
   // country-document reconstruction or parallel runtime model is retained.
   queryMonthEnd(month);

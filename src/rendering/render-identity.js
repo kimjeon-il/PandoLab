@@ -1,7 +1,7 @@
 import {sameStructuredValue} from '../runtime/structured-value.js';
 
 // Exact identities, not joined whole-world strings or unchecked hashes.
-export const sameRenderIdentity = sameStructuredValue;
+export const sameRenderIdentity = (left, right) => sameStructuredValue(left, right);
 
 // GeoJSON updates contain only changed properties. All callers own the same
 // fixed property schema, so removal of an absent key is not inferred here.
