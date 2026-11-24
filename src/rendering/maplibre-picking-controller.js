@@ -97,5 +97,5 @@ export function createMapLibrePicking({getMap,getProjection,getTerritories,getHy
   return [...refs.values()];
  }
 
- return Object.freeze({queryObjectRefs,invalidateLayers(){pickLayerCache=null;}});
+ return Object.freeze({queryObjectRefs,pickBounds,invalidateLayers(){pickLayerCache=null;}});
 }
