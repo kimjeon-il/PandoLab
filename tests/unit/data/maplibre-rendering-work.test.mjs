@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreRenderingDomain} from '../../../src/rendering/maplibre-rendering-domain.js';
 import {createMapLibreHighlight,partitionHighlightLines} from '../../../src/rendering/maplibre-highlight.js';
+import {createMapLibreSourceWrites} from '../../../src/rendering/maplibre-source-lifecycle.js';
 
 test('long highlights share their split endpoints and preserve every original segment',()=>{
  const long=Array.from({length:18000},(_,index)=>[index/1000,(index%3)/1000]);
@@ -292,4 +293,20 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   domain.dispose();globalThis.requestAnimationFrame=previous.requestAnimationFrame;
   globalThis.document=previous.document;
  }
+});
+
+test('native source writes serialize and reject queued work from an obsolete generation',async()=>{
+ let generation=1,release,started,dirty=0;
+ const ready=new Promise(resolve=>{started=resolve;});
+ const source={on(){},off(){}},map={getSource:()=>source,triggerRepaint(){}};
+ const writes=createMapLibreSourceWrites({getMap:()=>map,getGeneration:()=>generation,getContextRevision:()=>0,
+  isDisposed:()=>false,requiredSource:()=>true,dirty:()=>{dirty++;},track:(_name,run)=>run(),onError:error=>{throw error;}});
+ const first=writes.update(()=>new Promise(resolve=>{release=resolve;started();}),'territories');
+ const obsolete=writes.update(()=>{throw Error('obsolete source write ran');},'territories');
+ await ready;assert.equal(writes.pendingCount(),2);
+ generation++;assert.equal(writes.pendingCount(),0);release();
+ assert.equal(await first,true);assert.equal(await obsolete,false);
+ assert.equal(dirty,2);
+ assert.equal(await writes.update(()=>{},'territories'),true);
+ assert.equal(writes.pendingCount(),0);
 });

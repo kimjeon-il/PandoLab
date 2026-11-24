@@ -145,6 +145,8 @@ export function createCoreDocumentReadModel(initialProject) {
     territorialViews=nextViews;hydroViews=nextHydroViews;
     return nextWorld;
   }
+  const worldEntityPayload=({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties})=>
+    ({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties});
   function acceptWorldDelta(delta,state) {
     if (!world || delta.baseEpoch!==world.sourceEpoch || delta.sourceEpoch!==state.epoch
       || delta.month!==state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
@@ -171,14 +173,16 @@ export function createCoreDocumentReadModel(initialProject) {
     }
     if(prior.size+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
     const unchanged=prior.values();
-    const entities=Array.from({length:delta.entityCount},(_,index)=>positions.get(index)??unchanged.next().value);
+    const entities=Array.from({length:delta.entityCount},(_,index)=>positions.get(index)??worldEntityPayload(unchanged.next().value));
     return acceptWorld({month:delta.month,sourceEpoch:delta.sourceEpoch,entities},state.epoch);
   }
   function rebaseWorld(epoch) {
     if (!world) invalid('A current C++ world must be admitted before rebasing an unchanged timeline.');
-    const entities=world.entities.map(({ objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties }) => ({
-      objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties,
-    }));
+    if(worldSourceProject===project){
+      world=Object.freeze({...world,sourceEpoch:epoch});
+      return world;
+    }
+    const entities=world.entities.map(worldEntityPayload);
     return acceptWorld({ month: world.month,sourceEpoch: epoch,entities },epoch);
   }
   function acceptTransition(result,operation,verifiedResources) {
