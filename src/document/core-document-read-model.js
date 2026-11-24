@@ -216,14 +216,15 @@ export function createCoreDocumentReadModel(initialProject) {
     if (!world || delta.baseEpoch!==world.sourceEpoch || delta.sourceEpoch!==state.epoch
       || delta.month!==state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
       || !Number.isSafeInteger(delta.entityCount) || delta.entityCount<0
-      || delta.entityCount>world.entities.length+delta.upserts.length)
+      || delta.entityCount>world.entities.length+delta.upserts.length
+      || (Object.hasOwn(delta,'retainedOrder')&&!Array.isArray(delta.retainedOrder)))
       invalid('A world delta requires its accepted base epoch and target cursor.');
     const key=ref=>{
       if (!ref || typeof ref.domain!=='string' || typeof ref.id!=='string')
         invalid('A world delta requires a valid object reference.');
       return timelineObjectKey(ref);
     };
-    if(!delta.upserts.length&&!delta.removed.length){
+    if(!delta.upserts.length&&!delta.removed.length&&!Object.hasOwn(delta,'retainedOrder')){
       if(delta.entityCount!==world.entities.length)invalid('World delta entity count differs.');
       if(canReuseWorldAt(delta.month)){
         world=Object.freeze({...world,month:delta.month,sourceEpoch:state.epoch});
@@ -245,11 +246,21 @@ export function createCoreDocumentReadModel(initialProject) {
       touched.add(id);if(world.byId.getObject(entity.objectRef))retainedCount--;positions.set(index,entity);
     }
     if(retainedCount+positions.size!==delta.entityCount)invalid('World delta entity count differs.');
+    let retained=world.entities;
+    if(Object.hasOwn(delta,'retainedOrder')){
+      if(delta.retainedOrder.length!==retainedCount)invalid('Invalid retained world delta order count.');
+      const ordered=new Set();
+      retained=delta.retainedOrder.map(ref=>{
+        const id=key(ref),row=world.byId.getObject(ref);
+        if(!row||touched.has(id)||ordered.has(id))invalid('Invalid retained world delta order identity.');
+        ordered.add(id);return row;
+      });
+    }
     let cursor=0;
     const entities=Array.from({length:delta.entityCount},(_,index)=>{
       if(positions.has(index))return positions.get(index);
-      while(cursor<world.entities.length){
-        const row=world.entities[cursor++];
+      while(cursor<retained.length){
+        const row=retained[cursor++];
         if(!touched.has(key(row.objectRef)))return row;
       }
       invalid('Missing retained world delta row.');
@@ -293,6 +304,7 @@ export function createCoreDocumentReadModel(initialProject) {
     if(operation==='core.document-temporal-candidate-adopt') {
       const complete=Object.hasOwn(result||{},'project'),delta=result?.delta!=null;
       if(complete===delta)invalid('Core adoption requires exactly one complete project or temporal delta.');
+      if(delta&&(!result.worldDelta||result.world))invalid('Core delta adoption requires its authoritative world delta.');
       if(complete)acceptLoadedProject(result.project);
     }
     if (['core.document-load','core.document-load-baseline','core.document-initialize',
@@ -303,8 +315,8 @@ export function createCoreDocumentReadModel(initialProject) {
       applyGeometryAdmission(result.geometryDelta,verifiedResources);
     }
     if (result?.delta) apply(result.delta,verifiedResources);
-    if(operation==='core.document-timeline-cursor') {
-      if(!result?.worldDelta)invalid('A cursor transition requires a Core world delta.');
+    if(operation==='core.document-timeline-cursor'||(operation==='core.document-temporal-candidate-adopt'&&result.delta!=null)) {
+      if(!result?.worldDelta)invalid('A temporal transition requires a Core world delta.');
       acceptWorldDelta(result.worldDelta,result.state);
     }
     else if (result?.world) acceptWorld(result.world,result.state.epoch);

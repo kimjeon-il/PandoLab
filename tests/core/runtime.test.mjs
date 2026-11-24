@@ -503,3 +503,41 @@ test('temporal frame approval compares the same immutable content pair only once
  assert.equal(owner.countrySourceAdmitted(equivalent),true);
  owner.dispose();
 });
+
+
+test('Core builtin source adoption transmits changed world rows, with retained order and epoch parity',async()=>{
+  const initial=readFixture(),session=await sessionFor(initial);
+  const source=(month,reverse=false)=>{
+    const document=readFixture();
+    document.projectSetup={...document.projectSetup,sourceMode:'builtin',initialMonth:month};
+    if(reverse)document.territorialEntities.reverse();
+    const bytes=new TextEncoder().encode(JSON.stringify(document));
+    return {setup:document.projectSetup,asset:{kind:'stored-asset',encoding:'identity',sourceBytes:bytes,
+      compressedBytes:bytes.length,decodedBytes:bytes.length,baseDataset:document.baseDataset,sourceMonth:month,fingerprint:hash(bytes)}};
+  };
+  try{
+    const first=source('1914-06');
+    const baseline=session.storageBaselineLoad(first.asset,session.projectState().epoch);
+    const before=session.documentLoadBaseline(baseline.storageBaselineId,first.setup);
+    const snapshot=session.documentSnapshot(),prior=session.resolveWorld(before.timelineCursor,before.epoch);
+    const model=createCoreDocumentReadModel(snapshot);
+    model.acceptWorld(prior,before.epoch);
+    const target=source('1914-07',true);
+    const pin=session.temporalSourcePrepare({source:target.asset,dataRevision:'test-revision',manifestSha256:'a'.repeat(64),expectedEpoch:before.epoch});
+    const candidate=session.temporalCandidatePrepare({sourceId:pin.sourceId,targetMonth:'1914-07',sourceFingerprint:pin.fingerprint,
+      expectedEpoch:before.epoch,setup:target.setup,documentId:snapshot.documentId});
+    const result=session.temporalCandidateAdopt({candidateId:candidate.candidateId,sourceId:pin.sourceId,targetMonth:'1914-07',
+      sourceFingerprint:pin.fingerprint,worldSha256:candidate.worldSha256,replacementId:session.captureReplacement(before.epoch),expectedEpoch:before.epoch});
+    assert.ok(result.delta);
+    assert.ok(result.worldDelta);
+    assert.equal(Object.hasOwn(result,'world'),false);
+    assert.equal(result.worldDelta.baseEpoch,before.epoch);
+    assert.equal(result.worldDelta.sourceEpoch,result.state.epoch);
+    const expected=session.resolveWorld('1914-07',result.state.epoch);
+    assert.ok(result.worldDelta.upserts.length<expected.entities.length);
+    model.acceptTransition(result,'core.document-temporal-candidate-adopt');
+    assert.deepEqual(model.world().entities,model.projectWorld(expected,result.state.epoch).entities);
+    assert.deepEqual(model.world().entities.map(row=>row.objectRef),expected.entities.map(row=>row.objectRef));
+    assert.deepEqual(model.snapshot().territorialEntities,session.documentSnapshot().territorialEntities);
+  }finally{session.delete();}
+});

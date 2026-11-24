@@ -35,6 +35,14 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
       || typeof core.resolveWorld !== 'function') fail('PL-CORE-DOCUMENT-ABI','An epoch-pinned current C++ world is required.');
     return core.resolveWorld(state.timelineCursor,state.epoch);
   }
+  function requireWorldDelta(result,expectedEpoch) {
+    const delta=result?.worldDelta;
+    if(!result?.state||!delta||delta.baseEpoch!==expectedEpoch||delta.sourceEpoch!==result.state.epoch
+      ||delta.month!==result.state.timelineCursor||!Number.isSafeInteger(delta.entityCount)||delta.entityCount<0
+      ||!Array.isArray(delta.upserts)||!Array.isArray(delta.removed)
+      ||(Object.hasOwn(delta,'retainedOrder')&&!Array.isArray(delta.retainedOrder)))
+      fail('PL-CORE-DOCUMENT-ABI','A Core transition must return its own epoch-pinned world delta.');
+  }
   function loadedResult(state,core) {
     for (const method of ['documentSnapshot','selectionSnapshot'])
       if (typeof core[method] !== 'function') fail('PL-CORE-DOCUMENT-ABI',`DocumentSession.${method} is required.`);
@@ -66,8 +74,8 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
       if(result.delta===null)return loadedResult(result.state,core);
       if(typeof result.delta!=='object'||!Array.isArray(result.delta.geometries))
         fail('PL-CORE-DOCUMENT-ABI','Core temporal adoption requires its authoritative delta.');
-      return {...result,selection:core.selectionSnapshot(),
-        world:resolvedWorld(core,result.state)};
+      requireWorldDelta(result,payload.expectedEpoch);
+      return {...result,selection:core.selectionSnapshot()};
     }),
     resolveWorld: (payload, context) => call('resolveWorld', [payload.month, payload.expectedEpoch], context),
     geometryRequirements:(payload,context)=>call('geometryRequirements',[payload.month,payload.expectedEpoch],context),
@@ -78,11 +86,8 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
     }),
     setTimelineCursor: (payload, context) => call('setTimelineCursor', [payload.month, payload.expectedEpoch], context,
       result => {
-        const delta=result?.worldDelta;
-        if (!result?.state || !delta || delta.baseEpoch!==payload.expectedEpoch || delta.sourceEpoch!==result.state.epoch
-          || delta.month!==result.state.timelineCursor || !Number.isSafeInteger(delta.entityCount) || delta.entityCount<0
-          || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
-          || !Array.isArray(result.geometryDelta?.admitted)||result.geometryDelta.admitted.length
+        requireWorldDelta(result,payload.expectedEpoch);
+        if (!Array.isArray(result.geometryDelta?.admitted)||result.geometryDelta.admitted.length
           || !Array.isArray(result.geometryDelta?.removed))
           fail('PL-CORE-DOCUMENT-ABI', 'The C++ cursor transition must return its own epoch-pinned world delta.');
         return result;

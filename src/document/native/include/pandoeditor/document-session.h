@@ -88,7 +88,8 @@ public:
     DocumentSessionState temporalCandidateAdopt(std::uint32_t candidateId,
         std::uint32_t sourceId,const std::string& targetMonth,
         const std::string& sourceFingerprint,const std::string& worldSha256,
-        std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta=nullptr);
+        std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta=nullptr,
+        std::shared_ptr<const ResolvedWorld>* previousWorld=nullptr);
     bool temporalCandidateDiscard(std::uint32_t candidateId,std::uint32_t expectedEpoch);
     DocumentSessionState admitExternalBaseline(std::uint32_t expectedEpoch);
     std::uint32_t captureReplacement(std::uint32_t expectedEpoch);

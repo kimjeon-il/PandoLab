@@ -234,7 +234,8 @@ bool DocumentSession::temporalCandidateDiscard(std::uint32_t candidateId,std::ui
 DocumentSessionState DocumentSession::temporalCandidateAdopt(
     std::uint32_t candidateId,std::uint32_t sourceId,const std::string& targetMonth,
     const std::string& sourceFingerprint,const std::string& worldSha256,
-    std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta) {
+    std::uint32_t replacementId,std::uint32_t expectedEpoch,std::string* acceptedDelta,
+    std::shared_ptr<const ResolvedWorld>* previousWorld) {
     requireEpoch(expectedEpoch);
     // Validate the *same* capsule that ProjectDomain already owns, before
     // changing any state. A missing or superseded capsule never commits.
@@ -265,6 +266,13 @@ DocumentSessionState DocumentSession::temporalCandidateAdopt(
     // and allocations above happen before this non-interruptible Core commit.
     // The old Project/selection/draft/baseline/history remain in replacement_.
     auto admittedSource=found->second.baseline;
+    // Pin the accepted old world before replacing its source. New-document
+    // adoption has no delta base and continues to publish a full snapshot.
+    if(previousWorld){
+        previousWorld->reset();
+        if(!temporalCandidate_->preparedDelta.empty())
+            *previousWorld=project_.resolveWorldShared(project_.timelineCursor());
+    }
     if(acceptedDelta)*acceptedDelta=std::move(temporalCandidate_->preparedDelta);
     project_=std::move(temporalCandidate_->project);
     storageBaseline_=admittedSource;

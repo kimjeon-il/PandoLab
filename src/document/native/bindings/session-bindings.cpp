@@ -63,16 +63,34 @@ bool sameWorldEntity(const ResolvedEntity& a,const ResolvedEntity& b) {
         &&a.ancestors==b.ancestors&&a.validity.from==b.validity.from&&a.validity.to==b.validity.to
         &&a.properties==b.properties;
 }
-// Cursor transitions keep catalog order; transmit changed rows only.
-val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint32_t baseEpoch,std::uint32_t sourceEpoch) {
+// Cursor transitions keep catalog order. Source adoption can reorder the
+// retained identities; send their references only when that actually happens.
+val worldDelta(const ResolvedWorld& before,const ResolvedWorld& after,std::uint32_t baseEpoch,
+               std::uint32_t sourceEpoch,bool allowReorder=false) {
     auto value=val::object(),upserts=val::array(),removed=val::array();
     unsigned u=0,r=0;
+    std::vector<const ObjectRef*> retained;
+    if(allowReorder && &before!=&after)retained.reserve(after.entities.size());
+    std::size_t previousIndex=0;
+    bool havePrevious=false,reordered=false;
     if(&before!=&after)for(unsigned i=0;i<after.entities.size();++i) {
         const auto& row=after.entities[i];const auto* previous=before.find(row.objectRef);
-        if(previous&&sameWorldEntity(*previous,row))continue;
+        if(previous&&sameWorldEntity(*previous,row)){
+            if(allowReorder){
+                const auto index=static_cast<std::size_t>(previous-before.entities.data());
+                if(havePrevious&&index<previousIndex)reordered=true;
+                previousIndex=index;havePrevious=true;retained.push_back(&row.objectRef);
+            }
+            continue;
+        }
         auto update=val::object();update.set("index",i);update.set("entity",worldEntity(row));upserts.set(u++,update);
     }
     if(&before!=&after)for(const auto& row:before.entities)if(!after.find(row.objectRef))removed.set(r++,object(row.objectRef));
+    if(reordered){
+        auto order=val::array();unsigned i=0;
+        for(const auto* ref:retained)order.set(i++,object(*ref));
+        value.set("retainedOrder",order);
+    }
     value.set("month",after.month);value.set("baseEpoch",baseEpoch);value.set("sourceEpoch",sourceEpoch);
     value.set("entityCount",double(after.entities.size()));value.set("upserts",upserts);value.set("removed",removed);
     return value;
@@ -635,6 +653,8 @@ public:
             shape(input,{"candidateId","sourceId","targetMonth","sourceFingerprint","worldSha256",
                 "replacementId","expectedEpoch"},"CORE_TEMPORAL_CANDIDATE_ARGS");
             std::string delta;
+            std::shared_ptr<const ResolvedWorld> previousWorld;
+            const auto epoch=commandEpoch(input);
             const auto adopted=session_.temporalCandidateAdopt(
                 temporalHandle(input["candidateId"],"CORE_TEMPORAL_CANDIDATE_ARGS"),
                 temporalHandle(input["sourceId"],"CORE_TEMPORAL_CANDIDATE_ARGS"),
@@ -642,9 +662,13 @@ public:
                 text(input["sourceFingerprint"],"CORE_TEMPORAL_CANDIDATE_ARGS"),
                 text(input["worldSha256"],"CORE_TEMPORAL_CANDIDATE_ARGS"),
                 temporalHandle(input["replacementId"],"CORE_TEMPORAL_CANDIDATE_ARGS"),
-                commandEpoch(input),&delta);
+                epoch,&delta,&previousWorld);
             auto result=val::object();result.set("state",documentState(adopted));
             result.set("delta",delta.empty()?val::null():val::global("JSON").call<val>("parse",delta));
+            if(previousWorld){
+                const auto next=session_.resolveWorldShared(adopted.timelineCursor);
+                result.set("worldDelta",worldDelta(*previousWorld,*next,epoch,adopted.epoch,true));
+            }
             return result;
         });
     }
