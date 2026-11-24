@@ -22,6 +22,7 @@ import { createSemanticIcon } from "../ui/icon-utils.js";
 import { createEmptyState } from "../ui/empty-state.js";
 import { createSelectionDomain } from "../document/selection-domain.js";
 import { coreSelectionRefToWeb,webSelectionRefToCore } from "../document/core-object-ref.js";
+import { normalizeObjectRef } from "../document/object-ref-identity.js";
 import { createDocumentSession } from "../document/document-session.js";
 import { createProjectDomain } from "../document/project-domain.js";
 import {bindProjectDocumentIdentity} from '../data/map-project-identity.js';
@@ -150,7 +151,7 @@ export async function composeViewer({ productMode, meta }) {
   disposables.push(selectionUiController);
   const activeSession=Object.freeze({...documentSession,projectDomain,selectionDomain,selectionUiController});
   connectMapOwner('workspaceSurfaces',surfaces,{platform:{$:id=>get(id==='app'?'viewer':id)},projectState:{get state(){return map.viewState;}},
-    surfaceFactories:{createSurfaceController},domains:{get objectSearchController(){return searchController;}},
+    surfaceFactories:{createSurfaceController},domains:{get objectSearchController(){return searchController;},get objectDetailsPanel(){return objectDetailsPanel;}},
     mapHostView:{queueMapResize:()=>{owners.mapHost.queueMapResize('panel-layout');}},
     uiControlServices:{selectController},get mapNavigation(){return map.navigation;}});
   surfaces.initializeWorkspaceSurfaces();
@@ -161,22 +162,28 @@ export async function composeViewer({ productMode, meta }) {
       const repository=map.entityRepository;
       const month=activeSession.commandOwner.state().timelineCursor;
       const row=repository.get(ref.id),parent=repository.parent(ref.id);
-      const objectName=id=>map.objectQuery.objectDisplayInfo({domain:'territorial',type:'entity',id}).name;
+      const objectInfo=id=>map.objectQuery.objectDisplayInfo({domain:'territorial',type:'entity',id});
       const metadata=row?.properties?.metadata;
       const affiliationType=affiliationTypeAt(metadata,month);
       const lessee=affiliationType==='조차지'&&metadata?.builtinSubunit?.lesseeCountryId;
       return {
-        parentName:parent?objectName(parent.id):'',
+        parentName:parent?objectInfo(parent.id).name:'',
         affiliationType,
-        affiliationSubjectName:lessee?objectName(lessee):'',
-        children:repository.children(ref.id).map(child=>({
-          id:child.id,name:objectName(child.id),
-          affiliationType:affiliationTypeAt(child.properties?.metadata,month),
-        })),
+        affiliationSubjectName:lessee?objectInfo(lessee).name:'',
+        children:repository.children(ref.id).map(child=>{
+          const {name,flagUrl}=objectInfo(child.id);
+          return {id:child.id,name,flagUrl,affiliationType:affiliationTypeAt(child.properties?.metadata,month)};
+        }),
       };
     },
     selectObject:id=>selectionUiController.applyIntent({domain:'territorial',type:'entity',id}),
-    onError:error=>report(error,'소속 객체를 선택하지 못했습니다.','PL-OBJECT-DETAIL-SELECTION'),
+    hoverObject:(id,entered,isCurrent)=>{
+      const ref=normalizeObjectRef({domain:'territorial',type:'entity',id});
+      return selectionDomain.setHover(entered?ref:null,{source:'details',expectedKey:entered?'':ref.key,isCurrent});
+    },
+    onError:(error,operation)=>operation==='hover'
+      ?report(error,'소속 객체를 강조하지 못했습니다.','PL-OBJECT-DETAIL-HOVER')
+      :report(error,'소속 객체를 선택하지 못했습니다.','PL-OBJECT-DETAIL-SELECTION'),
   });
   disposables.push(objectDetailsPanel);
   const resetView=get('resetViewBtn');

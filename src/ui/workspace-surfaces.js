@@ -114,6 +114,7 @@ export function createWorkspaceSurfaces() {
 
   function syncOverlayState() {
     const view = surfaceController.render();
+    if (!view.detailsOpen) dependencies.domains.objectDetailsPanel?.clearHover();
     if (!surfaceController.isOpen('search')) {
       dependencies.domains.objectSearchController?.cancelSearch();
       cancelAnimationFrame(searchFocusFrame);

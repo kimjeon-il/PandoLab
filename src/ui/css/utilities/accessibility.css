@@ -53,24 +53,24 @@
   font-size: var(--ui-font-sm);
 }
 
-html.keyboard-navigation :where(button, a[href], summary, input, textarea, select):focus-visible {
+html :where(button, a[href], summary, input, textarea, select):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: var(--ui-space-0-5);
 }
 
-html.keyboard-navigation :where(button, a[href], summary, input, textarea, select)[aria-pressed="true"]:focus-visible {
+:where(button, a[href], summary, input, textarea, select)[aria-pressed="true"]:focus-visible {
   outline-color: var(--selection-focus-on-strong);
 }
 
-html.keyboard-navigation .ui-selectable-row.is-selected:not(.is-multi-selected):focus-visible {
+.ui-selectable-row.is-selected:not(.is-multi-selected):focus-visible {
   outline-color: var(--selection-focus-on-strong);
 }
 
-html.keyboard-navigation .ui-selectable-row.is-primary-selected:focus-visible {
+.ui-selectable-row.is-primary-selected:focus-visible {
   outline-color: var(--selection-focus-on-strong);
 }
 
-html.keyboard-navigation :is(.ui-selectable-row.is-selected:not(.is-multi-selected), .ui-selectable-row.is-primary-selected) :where(button, input):focus-visible {
+:is(.ui-selectable-row.is-selected:not(.is-multi-selected), .ui-selectable-row.is-primary-selected) :where(button, input):focus-visible {
   outline-color: var(--selection-focus-on-strong);
 }
 

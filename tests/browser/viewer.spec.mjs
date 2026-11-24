@@ -904,6 +904,71 @@ async function search(page,touch=false){
   await ready(page);
 }
 
+test('France details flag grid previews and opens its child territories',async({browser,baseURL})=>{
+  test.setTimeout(180_000);
+  for(const mobile of [false,true]){
+    const context=await browser.newContext({baseURL,viewport:mobile?{width:320,height:800}:{width:1200,height:900},
+      isMobile:mobile,hasTouch:mobile});
+    try{
+      const page=await context.newPage();
+      await open(page);
+      if(mobile)await page.locator('#objectSearchInput').tap();
+      else await page.locator('#objectSearchBtn').click();
+      await page.getByRole('searchbox',{name:'객체 검색'}).fill('프랑스');
+      await page.locator('#objectSearchResults button').filter({hasText:/^프랑스(?:\s|$)/}).first()[mobile?'tap':'click']();
+      const details=page.locator('#objectDetailSurface');
+      await expect(details.locator('#objectDetailObjectName')).toHaveText('프랑스');
+      if(mobile)await page.getByRole('slider',{name:'정보창 높이 조절'}).tap();
+      const group=details.locator('details').filter({has:page.getByText('해외집합체',{exact:true})});
+      const tiles=group.locator('.object-details-child');
+      await expect(tiles).toHaveCount(5);
+      const boxes=await tiles.evaluateAll(nodes=>nodes.map(node=>{
+        const {x,y,width,height}=node.getBoundingClientRect();
+        return {x,y,width,height};
+      }));
+      expect(new Set(boxes.slice(0,4).map(box=>box.y)).size).toBe(1);
+      expect(boxes[4].y).toBeGreaterThan(boxes[0].y);
+      expect(boxes[4].x).toBe(boxes[0].x);
+      for(const box of boxes){
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBe(boxes[0].height);
+        expect(box.x+box.width).toBeLessThanOrEqual(mobile?320:1200);
+      }
+      const tile=tiles.first(),name=await tile.getAttribute('aria-label');
+      expect(name).toBeTruthy();
+      if(mobile)await tile.tap();
+      else {
+        const previewKeys=()=>page.evaluate(async()=>{
+          const {sourceId}=window.__PANDOLAB_VIEWER__.rendererStats().highlight||{};
+          const source=sourceId&&window.__PANDOLAB_MAPLIBRE__.getSource(sourceId);
+          const features=source?(await source.getData()).features:[];
+          return [...new Set(features.map(feature=>feature.properties.objectKey))].filter(key=>key!=='territorial:entity:FRA');
+        });
+        await tile.hover();
+        await expect(page.locator('#uiTooltip')).toHaveText(name);
+        await expect.poll(async()=>(await previewKeys()).length).toBe(1);
+        const firstPreview=await previewKeys();
+        const name2=await tiles.nth(1).getAttribute('aria-label');
+        await tiles.nth(1).hover();
+        await expect(page.locator('#uiTooltip')).toHaveText(name2);
+        await expect.poll(async()=>(await previewKeys()).filter(key=>!firstPreview.includes(key)).length).toBe(1);
+        const summary=group.locator('summary');
+        await summary.click();
+        await expect(page.locator('#uiTooltip')).toBeHidden();
+        await expect.poll(previewKeys).toEqual([]);
+        await summary.focus();
+        await page.keyboard.press('Enter');
+        await page.keyboard.press('Tab');
+        await expect(tile).toBeFocused();
+        await expect(tile).toHaveCSS('outline-style','solid');
+        await expect(page.locator('#uiTooltip')).toHaveText(name);
+        await page.keyboard.press('Enter');
+      }
+      await expect(details.locator('#objectDetailObjectName')).toHaveText(name);
+    }finally{await context.close();}
+  }
+});
+
 test('external basemap preserves the dated map and restores it after failure',async({page})=>{
  test.setTimeout(180_000);await open(page);await search(page);
  const before=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,selection:window.__PANDOLAB_VIEWER__.selectionSnapshot(),camera:window.__PANDOLAB_MAP_HOST__.getViewState()}));

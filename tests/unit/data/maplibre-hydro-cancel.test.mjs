@@ -184,7 +184,7 @@ test('a shifted viewport keeps its overlapping pack in the already active coales
  const context=vm.createContext({AbortController,AbortSignal,DOMException,Response,TextDecoder,Uint8Array,
   queueMicrotask,importScripts(){},onmessage:null,postMessage:message=>messages.push(structuredClone(message))});
  context.self=context;
- for(const file of ['hydro-shard-store.js','hydro-tile-worker.js'])
+ for(const file of ['hydro-shard-store.js','hydro-transfer-codec.js','hydro-tile-worker.js'])
   vm.runInContext(await readFile(new URL('../../../src/rendering/workers/'+file,import.meta.url),'utf8'),context);
  const start=vm.runInContext(`()=>{
   const pack=[65,87,72,70,4,0,0,0,0,0,0,0],bytes=new Uint8Array([...pack,...pack,...pack]);
@@ -226,7 +226,8 @@ test('the hydro worker publishes successful ranges and retries failed ranges on 
  const context=vm.createContext({AbortController,TextDecoder,Uint8Array,clearTimeout,
   importScripts(){},onmessage:null,postMessage:message=>messages.push(structuredClone(message))});
  context.self=context;
- vm.runInContext(await readFile(new URL('../../../src/rendering/workers/hydro-tile-worker.js',import.meta.url),'utf8'),context);
+ for(const file of ['hydro-transfer-codec.js','hydro-tile-worker.js'])
+  vm.runInContext(await readFile(new URL('../../../src/rendering/workers/'+file,import.meta.url),'utf8'),context);
  const run=vm.runInContext(`async()=>{
   rangeSupportPromise=Promise.resolve(true);
   tilePacks.set('0/0-0',[1,2]);
@@ -249,8 +250,8 @@ test('the hydro worker publishes successful ranges and retries failed ranges on 
  const ready=messages.filter(row=>row.type==='view-ready');
  assert.deepEqual(ready.map(row=>[row.packIds,row.failedPacks.map(pack=>pack.id)]),[[[1],[2]],[[1,2],[]]]);
  assert.deepEqual(messages,[
-  {type:'pack',revision:1,packId:1,features:[]},ready[0],
+  {type:'pack',revision:1,packId:1,packed:{metadata:[],lengths:new Uint32Array(),coordinates:new Float64Array()}},ready[0],
   {type:'view-progress',revision:2,packIds:[1]},
-  {type:'pack',revision:2,packId:2,features:[]},ready[1],
+  {type:'pack',revision:2,packId:2,packed:{metadata:[],lengths:new Uint32Array(),coordinates:new Float64Array()}},ready[1],
  ]);
 });

@@ -39,7 +39,7 @@ test('hydro visibility and edited-source state belong to the hydro display',()=>
  const stats={hydroVisibilityScans:0};
  const hydro=createMapLibreHydroDisplay({state:{layerVisibility:{rivers:true,lakes:true},hydroEdits:[],
   hydroFeatureCatalogRevision:1,itemVisibility:{hydro:{}},physicalSettings:{hydroLayers:{}}},
-  physicalResources:{hydroDetailEnabled:()=>false,hydroActivityView:()=>[]},
+  physicalResources:{hydroDetailEnabled:()=>false,hydroActivityView:()=>null},
   physicalServices:{isHydroFeatureVisible:()=>true},physicalConfig:{DATA_REVISION:'fixture'},
   preferences:{mapPalette:()=>({ocean:'#ffffff'})},platform:{runtimeAssetUrl:row=>row},
   feedback:{reportOperationError(){}},getMap:()=>map,getProjection:()=>({}),getPresentation:()=>({}),
