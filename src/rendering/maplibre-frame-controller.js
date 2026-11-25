@@ -13,7 +13,7 @@ export function createMapLibreFrameController({
 }){
  let generation=0,contextRevision=0,contextLost=false,closed=false;
  let sourceRevision=0,mutationRevision=0,dirtySinceRender=false,certificate=null,certificateSerial=0;
- let pendingFrame=null,ready=false,preparedReady=false,error=null,requestedCertificate=null,approvedFrame=null;
+ let pendingFrame=null,domainPending=false,ready=false,preparedReady=false,error=null,requestedCertificate=null,approvedFrame=null;
  let certificateNotified=false,nativeReadinessChecks=0,certificateWakeups=0;
  let dirtyCalls=0,coalescedDirtyCalls=0,certificateInvalidations=0,certificateRepaintRequests=0,commitRejections=0;
  let previousActiveRender=null,endSourceFrame=null,basemapRecovery=null;
@@ -203,15 +203,15 @@ export function createMapLibreFrameController({
    revokeApproval();certificate={...identity,serial:++certificateSerial};
   }
   endSourceFrame?.();endSourceFrame=null;
-  if(pendingFrame&&!certificateNotified&&!admissionPending(getCountryStatus(),moving)){
+  if(pendingFrame&&!domainPending&&!certificateNotified&&!admissionPending(getCountryStatus(),moving)){
    certificateNotified=true;certificateWakeups++;invalidate('maplibre-presented');
   }
  }
  function deferFrame(){
   ready=false;revokeApproval();return {succeeded:false,deferred:true,presentationReady:false};
  }
- function renderFrame(frame,{physicalPrepared=false}={}){
-  stats.approvalAttempts++;approvedFrame=null;
+ function renderFrame(frame,{physicalPrepared=false,domainPending:blocked=false}={}){
+  stats.approvalAttempts++;approvedFrame=null;domainPending=blocked;
   if(error){pendingFrame=null;return {succeeded:false,presentationReady:false,error};}
   pendingFrame=frame;
   if(!isStyleReady()||unavailable())return deferFrame();
@@ -219,7 +219,7 @@ export function createMapLibreFrameController({
   metrics.run('polar.sync',()=>{polarDisplay.syncPolar();polarDisplay.syncPolarLines();});
   if(initialMapLoading)syncInitialMapSkeleton();else syncLabelVisibility();
   const country=getCountryStatus(),map=getMap();
-  if(admissionPending(country,map.isMoving()))return deferFrame();
+  if(domainPending||admissionPending(country,map.isMoving()))return deferFrame();
   if(!nativeFrameReady()){invalidateCertificate();return deferFrame();}
   const identity=drawIdentity();
   if(!certificateCurrent(identity)){requestDraw(identity);return deferFrame();}
@@ -239,7 +239,7 @@ export function createMapLibreFrameController({
   return preparedReady&&!!accepted&&frame?.projectGeneration===generation&&accepted.projectGeneration===generation
     &&accepted.frameId===frame.frameId&&accepted.viewRevision===frame.viewRevision
     &&accepted.projectionRevision===frame.projectionRevision&&approval.certificate===certificate
-    &&approval.ticket===presentation.ticket&&certificateCurrent()&&isStyleReady();
+    &&approval.ticket===presentation.ticket&&!domainPending&&certificateCurrent()&&isStyleReady();
  }
  function canPresentVisualFrame(frame,result=null){
   return (result===null||approved(frame))&&presentation.canPresentVisualFrame(frame,result);
@@ -311,7 +311,7 @@ export function createMapLibreFrameController({
  }
  function resetForProject(options){
   generation=options.generation;error=null;ready=false;dirtySinceRender=false;mutationRevision++;
-  invalidateCertificate();previousActiveRender=null;pendingFrame=null;
+  invalidateCertificate();previousActiveRender=null;pendingFrame=null;domainPending=false;
   presentation.resetForProject(options);
  }
  function cancelStyleRestore(){

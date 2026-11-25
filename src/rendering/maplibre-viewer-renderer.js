@@ -233,6 +233,11 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders,
   prewarmCountryMeshes:polarDisplay.prewarmCountryMeshes});
  function setTerritorialFeatures(features){return country.setTerritorialFeatures(features);}
+ function syncBuiltinCountryPresentation(features){
+  if(disposed||!loaded)return;
+  // Do not restart the unrelated hydro, physical and style pipeline.
+  setTerritorialFeatures(features).catch(failMapPreparation);
+ }
  const selection=createMapLibreSelection({getMap:()=>map,...renderPorts.selection,styleReady,ensurePolar,setData,orderSceneLayers,metrics,invalidate,
  feedback:deps.feedback,suppressHover:frameSuppressHover,objectRefVisible:ref=>deps.objectRefVisible(ref),
  getTerritory:id=>deps.territorialModel.entityRepository.get(id),getHydroFeature:id=>deps.hydroModel.hydroFeatureById(id),
@@ -261,7 +266,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(frame.initialMapLoading)frame.syncInitialMapSkeleton();
   dirty();
  }invalidate('map-paint');}
- return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot:camera.cameraSnapshot,setInitialMapLoading:frame.setInitialMapLoading,attach,initialize,setTerritorialFeatures,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>frame.pickingRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
+ return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot:camera.cameraSnapshot,setInitialMapLoading:frame.setInitialMapLoading,attach,initialize,setTerritorialFeatures,syncBuiltinCountryPresentation,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>frame.pickingRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
  get map(){return map;},get projection(){return projection;},get loaded(){return loaded;},isStyleReady:styleReady,renderFrame:frame.renderFrame,commitVisualFrame:frame.commitVisualFrame,measureWork:metrics.track,measureSyncWork:metrics.run,
   panBy:camera.panBy,fitGeometry:camera.fitGeometry,
   fitMapBounds,fitWorld:camera.fitWorld,isAtWorldView,

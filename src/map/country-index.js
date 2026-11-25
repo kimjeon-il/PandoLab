@@ -20,7 +20,8 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
   let countryLabelAnchorRequestId;
   let countryLabelAnchorFlight;
   let labelFallbackQueue;
-  let anchorPublicationScheduled = false;
+  let anchorPublicationScheduled = false,anchorVersionSequence=0;
+  const preparingDate=()=>dependencies.domains.renderingDomain?.isPreparingTemporalFrame?.()===true;
   const countryLabelAnchorDependencies = new Map();
   const anchorsByGeometry = new Map();
   function connect(ports) {
@@ -109,22 +110,18 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
       const message = event.data || {};
       const flight = countryLabelAnchorFlight;
       if (!flight || message.requestId !== flight.requestId) return;
-      if (dependencies.domains.renderingDomain?.isPreparingTemporalFrame?.()) {
-        dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-result', () => worker.onmessage({data:message}), 100);
-        return;
-      }
       countryLabelAnchorFlight = null;
       if (flight.generation !== dependencies.domains.projectDomain.getGeneration()) {
         dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-batch', flushCountryLabelAnchorQueue, 20);
         return;
       }
-      dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-batch', flushCountryLabelAnchorQueue, 20);
+      scheduleAnchorBatch();
       if (message.type === 'error') {
         console.warn('Country label anchor worker failed', message.message);
-        for (const { id } of flight.items) {
-          const feature = (0, dependencies.countries.territorialLabelFeatureById)(id);
-          if (feature) queueCountryLabelFallback(id);
-          pendingCountryLabelAnchors.delete(id);
+        for (const item of flight.items) {
+          if(!currentAnchorItem(item))continue;
+          queueCountryLabelFallback(item.id);
+          pendingCountryLabelAnchors.delete(item.id);
         }
         dependencies.domains.renderingDomain?.invalidateLabels?.('country-label-anchor-fallback');
         return;
@@ -139,7 +136,7 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
           anchorsByGeometry.set(item.content,anchor);
           if (anchorsByGeometry.size > 1024) anchorsByGeometry.delete(anchorsByGeometry.keys().next().value);
         }
-        if (countryLabelAnchorVersions.get(id) !== Number(result.version || 0)) continue;
+        if (!item||item.version!==Number(result.version||0)||!currentAnchorItem(item)) continue;
         const feature = (0, dependencies.countries.territorialLabelFeatureById)(id);
         if (feature && anchor) countryLabelAnchors.set(id, anchor);
         else if (feature) queueCountryLabelFallback(id);
@@ -163,15 +160,31 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
     return worker;
   }
 
+  function currentAnchorItem(item){
+    const feature=dependencies.countries.territorialLabelFeatureById(item.id);
+    return !!feature&&countryLabelAnchorVersions.get(item.id)===item.version
+      &&admittedGeometryKey(feature.geometry)===item.geometryKey;
+  }
+
+  function scheduleAnchorBatch(){
+    if(preparingDate()&&!document.hidden&&!dependencies.projectState.state.mapMoving){
+      dependencies.projectState.mapWorkScheduler.cancel('country-label-anchor-batch');
+      clearTimeout(countryLabelAnchorTimer);
+      countryLabelAnchorTimer=setTimeout(flushCountryLabelAnchorQueue,0);
+    }else dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-batch',flushCountryLabelAnchorQueue,20);
+  }
+
   function scheduleCountryLabelPublication() {
-    if (anchorPublicationScheduled) return;
-    anchorPublicationScheduled = true;
-    const publish = () => {
-      if (dependencies.domains.renderingDomain?.isPreparingTemporalFrame?.()) {
-        dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-publication', publish, 100);
-        return;
-      }
-      anchorPublicationScheduled = false;
+    if(preparingDate()){
+      dependencies.projectState.mapWorkScheduler.cancel('country-label-anchor-publication');
+      anchorPublicationScheduled=false;
+      dependencies.domains.renderingDomain?.invalidateLabels?.('country-label-anchor-ready');
+      return;
+    }
+    if(anchorPublicationScheduled)return;
+    anchorPublicationScheduled=true;
+    const publish=()=>{
+      anchorPublicationScheduled=false;
       dependencies.domains.renderingDomain?.invalidateLabels?.('country-label-anchor-ready');
     };
     // Four-point worker batches must not each reload every visible symbol tile.
@@ -201,7 +214,6 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
     countryLabelAnchorTimer = 0;
     if (countryLabelAnchorFlight) return;
     if (document.hidden || dependencies.projectState.state.countryVisualPhase === 'pending'
-        || dependencies.domains.renderingDomain?.isPreparingTemporalFrame?.()
         || dependencies.projectState.state.mapMoving || navigator.scheduling?.isInputPending?.()) {
       dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-batch', flushCountryLabelAnchorQueue, 100);
       return;
@@ -214,7 +226,7 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
       items.push({
         id,
         version: countryLabelAnchorVersions.get(id) || 0,
-        geometry: feature.geometry,
+        geometry: feature.geometry,geometryKey:admittedGeometryKey(feature.geometry),
         content: geometryReferenceFor(feature.geometry) ? admittedGeometryKey(feature.geometry) : null,
       });
       if (items.length >= 4 || performance.now() - batchStartedAt >= 4) break;
@@ -229,8 +241,8 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
       countryLabelAnchorWorker?.terminate();
       countryLabelAnchorWorker = null;
       for (const item of items) {
-        const feature = (0, dependencies.countries.territorialLabelFeatureById)(item.id);
-        if (feature) queueCountryLabelFallback(item.id);
+        if(!currentAnchorItem(item))continue;
+        queueCountryLabelFallback(item.id);
         pendingCountryLabelAnchors.delete(item.id);
       }
     }
@@ -263,22 +275,22 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
       const reused=ref?anchorsByGeometry.get(content):null;
       if(reused){
         countryLabelAnchors.set(id,reused);pendingCountryLabelAnchors.delete(id);
-        countryLabelAnchorVersions.set(id,(countryLabelAnchorVersions.get(id)||0)+1);changed=true;continue;
+        countryLabelAnchorVersions.set(id,++anchorVersionSequence);changed=true;continue;
       }
       const baked=bakedAnchors[countryBoundaryOwner(id)];
       if(baked&&validLabelAnchor(baked.coordinates)&&matchesCountryGeometrySignature(feature,baked.signature)){
         countryLabelAnchors.set(id,[...baked.coordinates]);pendingCountryLabelAnchors.delete(id);
-        countryLabelAnchorVersions.set(id,(countryLabelAnchorVersions.get(id)||0)+1);changed=true;continue;
+        countryLabelAnchorVersions.set(id,++anchorVersionSequence);changed=true;continue;
       }
       countryLabelAnchors.delete(id);
-      countryLabelAnchorVersions.set(id, (countryLabelAnchorVersions.get(id) || 0) + 1);
+      countryLabelAnchorVersions.set(id,++anchorVersionSequence);
       pendingCountryLabelAnchors.add(id);
       changed = true;
     }
     if (!changed) return;
     (0, dependencies.objectDisplay.invalidateObjectPresentation)();
     clearTimeout(countryLabelAnchorTimer);
-    countryLabelAnchorTimer = setTimeout(flushCountryLabelAnchorQueue, delay);
+    countryLabelAnchorTimer = setTimeout(flushCountryLabelAnchorQueue,preparingDate()?0:delay);
   }
 
   function initializeCountryLandRevision() {

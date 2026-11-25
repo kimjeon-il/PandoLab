@@ -150,7 +150,7 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
  globalThis.requestAnimationFrame=callback=>{queue.push(callback);return queue.length;};
  globalThis.document={baseURI:'https://fixture.test/',documentElement:{dataset:{}}};
  const sources=new Map(),layers=new Map(),frames=[];
- let moving=false,zoom=4;
+ let moving=false,zoom=4,countryPending=false,waterPending=false;
  const map={
   getZoom:()=>zoom,isMoving:()=>moving,
   getFontFaces:()=>({}),setFontFaces(){},
@@ -169,7 +169,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
  let boundaryVisible=true,boundaryRequests=0,boundaryGate,physicalRuns=0;
  const renderer={map,loaded:true,isStyleReady:()=>true,isFramePreserved:()=>preserved,labelZoomVisibility:()=>({country:true,places:true}),getRuntimeState:()=>({webglContextLost:false,temporalPresentationPending:temporal,temporalSourceAdmitted:admitted,projectRenderBlocked:!!failure}),
   syncHydroState(){},syncPhysicalContext(){physicalRuns++;},setSelection(){},
-  renderFrame:(_frame,{physicalPrepared}={})=>{assert.equal(physicalPrepared,!failure);return {succeeded:true,presentationReady:true};},
+  renderFrame:(_frame,{physicalPrepared,domainPending}={})=>{
+   assert.equal(physicalPrepared,!failure);
+   return countryPending||waterPending||domainPending?{deferred:true}:{succeeded:true,presentationReady:true};
+  },
   canPresentVisualFrame:()=>true,commitVisualFrame:()=>true,verifyLayout(){},
   failMapPreparation(error){if(!features.length)throw error;failure=error;}};
  const labels={
@@ -253,6 +256,19 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   assert.equal(domain.getStats().visualFrameCommittedCount,publications,'Target tiles alone cannot release a preserved frame');
   completePlaces(true);await flush();
   assert.equal(domain.getStats().visualFrameCommittedCount,publications+1);
+  state.timelineCursor='1922-12';temporal=true;countryPending=waterPending=true;
+  let finishDatedPlaces;placeTask=new Promise(resolve=>{finishDatedPlaces=resolve;});
+  const beforeDate=[labelRuns,placeQueries,physicalRuns,contentRuns,domain.getStats().visualFrameCommittedCount];
+  domain.invalidateDocument('new-month',{content:false});await flush();
+  assert.equal(labelRuns,beforeDate[0]+1);assert.equal(placeQueries,beforeDate[1]+1);
+  assert.ok(physicalRuns>beforeDate[2]);assert.equal(contentRuns,beforeDate[3]);
+  assert.equal(domain.getStats().visualFrameCommittedCount,beforeDate[4]);
+  countryPending=false;domain.invalidateView('maplibre-presented');await flush();
+  waterPending=false;domain.invalidateView('physical-source-ready');await flush();
+  assert.equal(domain.getStats().visualFrameCommittedCount,beforeDate[4]);
+  assert.equal(placeQueries,beforeDate[1]+1);
+  finishDatedPlaces(true);await flush();placeTask=null;
+  assert.equal(domain.getStats().visualFrameCommittedCount,beforeDate[4]+1);
   features=[{id:'region',properties:{entityKind:'regional'},geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,1],[0,0]]]}}];
   temporal=true;
   const beforeHidden=domain.getStats().visualFrameCommittedCount;

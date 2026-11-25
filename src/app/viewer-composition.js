@@ -276,7 +276,7 @@ export async function composeViewer({ productMode, meta }) {
   });
   disposables.push(postPresentation);
   // Both imported files and the builtin map use the same C++ time cursor.
-  const applyDocumentMonth=async(month,{isCurrent=()=>true,waitForFrame=false,admitPresentation=null,geometryPreparation}={})=>{
+  const applyDocumentMonth=async(month,{isCurrent=()=>true,waitForFrame=false,admitPresentation=null,geometryPreparation,physicalPreparation=null}={})=>{
     projectDomain.requireTimelineMonth(month);
     const before=map.features(),generation=projectDomain.getGeneration();
     const previousMonth=activeSession.commandOwner.state().timelineCursor;
@@ -285,14 +285,10 @@ export async function composeViewer({ productMode, meta }) {
     if(before!==map.features()&&territorialMembershipDelta(before,map.features()).changed)
       await map.objectCatalog.pruneLayerItemVisibility();
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    // Country sources can tile while place data loads. Keep temporal admission
-    // closed until both owners finish preparing the accepted Core month.
-    await Promise.all([
-      map.update({previousMonth}),
-      waitForFrame&&map.viewState.layerVisibility.labels!==false
-        ?owners.territorialLabels.preparePlaces():null,
-    ]);
-    if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
+    // Join preparation only after independent scene and country work have started.
+    // Viewport preparation and the native-frame barrier belong to the domain.
+    const [updated]=await Promise.all([map.update({previousMonth,isCurrent}),physicalPreparation]);
+    if(updated!==true||!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     if(admitPresentation?.()===false)return false;
     if(waitForFrame)await map.renderer.waitForMapPresentation(generation);
     if(!isCurrent()||projectDomain.getGeneration()!==generation)return false;
@@ -401,43 +397,37 @@ export async function composeViewer({ productMode, meta }) {
     const temporalTicket=map.renderer.beginTemporalViewTransition(current,()=>{committed=commit();});
     status.dataset.loadingKind='temporal';status.dataset.ready='false';
     presentViewerLoadStatus(status,'다음 시점 준비 중…');
+    let preparing=true;
+    const preparationCurrent=()=>preparing&&current();
     try{
-      // Physical resources are scoped to this document; one C++ cursor owns
-      // the date for both builtin and GeoPackage projects.
-      let preparing=true;
-      let geometryPreparation;
-      const preparationCurrent=()=>preparing&&current();
-      try{
-        [,geometryPreparation]=await Promise.all([
-          owners.physicalResources.preparePhysicalContext(month,{
-            isCurrent:preparationCurrent,activeProject:projectDomain.activeProject()}),
-          map.renderer.measureWork('core.timeline-geometry',()=>activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent})),
-        ]);
-      }finally{preparing=false;}
+      // Core geometry alone gates cursor mutation. Physical preparation can
+      // continue while the accepted country's sources and labels are built.
+      const physicalPreparation=owners.physicalResources.preparePhysicalContext(month,{
+        isCurrent:preparationCurrent,activeProject:projectDomain.activeProject()});
+      physicalPreparation.catch(()=>{});
+      const geometryPreparation=await map.renderer.measureWork('core.timeline-geometry',
+        ()=>activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent}));
       if(!current())return false;
-      // Keep the current map interactive while immutable physical data loads.
-      // The existing frame guard is still needed once the cursor can change.
       map.renderer.preserveTemporalFrame();
-      if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,geometryPreparation,
+      if(!await applyDocumentMonth(month,{isCurrent:current,waitForFrame:true,geometryPreparation,physicalPreparation,
         admitPresentation:()=>map.renderer.admitTemporalViewTransition(temporalTicket)}))return false;
       if(!current()||!committed)return false;
       status.dataset.ready='true';presentViewerLoadStatus(status,'지도 준비 완료.');
       postPresentation.schedule(current);
       return true;
     }catch(error){
+      preparing=false;
       if(current()){
         if(previous){
           const restoreTicket=map.renderer.beginTemporalViewTransition(current);
           try{
             map.renderer.preserveTemporalFrame();
             map.renderer.retryMapPreparation();
-            await owners.physicalResources.preparePhysicalContext(previous,{
+            const physicalPreparation=owners.physicalResources.preparePhysicalContext(previous,{
               isCurrent:current,activeProject:projectDomain.activeProject()});
+            physicalPreparation.catch(()=>{});
             if(!current())return false;
-            // Do not report the prior map as restored merely because its C++
-            // cursor was reset. Wait for that generation's real replacement
-            // picture before releasing the date control's loading state.
-            const restored=await applyDocumentMonth(previous,{isCurrent:current,waitForFrame:true,
+            const restored=await applyDocumentMonth(previous,{isCurrent:current,waitForFrame:true,physicalPreparation,
               admitPresentation:()=>map.renderer.admitTemporalViewTransition(restoreTicket)});
             if(!restored)throw new Error('Previous dated map was not restored.');
           }catch(restoreError){error.restoreError=restoreError;}
@@ -447,7 +437,7 @@ export async function composeViewer({ productMode, meta }) {
       }
       throw error;
     }finally{
-      map.renderer.finishTemporalViewTransition(temporalTicket);
+      preparing=false;map.renderer.finishTemporalViewTransition(temporalTicket);
     }
   };
   projectClock=createProjectMonthClock({

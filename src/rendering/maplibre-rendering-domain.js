@@ -8,7 +8,7 @@ export function createMapLibreRenderingDomain(options){
  let disposed=false,queued=false,frameId=0,contentDirty=true,selectionDirty=true,labelsDirty=true,lastFrame=null;
  let boundaryDirty=false,previousLabelVisibility=null;
  let previousHydroZoomBand=null;
- let pendingPlaceViewport=null;
+ let pendingPlaceViewport=null,placesDirty=true;
  const hydroZoomBand=()=>{
   const zoom=renderer.map.getZoom();
   return HYDRO_DISPLAY_ZOOMS.filter(threshold=>zoom>=threshold).length;
@@ -24,14 +24,16 @@ export function createMapLibreRenderingDomain(options){
   if(!queued){queued=true;requestAnimationFrame(render);}return true;
  };
  const preparePlacesForPublication=()=>{
+  placesDirty=false;
   const task=options.labelResources.preparePlaces();
   if(pendingPlaceViewport===task)return;
-  pendingPlaceViewport=task;
+  pendingPlaceViewport=task;stats.placePreparations=(stats.placePreparations||0)+1;
   task.then(()=>{
    if(pendingPlaceViewport!==task||disposed)return;
    pendingPlaceViewport=null;
-   if(renderer.isFramePreserved())invalidate('settled-place-viewport');
-  },error=>{if(pendingPlaceViewport===task&&!disposed)renderer.failMapPreparation(error);});
+   // The place snapshot callback owns label invalidation; wake only admission.
+   if(renderer.isFramePreserved())invalidate('settled-place-viewport',false,false);
+  },error=>{if(pendingPlaceViewport===task&&!disposed){pendingPlaceViewport=null;renderer.failMapPreparation(error);}});
  };
  const labels=createMapLibreLabelPresentation({renderer,labels:options.labelResources,
   onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready',false,false),
@@ -52,14 +54,14 @@ export function createMapLibreRenderingDomain(options){
    const updateViewport=!renderer.map.isMoving?.()||preserved;
    const labelThresholdChanged=previousLabelVisibility!==null&&
     (labelVisibility.country!==previousLabelVisibility.country||labelVisibility.places!==previousLabelVisibility.places);
-   labelsDirty||=labelThresholdChanged;
+   labelsDirty||=labelThresholdChanged;placesDirty||=labelThresholdChanged;
    previousLabelVisibility=labelVisibility;
    previousHydroZoomBand=hydroZoomBand();
    const updateLabels=labelsDirty&&updateViewport;
    const frame=prepareView({frameId:++frameId,withBounds:updateLabels});lastFrame=frame;
    const refreshContent=contentDirty,refreshBoundaries=boundaryDirty;
    contentDirty=false;boundaryDirty=false;
-   if(refreshContent)preparePlacesForPublication();
+   if(placesDirty&&updateViewport)preparePlacesForPublication();
    // Start independent physical source writes before assembling the scene
    // and symbols; neither country tiling nor boundary completion is awaited.
    const physicalPrepared=!renderer.getRuntimeState().projectRenderBlocked;
@@ -81,16 +83,18 @@ export function createMapLibreRenderingDomain(options){
      labels.renderTerritorialLabels(layout,{deferWhileMoving:!preserved});
     }
    }
-   const result=renderer.renderFrame(frame,{physicalPrepared});
    const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(updateLabels&&labelsDirty||labels.pending);
-   const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
+   const waitingForPlaces=labelVisibility.places&&preserved&&(placesDirty||pendingPlaceViewport!==null);
    const runtime=renderer.getRuntimeState();
    const waitingForBoundaries=renderer.isFramePreserved()&&runtime.temporalPresentationPending&&content.territorialBoundariesPending();
    const boundaryFailure=waitingForBoundaries&&runtime.temporalSourceAdmitted&&content.territorialBoundaryFailure();
    if(boundaryFailure&&!runtime.projectRenderBlocked){
     renderer.failMapPreparation(boundaryFailure);return;
    }
-   if(result.deferred||waitingForVisibleLabels||waitingForPlaces||waitingForBoundaries||!renderer.canPresentVisualFrame(frame,result))return;
+   const domainPending=!!(waitingForVisibleLabels||waitingForPlaces||waitingForBoundaries||contentDirty||boundaryDirty
+    ||(preserved&&labelsDirty&&(labelVisibility.country||labelVisibility.places)));
+   const result=renderer.renderFrame(frame,{physicalPrepared,domainPending});
+   if(domainPending||result.deferred||!renderer.canPresentVisualFrame(frame,result))return;
    if(!renderer.commitVisualFrame(frame))return;
    labels.publishOptionalFlags();
    stats.visualFrameCommittedCount++;stats.lastCommittedVisualFrameId=frame.frameId;
@@ -100,7 +104,7 @@ export function createMapLibreRenderingDomain(options){
  const methods={
   isPreparingTemporalFrame:()=>renderer.getRuntimeState().temporalPresentationPending,
   invalidateView:reason=>{
-   if(reason==='map-retry'){labels.retry();content.retryTerritorialBoundaries();return invalidate(reason,true);}
+   if(reason==='map-retry'){placesDirty=true;labels.retry();content.retryTerritorialBoundaries();return invalidate(reason,true);}
    if(reason==='maplibre-camera'){
     if(renderer.map.isMoving?.()&&!renderer.isFramePreserved())return false;
     const visibility=renderer.labelZoomVisibility();
@@ -113,14 +117,20 @@ export function createMapLibreRenderingDomain(options){
    if(['maplibre-presented','vector-ready','physical-source-ready','polar-ready','hydro-ready','country-paint','temporal-source-admitted','await-current-map-frame','highlight-shown','highlight-failed'].includes(reason))
     return invalidate(reason,false,false);
    return invalidate(reason);
-  },invalidateViewport:reason=>{renderer.verifyLayout();return invalidate(reason,true);},
-  invalidateProject:reason=>invalidate(reason,true),invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason,false,reason!=='selection-hover');},
+  },invalidateViewport:reason=>{placesDirty=true;renderer.verifyLayout();return invalidate(reason,true);},
+  invalidateDocument(reason,{content=false,selection=false}={}){
+   placesDirty=true;selectionDirty||=selection;return invalidate(reason,content,true);
+  },
+  invalidateProject:reason=>{
+   if(reason!=='physical-water-ready'&&reason!=='physical-land-ready')placesDirty=true;
+   return invalidate(reason,true);
+  },invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason,false,reason!=='selection-hover');},
   invalidateLabels:reason=>invalidate(reason),invalidateQuality:reason=>invalidate(reason),
   invalidateBaseScene:reason=>invalidate(reason,true),invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},
   beginInteraction(){options.labelResources.getState().mapMoving=true;options.labelResources.beginPlaceInteraction();},
-  endInteraction(reason){options.labelResources.getState().mapMoving=false;preparePlacesForPublication();return invalidate(reason);},
-  resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetContentCaches();boundaryDirty=false;contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
+  endInteraction(reason){options.labelResources.getState().mapMoving=false;placesDirty=true;return invalidate(reason);},
+  resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetContentCaches();pendingPlaceViewport=null;placesDirty=true;boundaryDirty=false;contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
   getStats:()=>({...stats,lastFrameId:lastFrame?.frameId}),getDistributionRenderRows:()=>content.buildDistributionRenderRows(),
   getTerritorialBoundaryStats:content.getTerritorialBoundaryStats,
   recordSelectionRenderError:entry=>reportDiagnostic(entry),

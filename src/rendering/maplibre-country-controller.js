@@ -15,7 +15,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
  sourceLayer,sourceLayers,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders,
  prewarmCountryMeshes,readCountryPresentation=()=>state}){
  let countryGeneration=-1,countryContentKey='',territories=[],acceptedCountryInputs=null;
- let countrySequence=0,countryTail=Promise.resolve();
+ let countrySequence=0,countryTail=Promise.resolve(),pendingCountryRequest=null;
  const activeCountryTasks=new Set(),geometryBytes=createGeometryByteEstimator();
  const trustedTiles=(record,source)=>record?.key!=null&&record.source===source&&record.tiles instanceof Map?record.tiles:null;
  const immutableRepositories=new WeakMap();
@@ -52,17 +52,17 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    .map(row=>({...row,properties:structuredClone(row.properties)}));
   return createTerritorialEntityRepository({getEntities:()=>rows});
  }
+ function sameCountryInputs(before,inputs){
+  if(!before||before.generation!==inputs.generation||before.source!==inputs.source
+    ||before.stroke!==inputs.stroke||before.presentation!==inputs.presentation
+    ||before.visibility!==inputs.visibility||before.visible!==inputs.visible)return false;
+  const immutable=immutableCountryRows(before.entities)&&immutableCountryRows(inputs.entities)
+    &&immutableCountryRows(before.features)&&immutableCountryRows(inputs.features);
+  return immutable&&sameCountryRows(before.entities,inputs.entities)&&sameCountryRows(before.features,inputs.features);
+ }
  function canReuseCountryInputs(inputs){
-  const accepted=acceptedCountryInputs;
-  if(!accepted||!styleReady()||isFrameBlocked()||countryGeneration!==getGeneration()
-    ||activeCountryTasks.size||countryDisplay.needsSwap)return false;
-  const samePresentation=accepted.generation===inputs.generation&&accepted.source===inputs.source
-    &&accepted.stroke===inputs.stroke&&accepted.presentation===inputs.presentation
-    &&accepted.visibility===inputs.visibility&&accepted.visible===inputs.visible;
-  if(!samePresentation)return false;
-  const immutable=immutableCountryRows(accepted.entities)&&immutableCountryRows(inputs.entities)
-    &&immutableCountryRows(accepted.features)&&immutableCountryRows(inputs.features);
-  return immutable&&sameCountryRows(accepted.entities,inputs.entities)&&sameCountryRows(accepted.features,inputs.features);
+  return styleReady()&&!isFrameBlocked()&&countryGeneration===getGeneration()
+    &&!activeCountryTasks.size&&!countryDisplay.needsSwap&&sameCountryInputs(acceptedCountryInputs,inputs);
  }
  function setTerritorialFeatures(features){
   if(isDisposed())return Promise.resolve(false);
@@ -71,11 +71,16 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   const inputs={entities,features,generation:getGeneration(),source:getMap()?.getSource(datedSources.active('territories')),
    presentation:state.layerPresentation,visibility:state.itemVisibility?.objects,
    visible:state.layerVisibility.objects,stroke:JSON.stringify([countryStyle.countryStroke,countryStyle.borderAlpha])};
+  const ticket=isTemporalPending()?getTemporalTicket():null,pending=pendingCountryRequest;
+  if(pending&&pending.ticket===ticket&&(!ticket||ticket.isCurrent())&&!pending.signal.aborted
+    &&!isFrameBlocked()&&sameCountryInputs(pending.inputs,inputs)){
+   stats.countryRequestJoins=(stats.countryRequestJoins||0)+1;return pending.task;
+  }
   if(canReuseCountryInputs(inputs)){
    territories=features;acceptedCountryInputs=inputs;countryContentKey=countryContentIdentity(features);return Promise.resolve(true);
   }
   if(activeCountryTasks.size)countryTail=Promise.resolve();
-  const signal=geometryClient.startCountryRequest(),ticket=isTemporalPending()?getTemporalTicket():null;
+  const signal=geometryClient.startCountryRequest();
   territories=features;const sequence=++countrySequence,requestedGeneration=getGeneration();countryGeneration=-1;
   const task=countryTail.then(async()=>{
    if(sequence!==countrySequence||requestedGeneration!==getGeneration()||isDisposed())return false;
@@ -88,7 +93,9 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
     return applied;
    }
    finally{activeCountryTasks.delete(sequence);}
-  }).catch(cause=>{if(isDisposed()||sequence!==countrySequence||requestedGeneration!==getGeneration())return false;throw cause;});
+  }).catch(cause=>{if(isDisposed()||sequence!==countrySequence||requestedGeneration!==getGeneration()||ticket&&!ticket.isCurrent())return false;throw cause;})
+   .finally(()=>{if(pendingCountryRequest?.task===task)pendingCountryRequest=null;});
+  pendingCountryRequest={inputs,ticket,signal,task};
   countryTail=task.catch(()=>{});return task;
  }
  async function applyTerritorialFeatures(features,sequence,requestedGeneration,entityRepository,signal,ticket){
@@ -213,7 +220,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
  function reset(){
   geometryClient.cancelCountryRequest();
   countryTail=Promise.resolve();countrySequence++;countryGeneration=-1;
-  countryContentKey='';acceptedCountryInputs=null;
+  countryContentKey='';acceptedCountryInputs=null;pendingCountryRequest=null;
  }
  return Object.freeze({setTerritorialFeatures,reset,get features(){return territories;},
   status:()=>({generation:countryGeneration,contentKey:countryContentKey}),

@@ -227,21 +227,19 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
   });
   renderQuality.applyAdaptiveRenderQuality();
   renderQuality.syncResolvedInteractionStyle();
-  function buildScene(){if(!session)return;objectCatalog.invalidateObjectPresentation();renderingDomain.invalidateProject('document-presentation');}
-  async function update({previousMonth}={}) {
-    if(!session)return;
+  async function update({previousMonth,isCurrent=()=>true}={}) {
+    if(!session||disposed||!isCurrent())return false;
     const generation=++updateGeneration;
+    const current=()=>!disposed&&generation===updateGeneration&&isCurrent();
     const entities=entityStore.snapshot();
     const previous=presentedEntities;
     if(!previous||previous!==entities)state.countryIndex=new Map(entities.map(feature=>[String(feature.id),feature]));
-    const territorialFeatures=territorialScope.displayEntities().filter(feature=>feature.properties.entityKind==='general');
-    await initialized;if(generation!==updateGeneration)return;
-    // A dated source is admitted before its matching MapLibre render event.
-    if(!await renderer.prepareTemporalCountrySource(territorialFeatures)||generation!==updateGeneration)return;
-    if(!await renderer.setTerritorialFeatures(territorialFeatures)||generation!==updateGeneration)return;
-    presentedEntities=entities;
-    const hydroChanged=presentedHydroEdits!==state.hydroEdits;
-    presentedHydroEdits=state.hydroEdits;
+    const territorialFeatures=territorialSceneRuntime.countryFeatures(),hydroEdits=state.hydroEdits;
+    await initialized;if(!current())return false;
+    if(!await renderer.prepareTemporalCountrySource(territorialFeatures)||!current())return false;
+    const countryTask=renderer.setTerritorialFeatures(territorialFeatures);
+    countryTask.catch(()=>{});
+    const hydroChanged=presentedHydroEdits!==hydroEdits;
     // Distribution lifetimes can change on their own, even with identical national geometry.
     let distributionChanged=false;
     if(previousMonth&&previousMonth!==state.timelineCursor&&state.layerVisibility.distributions!==false){
@@ -251,14 +249,13 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     }
     const propertiesOnly=previous&&classifyTerritorialPropertyOnly(previous,entities);
     const regionalPaint=propertiesOnly?.paintChangedIds.some(id=>repository.get(id)?.properties.entityKind==='regional');
-    if(!previousMonth||distributionChanged||regionalPaint||previous!==entities&&!propertiesOnly)buildScene();
-    else {
-      if(previous!==entities)objectCatalog.invalidateObjectPresentation();
-      if(hydroChanged)renderingDomain.invalidateSelection('dated-hydro');
-      const zoom=renderer.labelZoomVisibility();
-      if(zoom.country||zoom.places)renderingDomain.invalidateLabels('document-month-labels');
-      else renderingDomain.invalidateView('temporal-source-admitted');
-    }
+    const rebuild=!previousMonth||distributionChanged||regionalPaint||previous!==entities&&!propertiesOnly;
+    if(rebuild||previous!==entities)objectCatalog.invalidateObjectPresentation();
+    // Schedule independent source/scene/label work before joining the country write.
+    renderingDomain.invalidateDocument('document-presentation',{content:!!rebuild,selection:!!hydroChanged});
+    if(!await countryTask||!current())return false;
+    presentedEntities=entities;presentedHydroEdits=hydroEdits;
+    return true;
   }
   const selectionPerformanceMetrics={};
 

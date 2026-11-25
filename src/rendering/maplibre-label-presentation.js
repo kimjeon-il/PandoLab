@@ -2,6 +2,7 @@ import {temporalMonthEnd} from '../document/temporal.js';
 import {MAP_LABEL_SIZE_STOPS,TERRITORIAL_NAME_SIZE,TERRITORIAL_ICON_SIZE,TERRITORIAL_FLAG_BASE_HEIGHT} from './label-layout.js';
 import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
 import {retainViewportItems} from '../runtime/resource-dependency-policy.js';
+import {sameRenderIdentity} from './render-identity.js';
 
 /** Ordinary geographic labels use MapLibre symbols, shaping and collision placement. */
 const labelTextLayers=['viewer-label-text','viewer-label-country'];
@@ -254,6 +255,8 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
   if(failedKey&&JSON.stringify(request)===failedKey)return;
   const rows=new Map(features.map(feature=>[feature.id,feature]));
   const sameSource=observedSource&&map.getSource(sourceId)===observedSource;
+  if(pending&&sameSource&&requestedLayout&&sameRenderIdentity(requestedLayout,request)
+    &&MAPLIBRE_LABEL_LAYERS.every(id=>map.getLayer(id)))return;
   const preparedDiff=!pending&&sameSource&&sourceRows?labelSourceDiff(sourceRows,rows):null;
   const nextPaintKey=JSON.stringify(palette);
   if(preparedDiff&&!hasSourceDiff(preparedDiff)&&nextPaintKey===paintKey&&MAPLIBRE_LABEL_LAYERS.every(id=>map.getLayer(id)))return;

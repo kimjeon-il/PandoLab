@@ -16,6 +16,8 @@ import { territorialNativeLabelRows } from "../ui/territorial-native-label.js";
 import { effectiveTerritorialFlagUrl } from "../ui/country-flags.js";
 import { territorialPaintRole, territorialSymbolVisibility } from "../ui/layer-presentation.js";
 
+import {resourceKey} from '../runtime/resource-dependency-policy.js';
+
 const PLACE_SEARCH_LANGUAGES = Object.freeze({ ko: true, en: true, native: true });
 
 /** TerritorialLabels: extracted application responsibility.
@@ -27,13 +29,13 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
   let dependencies;
   let labelLayoutMetrics;
   const labelComponentBounds = new Map();
-  let builtinPlaces,activeSource='unbound',placeWindow=null;
+  let builtinPlaces,activeSource='unbound',placeWindow=null,placePreparation=null;
 
   function setProjectSource(source) {
     if(!['builtin','project','new'].includes(source))throw new TypeError('Unknown map source');
     activeSource=source==='builtin'?'builtin':'project';
 
-    placeWindow=null;
+    placeWindow=null;placePreparation=null;
     builtinPlaces?.resetProject();
   }
   function connect(ports) {
@@ -62,11 +64,16 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     if (!capabilities.builtinPlaces || (!capabilities.eagerBuiltinPlaces && !force && builtinPlaces.snapshot().revision === 0)) return Promise.resolve(false);
     if (!force && (dependencies.projectState.state.layerVisibility.labels === false ||
       !dependencies.rendering.mapRenderer.labelZoomVisibility().places)) {
-      builtinPlaces.cancelViewport(); return builtinPlaces.settle(null);
+      placePreparation=null;builtinPlaces.cancelViewport(); return builtinPlaces.settle(null);
     }
     const view=placeView();
     if(!view)return Promise.resolve(false);
-    return dependencies.projectState.state.mapMoving?builtinPlaces.prepare(view):builtinPlaces.settle(view);
+    const moving=!!dependencies.projectState.state.mapMoving,key=resourceKey([view,moving]);
+    if(placePreparation?.key===key)return placePreparation.task;
+    const task=moving?builtinPlaces.prepare(view):builtinPlaces.settle(view);
+    const entry={key,task};placePreparation=entry;
+    const finish=()=>{if(placePreparation===entry)placePreparation=null;};
+    task.then(finish,finish);return task;
   }
 
   function labelById(id) {
@@ -234,7 +241,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     disposePlaces() {
 
 
-      builtinPlaces?.dispose();
+      placePreparation=null;builtinPlaces?.dispose();
     },
     labelById,
     searchPlaces:query=>activeSource==='builtin'?builtinPlaces.search(query):Promise.resolve({records:[],truncated:false}),
