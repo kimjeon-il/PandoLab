@@ -2,7 +2,8 @@ import {createTerritorialFillResolver} from './territorial-fill-style.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {layerObjectRank,layerStyle} from '../ui/layer-presentation.js';
 import {admittedGeometryKey as geometryKey} from '../geometry/geometry-version-store.js';
-import {changedRenderProperties} from './render-identity.js';
+import {changedRenderProperties,sameRenderIdentity} from './render-identity.js';
+import {estimateFeatureRows} from './geometry-residency.js';
 export function prepareCountryPresentation(features,{state,entityRepository,style,layerPresentation,previousRows=null,fillCache=null}){
   if(state.layerVisibility.objects===false)return {presented:[],nextBatches:[],key:[]};
   const resolve=createTerritorialFillResolver({state,entityRepository,resolveStoredColors:true,previousResults:fillCache});
@@ -47,9 +48,24 @@ export function countryTileDiff(previousTileRows,tileFeatures){
  const remove=[],add=[],update=[];
  for(const id of previousTileRows.keys())if(!next.has(id))remove.push(id);
  for(const [id,feature]of next){const previous=previousTileRows.get(id);if(!previous){add.push(feature);continue;}if(previous===feature)continue;
-  const geometryChanged=previous.geometry!==feature.geometry&&geometryKey(previous.geometry)!==geometryKey(feature.geometry);
+  const beforeKey=geometryKey(previous.geometry),afterKey=geometryKey(feature.geometry);
+  // Canonical identities are exact; derived border objects can be recreated
+  // with identical coordinates. Avoid resending those geometries as well.
+  const geometryChanged=previous.geometry!==feature.geometry&&beforeKey!==afterKey
+   &&(beforeKey.startsWith('canonical:')&&afterKey.startsWith('canonical:')||!sameRenderIdentity(previous.geometry,feature.geometry));
   const properties=changedRenderProperties(previous.properties,feature.properties);
   if(geometryChanged||properties.length)update.push({id,...(geometryChanged?{newGeometry:feature.geometry}:{}),...(properties.length?{addOrUpdateProperties:properties}:{})});
  }
  return {next,remove,add,update};
+}
+
+// Approximate payload cost, not measured wire bytes or GPU time.
+export function countryDeltaPreferred(delta,geometryBytes){
+ if(!delta)return false;
+ const {remove,add,update,next}=delta;
+ if(!remove.length&&!add.length&&!update.length)return true;
+ const full=estimateFeatureRows(next.values(),geometryBytes);
+ const changed=remove.length*64+estimateFeatureRows(add,geometryBytes)
+  +update.reduce((bytes,row)=>bytes+256+(row.newGeometry?geometryBytes(row.newGeometry):0),0);
+ return changed<full*.75;
 }

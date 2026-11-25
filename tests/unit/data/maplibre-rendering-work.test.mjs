@@ -1,4 +1,6 @@
-import {countryPaintOnly,countryTileDiff} from '../../../src/rendering/maplibre-country-presentation.js';
+import {countryPaintOnly,countryTileDiff,countryDeltaPreferred} from '../../../src/rendering/maplibre-country-presentation.js';
+import {createMapLibreCountryController} from '../../../src/rendering/maplibre-country-controller.js';
+import {createGeometryByteEstimator} from '../../../src/rendering/geometry-residency.js';
 import {createMapLibreCountryDisplay} from '../../../src/rendering/maplibre-country-display.js';
 import {packHydroFeatures,unpackHydroFeatures,encodeStrokeGeometry,decodeStrokeGeometry,geometryTransferBuffers} from '../../../src/rendering/geometry-transfer-codec.js';
 import test from 'node:test';
@@ -377,6 +379,9 @@ test('country paint-only detection and tile delta preserve unchanged geometry',(
  assert.deepEqual(delta.update,[{id:previous.id,addOrUpdateProperties:[{key:'color',value:'#ffffff'}]}]);
  const removed=countryTileDiff(new Map([[previous.id,previous]]),[]);
  assert.deepEqual(removed.remove,[previous.id]);
+ const copied={...previous,geometry:structuredClone(geometry)};
+ assert.deepEqual(countryTileDiff(new Map([[previous.id,previous]]),[copied]).update,[]);
+ assert.equal(countryDeltaPreferred(removed,createGeometryByteEstimator()),false);
 });
 
 test('country source replacement preserves mandatory layers and resets owned state',()=>{
@@ -458,4 +463,78 @@ test('dated country standby is initialized without tiles and only the published 
   owner.activate('territories',active);
   assert.equal(visible(active),2);assert.equal(visible(standby),0);
  }finally{owner.dispose();}
+});
+
+test('historical country writes use acknowledged deltas and recover uncertain native data',async()=>{
+ const display=createMapLibreCountryDisplay(),sources=new Map([['territories',{}],['territories-retained',{}]]),records=new Map(),native=new Map();
+ let active='territories',temporal=false,ticket=null,features=[],failNext=false,holdNext=false,releaseWrite,startedWrite;
+ let request,fullWrites=0,deltaWrites=0,reserves=0;
+ const writes=[],stats={retainedSourceHits:0},map={getSource:id=>sources.get(id),triggerRepaint(){}};
+ const make=(id,x)=>({type:'Feature',id,properties:{entityKind:'general',parentId:null,style:{color:'#336699'}},
+  geometry:{type:'Polygon',coordinates:[[[x,0],[x+.5,0],[x+.5,.5],[x,.5],[x,0]]]}});
+ const baseline=Array.from({length:12},(_,i)=>make('country-'+String(i).padStart(2,'0'),i));
+ const next=baseline.map((row,i)=>i===5?make(row.id,30):row);
+ const later=next.map((row,i)=>i===6?make(row.id,40):row);
+ const replacement=baseline.map((row,i)=>make('replacement-'+i,50+i));
+ const nativeRows=id=>native.get(id)||new Map();
+ const setData=async(id,data,current)=>{
+  if(!current())return false;
+  fullWrites++;writes.push({type:'full',id,count:data.features.length});
+  native.set(id,new Map(data.features.map(row=>[row.id,row])));return true;
+ };
+ const writeDelta=async(id,delta)=>{
+  deltaWrites++;writes.push({type:'delta',id,delta});
+  const rows=new Map(nativeRows(id));
+  for(const key of delta.remove)rows.delete(key);
+  for(const row of delta.add)rows.set(row.id,row);
+  for(const row of delta.update){
+   const before=rows.get(row.id),properties={...before.properties};
+   for(const {key,value}of row.addOrUpdateProperties||[])properties[key]=value;
+   rows.set(row.id,{...before,geometry:row.newGeometry||before.geometry,properties});
+  }
+  native.set(id,rows);
+  if(failNext){failNext=false;throw Error('native write failed after mutation');}
+  if(holdNext){holdNext=false;await new Promise(resolve=>{releaseWrite=resolve;startedWrite();});}
+  return true;
+ };
+ const datedSources={active:()=>active,get:id=>records.get(id),set:(id,record)=>records.set(id,record),
+  reuse:(_kind,key,equals)=>[...records].find(([id,record])=>record.source===sources.get(id)&&equals(record.key,key)),
+  reserve(){reserves++;return active==='territories'?'territories-retained':'territories';},activate(_kind,id){active=id;}};
+ const controller=createMapLibreCountryController({getMap:()=>map,getGeneration:()=>1,isDisposed:()=>false,styleReady:()=>true,
+  isFrameBlocked:()=>false,getBasemapRecovery:()=>null,waitForStyle:async()=>{},isTemporalPending:()=>temporal,
+  isFramePreserved:()=>temporal,getTemporalTicket:()=>ticket,initialize:async()=>{},getEntityRepository:()=>({list:()=>features}),
+  state:{layerVisibility:{objects:true},layerPresentation:{}},layerPresentation:{isLayerItemVisible:()=>true},
+  currentMapStyle:()=>({countryStroke:{color:'#fff',width:1},borderAlpha:1}),
+  geometryClient:{startCountryRequest(){request?.abort();request=new AbortController();return request.signal;},cancelCountryRequest(){request?.abort();}},
+  countryDisplay:display,datedSources,sourceWrites:{hasPendingWrite:()=>false,update:(submit,id,current)=>current()?submit({updateData:delta=>writeDelta(id,delta)}):Promise.resolve(false)},
+  setData,scene:{syncCountryPaint(){},syncVectorGroups(){},orderSceneLayers(){},syncTerritorialFills(){}},
+  metrics:{run:(_name,fn)=>fn(),track:(_name,fn)=>fn()},stats,dirty(){},prewarmCountryMeshes(){},
+  prepareCountryBorders:async rows=>rows.map(row=>({key:'border:'+row.id,feature:{type:'Feature',id:'border:'+row.id,
+   properties:{displayRole:'country-border',objectKey:'border:'+row.id},geometry:{type:'MultiLineString',coordinates:[row.geometry.coordinates[0]]}}}))});
+ const submit=rows=>{features=rows;return controller.setTerritorialFeatures(rows);};
+ const begin=()=>{temporal=true;let live=true;ticket={isCurrent:()=>live};return ()=>{live=false;};};
+ const nativeGeometry=(id,key)=>nativeRows(id).get(key)?.geometry.coordinates;
+ try{
+  assert.equal(await submit(baseline),true);assert.equal(fullWrites,1);
+  begin();assert.equal(await submit(next),true);
+  assert.equal(active,'territories');assert.equal(fullWrites,1);assert.equal(reserves,0);assert.equal(deltaWrites,1);
+  const first=writes.at(-1).delta;
+  assert.equal(first.add.length,0);assert.equal(first.remove.length,0);
+  assert.equal(first.update.filter(row=>row.newGeometry).length,2);
+  assert.equal(first.update.length,2);
+  const targetKey=[...display.rows.keys()].find(id=>id.endsWith('country-06'));
+  const beforeGeometry=structuredClone(nativeGeometry(active,targetKey));
+  begin();failNext=true;
+  await assert.rejects(submit(later),/native write failed after mutation/);
+  assert.deepEqual(nativeGeometry(active,targetKey),beforeGeometry);
+  assert.equal(records.get(active).key,display.key);
+  const cancel=begin();holdNext=true;
+  const started=new Promise(resolve=>{startedWrite=resolve;});
+  const cancelled=submit(later);await started;cancel();releaseWrite();
+  assert.equal(await cancelled,false);assert.deepEqual(nativeGeometry(active,targetKey),beforeGeometry);
+  begin();assert.equal(await submit(later),true);assert.notDeepEqual(nativeGeometry(active,targetKey),beforeGeometry);
+  begin();assert.equal(await submit(replacement),true);
+  assert.equal(reserves,1);assert.equal(active,'territories-retained');assert.equal(writes.at(-1).type,'full');
+  assert.equal(nativeRows(active).size,replacement.length*2);
+ }finally{controller.dispose();}
 });

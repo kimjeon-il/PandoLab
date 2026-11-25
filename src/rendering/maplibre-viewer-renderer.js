@@ -226,7 +226,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  }
  const country=createMapLibreCountryController({getMap:()=>map,getGeneration:()=>frame.generation,isDisposed:()=>disposed,
   styleReady,isFrameBlocked:()=>frame.blocked,getBasemapRecovery:()=>frame.basemapRecovery,waitForStyle:signal=>frame.waitForStyle(signal),
-  isTemporalPending:()=>frame.temporalPending(),initialize,getEntityRepository:()=>deps.territorialModel.entityRepository,
+  isTemporalPending:()=>frame.temporalPending(),isFramePreserved:()=>frame.hasOverlay,getTemporalTicket:()=>frame.ticket,
+  initialize,getEntityRepository:()=>deps.territorialModel.entityRepository,
   ...renderPorts.country,layerPresentation:deps.layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
   sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders,
   prewarmCountryMeshes:polarDisplay.prewarmCountryMeshes});
