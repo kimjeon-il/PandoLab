@@ -9,6 +9,13 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
  dirty,invalidate,failMapPreparation,getStats,lifetime=createRenderLifetime({getMap,getGeneration,isDisposed})}){
  let landRevision=null,physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null;
  const physicalPending=createLatestRenderRequests(),geometryBytes=createGeometryByteEstimator();
+ const waterFeatures=context=>context.waterFeatures??(context.water?[{type:'Feature',properties:{},geometry:context.water}]:[]);
+ const waterKey=context=>context.waterRevision||JSON.stringify(waterFeatures(context).map(feature=>geometryKey(feature.geometry)));
+ function selectedPhysicalKey(kind){
+  const context=physicalResources.physicalLand;
+  if(!context||!physicalResources.physicalContextState.ready)return null;
+  return kind==='physical-land'?context.revision:waterKey(context);
+ }
  function reconcilePhysicalSource(kind,key,data,displayPrepared=false){
   const id=datedSources.active(kind),source=getMap().getSource(id),previous=physicalPending.get(kind);
   // Even when returning to already displayed data, retire the obsolete target.
@@ -48,7 +55,10 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   const id=useStandby?datedSources.reserve(kind):active;
   const scope=lifetime.capture(),source=scope.map.getSource(id),entry=physicalPending.begin(kind,{key,source,id,generation:scope.generation});
   datedSources.set(id,{kind,source});
-  const current=()=>physicalPending.current(kind,entry)&&scope.sourceCurrent(id,source);
+  // Core can already have selected another date before the next scene frame.
+  // Never report an old target's success/failure against that newer selection.
+  const current=()=>physicalPending.current(kind,entry)&&scope.sourceCurrent(id,source)&&selectedPhysicalKey(kind)===key;
+  const retireObsolete=()=>{if(physicalPending.finish(kind,entry))invalidate('physical-source-retry');};
   if(kind==='physical-land'&&displayPrepared)getStats().physicalLandAssetHits++;
   // Tag only the display derivative; source-owned geometry and selection
   // identities are left intact.
@@ -58,11 +68,22 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
    :Promise.resolve(tagged);
   let estimatedBytes=0;
   prepared.then(value=>{
-   if(!current())return false;
+   if(!current()){retireObsolete();return false;}
    estimatedBytes=estimateFeatureRows(value.features,geometryBytes);
    return setData(id,value,current,{shareAcrossGenerations:true});
-  },cause=>{if(current()){physicalPending.finish(kind,entry);failMapPreparation(cause);}return false;})
-   .then(applied=>{if(!current())return;physicalPending.finish(kind,entry);if(applied){datedSources.set(id,{kind,source,key,estimatedBytes});publish(id,source);invalidate('physical-source-ready');}},cause=>{if(!current())return;physicalPending.finish(kind,entry);if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');});
+  },cause=>{
+   if(!current()){retireObsolete();return false;}
+   physicalPending.finish(kind,entry);failMapPreparation(cause);return false;
+  }).then(applied=>{
+   if(!current()){retireObsolete();return;}
+   physicalPending.finish(kind,entry);
+   if(applied){datedSources.set(id,{kind,source,key,estimatedBytes});publish(id,source);invalidate('physical-source-ready');}
+   else invalidate('physical-source-retry');
+  },cause=>{
+   if(!current()){retireObsolete();return;}
+   physicalPending.finish(kind,entry);
+   if(entry.generation===getGeneration())failMapPreparation(cause);else invalidate('physical-source-retry');
+  });
  }
 
  function syncPhysicalContext(){
@@ -78,9 +99,7 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
    reconcilePhysicalSource('physical-land',context.revision,()=>collection([{type:'Feature',properties:{},geometry:context.geometry}]),context.displayPrepared);
   // The physical owner resolves the drawn water and its identities together.
   // Admission into the searchable hydro catalog can complete independently.
-  const waterFeatures=context.waterFeatures??(context.water?[{type:'Feature',properties:{},geometry:context.water}]:[]);
-  const waterKey=context.waterRevision||JSON.stringify(waterFeatures.map(feature=>geometryKey(feature.geometry)));
-  reconcilePhysicalSource('physical-water',waterKey,()=>collection(waterFeatures));
+  reconcilePhysicalSource('physical-water',waterKey(context),()=>collection(waterFeatures(context)));
   return true;
  }
 

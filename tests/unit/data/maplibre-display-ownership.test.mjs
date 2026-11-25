@@ -62,6 +62,14 @@ test('rapid land and water reversal retires obsolete work without failing the re
   failB(Error('obsolete B'));finishWaterB();await flush();
   assert.equal(errors.length,0);assert.equal(active.get('physical-land'),'physical-land');assert.equal(active.get('physical-water'),'physical-water');
   assert.equal(writes.length,3,'Returning to acknowledged A requires no native rewrite');
+  // Also cover the gap between accepting a new Core cursor and the next
+  // render-domain synchronization. B may fail before sync observes A.
+  context=B;base.syncPhysicalContext();await flush();
+  context=A;failB(Error('obsolete B before sync'));finishWaterB();await flush();
+  assert.equal(errors.length,0);
+  assert.equal(base.isPending('physical-land'),false);assert.equal(base.isPending('physical-water'),false);
+  base.syncPhysicalContext();await flush();
+  assert.equal(writes.length,4,'Late failure must not invalidate acknowledged A');
  }finally{base.dispose();}
 });
 

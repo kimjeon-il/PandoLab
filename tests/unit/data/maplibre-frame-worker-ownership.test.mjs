@@ -338,7 +338,7 @@ test('geometry worker scopes cancel superseded country and frame work without re
  await assert.rejects(obsolete,{name:'AbortError'});
  const pending=client.prepareRenderGeometry([{kind:'fill'}],1);
  const land=client.preparePhysicalDisplay('land',{type:'Polygon',coordinates:[]});
- client.reset();
+ client.reset({retainPhysical:true});
  assert.equal(requests[1].options.signal.aborted,true);
  assert.equal(requests[2].options.signal.aborted,false);
  requests[1].resolve({result:{packets:[]}});
@@ -347,6 +347,8 @@ test('geometry worker scopes cancel superseded country and frame work without re
  requests[2].resolve({result:{geometry,durationMs:1}});
  assert.equal(await land,geometry);
  assert.equal(client.physicalGeometry('land'),geometry);
+ // Only explicit temporal retention preserves the physical cache.
+ client.reset();assert.equal(client.physicalGeometry('land'),undefined);
  client.dispose();client.dispose();
  assert.equal(stopped,1);assert.equal(client.physicalGeometry('land'),undefined);
  await assert.rejects(client.prepareRenderGeometry([{kind:'fill'}],2),{name:'AbortError'});
