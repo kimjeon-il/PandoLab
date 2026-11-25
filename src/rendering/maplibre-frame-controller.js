@@ -267,7 +267,7 @@ export function createMapLibreFrameController({
  }
  function failMapPreparation(cause){
   if(unavailable())return;
-  error=cause;ready=false;invalidateCertificate();
+  error=cause;ready=false;invalidateCertificate();polarDisplay.cancelPending();
   notify('error','지도 불러오기 실패');
   for(const waiter of styleWaiters)waiter.finish(cause);
   presentation.rejectMapPresentationWaiters(cause);presentation.failTemporalPresentation(cause);
@@ -280,7 +280,7 @@ export function createMapLibreFrameController({
  }
  function beginTemporalViewTransition(isCurrent,onPresented){
   datedSources.cancelRetirement();
-  revokeApproval();
+  polarDisplay.cancelCountryPrewarm();revokeApproval();
   const ticket=presentation.beginTemporalViewTransition(isCurrent,onPresented);
   const external=getExternalBasemap();
   if(external&&!basemapRecovery){
@@ -297,7 +297,10 @@ export function createMapLibreFrameController({
  }
  function finishTemporalViewTransition(ticket){
   const finished=presentation.finishTemporalViewTransition(ticket);
-  if(finished){if(!presentation.ticket?.presented)revokeApproval();datedSources.scheduleRetirement();}
+  if(finished){
+   if(!presentation.ticket?.presented){polarDisplay.cancelPending();revokeApproval();}
+   datedSources.scheduleRetirement();
+  }
   return finished;
  }
  function prepareProjectReset(options){
@@ -317,7 +320,7 @@ export function createMapLibreFrameController({
  function onContextLost(){
   if(unavailable())return;
   cancelStyleRestore();contextRevision++;contextLost=true;ready=false;dirtySinceRender=false;
-  invalidateCertificate();previousActiveRender=null;sourceWrites.reset();physicalBase.resetContext();
+  invalidateCertificate();previousActiveRender=null;sourceWrites.reset();physicalBase.resetContext();polarDisplay.cancelPending();
   presentation.rebaseContext();notify('loading','지도 복구 중');
  }
  function onContextRestored(){

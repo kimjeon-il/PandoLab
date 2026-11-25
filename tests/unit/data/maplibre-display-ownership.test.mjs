@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createMapLibrePhysicalBase} from '../../../src/rendering/maplibre-physical-base.js';
 import {createMapLibreHydroDisplay} from '../../../src/rendering/maplibre-hydro-display.js';
 import {createMapLibrePolarDisplay} from '../../../src/rendering/maplibre-polar-display.js';
+import {createPolarLayer,polarGeometry} from '../../../src/rendering/maplibre-polar-layer.js';
 import {createMapLibreSceneController} from '../../../src/rendering/maplibre-scene-controller.js';
 
 test('physical land and water keep their independent source identities and pending lifecycle',async()=>{
@@ -60,17 +61,17 @@ test('hydro visibility and edited-source state belong to the hydro display',()=>
 });
 
 test('polar display owns its packet and overlay lifecycle without changing canonical lines',async()=>{
- let updates=0,overlayRows=[],warmRows=[],finishWarm;
- const layer={id:'polar',pending:false,ensure(){},update(){updates++;},setOverlayLines:rows=>{overlayRows=rows;},
-  prewarmMeshes:rows=>{warmRows=rows;return new Promise(resolve=>{finishWarm=resolve;});},
-  resetContext(){},retry(){},stats:()=>({updates}),dispose(){}};
+ let updates=0,overlayRows=[],warmRows=[],warmSignal,finishWarm,finishStatic,changed;
+ const layer={id:'polar',pending:false,ensure(){},update(token){updates++;finishStatic=()=>{layer.pending=false;changed(token);};layer.pending=true;},setOverlayLines:rows=>{overlayRows=rows;},
+  prewarmMeshes:(rows,signal)=>{warmRows=rows;warmSignal=signal;return new Promise(resolve=>{finishWarm=resolve;});},
+  cancelStatic(){layer.pending=false;},resetContext(){layer.cancelStatic();},retry(){layer.cancelStatic();},stats:()=>({updates}),dispose(){}};
  const map={getLayer:id=>id==='polar'?{}:null,getLayersOrder:()=>['polar'],moveLayer(){},getZoom:()=>6};
  const river={type:'LineString',coordinates:[[0,86],[1,86.5]]};
  const hydro={features:[{id:'river',geometry:river,
   properties:{category:'river',stage:'base',logicalId:'river',featureId:'fragment',layerId:'rivers'}}],
   visibilityKey:'visible',editsKey:'edits',stageZooms:new Map([['base',4]])};
  const countryDisplay={key:'',rows:new Map(),borders:new Map()};
- const polar=createMapLibrePolarDisplay({createLayer:()=>layer,getMap:()=>map,isStyleReady:()=>true,
+ const polar=createMapLibrePolarDisplay({createLayer:options=>{changed=options.onChange;return layer;},getMap:()=>map,isStyleReady:()=>true,
   prepareRenderGeometry:async()=>({packets:[{packet:{}}]}),getGeneration:()=>1,
   dirty(){},invalidate(){},failMapPreparation:cause=>{throw cause;},
   getMapStyle:()=>({paint:{'physical-land-fill':{'fill-color':'#eee'},ocean:{'background-color':'#fff'}}}),
@@ -81,7 +82,8 @@ test('polar display owns its packet and overlay lifecycle without changing canon
   hydro,getSceneKey:()=>'',getSceneVectors:()=>[],getPickBounds:()=>[-180,85,180,90],
   resolveObjectKey:()=>null,isHydroFeatureVisible:()=>true,rgba:(_color,alpha)=>[1,1,1,alpha]});
  polar.syncPolar();polar.syncPolarLines();
- assert.equal(updates,1);
+ assert.equal(updates,1);assert.equal(polar.pending,true);
+ finishStatic();assert.equal(polar.pending,false);
  assert.equal(overlayRows.length,1);
  assert.equal(overlayRows[0].geometry,river);
  assert.equal(polar.visibleLines,overlayRows);
@@ -91,11 +93,55 @@ test('polar display owns its packet and overlay lifecycle without changing canon
  assert.equal(warmRows.length,1);
  assert.equal(updates,1,'warming must not publish the upcoming country');
  countryDisplay.key=key;countryDisplay.rows=new Map([['country',country]]);
- polar.syncPolar();assert.equal(updates,1);assert.equal(polar.pending,true);
+ assert.equal(polar.pending,true,'Native country acknowledgement alone cannot admit stale polar pixels');
+ polar.syncPolar();assert.equal(updates,2,'Static preparation joins rather than waits for the speculative job');
+ assert.equal(polar.pending,true);
  finishWarm();for(let i=0;i<5;i++)await Promise.resolve();
- polar.syncPolar();assert.equal(updates,2);assert.equal(polar.pending,false);
- polar.resetContext();polar.dispose();
+ assert.equal(polar.pending,true,'CPU warming does not publish the GPU batch');
+ finishStatic();assert.equal(polar.pending,false);
+ const obsolete=new AbortController();polar.prewarmCountryMeshes([country],['obsolete'],obsolete.signal);
+ const obsoleteSignal=warmSignal;polar.cancelCountryPrewarm();assert.equal(obsoleteSignal.aborted,true);
+ finishWarm();await Promise.resolve();
+ polar.resetContext();assert.equal(polar.pending,true);polar.dispose();
  assert.equal(polar.visibleLines.length,0);
+});
+
+test('polar meshes share in-flight work and cancel only when the last consumer leaves',async()=>{
+ const map={getLayer:()=>null,addLayer(){},removeLayer(){},triggerRepaint(){}};
+ const requests=[],published=[],errors=[];
+ const packet={positions:new Float32Array(),indices:new Uint32Array()};
+ const layer=createPolarLayer({map,prepare:(geometry,signal)=>new Promise((resolve,reject)=>{
+  const abort=()=>reject(signal.reason);
+  signal.addEventListener('abort',abort,{once:true});
+  requests.push({geometry,signal,resolve:()=>{signal.removeEventListener('abort',abort);resolve(packet);}});
+ }),onChange:key=>published.push(key),onError:error=>errors.push(error)});
+ const shape=polarGeometry({type:'Polygon',coordinates:[[[0,85],[2,85],[2,86],[0,85]]]});
+ const other=polarGeometry({type:'Polygon',coordinates:[[[3,85],[5,85],[5,86],[3,85]]]});
+ const item=geometry=>({geometry,color:[1,1,1,1]});
+ const tick=async()=>{for(let i=0;i<32;i++)await Promise.resolve();};
+ try{
+  const speculative=new AbortController();
+  const warm=layer.prewarmMeshes([item(shape)],speculative.signal);
+  layer.update('date-a',[item(shape)],[1,1,1,1]);
+  const highlight=layer.prepareHighlights([item(shape)]);
+  await tick();assert.equal(requests.length,1);
+  const aborted=assert.rejects(warm,{name:'AbortError'});speculative.abort();await aborted;
+  assert.equal(requests[0].signal.aborted,false,'Static and highlight consumers still own the job');
+  requests[0].resolve();await highlight;await tick();
+  assert.deepEqual(published,['date-a']);assert.equal(layer.pending,false);
+  assert.equal(layer.stats().sharedPreparations,2);
+  const obsolete=new AbortController(),orphan=layer.prewarmMeshes([item(other)],obsolete.signal);
+  await tick();assert.equal(requests.length,2);
+  const rejected=assert.rejects(orphan,{name:'AbortError'});obsolete.abort();await rejected;await tick();
+  assert.equal(requests[1].signal.aborted,true);
+  const current=new AbortController(),fresh=layer.prewarmMeshes([item(other)],current.signal);
+  layer.update('date-b',[item(other)],[1,1,1,1]);layer.update('date-c',[item(other)],[1,1,1,1]);
+  await tick();assert.equal(requests.length,3);
+  requests[2].resolve();await fresh;await tick();
+  assert.deepEqual(published,['date-a','date-c'],'Obsolete static batches must not publish');
+  assert.equal(layer.stats().preparations,3);assert.equal(layer.stats().cancelledPreparations,1);
+  assert.equal(layer.stats().inFlightMeshes,0);assert.equal(errors.length,0);
+ }finally{layer.dispose();}
 });
 
 test('scene controller owns style, source readiness and country paint batches',()=>{

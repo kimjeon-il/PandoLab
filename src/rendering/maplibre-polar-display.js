@@ -10,9 +10,19 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
  getPickBounds,resolveObjectKey,isHydroFeatureVisible,rgba,createLayer=createPolarLayer,
  readPolarPresentation=()=>({graticule:state.backgroundSettings?.graticule,graticuleAvailable:state.resourceCapabilities?.graticule,
   rivers:state.layerVisibility.rivers,hydroEdits:state.hydroEdits})}){
- let polarLayer=null,polarInputs=[],polarLineInputs=[],polarVisibleLines=[],countryWarm=null;
- const warmingPublishedCountry=()=>countryWarm?.generation===getGeneration()&&!countryWarm.signal.aborted
-  &&countryWarm.key===countryDisplay.key;
+ let polarLayer=null,polarInputs=[],publishedInputs=null,staticToken=null,polarLineInputs=[],polarVisibleLines=[],countryWarm=null;
+ const physicalReady=()=>physicalResources.physicalContextState.ready&&physicalResources.physicalLand;
+ function awaitingPublishedInputs(){
+  const context=physicalReady();
+  return !!context&&(!publishedInputs||publishedInputs!==polarInputs
+   ||publishedInputs[0]!==getGeneration()||publishedInputs[1]!==countryDisplay.key
+   ||publishedInputs[3]!==context.geometry||publishedInputs[4]!==context.water||publishedInputs[5]!==context.revision);
+ }
+ function invalidateStaticInputs(){polarInputs=[];publishedInputs=null;staticToken=null;}
+ function cancelCountryPrewarm(){countryWarm?.cancel();}
+ function cancelPending(){
+  cancelCountryPrewarm();polarLayer?.cancelStatic();invalidateStaticInputs();
+ }
  const polarGrid=polarGridPacket();
  const overlayLinePackets=new WeakMap();
  function positionPolarLayer(){
@@ -24,30 +34,40 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
  function ensurePolar(){
   polarLayer ||=createLayer({map:getMap(),prepare:async (geometry,signal)=>(await prepareRenderGeometry([
    {kind:'fill',cacheKey:'polar:'+geometryKey(geometry),geometry,polarCapOnly:true},
-  ],getGeneration(),undefined,signal)).packets[0].packet,onChange:()=>{dirty();invalidate('polar-ready');},onError:cause=>{if(cause.name==='AbortError'){polarInputs=[];invalidate('polar-cancelled');}else failMapPreparation(cause);}});
+  ],getGeneration(),undefined,signal)).packets[0].packet,onChange:token=>{
+   if(token!==staticToken)return;
+   publishedInputs=polarInputs;dirty();invalidate('polar-ready');
+  },onError:cause=>{if(cause.name==='AbortError'){invalidateStaticInputs();invalidate('polar-cancelled');}else failMapPreparation(cause);}});
   polarLayer.ensure();
   return polarLayer;
  }
  function prewarmCountryMeshes(rows,key,signal){
+  cancelCountryPrewarm();
   if(!isStyleReady()||signal.aborted)return;
-  const shapes=new Set();
+  const style=getMapStyle(),colored=isColorsEnabled(),land=style.paint['physical-land-fill']['fill-color'],shapes=new Set();
   for(const row of rows){
+   if(!(colored?row.properties.color&&row.properties.displayAlpha>0:land))continue;
    const shape=polarGeometry(row.geometry);
    if(shape)shapes.add(shape);
   }
   if(!shapes.size)return;
-  const request={key,generation:getGeneration(),signal};
+  const controller=new AbortController();
+  const request={key,generation:getGeneration(),cancel:null};
+  const detach=()=>{
+   signal.removeEventListener('abort',request.cancel);
+   if(countryWarm===request)countryWarm=null;
+  };
+  request.cancel=()=>{detach();controller.abort();};
   countryWarm=request;
-  // Speculative preparation must never expose an unacknowledged country.
-  // A failure falls back to the normal, error-reporting polar update.
-  ensurePolar().prewarmMeshes([...shapes].map(geometry=>({geometry})),signal).catch(()=>{}).finally(()=>{
-   if(countryWarm!==request)return;
-   countryWarm=null;
-   if(!signal.aborted&&request.generation===getGeneration())invalidate('polar-ready');
-  });
+  signal.addEventListener('abort',request.cancel,{once:true});
+  // Warm CPU packets only. The static batch independently subscribes to
+  // these same jobs after native country acknowledgement.
+  ensurePolar().prewarmMeshes([...shapes].map(geometry=>({geometry})),controller.signal)
+   .catch(()=>{}).finally(detach);
+  return request.cancel;
  }
  function syncPolar(){
-  if(!isStyleReady()||warmingPublishedCountry())return;
+  if(!isStyleReady())return;
   ensurePolar();
   const style=getMapStyle(),items=[],{graticule,graticuleAvailable}=readPolarPresentation();
   const add=(geometry,color,alpha=1,multiply=false,loadingRole)=>{
@@ -74,7 +94,8 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   if(graticule!==false&&graticuleAvailable!==false){
    items.push({packet:polarGrid,color:rgba('#777777',.15),width:.5,loadingRole:'grid'});
   }
-  polarLayer.update(Symbol('polar display revision'),items,rgba(style.paint.ocean['background-color']));
+  staticToken=Symbol('polar display revision');
+  polarLayer.update(staticToken,items,rgba(style.paint.ocean['background-color']));
   positionPolarLayer();
  }
 
@@ -119,18 +140,18 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
    }
   }
   polarVisibleLines=rows;
-  polarLayer.setOverlayLines(rows);
+  polarLayer.setOverlayLines(rows);dirty();
  }
 
- return Object.freeze({ensurePolar,positionPolarLayer,syncPolar,syncPolarLines,prewarmCountryMeshes,
-  get layer(){return polarLayer;},get pending(){return !!polarLayer?.pending||!!warmingPublishedCountry();},
+ return Object.freeze({ensurePolar,positionPolarLayer,syncPolar,syncPolarLines,prewarmCountryMeshes,cancelCountryPrewarm,cancelPending,
+  get layer(){return polarLayer;},get pending(){return !!polarLayer?.pending||awaitingPublishedInputs();},
   get visibleLines(){return polarVisibleLines;},
-  invalidateInputs(){polarInputs=[];polarLineInputs=[];},
+  invalidateInputs(){invalidateStaticInputs();polarLineInputs=[];},
   setLoadingSurface(value){polarLayer?.setLoadingSurface(value);},
-  resetContext(){polarLayer?.resetContext();polarInputs=[];polarLineInputs=[];},
-  retry(){polarInputs=[];polarLineInputs=[];polarLayer?.retry();},
-  resetProject(){countryWarm=null;polarInputs=[];polarLineInputs=[];},
+  resetContext(){cancelCountryPrewarm();polarLayer?.resetContext();invalidateStaticInputs();polarLineInputs=[];},
+  retry(){cancelCountryPrewarm();invalidateStaticInputs();polarLineInputs=[];polarLayer?.retry();},
+  resetProject(){cancelPending();polarLineInputs=[];},
   stats:()=>polarLayer?.stats(),
-  dispose(){countryWarm=null;polarLayer?.dispose();polarLayer=null;polarInputs=[];polarLineInputs=[];polarVisibleLines=[];}
+  dispose(){cancelCountryPrewarm();polarLayer?.dispose();polarLayer=null;invalidateStaticInputs();polarLineInputs=[];polarVisibleLines=[];}
  });
 }

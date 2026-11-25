@@ -112,6 +112,8 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    if(sourceChanged){scene.syncVectorGroups();scene.orderSceneLayers();}
   };
   const active=datedSources.get(datedSources.active('territories'));
+  let cancelWarm,accepted=false;
+  try{
   // A paint-only transition shares the already tiled source. Keep the actual
   // tile rows for the next native diff and update its paint through feature state.
   const paintChanges=[];
@@ -135,6 +137,9 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
     countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers,countryTileSource,onCountrySourceRemoved:id=>scene.removeCountryFillSource(id),onStyleInvalidated:()=>{scene.invalidateLayerIndex();},dirty});
    }
    const activeId=datedSources.active('territories'),activeSource=map.getSource(activeId);
+   // Start independent country cap meshes before shared-border preparation.
+   // No speculative mesh may change the acknowledged display.
+   cancelWarm=prewarmCountryMeshes(presented,key,signal);
    const borders=await metrics.track('territorial.borders',()=>prepareCountryBorders(presented,requestedGeneration,signal));
    if(!current()||datedSources.active('territories')!==activeId||map.getSource(activeId)!==activeSource)return false;
    const tileFeatures=presented.slice();
@@ -156,7 +161,6 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    const dirtyEntry={kind:'territories',source};
    if(willWrite)datedSources.set(requestedSource,dirtyEntry);
    countryDisplay.clearSwap();
-   prewarmCountryMeshes(presented,key,signal);
    // Restore the last acknowledged native snapshot after an uncertain write.
    // A superseded request cannot write back into a newer source instance.
    const rollback=async()=>{
@@ -202,7 +206,8 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(sequence!==countrySequence||requestedGeneration!==getGeneration())return false;
   if(requestedGeneration===getGeneration()&&sequence===countrySequence){countryGeneration=getGeneration();countryContentKey=countryContentIdentity(features);}
   map.triggerRepaint();
-  return true;
+  accepted=true;return true;
+  }finally{if(!accepted)cancelWarm?.();}
  }
 
  function reset(){

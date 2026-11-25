@@ -2,6 +2,7 @@ import {riverWidthAtZoom} from './maplibre-hydro-presentation.js';
 import {createPolarDrawBatcher} from './maplibre-polar-batch.js';
 import {renderCacheBudget} from './render-cache-budget.js';
 import {createGeometryWorkGate} from './geometry-work-gate.js';
+import {immutableGeometryContentKey} from '../geometry/geometry-version-store.js';
 
 // Hand over before Mercator's 85.051129-degree tile edge: a line ending on
 // that edge can still acquire a stretched polar segment during tile clipping.
@@ -36,12 +37,22 @@ export function clipMercatorLines(geometry){
  }
  return {type:'MultiLineString',coordinates:result};
 }
-const polarShapes=new WeakMap();
+const polarShapes=new WeakMap(),canonicalPolarShapes=new Map();
+const forgetPolarShape=new FinalizationRegistry(({key,ref})=>{
+ if(canonicalPolarShapes.get(key)===ref)canonicalPolarShapes.delete(key);
+});
 export function polarGeometry(geometry){
  if(!geometry)return null;if(polarShapes.has(geometry))return polarShapes.get(geometry);
+ // The geometry registry supplies an exact, immutable content identity.
+ // Different canonical objects representing the same shape share one packet.
+ const key=immutableGeometryContentKey(geometry),shared=key&&canonicalPolarShapes.get(key)?.deref();
+ if(shared){polarShapes.set(geometry,shared);return shared;}
  const polygons=geometry?.type==='Polygon'?[geometry.coordinates]:geometry?.type==='MultiPolygon'?geometry.coordinates:[];
  const selected=polygons.filter(poly=>poly.some(ring=>ring.some(point=>Math.abs(point[1])>=POLAR_LATITUDE)));
- const result=selected.length?{type:'MultiPolygon',coordinates:selected}:null;polarShapes.set(geometry,result);return result;
+ const result=selected.length?{type:'MultiPolygon',coordinates:selected}:null;
+ polarShapes.set(geometry,result);
+ if(key&&result){const ref=new WeakRef(result);canonicalPolarShapes.set(key,ref);forgetPolarShape.register(result,{key,ref});}
+ return result;
 }
 export function polarLinePacket(lines){
  const values=[],indices=[],ranges=[];
@@ -104,7 +115,7 @@ function visiblePolarCaps(data){
 }
 export const polarCapsVisible=data=>visiblePolarCaps(data)!==0;
 export function createPolarLayer({map,prepare,onChange,onError}){
- const id='pando-polar-caps',capCache=new WeakMap();
+ const id='pando-polar-caps',capCache=new WeakMap(),meshJobs=new Map();
  const cores=Number(globalThis.navigator?.hardwareConcurrency),memory=Number(globalThis.navigator?.deviceMemory);
  const limit=memory>0&&memory<=4||cores>0&&cores<=4?1:2;
  const meshGate=createGeometryWorkGate(limit);
@@ -122,7 +133,7 @@ export function createPolarLayer({map,prepare,onChange,onError}){
  let culledFrames=0,drawCalls=0,submittedTriangles=0,uploadedBytes=0,residentBytes=0;
  const buffers=new Map();
  const shader=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const message=gl.getShaderInfoLog(s);gl.deleteShader(s);throw Error(message);}return s;};
- let variant='',preparations=0,failed=false;
+ let variant='',preparations=0,failed=false,sharedPreparations=0,cancelledPreparations=0,cacheHits=0;
  function compile(options){
   if(program&&variant===options.shaderData.variantName)return;
   if(program)gl.deleteProgram(program);variant=options.shaderData.variantName;
@@ -255,17 +266,46 @@ export function createPolarLayer({map,prepare,onChange,onError}){
    }
   }};
  const background=capMesh();
- async function mesh(geometry,context){
-  // Share only completed immutable packets. A cancelled in-flight task
-  // must not poison the next generation's use of the same geometry.
+ function mesh(geometry,context){
+  context.throwIfCancelled();
   const cached=capCache.get(geometry);
-  if(cached)return cached;
-  return meshGate.run(context,async()=>{
-   context.throwIfCancelled();
-   const prior=capCache.get(geometry);if(prior)return prior;
-   preparations++;
-   const packet=await prepare(geometry,context.signal);
-   context.throwIfCancelled();capCache.set(geometry,packet);return packet;
+  if(cached){cacheHits++;return Promise.resolve(cached);}
+  let job=meshJobs.get(geometry);
+  if(job)sharedPreparations++;
+  else{
+   const controller=new AbortController();
+   job={controller,users:0,task:null,done:false};
+   const owned=job,work=contextFor(controller.signal,context.priority);
+   meshJobs.set(geometry,owned);
+   owned.task=meshGate.run(work,async()=>{
+    work.throwIfCancelled();preparations++;
+    const packet=await prepare(geometry,controller.signal);
+    work.throwIfCancelled();
+    if(!disposed&&meshJobs.get(geometry)===owned)capCache.set(geometry,packet);
+    return packet;
+   }).finally(()=>{
+    owned.done=true;
+    if(meshJobs.get(geometry)===owned)meshJobs.delete(geometry);
+   });
+  }
+  const owned=job,signal=context.signal;
+  return new Promise((resolve,reject)=>{
+   let finished=false;owned.users++;
+   const finish=(callback,value)=>{
+    if(finished)return;
+    finished=true;signal.removeEventListener('abort',abort);owned.users--;
+    callback(value);
+    // Give a synchronous replacement a chance to join the same job before
+    // abandoning it. No subscriber owns another subscriber's cancellation.
+    if(!owned.users&&!owned.done)queueMicrotask(()=>{
+     if(owned.users||owned.done||meshJobs.get(geometry)!==owned)return;
+     meshJobs.delete(geometry);cancelledPreparations++;stop(owned.controller);
+    });
+   };
+   const abort=()=>finish(reject,signal.reason||cancelled());
+   signal.addEventListener('abort',abort,{once:true});
+   owned.task.then(packet=>finish(resolve,packet),cause=>finish(reject,cause));
+   if(signal.aborted)abort();
   });
  }
  const batchFor=rows=>batcher.batch(rows);
@@ -313,12 +353,15 @@ export function createPolarLayer({map,prepare,onChange,onError}){
   highlightBatch=stagedHighlights=emptyBatch;retire(previous);retire(staged);
   if(previous.rows.length)map.triggerRepaint?.();
  }
- function resetContext(){failed=false;release();if(gl){vao=gl.createVertexArray();prepareBuffers(staticBatch,gridBatch,overlayBatch,highlightBatch);}}
- return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size,mergedCpuCache:batcher.stats()}),
-  retry(){sequence++;stop(staticRequest);staticRequest=null;pending=false;key='';resetContext();},resetContext,
+ function cancelStatic(){
+  sequence++;stop(staticRequest);staticRequest=null;pending=false;key='';
+ }
+ function resetContext(){cancelStatic();failed=false;release();if(gl){vao=gl.createVertexArray();prepareBuffers(staticBatch,gridBatch,overlayBatch,highlightBatch);}}
+ return {id,stats:()=>({preparations,sharedPreparations,cancelledPreparations,cacheHits,inFlightMeshes:meshJobs.size,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size,mergedCpuCache:batcher.stats()}),
+  retry:resetContext,resetContext,cancelStatic,
   ensure(){if(!map.getLayer(id))map.addLayer(layer,map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);},get pending(){return pending;},
   // Warm the same CPU mesh cache without changing the visible polar batch.
-  prewarmMeshes:(items,signal)=>prepareRows(items,contextFor(signal,60)),
+  prewarmMeshes:(items,signal)=>prepareRows(items,contextFor(signal,50)),
   prepareHighlights,clearHighlights,
   setOverlayLines(items){
    const previous=overlayBatch,next=batchFor(items);
@@ -336,11 +379,13 @@ export function createPolarLayer({map,prepare,onChange,onError}){
     const nextGrid=batchFor(next.filter(row=>row.loadingRole==='grid'));
     try{prepareBuffers(nextStatic,nextGrid);}catch(error){retire(nextStatic);retire(nextGrid);throw error;}
     staticBatch=nextStatic;gridBatch=nextGrid;
-    retire(previous);retire(previousGrid);pending=false;onChange();
+    retire(previous);retire(previousGrid);pending=false;onChange(nextKey);
    }).catch(error=>{if(!disposed&&version===sequence){pending=false;key='';failed=error?.name!=='AbortError';onError(error);}})
     .finally(()=>{if(staticRequest===controller)staticRequest=null;});
   },dispose(){if(disposed)return;disposed=true;sequence++;highlightSequence++;pending=false;key='';
    stop(staticRequest);stop(highlightRequest);staticRequest=highlightRequest=null;
+   for(const job of meshJobs.values())stop(job.controller);
+   meshJobs.clear();
    staticBatch=gridBatch=overlayBatch=highlightBatch=stagedHighlights=emptyBatch;loadingSurface=null;batcher.clear();
    if(map.getLayer(id))map.removeLayer(id);else release();}};
 }

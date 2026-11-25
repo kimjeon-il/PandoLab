@@ -30,7 +30,7 @@ function fixture(){
   scene:{requiredSource:id=>id==='territories',requiredSourcesReady:()=>{nativeChecks++;return sourcesReady;},requiredVectorPending:()=>vectorPending,
    syncLabelVisibility:()=>false,hasStyleController:()=>false,applyStyle(){},getStyle:()=>({}),syncVectorGroups(){}},
   selection:{owns:()=>false,onRender(){},selectionPending:()=>selectionPending,onTemporalAdmission(){},reset(){},refresh(){}},
-  physicalBase:{syncPhysicalContext(){},resetContext(){}},polarDisplay:{get pending(){return polarPending;},syncPolar(){},syncPolarLines(){},resetContext(){},retry(){}},
+  physicalBase:{syncPhysicalContext(){},resetContext(){}},polarDisplay:{get pending(){return polarPending;},syncPolar(){},syncPolarLines(){},resetContext(){},retry(){},cancelPending(){},cancelCountryPrewarm(){}},
   physicalResources:{physicalContextState:{get ready(){return physicalReady;}}},
   sourceWrites:{pendingCount:()=>writesPending,reset(){},handlesError:()=>false},
   datedSources:{has:()=>false,scheduleRetirement(){},cancelRetirement(){}},

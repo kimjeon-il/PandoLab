@@ -490,7 +490,7 @@ test('dated source lifecycle acknowledges prewarm, reuses slots and enforces the
 test('historical country writes use acknowledged deltas and recover uncertain native data',async()=>{
  const display=createMapLibreCountryDisplay(),sources=new Map([['territories',{}],['territories-retained',{}]]),records=new Map(),native=new Map();
  let active='territories',temporal=false,ticket=null,features=[],failNext=false,holdNext=false,releaseWrite,startedWrite;
- let request,fullWrites=0,deltaWrites=0,reserves=0;
+ let request,fullWrites=0,deltaWrites=0,reserves=0,warmed=false,cancelledWarmups=0;
  const writes=[],stats={retainedSourceHits:0},map={getSource:id=>sources.get(id),triggerRepaint(){}};
  const make=(id,x)=>({type:'Feature',id,properties:{entityKind:'general',parentId:null,style:{color:'#336699'}},
   geometry:{type:'Polygon',coordinates:[[[x,0],[x+.5,0],[x+.5,.5],[x,.5],[x,0]]]}});
@@ -530,9 +530,13 @@ test('historical country writes use acknowledged deltas and recover uncertain na
   geometryClient:{startCountryRequest(){request?.abort();request=new AbortController();return request.signal;},cancelCountryRequest(){request?.abort();}},
   countryDisplay:display,datedSources,sourceWrites:{hasNativeWrite:()=>false,update:(submit,id,current)=>current()?submit({updateData:delta=>writeDelta(id,delta)}):Promise.resolve(false)},
   setData,scene:{syncCountryPaint(){},syncVectorGroups(){},orderSceneLayers(){},syncTerritorialFills(){}},
-  metrics:{run:(_name,fn)=>fn(),track:(_name,fn)=>fn()},stats,dirty(){},prewarmCountryMeshes(){},
-  prepareCountryBorders:async rows=>rows.map(row=>({key:'border:'+row.id,feature:{type:'Feature',id:'border:'+row.id,
-   properties:{displayRole:'country-border',objectKey:'border:'+row.id},geometry:{type:'MultiLineString',coordinates:[row.geometry.coordinates[0]]}}}))});
+  metrics:{run:(_name,fn)=>fn(),track:(_name,fn)=>fn()},stats,dirty(){},
+  prewarmCountryMeshes(){warmed=true;return ()=>{cancelledWarmups++;};},
+  prepareCountryBorders:async rows=>{
+   assert.equal(warmed,true,'Country cap preparation must start before border preparation');warmed=false;
+   return rows.map(row=>({key:'border:'+row.id,feature:{type:'Feature',id:'border:'+row.id,
+    properties:{displayRole:'country-border',objectKey:'border:'+row.id},geometry:{type:'MultiLineString',coordinates:[row.geometry.coordinates[0]]}}}));
+  }});
  const submit=rows=>{features=rows;return controller.setTerritorialFeatures(rows);};
  const begin=()=>{temporal=true;let live=true;ticket={isCurrent:()=>live};return ()=>{live=false;};};
  const nativeGeometry=(id,key)=>nativeRows(id).get(key)?.geometry.coordinates;
@@ -554,6 +558,7 @@ test('historical country writes use acknowledged deltas and recover uncertain na
   const started=new Promise(resolve=>{startedWrite=resolve;});
   const cancelled=submit(later);await started;cancel();releaseWrite();
   assert.equal(await cancelled,false);assert.deepEqual(nativeGeometry(active,targetKey),beforeGeometry);
+  assert.equal(cancelledWarmups,2,'Failed and cancelled writes must release speculative mesh consumers');
   begin();assert.equal(await submit(later),true);assert.notDeepEqual(nativeGeometry(active,targetKey),beforeGeometry);
   begin();assert.equal(await submit(replacement),true);
   assert.equal(reserves,1);assert.equal(active,'territories-retained');assert.equal(writes.at(-1).type,'full');
