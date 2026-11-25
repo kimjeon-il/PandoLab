@@ -139,7 +139,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     operationFeedback:{reliabilityDiagnostic:diagnostics},
     rendering:{get mapRenderer(){return renderer;}},feedback:{reportOperationError:onError}}));
   const renderer=createMapLibreViewerRenderer({projectState:{state,mapWorkScheduler},physicalConfig,
-    runtimeConfiguration:{APP_VERSION:meta.appVersion},layerPresentation:{ASSET_REVISION:meta.assetRevision,isLayerItemVisible:objectCatalog.isLayerItemVisible},
+    runtimeConfiguration:{APP_VERSION:meta.appVersion},layerPresentation:{isLayerItemVisible:objectCatalog.isLayerItemVisible},
     preferences:{mapPalette:palette},colorModel:readPorts.colorModel,
     platform:{d3,deepClone:structuredClone,$:id=>document.getElementById(id),runtimeAssetUrl},
     countries:territorialSceneRuntime,builtinCountries:territorialSceneRuntime,countryLabelModel:labelOwner,
@@ -186,16 +186,16 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     objectDisplay:{invalidateObjectPresentation:objectCatalog.invalidateObjectPresentation},mapView:{ringRepresentativePoint:mapProjection.ringRepresentativePoint},
     domains:{get projectDomain(){return projectDomain;},get renderingDomain(){return renderingDomain;}}};
   connectMapOwner('countryIndex',countryIndex,mergeCapabilityPorts(commonPorts,countryPorts));initializeMapReadOwners(owners,'anchors');
-  const labelPorts={...countryPorts,rendering:{mapRenderer:renderer},territorialModel:{entityRepository:repository},territorialObjectModel:{territorialScope},objectPresentation,
-    countries:{...countryPorts.countries,scheduleCountryLabelAnchors:countryIndex.scheduleCountryLabelAnchors},
-    mapView:mapProjection,mapHostView:{projectionViewSnapshot:mapHost.projectionViewSnapshot},
-    layerPresentation:{...readPorts.layerPresentation,isLayerItemVisible:objectCatalog.isLayerItemVisible,isCountryVisibleById:objectCatalog.isCountryVisibleById},
+  const labelPorts={projectState:{state},platform:{runtimeAssetUrl},rendering:{mapRenderer:renderer},territorialModel:{entityRepository:repository},territorialObjectModel:{territorialScope},objectPresentation,
+    countries:{builtinTerritorialScene:territorialSceneRuntime.builtinTerritorialScene,scheduleCountryLabelAnchors:countryIndex.scheduleCountryLabelAnchors},
+    mapHostView:{projectionViewSnapshot:mapHost.projectionViewSnapshot},
+    layerPresentation:{isLayerItemVisible:objectCatalog.isLayerItemVisible},
     labelPresentation:{automaticLabelSettings,labelKey,LABEL_PRIORITIES,
       get pendingCountryLabelAnchors(){return countryIndex.pendingCountryLabelAnchors;},get countryLabelAnchors(){return countryIndex.countryLabelAnchors;}},
-    preferences:{get userPreferences(){return getPreferences();}},surfaces:{isMobile},renderScene:{get currentRenderQuality(){return renderQuality.currentRenderQuality;}},
-    spatialQuery:{geometryBounds:spatialIndex.geometryBounds,visibleMapObjectCandidates:spatialIndex.visibleMapObjectCandidates,viewportCullingMetrics:spatialIndex.viewportCullingMetrics},
+    preferences:{get userPreferences(){return getPreferences();}},renderScene:{get currentRenderQuality(){return renderQuality.currentRenderQuality;}},
+    spatialQuery:{viewportCullingMetrics:spatialIndex.viewportCullingMetrics},
     feedback:{reportOperationError:onError},domains:{get renderingDomain(){return renderingDomain;},get projectDomain(){return projectDomain;},
-      get selectionDomain(){return documentSession.selectionDomain;},objectSearchController:{cancelSearch:()=>onPlacesSettled('cancel'),render:()=>onPlacesSettled('render')}}};
+      get selectionDomain(){return documentSession.selectionDomain;},objectSearchController:{render:()=>onPlacesSettled('render')}}};
   connectMapOwner('territorialLabels',labelOwner,mergeCapabilityPorts(commonPorts,labelPorts));initializeMapReadOwners(owners,'labels');
   const places=()=>labelOwner.builtinPlaces;
   connectMapOwner('mapScene',mapScene,mergeCapabilityPorts(commonPorts,{rendering:{mapRenderer:renderer}}));

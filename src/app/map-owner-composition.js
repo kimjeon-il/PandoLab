@@ -23,7 +23,7 @@ import {mapProjectResourcePath} from "../data/map-project-manifest.js";
 const READ_INITIALIZATION=Object.freeze({
   queries:[['objectPresentation','initializeTerritorialScope'],['objectPresentation','initializeObjectPresentationModel']],
   spatial:[['spatialIndex','initializeGeometryBoundsCache'],['spatialIndex','initializeMapObjectSpatialIndex'],['spatialIndex','initializeViewportCullingMetrics']],
-  labels:[['territorialLabels','initializeCountryOutlineCache'],['territorialLabels','initializeLabelLayoutMetrics']],
+  labels:[['territorialLabels','initializeLabelLayoutMetrics']],
   anchors:[['countryIndex','initializeCountryLandRevision'],['countryIndex','initializeCountryLabelAnchorWorker'],['countryIndex','initializeLabelFallbackQueue']],
   projection:[['mapProjection','initializeMapLayoutMetricsSnapshot'],['mapProjection','initializeGraticule']],
 });
