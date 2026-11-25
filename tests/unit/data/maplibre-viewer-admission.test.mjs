@@ -48,7 +48,7 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    let featureInstalls=0;const removeCustom=renderer.registerFeature('custom-fixture',map=>{featureInstalls++;map.addLayer({id:'custom-fixture',type:'custom',render(){}});return ()=>{if(map.getLayer('custom-fixture'))map.removeLayer('custom-fixture');};});
    let frameId=0;
    const frame=()=>({frameId:++frameId,projectGeneration:renderer.getProjectGeneration(),viewRevision:1,projectionRevision:0});
-   const settle=async()=>{for(let i=0;i<300;i++){if(errors.length)throw new Error(errors.join('\n'));const current=frame(),result=renderer.renderFrame(current);if(result.succeeded&&renderer.canPresentVisualFrame(current,result)){renderer.commitVisualFrame(current);return;}await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('Fixture map did not present');};
+   const settle=async()=>{for(let i=0;i<300;i++){if(errors.length)throw new Error(errors.join('\n'));const current=frame(),result=renderer.renderFrame(current);if(result.succeeded&&renderer.canPresentVisualFrame(current,result)&&renderer.commitVisualFrame(current))return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('Fixture map did not present');};
    renderer.setInitialMapLoading(true);
    if(!(renderer.map.getMinZoom()>-2)||renderer.map.getMaxZoom()!==22)
     throw new Error('Expected the fitted world zoom floor and native MapLibre zoom ceiling');
@@ -471,19 +471,28 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    const noLegacySvg=overlay.querySelector('svg')===null;
    renderer.admitTemporalViewTransition(ticket);
    const beforePrepared=renderer.renderFrame(frame()).deferred;
+   // Keep the same square coverage but guarantee a new native content identity,
+   // rather than letting an earlier fixture visit satisfy this delay test.
+   after.geometry={type:'Polygon',coordinates:[[[18,-5],[22,-5],[26,-5],[26,5],[18,5],[18,-5]]]};
    await renderer.prepareTemporalCountrySource([after]);
    const beforeSourceApplied=renderer.renderFrame(frame()).deferred;
    let presented=false;const waiting=renderer.waitForTemporalPresentation().then(()=>{presented=true;});
    await new Promise(resolve=>setTimeout(resolve,50));const premature=presented;
    const map=renderer.map,addSource=map.addSource.bind(map);let releaseCountry;
+   const patched=new Set(),restoreWrites=[];
    const interceptCountryWrite=id=>{
-    if(!id.startsWith('territories')||id===inactiveCountry)return;
+    if(!id.startsWith('territories'))return;
     const source=map.getSource(id);
-    const setData=source.setData.bind(source),updateData=source.updateData.bind(source);
-    const delay=write=>(...data)=>new Promise((resolve,reject)=>{releaseCountry=()=>{
-     source.setData=setData;source.updateData=updateData;return write(...data).then(resolve,reject);
-    };});
-    source.setData=delay(setData);source.updateData=delay(updateData);
+    if(!source||patched.has(source))return;
+    patched.add(source);
+    for(const method of ['setData','updateData']){
+     const original=source[method];
+     if(typeof original!=='function')continue;
+     restoreWrites.push(()=>{source[method]=original;});
+     source[method]=(...args)=>new Promise((resolve,reject)=>{
+      releaseCountry=()=>Promise.resolve(original.apply(source,args)).then(resolve,reject);
+     });
+    }
    };
    for(const id of Object.keys(map.getStyle().sources))interceptCountryWrite(id);
    map.addSource=(id,...args)=>{
@@ -493,35 +502,74 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    for(let i=0;i<100&&!releaseCountry;i++)await new Promise(resolve=>setTimeout(resolve,10));
    if(!releaseCountry)throw new Error('Country update was not requested');
    const requiredBlocked=renderer.renderFrame(frame()).deferred&&overlay.isConnected&&!presented;
-   map.addSource=addSource;releaseCountry();await countryPreparing;
+   map.addSource=addSource;for(const restore of restoreWrites)restore();releaseCountry();await countryPreparing;
    const activeTerritories=()=>renderer.map.getSource(renderer.getStats().datedSources.territories);
    const nextPixels=snapshot.getContext('2d').getImageData(0,0,snapshot.width,snapshot.height).data;
    const frozenBeforeAdmission=overlay.isConnected&&noLegacySvg&&oldPixels.some((value,index)=>index%4===3&&value>0)&&oldPixels.every((value,index)=>value===nextPixels[index]);
    await settle();await waiting;const releasedAfterAdmission=!overlay.isConnected;const lateRestored=renderer.map.getLayoutProperty('late','visibility')!=='none';removeLate();
-   const isInactiveSourceRetained=()=>{
-    const layers=renderer.map.getStyle().layers.filter(layer=>layer.source===inactiveCountry);
-    return !!renderer.map.getSource(inactiveCountry)&&layers.length&&layers.every(layer=>renderer.map.getLayoutProperty(layer.id,'visibility')==='none')&&
-     !renderer.map.style.tileManagers[inactiveCountry]?.used;
+   const inactiveSlotsHidden=()=>{
+    const active=renderer.getStats().datedSources.territories,style=map.getStyle();
+    return Object.keys(style.sources).filter(id=>id.startsWith('territories')&&id!==active).every(id=>
+     style.layers.filter(layer=>layer.source===id).every(layer=>map.getLayoutProperty(layer.id,'visibility')==='none')&&
+     !map.style.tileManagers[id]?.used);
    };
-   if(!isInactiveSourceRetained())
-    throw new Error('The old dated slot is still used for native tiling after publication');
+   if(!inactiveSlotsHidden())throw Error('An inactive dated slot is still used for native tiling');
    const retainedCountrySource=map.getSource(inactiveCountry),newCountrySource=activeTerritories();
-   const revisit=async(features,source)=>{
-    const setData=source.setData,updateData=source.updateData;
-    let writes=0;
-    source.setData=function(...args){writes++;return setData.apply(this,args);};
-    source.updateData=function(...args){writes++;return updateData.apply(this,args);};
+   const nativeCountryRows=async source=>(await source.getData()).features.filter(row=>row.properties.displayRole==='country-fill');
+   const revisit=async(features,expectedSource=null)=>{
+    const restores=[];let writes=0;
+    for(const id of Object.keys(map.getStyle().sources).filter(id=>id.startsWith('territories'))){
+     const source=map.getSource(id);
+     for(const method of ['setData','updateData']){
+      const original=source[method];
+      restores.push(()=>{source[method]=original;});
+      source[method]=function(...args){writes++;return original.apply(this,args);};
+     }
+    }
     try{
      const token=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();
      await renderer.prepareTemporalCountrySource(features);await renderer.setTerritorialFeatures(features);
      renderer.admitTemporalViewTransition(token);await settle();renderer.finishTemporalViewTransition(token);
-     if(activeTerritories()!==source||writes)throw new Error('An exact dated revisit replaced or rewrote its native source');
-    }finally{source.setData=setData;source.updateData=updateData;}
+     if(expectedSource&&(activeTerritories()!==expectedSource||writes))
+      throw Error('A retained exact dated revisit replaced or rewrote its native source');
+     const rows=await nativeCountryRows(activeTerritories());
+     if(rows.length!==features.length||features.some(feature=>!rows.some(row=>
+      row.id===refFor(feature).key&&JSON.stringify(row.geometry)===JSON.stringify(feature.geometry))))
+      throw Error('Dated revisit did not restore exact country geometry');
+     if(!inactiveSlotsHidden())throw Error('Dated revisit reactivated inactive tiling');
+    }finally{for(const restore of restores)restore();}
    };
-   await revisit([before],retainedCountrySource);await revisit([after],newCountrySource);
+   // Two acknowledged slots permit a zero-write revisit. An in-place delta
+   // overwrites the former slot, so its prior date must be restored correctly
+   // rather than requiring an obsolete zero-write cache hit.
+   const retainedBoth=!!retainedCountrySource&&retainedCountrySource!==newCountrySource;
+   await revisit([before],retainedBoth?retainedCountrySource:null);
+   await revisit([after],retainedBoth?newCountrySource:null);
    renderer.map.panBy([1,0],{animate:false});await settle();
-   if(!isInactiveSourceRetained())
-    throw new Error('A camera move reactivated the inactive dated slot');
+   if(!inactiveSlotsHidden())throw Error('A camera move reactivated an inactive dated slot');
+   // Exercise the distinct in-place path: most countries remain identical.
+   const extraRows=Array.from({length:12},(_,i)=>square('delta-fixture-'+i,-170+10*i));
+   for(const row of extraRows)entities.set(row.id,row);
+   const many=[after,...extraRows];await renderer.setTerritorialFeatures(many);await settle();
+   const changed={...extraRows[0],geometry:square(extraRows[0].id,-169).geometry};
+   entities.set(changed.id,changed);
+   const target=[after,changed,...extraRows.slice(1)],native=activeTerritories(),originalDelta=native.updateData,originalFull=native.setData;
+   let deltaWrites=0,fullWrites=0;
+   native.updateData=function(diff,...args){deltaWrites++;return originalDelta.call(this,diff,...args);};
+   native.setData=function(...args){fullWrites++;return originalFull.apply(this,args);};
+   try{
+    const token=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();
+    await renderer.prepareTemporalCountrySource(target);
+    if(!await renderer.setTerritorialFeatures(target))throw Error('Small dated delta was rejected');
+    renderer.admitTemporalViewTransition(token);await settle();renderer.finishTemporalViewTransition(token);
+    if(activeTerritories()!==native||deltaWrites!==1||fullWrites)
+     throw Error('Small dated geometry changes must use one in-place delta, not a source replacement');
+    const rows=await nativeCountryRows(native);
+    if(rows.length!==target.length||!rows.some(row=>row.id===refFor(changed).key&&JSON.stringify(row.geometry)===JSON.stringify(changed.geometry)))
+     throw Error('In-place delta did not publish the expected geometry');
+   }finally{native.updateData=originalDelta;native.setData=originalFull;}
+   await renderer.setTerritorialFeatures([after]);await settle();
+   for(const row of extraRows)entities.delete(row.id);
    await new Promise(resolve=>setTimeout(resolve,100));const optionalStillLoading=!renderer.map.areTilesLoaded();renderer.map.removeLayer('optional-fixture');renderer.map.removeSource('optional-fixture');
    const first=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();const retained=globalThis.document.querySelector('#map > div:last-child');
    const second=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();

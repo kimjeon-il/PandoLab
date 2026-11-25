@@ -137,29 +137,37 @@ test('computed anchors follow verified geometry content across documents',async(
  }finally{index.resetCountryLabelAnchorRuntime();globalThis.document=previous.document;globalThis.Worker=previous.Worker;}
 });
 
-test('anchor cloning yields to dated frames and retries after an obsolete document response',async()=>{
+test('dated anchor preparation starts immediately and rejects obsolete generation and geometry results',async()=>{
  const previous={document:globalThis.document,Worker:globalThis.Worker};globalThis.document={hidden:false};
- const requests=[],scheduled=[];let worker,generation=1,temporalPending=true,publications=0;
+ const requests=[],scheduled=new Map();let worker,generation=1,temporalPending=true,publications=0;
  globalThis.Worker=class{constructor(){worker=this;}postMessage(value){requests.push(value);}terminate(){}};
- const feature={id:'A',geometry:{type:'Polygon',coordinates:[[[0,0],[1,0],[0,1],[0,0]]]}},state={countryVisualPhase:'canonical',mapMoving:false};
+ const shape=x=>({id:'A',geometry:{type:'Polygon',coordinates:[[[x,0],[x+1,0],[x,1],[x,0]]]}});
+ let feature=shape(0);const state={countryVisualPhase:'canonical',mapMoving:false};
  const index=createCountryIndex();
- index.connect({projectState:{state,mapWorkScheduler:{cancel(){},scheduleIdle(_key,callback){scheduled.push(callback);}}},
+ index.connect({projectState:{state,mapWorkScheduler:{cancel:key=>scheduled.delete(key),scheduleIdle:(key,callback)=>scheduled.set(key,callback)}},
   countries:{builtinTerritorialScene:()=>({labelById:new Map([['A',feature]])}),territorialLabelFeatureById:()=>feature},
   objectDisplay:{invalidateObjectPresentation(){}},platform:{runtimeAssetUrl:()=>''},domains:{projectDomain:{getGeneration:()=>generation},renderingDomain:{invalidateLabels(){publications++;},isPreparingTemporalFrame:()=>temporalPending}}});
  index.initializeCountryLandRevision();index.initializeCountryLabelAnchorWorker();index.initializeLabelFallbackQueue();
+ const wait=()=>new Promise(resolve=>setTimeout(resolve,10));
+ const answer=(request,anchor)=>worker.onmessage({data:{type:'anchors',requestId:request.requestId,results:[{id:'A',version:request.items[0].version,anchor}]}});
  try{
-  index.scheduleCountryLabelAnchors(null,0);await new Promise(resolve=>setTimeout(resolve,10));
-  assert.equal(requests.length,0,'background geometry cloning cannot compete with a pending dated frame');
-  temporalPending=false;scheduled.shift()();assert.equal(requests.length,1);
-  generation=2;worker.onmessage({data:{type:'anchors',requestId:requests[0].requestId,results:[{id:'A',version:requests[0].items[0].version,anchor:[.2,.2]}]}});
-  assert.equal(index.countryLabelAnchors.size,0,'the obsolete generation cannot publish');assert.equal(scheduled.length,1,'its queued anchor work must resume for the current generation');
-  scheduled.shift()();assert.equal(requests.length,2);assert.equal(requests[1].generation,2);
-  temporalPending=true;worker.onmessage({data:{type:'anchors',requestId:requests[1].requestId,results:[{id:'A',version:requests[1].items[0].version,anchor:[.2,.2]}]}});
-  assert.equal(index.countryLabelAnchors.size,0,'a background result cannot replace labels inside a dated-frame transition');
-  temporalPending=false;scheduled.shift()();
-  assert.deepEqual(index.countryLabelAnchors.get('A'),[.2,.2]);
-  assert.equal(publications,0,'small anchor batches must coalesce before rebuilding the native label tiles');
-  for(const callback of scheduled.splice(0))callback();assert.equal(publications,1);
+  index.scheduleCountryLabelAnchors(null,0);await wait();
+  assert.equal(requests.length,1,'An accepted dated view may prepare its anchors before publication');
+  generation=2;feature=shape(2);index.scheduleCountryLabelAnchors(null,0);
+  answer(requests[0],[.2,.2]);await wait();
+  assert.equal(index.countryLabelAnchors.size,0);assert.equal(publications,0);
+  assert.equal(requests.length,2);assert.equal(requests[1].generation,2);
+  feature=shape(4);index.scheduleCountryLabelAnchors(null,0);
+  answer(requests[1],[2.2,.2]);await wait();
+  assert.equal(index.countryLabelAnchors.size,0);assert.equal(requests.length,3);assert.equal(publications,0);
+  answer(requests[2],[4.2,.2]);
+  assert.deepEqual(index.countryLabelAnchors.get('A'),[4.2,.2]);
+  assert.equal(publications,1,'The current dated result wakes the rendering domain immediately');
+  temporalPending=false;feature=shape(6);index.scheduleCountryLabelAnchors(null,0);await wait();
+  answer(requests[3],[6.2,.2]);
+  assert.equal(publications,1,'Ordinary background results still coalesce');
+  const publish=scheduled.get('country-label-anchor-publication');assert.equal(typeof publish,'function');publish();
+  assert.equal(publications,2);
  }finally{index.resetCountryLabelAnchorRuntime();globalThis.document=previous.document;globalThis.Worker=previous.Worker;}
 });
 

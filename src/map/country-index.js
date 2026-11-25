@@ -112,7 +112,7 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
       if (!flight || message.requestId !== flight.requestId) return;
       countryLabelAnchorFlight = null;
       if (flight.generation !== dependencies.domains.projectDomain.getGeneration()) {
-        dependencies.projectState.mapWorkScheduler.scheduleIdle('country-label-anchor-batch', flushCountryLabelAnchorQueue, 20);
+        scheduleAnchorBatch();
         return;
       }
       scheduleAnchorBatch();
@@ -127,7 +127,7 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
         return;
       }
       if (message.type !== 'anchors') return;
-      const sent=new Map(flight.items.map(item=>[item.id,item]));
+      const sent=new Map(flight.items.map(item=>[item.id,item]));let accepted=false;
       for (const result of message.results || []) {
         const id = String(result.id || '');
         const item=sent.get(id),anchor=validLabelAnchor(result.anchor)?result.anchor.slice(0,2).map(Number):null;
@@ -140,9 +140,9 @@ export function createCountryIndex({buildMeta=globalThis.PANDOLAB_BUILD_META}={}
         const feature = (0, dependencies.countries.territorialLabelFeatureById)(id);
         if (feature && anchor) countryLabelAnchors.set(id, anchor);
         else if (feature) queueCountryLabelFallback(id);
-        pendingCountryLabelAnchors.delete(id);
+        pendingCountryLabelAnchors.delete(id);accepted=true;
       }
-      scheduleCountryLabelPublication();
+      if(accepted)scheduleCountryLabelPublication();
     };
     worker.onerror = event => {
       console.warn('Country label anchor worker error', event.message || event);

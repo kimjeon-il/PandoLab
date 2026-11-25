@@ -998,57 +998,62 @@ test('external basemap preserves the dated map and restores it after failure',as
  expect(await page.locator('.maplibregl-ctrl-attrib').count()).toBe(0);
 });
 
-test('dated map keeps its complete frame through delayed, superseded and failed requests',async({page})=>{
+test('dated map keeps its complete frame and locks navigation through delayed and failed requests',async({page})=>{
  test.setTimeout(180_000);
  await page.setViewportSize({width:1280,height:800});await open(page);
  await page.evaluate(()=>{window.__datedTileErrors=[];window.__PANDOLAB_MAPLIBRE__.on('error',event=>{if(String(event.error?.message).includes('queryRadius'))window.__datedTileErrors.push({source:event.sourceId,message:event.error.message,layers:window.__PANDOLAB_MAPLIBRE__.getStyle().layers.map(layer=>({id:layer.id,type:layer.type,source:layer.source}))});});});
- const before=await page.locator('#timelineDateButtonText').innerText();
+ const date=page.locator('#timelineDateButtonText'),error=page.locator('#timelineDateError');
+ const before=await date.innerText(),beforeMonth=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor);
+ const controls=['timelinePreviousDecade','timelinePreviousYear','timelineNextYear','timelineNextDecade','timelineDateButton','timelineGoBtn'];
+ const locked=async()=>{for(const id of controls)await expect(page.locator('#'+id)).toBeDisabled();};
  let mode='delay',release,seen;
- const requested=new Promise(resolve=>{seen=resolve;});
- const gate=new Promise(resolve=>{release=resolve;});
+ const requested=new Promise(resolve=>{seen=resolve;}),gate=new Promise(resolve=>{release=resolve;});
  await page.route('**/caspian-1922-water.json.gz*',async route=>{
-  if(mode==='delay'){seen();await gate;await route.fulfill({status:404,body:'injected stale failure'});return;}
-  if(mode==='fail'){await page.evaluate(()=>{window.__holdDatedTiles=false;});await route.fulfill({status:404,body:'injected failure'});return;}
+  if(mode==='delay'){seen();await gate;await route.fulfill({status:404,body:'injected delayed failure'});return;}
+  if(mode==='fail'){await route.fulfill({status:404,body:'injected failure'});return;}
   await route.continue();
  });
  const selectYear=async year=>{
   await page.locator('#timelineDateButton').click();await page.locator('#timelineViewUnit').selectOption('year');
   await page.locator('#timelineYearInput').fill(String(year));await page.locator('#timelineGoBtn').click();
  };
- await selectYear(1922);await requested;
- const beforeMove=await page.evaluate(()=>({center:window.__PANDOLAB_MAPLIBRE__.getCenter().toArray(),
-  dragEnabled:window.__PANDOLAB_MAPLIBRE__.dragPan.isEnabled(),date:document.querySelector('#timelineDateButtonText').textContent}));
- expect(beforeMove.date).toBe(before);
- expect(beforeMove.dragEnabled,'the old map remains interactive while the next physical context is loading').toBe(true);
- const bounds=await page.locator('#map').boundingBox(),x=bounds.x+bounds.width/2,y=bounds.y+bounds.height/2;
- await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-100,y,{steps:12});await page.mouse.up();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getCenter().lng)).not.toBe(beforeMove.center[0]);
- expect(await page.locator('#timelineDateButtonText').innerText()).toBe(before);
- await page.locator('#timelinePreviousDecade').click();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60000}).toBe('1912-12');
- await ready(page,'latest request');release();await page.waitForTimeout(300);
- expect(await page.locator('#timelineDateButtonText').innerText()).toContain('1912');
- expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe('1912-12');
- await page.evaluate(()=>{const map=window.__PANDOLAB_MAPLIBRE__,original=map.isSourceLoaded.bind(map);window.__holdDatedTiles=true;map.isSourceLoaded=id=>!(window.__holdDatedTiles&&id===map.getLayer('territories')?.source)&&original(id);});
- await page.locator('#timelinePreviousYear').click();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60000}).toBe('1911-12');
+ await selectYear(1922);await requested;await locked();
+ expect(await date.innerText()).toBe(before);
+ // Synthetic events bypass disabled-button click behavior; the UI handler
+ // must still reject them. Engine-level supersession is tested separately.
  await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  map.jumpTo({center:[13.84,50.77],zoom:12});
-  map.jumpTo({center:[13.84,50.77],zoom:9});
+  document.querySelector('#timelinePreviousDecade').dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  document.querySelector('#timelineDateForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
  });
- await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(1);
- expect(await page.locator('#timelineDateButtonText').innerText()).toContain('1912');
- mode='fail';await selectYear(1922);
- await expect.poll(()=>page.locator('#timelineDateError').textContent(),{timeout:60000}).not.toBe('');
- expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe('1912-12');
- expect(await page.locator('#timelineDateButtonText').innerText()).toContain('1912');
+ await locked();expect(await date.innerText()).toBe(before);
+ mode='fail';release();
+ await expect.poll(()=>error.textContent(),{timeout:60000}).not.toBe('');
+ await expect(page.locator('#timelineDateButton')).toBeEnabled();
+ expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe(beforeMonth);
+ expect(await date.innerText()).toBe(before);
  await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
  expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.dragPan.isEnabled())).toBe(true);
- mode='pass';await page.locator('#timelineGoBtn').click();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60000}).toBe('1922-12');
- await ready(page,'retry after failure');
- expect(await page.locator('#timelineDateButtonText').innerText()).toContain('1922');
+ mode='pass';
+ // The error popover is still open and allows a fresh date.
+ await page.locator('#timelineYearInput').fill('1912');await page.locator('#timelineGoBtn').click();
+ await ready(page,'after rollback');await expect(date).toContainText('1912');
+ await expect(page.locator('#timelinePreviousYear')).toBeEnabled();
+ await page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__,original=map.isSourceLoaded.bind(map);
+  window.__holdDatedTiles=true;map.isSourceLoaded=id=>!(window.__holdDatedTiles&&id===window.__PANDOLAB_VIEWER__.rendererStats().datedSources.territories)&&original(id);
+ });
+ await page.locator('#timelinePreviousYear').click();
+ await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60000}).toBe('1911-12');
+ await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(1);await locked();
+ expect(await date.innerText()).toContain('1912');
+ await page.evaluate(()=>{
+  const map=window.__PANDOLAB_MAPLIBRE__;map.jumpTo({center:[13.84,50.77],zoom:12});map.jumpTo({center:[13.84,50.77],zoom:9});
+  window.__holdDatedTiles=false;map.triggerRepaint();
+ });
+ await ready(page,'released dated tiles');await expect(date).toContainText('1911');
+ await expect(page.locator('#timelineDateButton')).toBeEnabled();
+ await selectYear(1922);await ready(page,'retry after failure');
+ expect(await date.innerText()).toContain('1922');
  expect((await camera(page)).zoom).toBeCloseTo(9,6);
  expect(await page.evaluate(()=>window.__datedTileErrors)).toEqual([]);
 });

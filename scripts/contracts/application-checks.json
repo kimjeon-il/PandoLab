@@ -43,7 +43,13 @@
         "tests/unit/data/maplibre-label-presentation.test.mjs",
         "tests/unit/data/maplibre-rendering-work.test.mjs",
         "tests/unit/data/maplibre-performance-comparison.test.mjs",
-        "tests/unit/data/maplibre-external-style.test.mjs"
+        "tests/unit/data/maplibre-external-style.test.mjs",
+        "tests/unit/data/maplibre-frame-worker-ownership.test.mjs",
+        "tests/unit/data/maplibre-display-ownership.test.mjs",
+        "tests/unit/data/maplibre-physical-context-cache.test.mjs",
+        "tests/unit/data/maplibre-incremental-optimization.test.mjs",
+        "tests/unit/data/maplibre-camera-selection.test.mjs",
+        "tests/unit/data/maplibre-scene-group-index.test.mjs"
       ]
     },
     {
