@@ -10,10 +10,10 @@ function fixture(){
  const makeElement=()=>({dataset:{},style:{},append(){},getContext:()=>({drawImage(){}}),remove(){overlays.delete(this);}});
  const canvas={width:800,height:600,style:{removeProperty(){}}};
  let enabled=true,styleCurrent=true,countryKey='',presented=0,repaints=0;
- let countryGeneration=1,sourcesReady=true,cameraKey='camera',nativeChecks=0;
- const map={getCanvas:()=>canvas,getStyle:()=>({layers:[...layers.values()]}),getLayer:id=>layers.get(id),
+ let countryGeneration=1,sourcesReady=true,cameraKey='camera',nativeChecks=0,selectionPending=false,vectorPending=false,physicalReady=true,polarPending=false,writesPending=0;
+ const map={style:{},getCanvas:()=>canvas,getStyle:()=>({layers:[...layers.values()]}),getLayer:id=>layers.get(id),
   getLayoutProperty:id=>layers.get(id)?.layout.visibility,setLayoutProperty:(id,_key,value)=>{layers.get(id).layout.visibility=value;},
-  getSource:()=>null,isMoving:()=>false,triggerRepaint(){repaints++;},
+  getSource:id=>id==='territories'?{}:null,isMoving:()=>false,triggerRepaint(){repaints++;},
   dragPan:{isEnabled:()=>enabled,enable(){enabled=true;},disable(){enabled=false;}},
   on(name,fn){if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(fn);},
   off(name,fn){listeners.get(name)?.delete(fn);},
@@ -27,12 +27,12 @@ function fixture(){
   state:{},metrics:{begin:()=>()=>{},run:(_name,fn)=>fn(),publish(){}},stats,invalidate:reason=>invalidations.push(reason),
   presentMapPreparation:value=>notices.push(value),camera:{cameraKey:()=>cameraKey,hasPresented:()=>presented>0,
    markPresented(){presented++;},resetPresented(){presented=0;}},
-  scene:{requiredSource:()=>false,requiredSourcesReady:()=>{nativeChecks++;return sourcesReady;},requiredVectorPending:()=>false,
+  scene:{requiredSource:id=>id==='territories',requiredSourcesReady:()=>{nativeChecks++;return sourcesReady;},requiredVectorPending:()=>vectorPending,
    syncLabelVisibility:()=>false,hasStyleController:()=>false,applyStyle(){},getStyle:()=>({}),syncVectorGroups(){}},
-  selection:{owns:()=>false,onRender(){},selectionPending:()=>false,onTemporalAdmission(){},reset(){},refresh(){}},
-  physicalBase:{syncPhysicalContext(){},resetContext(){}},polarDisplay:{pending:false,syncPolar(){},syncPolarLines(){},resetContext(){},retry(){}},
-  physicalResources:{physicalContextState:{ready:true}},
-  sourceWrites:{pendingCount:()=>0,reset(){},handlesError:()=>false},
+  selection:{owns:()=>false,onRender(){},selectionPending:()=>selectionPending,onTemporalAdmission(){},reset(){},refresh(){}},
+  physicalBase:{syncPhysicalContext(){},resetContext(){}},polarDisplay:{get pending(){return polarPending;},syncPolar(){},syncPolarLines(){},resetContext(){},retry(){}},
+  physicalResources:{physicalContextState:{get ready(){return physicalReady;}}},
+  sourceWrites:{pendingCount:()=>writesPending,reset(){},handlesError:()=>false},
   datedSources:{has:()=>false,scheduleRetirement(){},cancelRetirement(){}},
   getExternalBasemap:()=>null,flushStyleChanges(){},feedback:{reportOperationError:cause=>errors.push(cause)},
   rgba:()=>[],getCountryStatus:()=>({generation:countryGeneration,contentKey:countryKey}),createElement:makeElement,isDocumentHidden:()=>false});
@@ -41,7 +41,9 @@ function fixture(){
  return {owner,map,visual,stats,overlays,errors,notices,enabled:()=>enabled,repaints:()=>repaints,
   setCountryKey:key=>{countryKey=key;},setStyleCurrent:value=>{styleCurrent=value;},
   setCountryGeneration:value=>{countryGeneration=value;},setSourcesReady:value=>{sourcesReady=value;},
-  setCameraKey:value=>{cameraKey=value;},nativeChecks:()=>nativeChecks,
+  setCameraKey:value=>{cameraKey=value;},setVectorPending:value=>{vectorPending=value;},
+  setSelectionPending:value=>{selectionPending=value;},setPhysicalReady:value=>{physicalReady=value;},
+  setPolarPending:value=>{polarPending=value;},setWritesPending:value=>{writesPending=value;},nativeChecks:()=>nativeChecks,
   certificateWakeups:()=>invalidations.filter(reason=>reason==='maplibre-presented').length,
   listenerCount:()=>[...listeners.values()].reduce((sum,rows)=>sum+rows.size,0)};
 }
@@ -99,6 +101,83 @@ test('unchanged native renders wake approval once and live readiness still gates
   map.emit('render');map.emit('render');
   assert.equal(f.certificateWakeups(),4);
   assert.equal(owner.stats().certificateWakeups,4);
+ }finally{owner.dispose();}
+});
+
+test('required source and style events revoke approval before publication and coalesce draw invalidation',()=>{
+ const f=fixture(),{owner,map,visual}=f;
+ try{
+  owner.renderFrame(visual(1));map.emit('render');
+  const first=visual(2),result=owner.renderFrame(first);
+  assert.equal(result.succeeded,true);
+  map.emit('sourcedata',{sourceId:'optional',sourceDataType:'content'});
+  assert.equal(owner.canPresentVisualFrame(first,result),true);
+  const before=owner.sourceRevision,mutation=owner.pickingRevision;
+  map.emit('sourcedataloading',{sourceId:'territories',sourceDataType:'content'});
+  owner.dirty();owner.dirty();
+  map.emit('sourcedata',{sourceId:'territories',sourceDataType:'content'});
+  assert.equal(owner.sourceRevision,before+1);
+  assert.equal(owner.pickingRevision,mutation+4);
+  assert.equal(owner.stats().coalescedDirtyCalls,3);
+  assert.equal(owner.commitVisualFrame(first),false);
+  const repaints=f.repaints();
+  assert.equal(owner.renderFrame(visual(3)).deferred,true);
+  assert.equal(owner.renderFrame(visual(4)).deferred,true);
+  assert.equal(f.repaints(),repaints+1);
+  map.emit('render');
+  const second=visual(5);assert.equal(owner.renderFrame(second).succeeded,true);
+  map.emit('styledata');
+  assert.equal(owner.commitVisualFrame(second),false);
+  map.emit('render');
+  const third=visual(6);assert.equal(owner.renderFrame(third).succeeded,true);
+  map.style={};map.emit('style.load');
+  assert.equal(owner.commitVisualFrame(third),false);
+  map.emit('render');
+  const fourth=visual(7);assert.equal(owner.renderFrame(fourth).succeeded,true);
+  map.emit('webglcontextlost');assert.equal(owner.commitVisualFrame(fourth),false);
+  map.emit('webglcontextrestored');
+  assert.equal(owner.renderFrame(visual(8)).deferred,true);
+  map.emit('render');
+  const fifth=visual(9);assert.equal(owner.renderFrame(fifth).succeeded,true);
+  assert.equal(owner.commitVisualFrame(fifth),true);
+ }finally{owner.dispose();assert.equal(f.listenerCount(),0);}
+});
+
+test('final publication rechecks native and domain readiness rather than trusting an earlier approval',async()=>{
+ const f=fixture(),{owner,map,visual}=f;
+ try{
+  owner.renderFrame(visual(1));map.emit('render');
+  let id=2;
+  for(const change of [f.setSourcesReady,f.setPhysicalReady]){
+   const frame=visual(id++),result=owner.renderFrame(frame);
+   assert.equal(result.succeeded,true);assert.equal(owner.canPresentVisualFrame(frame,result),true);
+   change(false);assert.equal(owner.commitVisualFrame(frame),false);
+   change(true);map.emit('render');
+  }
+  for(const change of [f.setVectorPending,f.setPolarPending,f.setWritesPending]){
+   const frame=visual(id++),result=owner.renderFrame(frame);
+   assert.equal(result.succeeded,true);
+   change(true);assert.equal(owner.commitVisualFrame(frame),false);
+   change(false);map.emit('render');
+  }
+  const ticket=owner.beginTemporalViewTransition();owner.preserveTemporalFrame();
+  await owner.prepareTemporalCountrySource([]);owner.admitTemporalViewTransition(ticket);
+  const frame=visual(id++);assert.equal(owner.renderFrame(frame).succeeded,true);
+  f.setSelectionPending(true);assert.equal(owner.commitVisualFrame(frame),false);
+  assert.equal(f.overlays.size,1);
+  f.setSelectionPending(false);map.emit('render');
+  const next=visual(id++);assert.equal(owner.renderFrame(next).succeeded,true);
+  const waiting=owner.waitForMapPresentation(1);
+  let resolved=false;waiting.then(()=>{resolved=true;});await Promise.resolve();
+  assert.equal(resolved,false,'A prepared frame must not resolve a presentation waiter');
+  assert.equal(owner.commitVisualFrame(next),true);assert.equal(await waiting,true);
+  assert.equal(f.overlays.size,0);
+  owner.dirty();map.emit('render');const prepared=visual(id++);
+  assert.equal(owner.renderFrame(prepared).succeeded,true);
+  const nextWait=owner.waitForMapPresentation(1);let preparedResolved=false;
+  nextWait.then(()=>{preparedResolved=true;});await Promise.resolve();
+  assert.equal(preparedResolved,false,'A prior generation commit must not admit newly prepared pixels');
+  assert.equal(owner.commitVisualFrame(prepared),true);assert.equal(await nextWait,true);
  }finally{owner.dispose();}
 });
 

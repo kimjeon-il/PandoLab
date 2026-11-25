@@ -12,9 +12,10 @@ export function createMapLibreFrameController({
  createElement=tag=>document.createElement(tag),isDocumentHidden=()=>document.hidden
 }){
  let generation=0,contextRevision=0,contextLost=false,closed=false;
- let sourceRevision=0,certifiedRevision=-1,certifiedGeneration=-1,certifiedContext=-1,certifiedCamera='',certifiedStyle=null;
+ let sourceRevision=0,mutationRevision=0,dirtySinceRender=false,certificate=null,certificateSerial=0;
  let pendingFrame=null,ready=false,preparedReady=false,error=null,requestedCertificate=null,approvedFrame=null;
  let certificateNotified=false,nativeReadinessChecks=0,certificateWakeups=0;
+ let dirtyCalls=0,coalescedDirtyCalls=0,certificateInvalidations=0,certificateRepaintRequests=0,commitRejections=0;
  let previousActiveRender=null,endSourceFrame=null,basemapRecovery=null;
  let initialMapLoading=false,initialFrameStaging=null,initialZoomHidden=false;
  let temporalOverlay=null,temporalInteractions=[],temporalOptionalLayers=[];
@@ -25,7 +26,7 @@ export function createMapLibreFrameController({
  const abortError=reason=>Object.assign(new Error(reason),{name:'AbortError',cancelled:true});
  const presentation=createMapPresentationSession({
   getGeneration:()=>generation,getContextRevision:()=>contextRevision,isDisposed:unavailable,
-  getReadiness:()=>({mapReady:preparedReady}),invalidateFrame:invalidate,
+  getReadiness:()=>({mapReady:ready}),invalidateFrame:invalidate,
   prepareContentKey:async features=>countryContentIdentity(features),sameContentKey:sameRenderIdentity,isImmutableContentKey:isCountryContentIdentity,
   isProjectBlocked:()=>!!error,isRecoveryFrameAdmissible:()=>!error&&isLoaded()&&!contextLost&&!unavailable(),
   onTemporalRetired:()=>{if(presentation.ticket?.presented)releaseTemporalFrame();},
@@ -37,9 +38,30 @@ export function createMapLibreFrameController({
   onMapPreparationStatus?.(value,generation);
  }
  function dirty(){
-  sourceRevision++;ready=false;preparedReady=false;approvedFrame=null;certificateNotified=false;stats.sourceUpdates++;
+  // Snapshot/picking consumers still distinguish explicit mutations, even
+  // when several of them invalidate the same not-yet-drawn native frame.
+  mutationRevision++;invalidateDraw();
+ }
+ function invalidateDraw(){
+  if(unavailable())return;
+  dirtyCalls++;
+  if(!dirtySinceRender){
+   dirtySinceRender=true;sourceRevision++;stats.sourceUpdates++;
+   invalidateCertificate();
+  }else{
+   coalescedDirtyCalls++;revokeApproval();
+  }
+  ready=false;
   endSourceFrame??=metrics.begin('source-to-render');
  }
+ function onSourceChange(event){
+  if(!event?.sourceId||!scene.requiredSource(event.sourceId))return;
+  // Ignore late events for removed sources, and unrelated hydro/standby tiles.
+  if(!getMap()?.getSource(event.sourceId))return;
+  if(!event.tile&&!event.coord&&event.sourceDataType==='content')mutationRevision++;
+  invalidateDraw();
+ }
+ function onStyleChange(){invalidateDraw();}
  function suspendOptionalLayers(){
   const map=getMap();
   for(const layer of map.getStyle()?.layers||[]){
@@ -107,7 +129,7 @@ export function createMapLibreFrameController({
  }
  function onFarCameraJump(){
   if(camera.hasPresented()&&!isProjectReplacing()&&!contextLost){
-   preserveDisplayedFrame();zoomFramePending=true;ready=false;preparedReady=false;approvedFrame=null;
+   preserveDisplayedFrame();zoomFramePending=true;ready=false;invalidateCertificate();
   }
  }
  function onCameraMove({userInitiated,largeJump,farFromPresented,applying,hasPresented}){
@@ -119,16 +141,33 @@ export function createMapLibreFrameController({
    else if(hasPresented)preserveDisplayedFrame();
    zoomFramePending=true;
   }
-  if(zoomFramePending){ready=false;preparedReady=false;approvedFrame=null;}
+  if(certificate&&certificate.camera!==camera.cameraKey()){
+   ready=false;invalidateCertificate();
+  }
+  if(zoomFramePending){ready=false;revokeApproval();}
   if(!applying&&!isProjectReplacing())invalidate('maplibre-camera');
  }
- function invalidateCertificate(){
-  certifiedRevision=-1;certifiedGeneration=-1;certifiedContext=-1;certifiedCamera='';certifiedStyle=null;
-  requestedCertificate=null;approvedFrame=null;certificateNotified=false;
+ function revokeApproval(){
+  approvedFrame=null;preparedReady=false;certificateNotified=false;
  }
- function certificateCurrent(cameraKey=camera.cameraKey(),style=getMap()?.style){
-  return certifiedRevision===sourceRevision&&certifiedGeneration===generation
-    &&certifiedContext===contextRevision&&certifiedCamera===cameraKey&&certifiedStyle===style;
+ function invalidateCertificate(){
+  if(certificate)certificateInvalidations++;
+  certificate=null;requestedCertificate=null;revokeApproval();
+ }
+ function drawIdentity(cameraKey=camera.cameraKey()){
+  const map=getMap();
+  return {revision:sourceRevision,generation,context:contextRevision,camera:cameraKey,style:map?.style,map};
+ }
+ function sameDraw(before,after){
+  return !!before&&before.revision===after.revision&&before.generation===after.generation
+   &&before.context===after.context&&before.camera===after.camera&&before.style===after.style&&before.map===after.map;
+ }
+ function certificateCurrent(identity=drawIdentity()){
+  return !dirtySinceRender&&sameDraw(certificate,identity);
+ }
+ function requestDraw(identity=drawIdentity()){
+  if(sameDraw(requestedCertificate,identity))return;
+  requestedCertificate=identity;certificateRepaintRequests++;identity.map.triggerRepaint();
  }
  function nativeFrameReady(){
   nativeReadinessChecks++;
@@ -143,12 +182,12 @@ export function createMapLibreFrameController({
  }
  function onRender(){
   if(unavailable())return;
-  stats.renderedFrames++;requestedCertificate=null;
+  stats.renderedFrames++;requestedCertificate=null;dirtySinceRender=false;
   if(isLoaded()&&!contextLost)selection.onRender();
-  const map=getMap(),moving=map.isMoving(),cameraKey=camera.cameraKey(),style=map.style;
-  const sameCertificate=certificateCurrent(cameraKey,style);
-  // Optional repaint traffic after a committed stationary frame does not
-  // need to rescan all required sources. Each new approval still checks live readiness.
+  // A post-draw callback that changes a required layer needs another draw.
+  if(dirtySinceRender)return;
+  const map=getMap(),moving=map.isMoving(),identity=drawIdentity();
+  const sameCertificate=certificateCurrent(identity);
   if(ready&&!pendingFrame&&!moving&&sameCertificate&&!endSourceFrame&&isStyleReady()){
    previousActiveRender=null;return;
   }
@@ -158,75 +197,77 @@ export function createMapLibreFrameController({
    renderQuality.queueAdaptiveRenderQualityRefresh('maplibre-frame-cadence');
   previousActiveRender=sampled;
   if(!requiredReady){
-   if(sameCertificate){invalidateCertificate();ready=false;preparedReady=false;}
-   else certificateNotified=false;
-   return;
+   ready=false;invalidateCertificate();return;
   }
   if(!sameCertificate){
-   certifiedRevision=sourceRevision;certifiedGeneration=generation;certifiedContext=contextRevision;
-   certifiedCamera=cameraKey;certifiedStyle=style;certificateNotified=false;
+   revokeApproval();certificate={...identity,serial:++certificateSerial};
   }
   endSourceFrame?.();endSourceFrame=null;
-  // Wake the application once for a usable certificate, not once per render
-  // while a date, vector, selection, physical context or label is still pending.
   if(pendingFrame&&!certificateNotified&&!admissionPending(getCountryStatus(),moving)){
    certificateNotified=true;certificateWakeups++;invalidate('maplibre-presented');
   }
  }
+ function deferFrame(){
+  ready=false;revokeApproval();return {succeeded:false,deferred:true,presentationReady:false};
+ }
  function renderFrame(frame,{physicalPrepared=false}={}){
   stats.approvalAttempts++;approvedFrame=null;
   if(error){pendingFrame=null;return {succeeded:false,presentationReady:false,error};}
-  if(!isStyleReady()||unavailable()){pendingFrame=frame;return {succeeded:false,deferred:true,presentationReady:false};}
   pendingFrame=frame;
+  if(!isStyleReady()||unavailable())return deferFrame();
   if(!physicalPrepared)metrics.run('physical.sync',physicalBase.syncPhysicalContext);
   metrics.run('polar.sync',()=>{polarDisplay.syncPolar();polarDisplay.syncPolarLines();});
   if(initialMapLoading)syncInitialMapSkeleton();else syncLabelVisibility();
   const country=getCountryStatus(),map=getMap();
-  // Cheap admission gates precede the native source scan. Never reuse a
-  // successful scan across asynchronous source or camera changes.
-  const pending=admissionPending(country,map.isMoving());
-  const nativeReady=!pending&&nativeFrameReady();
-  const cameraKey=nativeReady?camera.cameraKey():null;
-  if(!nativeReady||!certificateCurrent(cameraKey,map.style)){
-   ready=false;preparedReady=false;certificateNotified=false;
-   if(!pending&&!nativeReady)invalidateCertificate();
-   if(nativeReady){
-    const certificate=generation+'|'+contextRevision+'|'+sourceRevision+'|'+cameraKey;
-    if(requestedCertificate!==certificate){requestedCertificate=certificate;map.triggerRepaint();}
-   }
-   return {succeeded:false,deferred:true,presentationReady:false};
-  }
+  if(admissionPending(country,map.isMoving()))return deferFrame();
+  if(!nativeFrameReady()){invalidateCertificate();return deferFrame();}
+  const identity=drawIdentity();
+  if(!certificateCurrent(identity)){requestDraw(identity);return deferFrame();}
   if(initialMapLoading){
    preserveDisplayedFrame();initialFrameStaging='drawing';initialMapLoading=false;
-   syncInitialMapSkeleton();dirty();map.triggerRepaint();
-   return {succeeded:false,deferred:true,presentationReady:false};
+   syncInitialMapSkeleton();dirty();requestDraw();return deferFrame();
   }
-  presentation.markTemporalFrame(frame);preparedReady=true;approvedFrame=frame;certificateNotified=true;
+  presentation.markTemporalFrame(frame);
   const result={succeeded:true,presentationReady:true,frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
-  if(presentation.canPresentVisualFrame(frame,result)){
-   markCanonicalFrame();if(stats.firstCanonicalFrameMs===null)stats.firstCanonicalFrameMs=performance.now();
-  }
+  if(!presentation.canPresentVisualFrame(frame,result))return deferFrame();
+  approvedFrame={frame,certificate,ticket:presentation.ticket};preparedReady=true;certificateNotified=true;
+  markCanonicalFrame();if(stats.firstCanonicalFrameMs===null)stats.firstCanonicalFrameMs=performance.now();
   return result;
  }
  function approved(frame){
-  return preparedReady&&!!approvedFrame&&frame?.projectGeneration===generation&&approvedFrame.projectGeneration===generation
-    &&approvedFrame.frameId===frame.frameId&&approvedFrame.viewRevision===frame.viewRevision
-    &&approvedFrame.projectionRevision===frame.projectionRevision&&certificateCurrent()&&isStyleReady();
+  const approval=approvedFrame,accepted=approval?.frame;
+  return preparedReady&&!!accepted&&frame?.projectGeneration===generation&&accepted.projectGeneration===generation
+    &&accepted.frameId===frame.frameId&&accepted.viewRevision===frame.viewRevision
+    &&accepted.projectionRevision===frame.projectionRevision&&approval.certificate===certificate
+    &&approval.ticket===presentation.ticket&&certificateCurrent()&&isStyleReady();
  }
  function canPresentVisualFrame(frame,result=null){
   return (result===null||approved(frame))&&presentation.canPresentVisualFrame(frame,result);
  }
  function commitVisualFrame(frame){
-  if(!approved(frame)||!presentation.commitVisualFrame(frame))return false;
+  if(!approved(frame)){commitRejections++;return false;}
+  // This is the last gate before retiring the preserved pixels. Live native
+  // readiness can change after renderFrame() without an application dirty().
+  if(!nativeFrameReady()){
+   commitRejections++;ready=false;invalidateCertificate();return false;
+  }
+  if(admissionPending(getCountryStatus(),getMap().isMoving())||!approved(frame)){
+   commitRejections++;ready=false;revokeApproval();return false;
+  }
+  if(!presentation.commitVisualFrame(frame)){
+   commitRejections++;ready=false;revokeApproval();return false;
+  }
   if(!initialMapLoading)camera.markPresented();
   if(initialFrameStaging)initialFrameStaging='certified';
   projectFrameHeld=false;zoomFramePending=false;discardUnusedPreservedFrame();
-  metrics.publish();pendingFrame=null;approvedFrame=null;ready=true;notify('ready','지도 준비 완료');datedSources.scheduleRetirement();
+  metrics.publish();pendingFrame=null;approvedFrame=null;ready=true;
+  presentation.settleMapPresentationWaiters();
+  notify('ready','지도 준비 완료');datedSources.scheduleRetirement();
   return true;
  }
  function failMapPreparation(cause){
   if(unavailable())return;
-  error=cause;ready=false;preparedReady=false;approvedFrame=null;
+  error=cause;ready=false;invalidateCertificate();
   notify('error','지도 불러오기 실패');
   for(const waiter of styleWaiters)waiter.finish(cause);
   presentation.rejectMapPresentationWaiters(cause);presentation.failTemporalPresentation(cause);
@@ -239,6 +280,7 @@ export function createMapLibreFrameController({
  }
  function beginTemporalViewTransition(isCurrent,onPresented){
   datedSources.cancelRetirement();
+  revokeApproval();
   const ticket=presentation.beginTemporalViewTransition(isCurrent,onPresented);
   const external=getExternalBasemap();
   if(external&&!basemapRecovery){
@@ -255,7 +297,7 @@ export function createMapLibreFrameController({
  }
  function finishTemporalViewTransition(ticket){
   const finished=presentation.finishTemporalViewTransition(ticket);
-  if(finished)datedSources.scheduleRetirement();
+  if(finished){if(!presentation.ticket?.presented)revokeApproval();datedSources.scheduleRetirement();}
   return finished;
  }
  function prepareProjectReset(options){
@@ -265,7 +307,7 @@ export function createMapLibreFrameController({
   }
  }
  function resetForProject(options){
-  generation=options.generation;error=null;ready=false;preparedReady=false;
+  generation=options.generation;error=null;ready=false;dirtySinceRender=false;mutationRevision++;
   invalidateCertificate();previousActiveRender=null;pendingFrame=null;
   presentation.resetForProject(options);
  }
@@ -274,7 +316,7 @@ export function createMapLibreFrameController({
  }
  function onContextLost(){
   if(unavailable())return;
-  cancelStyleRestore();contextRevision++;contextLost=true;ready=false;preparedReady=false;
+  cancelStyleRestore();contextRevision++;contextLost=true;ready=false;dirtySinceRender=false;
   invalidateCertificate();previousActiveRender=null;sourceWrites.reset();physicalBase.resetContext();
   presentation.rebaseContext();notify('loading','지도 복구 중');
  }
@@ -305,11 +347,15 @@ export function createMapLibreFrameController({
   detachMap();attachedMap=map;
   map.on('render',onRender);map.on('webglcontextlost',onContextLost);
   map.on('webglcontextrestored',onContextRestored);map.on('error',handleMapError);
+  map.on('sourcedataloading',onSourceChange);map.on('sourcedata',onSourceChange);
+  map.on('styledataloading',onStyleChange);map.on('styledata',onStyleChange);map.on('style.load',onStyleChange);
  }
  function detachMap(){
   cancelStyleRestore();if(!attachedMap)return;
   attachedMap.off('render',onRender);attachedMap.off('webglcontextlost',onContextLost);
-  attachedMap.off('webglcontextrestored',onContextRestored);attachedMap.off('error',handleMapError);attachedMap=null;
+  attachedMap.off('webglcontextrestored',onContextRestored);attachedMap.off('error',handleMapError);
+  attachedMap.off('sourcedataloading',onSourceChange);attachedMap.off('sourcedata',onSourceChange);
+  attachedMap.off('styledataloading',onStyleChange);attachedMap.off('styledata',onStyleChange);attachedMap.off('style.load',onStyleChange);attachedMap=null;
  }
  function waitForStyle(signal){
   if(unavailable()||signal?.aborted)return Promise.reject(abortError('Map style request superseded.'));
@@ -327,8 +373,8 @@ export function createMapLibreFrameController({
   temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false};}
  function frameStats(){return {errorMessage:error?.message||null,generation,webglContextLost:contextLost,
   projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,
-  mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},sourceRevision,certifiedRevision,
-  nativeReadinessChecks,certificateWakeups};}
+  mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},sourceRevision,certifiedRevision:certificate?.revision??-1,
+  nativeReadinessChecks,certificateWakeups,dirtyCalls,coalescedDirtyCalls,certificateInvalidations,certificateRepaintRequests,commitRejections};}
  return Object.freeze({attachMap,notify,dirty,renderFrame,canPresentVisualFrame,commitVisualFrame,failMapPreparation,retryMapPreparation,
   beginTemporalViewTransition,admitTemporalViewTransition,finishTemporalViewTransition,
   prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
@@ -336,9 +382,9 @@ export function createMapLibreFrameController({
   temporalPending:presentation.temporalPending,get ticket(){return presentation.ticket;},
   preserveTemporalFrame,releaseTemporalFrame,isFramePreserved:()=>!!temporalOverlay||initialZoomHidden,
   suspendOptionalLayersIfHeld(){if(temporalFrameHeld)suspendOptionalLayers();},
-  externalRevisionKey:()=>JSON.stringify([generation,contextRevision,sourceRevision,presentation.temporalPending(),temporalFrameHeld]),
+  externalRevisionKey:()=>JSON.stringify([generation,contextRevision,mutationRevision,presentation.temporalPending(),temporalFrameHeld]),
   get generation(){return generation;},get contextRevision(){return contextRevision;},get contextLost(){return contextLost;},
-  get sourceRevision(){return sourceRevision;},get blocked(){return !!error;},
+  get sourceRevision(){return sourceRevision;},get pickingRevision(){return mutationRevision;},get blocked(){return !!error;},
   get basemapRecovery(){return basemapRecovery;},get hasOverlay(){return !!temporalOverlay;},
   get zoomPending(){return zoomFramePending;},get initialMapLoading(){return initialMapLoading;},
   suppressHover:()=>temporalFrameHeld&&presentation.temporalPending(),

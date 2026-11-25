@@ -261,7 +261,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   if(frame.initialMapLoading)frame.syncInitialMapSkeleton();
   dirty();
  }invalidate('map-paint');}
- return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot:camera.cameraSnapshot,setInitialMapLoading:frame.setInitialMapLoading,attach,initialize,setTerritorialFeatures,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>frame.sourceRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
+ return Object.freeze({registerFeature,previewExternalBasemap,cameraSnapshot:camera.cameraSnapshot,setInitialMapLoading:frame.setInitialMapLoading,attach,initialize,setTerritorialFeatures,setSceneDomains,setSelection,queryObjectRefs,getPickingRevision:()=>frame.pickingRevision,syncCameraFromState,syncPhysicalContext,syncHydroState,
  get map(){return map;},get projection(){return projection;},get loaded(){return loaded;},isStyleReady:styleReady,renderFrame:frame.renderFrame,commitVisualFrame:frame.commitVisualFrame,measureWork:metrics.track,measureSyncWork:metrics.run,
   panBy:camera.panBy,fitGeometry:camera.fitGeometry,
   fitMapBounds,fitWorld:camera.fitWorld,isAtWorldView,
