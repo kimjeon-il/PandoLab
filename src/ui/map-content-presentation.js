@@ -8,6 +8,13 @@ import {connectBoundarySegments} from "../geometry/boundary-lines.js";
 export function createMapContentPresentation({mapPalette=()=>({}),territorial={},generic={},distribution={},
  territorialBoundary={},base={},prepareMapDisplay=null,onMapDisplayReady=()=>{},onMapDisplayFailed=()=>{},
  reportDiagnostic=()=>{},isDisposed=()=>false,isSmooth=()=>document.documentElement.dataset.smoothLines!=='false'}={}) {
+  const visibleRegionalUnits = (displayed, state) => displayed.filter(feature =>
+    feature.properties.entityKind === 'regional' && state.layerVisibility?.objects !== false
+    && territorial.isLayerItemVisible?.('objects', feature.id));
+  const renderTerritorialBoundaries = () => {
+    const displayed = territorial.displayEntities();
+    renderTerritorialInternalBoundaries(displayed, visibleRegionalUnits(displayed, territorial.getState?.() || {}));
+  };
   const renderTerritorialUnits = () => {
     const t = territorial;
     const state = t.getState?.() || {};
@@ -16,9 +23,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
       neutralColor: theme.defaultLand });
     t.syncBuiltinPalette?.();
     const displayed = t.displayEntities();
-    const displayedUnits = displayed.filter(entity => entity.properties.entityKind === 'regional');
-    const eligible = displayedUnits.filter(feature =>
-      state.layerVisibility?.objects !== false && t.isLayerItemVisible?.('objects', feature.id));
+    const eligible = visibleRegionalUnits(displayed, state);
     const polygons = [];
     for (const feature of eligible) {
       const group = 'objects';
@@ -271,7 +276,7 @@ export function createMapContentPresentation({mapPalette=()=>({}),territorial={}
     pendingInputSignature: pendingTerritorialBoundary?.inputSignature || '',
     pendingStatus: pendingTerritorialBoundary?.status || 'idle',
   });
-  return Object.freeze({renderTerritorialUnits, renderGenericFeatures, renderDistributions, renderBase,
+  return Object.freeze({renderTerritorialUnits, renderTerritorialBoundaries, renderGenericFeatures, renderDistributions, renderBase,
     buildDistributionRenderRows, resetContentCaches, retryTerritorialBoundaries, getTerritorialBoundaryStats,
     territorialBoundariesPending: () => pendingTerritorialBoundary !== null,
     territorialBoundaryFailure: () => pendingTerritorialBoundary?.error ?? null,

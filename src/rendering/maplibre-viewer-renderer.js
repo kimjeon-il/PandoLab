@@ -129,7 +129,7 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
  isContextReady:styleReady,isTemporalPending:()=>frame.temporalPending(),
  physicalResources:deps.physicalResources,datedSources,sourceWrites,setData,preparePhysicalDisplay,orderSceneLayers,
  dirty,invalidate,failMapPreparation,getStats:()=>stats});
- const {syncPhysicalContext}=physicalBase;
+ const syncPhysicalContext=()=>metrics.run('physical.sync',physicalBase.syncPhysicalContext);
  const hydroDisplay=createMapLibreHydroDisplay({...renderPorts.hydro,physicalResources:deps.physicalResources,physicalServices:deps.physicalServices,
  physicalConfig:deps.physicalConfig,preferences:deps.preferences,platform:deps.platform,feedback:deps.feedback,
  getMap:()=>map,getProjection:()=>projection,getPresentation:()=>frame,initialize,styleReady,isDisposed:()=>disposed,
@@ -228,7 +228,8 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   styleReady,isFrameBlocked:()=>frame.blocked,getBasemapRecovery:()=>frame.basemapRecovery,waitForStyle:signal=>frame.waitForStyle(signal),
   isTemporalPending:()=>frame.temporalPending(),initialize,getEntityRepository:()=>deps.territorialModel.entityRepository,
   ...renderPorts.country,layerPresentation:deps.layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
-  sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders});
+  sourceLayer,sourceLayers:SOURCE_LAYERS.territories,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders,
+  prewarmCountryMeshes:polarDisplay.prewarmCountryMeshes});
  function setTerritorialFeatures(features){return country.setTerritorialFeatures(features);}
  const selection=createMapLibreSelection({getMap:()=>map,...renderPorts.selection,styleReady,ensurePolar,setData,orderSceneLayers,metrics,invalidate,
  feedback:deps.feedback,suppressHover:frameSuppressHover,objectRefVisible:ref=>deps.objectRefVisible(ref),

@@ -10,7 +10,9 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
  getPickBounds,resolveObjectKey,isHydroFeatureVisible,rgba,createLayer=createPolarLayer,
  readPolarPresentation=()=>({graticule:state.backgroundSettings?.graticule,graticuleAvailable:state.resourceCapabilities?.graticule,
   rivers:state.layerVisibility.rivers,hydroEdits:state.hydroEdits})}){
- let polarLayer=null,polarInputs=[],polarLineInputs=[],polarVisibleLines=[];
+ let polarLayer=null,polarInputs=[],polarLineInputs=[],polarVisibleLines=[],countryWarm=null;
+ const warmingPublishedCountry=()=>countryWarm?.generation===getGeneration()&&!countryWarm.signal.aborted
+  &&countryWarm.key===countryDisplay.key;
  const polarGrid=polarGridPacket();
  const overlayLinePackets=new WeakMap();
  function positionPolarLayer(){
@@ -26,8 +28,26 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   polarLayer.ensure();
   return polarLayer;
  }
+ function prewarmCountryMeshes(rows,key,signal){
+  if(!isStyleReady()||signal.aborted)return;
+  const shapes=new Set();
+  for(const row of rows){
+   const shape=polarGeometry(row.geometry);
+   if(shape)shapes.add(shape);
+  }
+  if(!shapes.size)return;
+  const request={key,generation:getGeneration(),signal};
+  countryWarm=request;
+  // Speculative preparation must never expose an unacknowledged country.
+  // A failure falls back to the normal, error-reporting polar update.
+  ensurePolar().prewarmMeshes([...shapes].map(geometry=>({geometry})),signal).catch(()=>{}).finally(()=>{
+   if(countryWarm!==request)return;
+   countryWarm=null;
+   if(!signal.aborted&&request.generation===getGeneration())invalidate('polar-ready');
+  });
+ }
  function syncPolar(){
-  if(!isStyleReady())return;
+  if(!isStyleReady()||warmingPublishedCountry())return;
   ensurePolar();
   const style=getMapStyle(),items=[],{graticule,graticuleAvailable}=readPolarPresentation();
   const add=(geometry,color,alpha=1,multiply=false,loadingRole)=>{
@@ -102,15 +122,15 @@ export function createMapLibrePolarDisplay({getMap,isStyleReady,prepareRenderGeo
   polarLayer.setOverlayLines(rows);
  }
 
- return Object.freeze({ensurePolar,positionPolarLayer,syncPolar,syncPolarLines,
-  get layer(){return polarLayer;},get pending(){return !!polarLayer?.pending;},
+ return Object.freeze({ensurePolar,positionPolarLayer,syncPolar,syncPolarLines,prewarmCountryMeshes,
+  get layer(){return polarLayer;},get pending(){return !!polarLayer?.pending||!!warmingPublishedCountry();},
   get visibleLines(){return polarVisibleLines;},
   invalidateInputs(){polarInputs=[];polarLineInputs=[];},
   setLoadingSurface(value){polarLayer?.setLoadingSurface(value);},
   resetContext(){polarLayer?.resetContext();polarInputs=[];polarLineInputs=[];},
   retry(){polarInputs=[];polarLineInputs=[];polarLayer?.retry();},
-  resetProject(){polarInputs=[];polarLineInputs=[];},
+  resetProject(){countryWarm=null;polarInputs=[];polarLineInputs=[];},
   stats:()=>polarLayer?.stats(),
-  dispose(){polarLayer?.dispose();polarLayer=null;polarInputs=[];polarLineInputs=[];polarVisibleLines=[];}
+  dispose(){countryWarm=null;polarLayer?.dispose();polarLayer=null;polarInputs=[];polarLineInputs=[];polarVisibleLines=[];}
  });
 }

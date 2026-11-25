@@ -173,12 +173,12 @@ export function createMapLibreFrameController({
    certificateNotified=true;certificateWakeups++;invalidate('maplibre-presented');
   }
  }
- function renderFrame(frame){
+ function renderFrame(frame,{physicalPrepared=false}={}){
   stats.approvalAttempts++;approvedFrame=null;
   if(error){pendingFrame=null;return {succeeded:false,presentationReady:false,error};}
   if(!isStyleReady()||unavailable()){pendingFrame=frame;return {succeeded:false,deferred:true,presentationReady:false};}
   pendingFrame=frame;
-  metrics.run('physical.sync',physicalBase.syncPhysicalContext);
+  if(!physicalPrepared)metrics.run('physical.sync',physicalBase.syncPhysicalContext);
   metrics.run('polar.sync',()=>{polarDisplay.syncPolar();polarDisplay.syncPolarLines();});
   if(initialMapLoading)syncInitialMapSkeleton();else syncLabelVisibility();
   const country=getCountryStatus(),map=getMap();

@@ -164,10 +164,10 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   distributionLayers:[],distributionEntries:[],territorialEntities:[],
   distributionSettings:{},countryVisualPhase:'canonical'};
  let preserved=false,placeTask=null,temporal=false,admitted=true,features=[],failure=null,afterBoundaryFailures=null;
- let boundaryVisible=true,boundaryRequests=0,boundaryGate;
+ let boundaryVisible=true,boundaryRequests=0,boundaryGate,physicalRuns=0;
  const renderer={map,loaded:true,isStyleReady:()=>true,isFramePreserved:()=>preserved,labelZoomVisibility:()=>({country:true,places:true}),getRuntimeState:()=>({webglContextLost:false,temporalPresentationPending:temporal,temporalSourceAdmitted:admitted,projectRenderBlocked:!!failure}),
-  syncHydroState(){},setSelection(){},
-  renderFrame:()=>({succeeded:true,presentationReady:true}),
+  syncHydroState(){},syncPhysicalContext(){physicalRuns++;},setSelection(){},
+  renderFrame:(_frame,{physicalPrepared}={})=>{assert.equal(physicalPrepared,!failure);return {succeeded:true,presentationReady:true};},
   canPresentVisualFrame:()=>true,commitVisualFrame:()=>true,verifyLayout(){},
   failMapPreparation(error){if(!features.length)throw error;failure=error;}};
  const labels={
@@ -269,12 +269,22 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   domain.invalidateProject('date-with-visible-outlines');await flush();
   assert.equal(boundaryRequests,1);
   assert.equal(domain.getStats().visualFrameCommittedCount,beforeVisible,'Dates must still wait for required outlines');
+  assert.ok(physicalRuns>0,'Physical sources start independently of required outlines');
   state.layerVisibility.objects=false;
   domain.invalidateProject('hide-objects-during-date');await flush();
   assert.equal(visibleRequest.aborted,true);
   assert.ok(domain.getStats().visualFrameCommittedCount>beforeVisible);
-  boundaryGate=null;
+  let resolveBoundary;
+  boundaryGate=()=>new Promise(resolve=>{resolveBoundary=resolve;});
   state.layerVisibility.objects=true;
+  domain.invalidateProject('date-with-ready-outlines');await flush();
+  const beforeBoundaryReady=[contentRuns,overlayRuns,labelRuns,placeQueries,sceneSubmissions];
+  resolveBoundary({result:{segments:[]}});await flush();
+  assert.deepEqual([contentRuns,overlayRuns,labelRuns,placeQueries],beforeBoundaryReady.slice(0,4),'Boundary completion must not rebuild independent scene or symbols');
+  assert.equal(sceneSubmissions,beforeBoundaryReady[4]+1);
+  // Change geometry identity so the following failure is a new boundary input.
+  features=[{...features[0],id:'region-new'}];
+  boundaryGate=null;
   temporal=false;
   preserved=false;
   const terminal=new Promise(resolve=>{let failures=0;afterBoundaryFailures=()=>{if(++failures===2)resolve();};});

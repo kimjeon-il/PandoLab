@@ -317,6 +317,8 @@ export function createPolarLayer({map,prepare,onChange,onError}){
  return {id,stats:()=>({preparations,pending,rows:staticBatch.rows.length+gridBatch.rows.length+overlayBatch.rows.length+highlightBatch.rows.length,culledFrames,drawCalls,submittedTriangles,uploadedBytes,residentBytes,residentBuffers:buffers.size,mergedCpuCache:batcher.stats()}),
   retry(){sequence++;stop(staticRequest);staticRequest=null;pending=false;key='';resetContext();},resetContext,
   ensure(){if(!map.getLayer(id))map.addLayer(layer,map.getLayer('viewer-label-dot')?'viewer-label-dot':undefined);},get pending(){return pending;},
+  // Warm the same CPU mesh cache without changing the visible polar batch.
+  prewarmMeshes:(items,signal)=>prepareRows(items,contextFor(signal,60)),
   prepareHighlights,clearHighlights,
   setOverlayLines(items){
    const previous=overlayBatch,next=batchFor(items);

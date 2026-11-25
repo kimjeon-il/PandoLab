@@ -59,21 +59,23 @@ test('hydro visibility and edited-source state belong to the hydro display',()=>
  hydro.dispose();
 });
 
-test('polar display owns its packet and overlay lifecycle without changing canonical lines',()=>{
- let updates=0,overlayRows=[];
+test('polar display owns its packet and overlay lifecycle without changing canonical lines',async()=>{
+ let updates=0,overlayRows=[],warmRows=[],finishWarm;
  const layer={id:'polar',pending:false,ensure(){},update(){updates++;},setOverlayLines:rows=>{overlayRows=rows;},
+  prewarmMeshes:rows=>{warmRows=rows;return new Promise(resolve=>{finishWarm=resolve;});},
   resetContext(){},retry(){},stats:()=>({updates}),dispose(){}};
  const map={getLayer:id=>id==='polar'?{}:null,getLayersOrder:()=>['polar'],moveLayer(){},getZoom:()=>6};
  const river={type:'LineString',coordinates:[[0,86],[1,86.5]]};
  const hydro={features:[{id:'river',geometry:river,
   properties:{category:'river',stage:'base',logicalId:'river',featureId:'fragment',layerId:'rivers'}}],
   visibilityKey:'visible',editsKey:'edits',stageZooms:new Map([['base',4]])};
+ const countryDisplay={key:'',rows:new Map(),borders:new Map()};
  const polar=createMapLibrePolarDisplay({createLayer:()=>layer,getMap:()=>map,isStyleReady:()=>true,
   prepareRenderGeometry:async()=>({packets:[{packet:{}}]}),getGeneration:()=>1,
   dirty(){},invalidate(){},failMapPreparation:cause=>{throw cause;},
   getMapStyle:()=>({paint:{'physical-land-fill':{'fill-color':'#eee'},ocean:{'background-color':'#fff'}}}),
   physicalResources:{physicalLand:{revision:'land',geometry:{type:'Polygon',coordinates:[]},water:null},
-   physicalContextState:{ready:true}},countryDisplay:{key:'',rows:new Map(),borders:new Map()},
+   physicalContextState:{ready:true}},countryDisplay,
   state:{backgroundSettings:{graticule:false},resourceCapabilities:{graticule:false},layerVisibility:{rivers:true},hydroEdits:[]},
   isColorsEnabled:()=>false,isInitialMapLoading:()=>false,getPalette:()=>({ocean:'#fff',strokes:{river:{width:1}}}),
   hydro,getSceneKey:()=>'',getSceneVectors:()=>[],getPickBounds:()=>[-180,85,180,90],
@@ -83,6 +85,15 @@ test('polar display owns its packet and overlay lifecycle without changing canon
  assert.equal(overlayRows.length,1);
  assert.equal(overlayRows[0].geometry,river);
  assert.equal(polar.visibleLines,overlayRows);
+ const country={geometry:{type:'Polygon',coordinates:[[[0,85],[2,85],[2,86],[0,85]]]},properties:{color:'#fff',displayAlpha:1}};
+ const key=['new-country'],controller=new AbortController();
+ polar.prewarmCountryMeshes([country],key,controller.signal);
+ assert.equal(warmRows.length,1);
+ assert.equal(updates,1,'warming must not publish the upcoming country');
+ countryDisplay.key=key;countryDisplay.rows=new Map([['country',country]]);
+ polar.syncPolar();assert.equal(updates,1);assert.equal(polar.pending,true);
+ finishWarm();for(let i=0;i<5;i++)await Promise.resolve();
+ polar.syncPolar();assert.equal(updates,2);assert.equal(polar.pending,false);
  polar.resetContext();polar.dispose();
  assert.equal(polar.visibleLines.length,0);
 });

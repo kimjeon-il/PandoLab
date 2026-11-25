@@ -6,7 +6,7 @@ import {HYDRO_DISPLAY_ZOOMS} from '../map/map-display-zoom.js';
 export function createMapLibreRenderingDomain(options){
  const {mapRenderer:renderer,selectionDomain,prepareView,renderers,reportDiagnostic}=options;
  let disposed=false,queued=false,frameId=0,contentDirty=true,selectionDirty=true,labelsDirty=true,lastFrame=null;
- let previousLabelVisibility=null;
+ let boundaryDirty=false,previousLabelVisibility=null;
  let previousHydroZoomBand=null;
  let pendingPlaceViewport=null;
  const hydroZoomBand=()=>{
@@ -25,6 +25,7 @@ export function createMapLibreRenderingDomain(options){
  };
  const preparePlacesForPublication=()=>{
   const task=options.labelResources.preparePlaces();
+  if(pendingPlaceViewport===task)return;
   pendingPlaceViewport=task;
   task.then(()=>{
    if(pendingPlaceViewport!==task||disposed)return;
@@ -39,7 +40,9 @@ export function createMapLibreRenderingDomain(options){
  const content=createMapContentPresentation({mapPalette:options.mapPalette,
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
   territorialBoundary:options.territorialBoundaryResources,base:options.baseResources,isDisposed:()=>disposed,
-  prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>invalidate('display-ready',true),
+  prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>{
+   boundaryDirty=true;invalidate('display-ready',false,false);
+  },
   onMapDisplayFailed:()=>invalidate('display-failed',false,false),reportDiagnostic});
  function render(){
   queued=false;if(disposed||!renderer.loaded||!renderer.isStyleReady()||renderer.getRuntimeState().webglContextLost)return;
@@ -54,13 +57,19 @@ export function createMapLibreRenderingDomain(options){
    previousHydroZoomBand=hydroZoomBand();
    const updateLabels=labelsDirty&&updateViewport;
    const frame=prepareView({frameId:++frameId,withBounds:updateLabels});lastFrame=frame;
+   const refreshContent=contentDirty,refreshBoundaries=boundaryDirty;
+   contentDirty=false;boundaryDirty=false;
+   if(refreshContent)preparePlacesForPublication();
+   // Start independent physical source writes before assembling the scene
+   // and symbols; neither country tiling nor boundary completion is awaited.
+   const physicalPrepared=!renderer.getRuntimeState().projectRenderBlocked;
+   if(physicalPrepared)renderer.syncPhysicalContext();
    renderer.syncHydroState();
-   const refreshContent=contentDirty;
    if(refreshContent){
-    contentDirty=false;preparePlacesForPublication();content.renderBase(frame);
-    content.renderTerritorialUnits(frame);content.renderGenericFeatures(frame);content.renderDistributions(frame);
-    options.syncMapScene();
-   }
+    content.renderTerritorialUnits(frame);content.renderBase(frame);
+    content.renderGenericFeatures(frame);content.renderDistributions(frame);
+   }else if(refreshBoundaries)content.renderTerritorialBoundaries();
+   if(refreshContent||refreshBoundaries)options.syncMapScene();
    if(selectionDirty){selectionDirty=false;renderer.setSelection(selectionDomain.snapshot());}
    // Prepare symbol sources alongside geometry, behind the preserved temporal
    // frame. Publication still waits for both sources and a subsequent render.
@@ -72,7 +81,7 @@ export function createMapLibreRenderingDomain(options){
      labels.renderTerritorialLabels(layout,{deferWhileMoving:!preserved});
     }
    }
-   const result=renderer.renderFrame(frame);
+   const result=renderer.renderFrame(frame,{physicalPrepared});
    const waitingForVisibleLabels=(labelVisibility.country||labelVisibility.places)&&(updateLabels&&labelsDirty||labels.pending);
    const waitingForPlaces=labelVisibility.places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null;
    const runtime=renderer.getRuntimeState();
@@ -111,7 +120,7 @@ export function createMapLibreRenderingDomain(options){
   invalidateOverlayStyle:reason=>invalidate(reason,true),invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},
   beginInteraction(){options.labelResources.getState().mapMoving=true;options.labelResources.beginPlaceInteraction();},
   endInteraction(reason){options.labelResources.getState().mapMoving=false;preparePlacesForPublication();return invalidate(reason);},
-  resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetContentCaches();contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
+  resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});content.resetContentCaches();boundaryDirty=false;contentDirty=true;selectionDirty=true;return invalidate('project-generation',true);},
   getStats:()=>({...stats,lastFrameId:lastFrame?.frameId}),getDistributionRenderRows:()=>content.buildDistributionRenderRows(),
   getTerritorialBoundaryStats:content.getTerritorialBoundaryStats,
   recordSelectionRenderError:entry=>reportDiagnostic(entry),

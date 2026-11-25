@@ -12,7 +12,7 @@ const collection=features=>({type:'FeatureCollection',features});
 export function createMapLibreCountryController({getMap,getGeneration,isDisposed,styleReady,isFrameBlocked,getBasemapRecovery,waitForStyle,
  isTemporalPending,initialize,getEntityRepository,state,layerPresentation,currentMapStyle,geometryClient,countryDisplay,datedSources,
  sourceLayer,sourceLayers,countryTileSource,scene,sourceWrites,setData,metrics,stats,dirty,prepareCountryBorders,
- readCountryPresentation=()=>state}){
+ prewarmCountryMeshes,readCountryPresentation=()=>state}){
  let countryGeneration=-1,countryContentKey='',territories=[],acceptedCountryInputs=null;
  let countrySequence=0,countryTail=Promise.resolve();
  const activeCountryTasks=new Set();
@@ -139,6 +139,8 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    // An empty native baseline needs one full write, not a redundant all-add diff.
    const delta=previousTileRows.size?metrics.run('territorial.tile-diff',()=>countryTileDiff(previousTileRows,tileFeatures)):null;
    const dirtyEntry={kind:'territories',source};datedSources.set(requestedSource,dirtyEntry);
+   // CPU polar meshes and native GeoJSON tiling can proceed independently.
+   prewarmCountryMeshes(presented,key,signal);
    try{
     let applied=true;
     if(!delta)applied=await metrics.track('territorial.full-submit',()=>setData(requestedSource,collection(tileFeatures),ownsSource));
