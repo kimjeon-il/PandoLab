@@ -353,6 +353,29 @@ test('geometry worker scopes cancel superseded country and frame work without re
  assert.equal(created,1);
 });
 
+test('scoped physical work cancels only after its last subscriber leaves and reuses completed geometry',async()=>{
+ const requests=[],stats={geometryWorkerRequests:0,physicalLandPreparations:0,physicalLandPreparationMs:0};
+ const client=createMapLibreGeometryClient({runtimeAssetUrl:path=>path,getGeneration:()=>1,getStats:()=>stats,
+  metrics:{track:(_name,fn)=>fn(),record(){}},createRpc:()=>({request(_operation,_payload,{signal}){
+   return new Promise((resolve,reject)=>{
+    const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});
+    requests.push({signal,resolve:value=>{signal.removeEventListener('abort',abort);resolve({result:{geometry:value,durationMs:1}});}});
+   });
+  },stop(){}})});
+ const geometry={type:'Polygon',coordinates:[]};
+ const a=new AbortController(),b=new AbortController();
+ try{
+  const first=client.preparePhysicalDisplay('land',geometry,a.signal),second=client.preparePhysicalDisplay('land',geometry,b.signal);
+  assert.equal(requests.length,1);const cancelled=assert.rejects(first,{name:'AbortError'});
+  a.abort();await cancelled;await Promise.resolve();assert.equal(requests[0].signal.aborted,false);
+  const rejected=assert.rejects(second,{name:'AbortError'});b.abort();await rejected;await Promise.resolve();
+  assert.equal(requests[0].signal.aborted,true);
+  const next=new AbortController(),third=client.preparePhysicalDisplay('land',geometry,next.signal);
+  assert.equal(requests.length,2);requests[1].resolve(geometry);assert.equal(await third,geometry);
+  next.abort();assert.equal(await client.preparePhysicalDisplay('land',geometry),geometry);assert.equal(requests.length,2);
+ }finally{client.dispose();}
+});
+
 test('geometry requester retries initialization failure once and does not reopen a disposed client',async()=>{
  const failure=Object.assign(new Error('init'),{code:'PL-MAP-GEOMETRY-INITIALIZATION'});
  let stopped=0,attempts=0,closed=false;

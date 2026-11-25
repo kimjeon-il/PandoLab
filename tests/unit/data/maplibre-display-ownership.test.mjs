@@ -32,6 +32,39 @@ test('physical land and water keep their independent source identities and pendi
  base.dispose();
 });
 
+test('rapid land and water reversal retires obsolete work without failing the returned date',async()=>{
+ const A={revision:'A',waterRevision:'water-A',geometry:{type:'Polygon',coordinates:[]},water:{type:'Polygon',coordinates:[]},displayPrepared:true};
+ const B={...A,revision:'B',waterRevision:'water-B',displayPrepared:false};
+ const active=new Map([['physical-land','physical-land'],['physical-water','physical-water']]);
+ const sources=new Map([...active.values(),'physical-land-retained','physical-water-retained'].map(id=>[id,{}]));
+ const records=new Map(),writes=[],errors=[],stats={physicalLandAssetHits:0,retainedSourceHits:0};
+ const native=new Set(),map={getSource:id=>sources.get(id)};
+ const slots={active:kind=>active.get(kind),get:id=>records.get(id),set:(id,row)=>records.set(id,row),
+  reuse:(kind,key)=>[...records].find(([id,row])=>row.kind===kind&&row.key===key&&!native.has(row.source)),
+  reserve:kind=>kind+'-retained',activate:(kind,id)=>active.set(kind,id)};
+ let context=A,failB,landSignal,finishWaterB;
+ const base=createMapLibrePhysicalBase({getMap:()=>map,getGeneration:()=>1,isDisposed:()=>false,isContextReady:()=>true,isTemporalPending:()=>true,
+  physicalResources:{get physicalLand(){return context;},physicalContextState:{ready:true}},datedSources:slots,
+  sourceWrites:{hasNativeWrite:source=>native.has(source)},setData:(id,data,current)=>{
+   writes.push(id);
+   if(id==='physical-water-retained'){const source=map.getSource(id);native.add(source);return new Promise(resolve=>{finishWaterB=()=>{native.delete(source);resolve(current());};});}
+   return Promise.resolve(true);
+  },preparePhysicalDisplay:(_key,_geometry,signal)=>{landSignal=signal;return new Promise((_resolve,reject)=>{failB=reject;});},
+  orderSceneLayers(){},dirty(){},invalidate(){},failMapPreparation:error=>errors.push(error),getStats:()=>stats});
+ const flush=async()=>{for(let i=0;i<16;i++)await Promise.resolve();};
+ try{
+  base.syncPhysicalContext();await flush();
+  context=B;base.syncPhysicalContext();await flush();
+  assert.equal(base.isPending('physical-land'),true);assert.equal(base.isPending('physical-water'),true);
+  context=A;base.syncPhysicalContext();await flush();
+  assert.equal(landSignal.aborted,true);
+  assert.equal(base.isPending('physical-land'),false);assert.equal(base.isPending('physical-water'),false);
+  failB(Error('obsolete B'));finishWaterB();await flush();
+  assert.equal(errors.length,0);assert.equal(active.get('physical-land'),'physical-land');assert.equal(active.get('physical-water'),'physical-water');
+  assert.equal(writes.length,3,'Returning to acknowledged A requires no native rewrite');
+ }finally{base.dispose();}
+});
+
 test('hydro visibility and edited-source state belong to the hydro display',()=>{
  const sources=new Map(),layers=new Map();
  const map={style:{},getSource:id=>sources.get(id),addSource:(id,value)=>sources.set(id,value),

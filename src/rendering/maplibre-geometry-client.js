@@ -100,21 +100,43 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   const stats=getStats();
   if(!stats.geometryQueue||snapshot.sampledAt>=stats.geometryQueue.sampledAt)stats.geometryQueue=snapshot;
  }
- function preparePhysicalDisplay(key,geometry){
-  requireOpen();
+ function subscribePhysicalDisplay(key,entry,signal){
+  if(!signal){entry.retained=true;return entry.task;}
+  signal.throwIfAborted();
+  if(entry.geometry)return entry.task;
+  entry.users++;
+  return new Promise((resolve,reject)=>{
+   let settled=false;
+   const finish=(callback,value)=>{
+    if(settled)return;
+    settled=true;signal.removeEventListener('abort',abort);entry.users--;
+    callback(value);
+    if(!entry.users&&!entry.retained&&!entry.geometry)queueMicrotask(()=>{
+     if(entry.users||entry.retained||entry.geometry||physicalDisplayCache.get(key)!==entry)return;
+     physicalDisplayCache.delete(key);entry.controller.abort();
+    });
+   };
+   const abort=()=>finish(reject,signal.reason||new DOMException('Physical display superseded','AbortError'));
+   signal.addEventListener('abort',abort,{once:true});
+   entry.task.then(value=>finish(resolve,value),cause=>finish(reject,cause));
+   if(signal.aborted)abort();
+  });
+ }
+ function preparePhysicalDisplay(key,geometry,signal=null){
+  requireOpen();signal?.throwIfAborted();
   const cached=physicalDisplayCache.get(key);
-  if(cached){physicalDisplayCache.delete(key);physicalDisplayCache.set(key,cached);return cached.task;}
+  if(cached){physicalDisplayCache.delete(key);physicalDisplayCache.set(key,cached);return subscribePhysicalDisplay(key,cached,signal);}
   if(physicalDisplayCache.size===2){
    const oldest=physicalDisplayCache.keys().next().value;
    physicalDisplayCache.get(oldest).controller.abort();
    physicalDisplayCache.delete(oldest);
   }
-  const entry={controller:new AbortController(),geometry:null,task:null,bytes:0};physicalDisplayCache.set(key,entry);
+  const entry={controller:new AbortController(),geometry:null,task:null,bytes:0,users:0,retained:false};physicalDisplayCache.set(key,entry);
   entry.task=requestMapGeometry('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},getGeneration(),entry.controller.signal)
    .then(result=>{recordGeometryQueue(result.geometryQueue);entry.geometry=result.geometry;entry.bytes=physicalEstimate(result.geometry);
     if(physicalDisplayCache.get(key)===entry)trimPhysical(key);
     getStats().physicalLandPreparations++;getStats().physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
-  return entry.task;
+  return subscribePhysicalDisplay(key,entry,signal);
  }
  async function prepareRenderGeometry(items,revision,boundary,signal=geometryAbort.signal){
   requireOpen();signal.throwIfAborted();

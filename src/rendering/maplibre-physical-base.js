@@ -9,6 +9,22 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
  dirty,invalidate,failMapPreparation,getStats,lifetime=createRenderLifetime({getMap,getGeneration,isDisposed})}){
  let landRevision=null,physicalLandKey='',physicalWaterKey='',physicalLandSource=null,physicalWaterSource=null;
  const physicalPending=createLatestRenderRequests(),geometryBytes=createGeometryByteEstimator();
+ function reconcilePhysicalSource(kind,key,data,displayPrepared=false){
+  const id=datedSources.active(kind),source=getMap().getSource(id),previous=physicalPending.get(kind);
+  // Even when returning to already displayed data, retire the obsolete target.
+  if(previous&&(previous.key!==key||getMap().getSource(previous.id)!==previous.source))
+   physicalPending.cancel(kind);
+  const record=datedSources.get(id),land=kind==='physical-land';
+  if(source&&record?.source===source&&record.key===key
+    &&(land?physicalLandKey:physicalWaterKey)===key
+    &&(land?physicalLandSource:physicalWaterSource)===source
+    &&!sourceWrites.hasNativeWrite(source)){
+   physicalPending.cancel(kind);
+   return;
+  }
+  // Never reuse an acknowledgement invalidated by a running native write.
+  preparePhysicalSource(kind,key,data(),displayPrepared);
+ }
  function preparePhysicalSource(kind,key,data,displayPrepared=false){
   const previous=physicalPending.get(kind);
   if(previous?.key===key&&previous.source===getMap().getSource(previous.id))return;
@@ -37,7 +53,9 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   // Tag only the display derivative; source-owned geometry and selection
   // identities are left intact.
   const tagged=collection(data.features.map(feature=>({...feature,properties:{...feature.properties,displayRole:kind}})));
-  const prepared=kind==='physical-land'&&!displayPrepared?preparePhysicalDisplay(key,tagged.features[0].geometry).then(geometry=>collection([{...tagged.features[0],geometry}])):Promise.resolve(tagged);
+  const prepared=kind==='physical-land'&&!displayPrepared
+   ?preparePhysicalDisplay(key,tagged.features[0].geometry,entry.signal).then(geometry=>collection([{...tagged.features[0],geometry}]))
+   :Promise.resolve(tagged);
   let estimatedBytes=0;
   prepared.then(value=>{
    if(!current())return false;
@@ -56,14 +74,13 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   }
   // The derived land revision includes any actual change to the land mask.
   // A water-only change must keep the existing land tiles and their coverage.
-  if(getMap().getSource(datedSources.active('physical-land'))&&(physicalLandKey!==context.revision||physicalLandSource!==getMap().getSource(datedSources.active('physical-land'))))
-   preparePhysicalSource('physical-land',context.revision,collection([{type:'Feature',properties:{},geometry:context.geometry}]),context.displayPrepared);
+  if(getMap().getSource(datedSources.active('physical-land')))
+   reconcilePhysicalSource('physical-land',context.revision,()=>collection([{type:'Feature',properties:{},geometry:context.geometry}]),context.displayPrepared);
   // The physical owner resolves the drawn water and its identities together.
   // Admission into the searchable hydro catalog can complete independently.
   const waterFeatures=context.waterFeatures??(context.water?[{type:'Feature',properties:{},geometry:context.water}]:[]);
   const waterKey=context.waterRevision||JSON.stringify(waterFeatures.map(feature=>geometryKey(feature.geometry)));
-  if(waterKey!==physicalWaterKey||physicalWaterSource!==getMap().getSource(datedSources.active('physical-water')))
-   preparePhysicalSource('physical-water',waterKey,collection(waterFeatures));
+  reconcilePhysicalSource('physical-water',waterKey,()=>collection(waterFeatures));
   return true;
  }
 
