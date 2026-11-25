@@ -14,7 +14,7 @@ const markerRing=['boolean',['get','markerRing'],false];
 const markerRadius=zoomSize(stop=>['case',markerRing,stop.cityDiameter/2+1.5,urbanSize(stop.cityDiameter/2,2.5)]);
 const cityNameSize=zoomSize(stop=>urbanSize(stop.cityName,12));
 
-export function createMapLibreLabelPresentation({renderer,labels,onChange,onError,onSourceError=onError}){
+export function createMapLibreLabelPresentation({renderer,labels,onChange,onSourceError}){
  const sourceId='viewer-labels';let requestedLayout=null,failedKey='',pending=false,disposed=false,sequence=0,tail=Promise.resolve();
  const measure=renderer.measureWork??((_name,work)=>work());
  let paintKey='';

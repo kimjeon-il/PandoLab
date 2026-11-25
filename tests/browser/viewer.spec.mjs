@@ -508,14 +508,11 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
    const map=window.__PANDOLAB_MAPLIBRE__,id='territorial:entity:DEU';
    const feature=(await map.getSource('viewer-labels').getData()).features.find(row=>row.id===id);
    const {x,y}=map.project(feature.geometry.coordinates);
-   const layers=['viewer-label-country','viewer-label-text'];
-   const above=map.queryRenderedFeatures([[x-3,y-12],[x+3,y-7]],{layers});
-   const below=map.queryRenderedFeatures([[x-3,y+7],[x+3,y+12]],{layers});
-   return [above,below].map(hits=>({
-    country:hits.some(hit=>hit.properties.objectKey===id),
-    city:hits.some(hit=>hit.layer.id==='viewer-label-text'),
-   }));
-  })).toEqual([{country:true,city:false},{country:true,city:false}]);
+   const layer='viewer-label-country';
+   const hits=map.queryRenderedFeatures([[x-3,y-3],[x+3,y+3]],{layers:[layer]});
+   return map.getLayoutProperty(layer,'text-anchor')==='center'&&
+    hits.some(hit=>hit.properties.objectKey===id);
+  })).toBe(true);
   const citySnapshot=()=>page.evaluate(async()=>{
    const map=window.__PANDOLAB_MAPLIBRE__;
    const features=(await map.getSource('viewer-labels').getData()).features;

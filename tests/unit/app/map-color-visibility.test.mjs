@@ -4,7 +4,7 @@ import {createMapSettings} from '../../../src/ui/app-map-settings.js';
 import {mapVisualOrder,mapVisualRank,normalizeLayerPresentation} from '../../../src/ui/layer-presentation.js';
 
 test('color visibility does not alter explicitly hidden objects or labels',async()=>{
- const state={layerVisibility:{objects:false,objectNames:false,objectFlags:false,labels:false,rivers:false,lakes:false},
+ const state={layerVisibility:{objects:false,objectNames:false,labels:false,rivers:false,lakes:false},
   layerPresentation:{styles:{objects:{colorVisible:true,boundaryVisible:false}},objectStyles:{'territorial:entity:A':{colorVisible:false}}}};
  const submitted=[];
  const settings=createMapSettings({capabilities:{builtinHydro:true,builtinPlaces:true},
@@ -26,7 +26,7 @@ test('color visibility does not alter explicitly hidden objects or labels',async
 });
 
 test('color visibility changes presentation only, preserving territorial colors, labels and data',async()=>{
- const state={layerVisibility:{objects:true,objectNames:true,objectFlags:true},layerPresentation:{styles:{objects:{colorVisible:true,boundaryVisible:true}},objectStyles:{'territorial:entity:A':{colorVisible:true}}}};
+ const state={layerVisibility:{objects:true,objectNames:true},layerPresentation:{styles:{objects:{colorVisible:true,boundaryVisible:true}},objectStyles:{'territorial:entity:A':{colorVisible:true}}}};
  const projectColor='#aabbcc',events=[],originalVisibility=structuredClone(state.layerVisibility);
  const settings=createMapSettings({capabilities:{builtinHydro:true,builtinPlaces:true},viewPresentation:{applyPresentation:async payload=>{
   events.push(['command',payload]);

@@ -1,9 +1,9 @@
 // These factories are inserted into the corresponding pinned MapLibre bundles.
 export function createLabelZoomWorker() {
  const pack=128,limit=255*pack;
- function add(bucket,buffers,property,feature,canonical,vertexEnd,vertexCount,parameters){
+ function add(bucket,buffers,feature,canonical,vertexEnd,vertexCount,parameters){
   if(!vertexCount)return;
-  const value=bucket.layers[0]._unevaluatedLayout._values[property];
+  const value=bucket.layers[0]._unevaluatedLayout._values['text-size'];
   const expression=value.expression;
   if(expression.kind!=='composite')return;
   const stops=expression.zoomStops;
@@ -68,7 +68,7 @@ export function createLabelZoomRenderer() {
   const size=evaluateFeature(sizeData,evaluateZoom(sizeData,zoom),{
    lowerSize:entry.packed[lower],upperSize:entry.packed[upper],
   });
-  // Broad-phase coverage must include the interpolated glyph or icon. Keep
+  // Broad-phase coverage must include the interpolated glyph. Keep
   // the tile's existing padding conservative as the label grows or shrinks.
   const scale=Math.max(1,size/entry.layoutSize);
   return {size,box:scale>1?{...box,x1:box.x1*scale,y1:box.y1*scale,x2:box.x2*scale,y2:box.y2*scale}:box};

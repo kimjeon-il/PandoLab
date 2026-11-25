@@ -12,7 +12,7 @@ import { isBuiltinPlaceId } from "../document/place-contract.js";
 import { mapPlaceLabelRowsAtMonth } from "../data/place-name-policy.js";
 import { temporalMonthEnd } from "../document/temporal.js";
 import { territorialNativeLabelRows } from "../ui/territorial-native-label.js";
-import { territorialSymbolVisibility } from "../ui/layer-presentation.js";
+import { territorialNamesVisible } from "../ui/layer-presentation.js";
 
 import {resourceKey} from '../runtime/resource-dependency-policy.js';
 
@@ -107,13 +107,12 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     for (const id of labelComponentBounds.keys()) {
       if (!renderCountries.labelById.has(id)) labelComponentBounds.delete(id);
     }
-    const visibility = territorialSymbolVisibility(dependencies.projectState.state);
+    const namesVisible = territorialNamesVisible(dependencies.projectState.state);
     const territorialRows = new Map();
-    for (const feature of renderCountries.labelById.values()) {
+    if (namesVisible) for (const feature of renderCountries.labelById.values()) {
       if (dependencies.projectState.state.countryVisualPhase === 'pending') continue;
       const id = String(feature.id || '');
       const group = 'objects';
-      if (!visibility.name) continue;
       const labelRef = renderCountries.labelRefs.get(id);
       const primaryName = dependencies.objectPresentation.territorialEntityName(
         dependencies.territorialModel.entityRepository.get(labelRef.id) || feature, { fallback: '' });

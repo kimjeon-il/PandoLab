@@ -57,9 +57,8 @@ ResolvedTerritorialPresentation resolvedTerritorialPresentation(const ProjectDoc
         r.boundaryVisible=os.boundaryVisible.value_or(gs.boundaryVisible.value_or(true));
         r.colorVisible=gs.colorVisible.value_or(true)&&os.colorVisible.value_or(true);
         const std::string name="objectNames";
-        const std::string flag="objectFlags";
         const bool visible=effectiveMapVisibility(d,territorialRef(u.id));
-        r.nameVisible=visible&&groupVisible(p,name);r.flagVisible=visible&&groupVisible(p,flag);
+        r.nameVisible=visible&&groupVisible(p,name);
         r.effectiveAlpha=terrainAlpha;
         return r;
     };

@@ -38,8 +38,7 @@ export function createMapLibreRenderingDomain(options){
  };
  const labels=createMapLibreLabelPresentation({renderer,labels:options.labelResources,
   onChange:()=>invalidate('map-labels-ready',false,false),
-  onSourceError:renderer.failMapPreparation,
-  onError:error=>reportDiagnostic({operation:'map-labels',stage:'prepare',result:'failed',message:error.message,error})});
+  onSourceError:renderer.failMapPreparation});
  const content=createMapContentPresentation({mapPalette:options.mapPalette,
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
   territorialBoundary:options.territorialBoundaryResources,base:options.baseResources,isDisposed:()=>disposed,

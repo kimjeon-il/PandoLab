@@ -86,7 +86,7 @@ std::optional<DistributionValueRange> distributionValueRange(const ProjectDocume
 double distributionValueAlpha(double value,const std::optional<DistributionValueRange>&);
 struct ResolvedTerritorialPresentation {
     double effectiveAlpha=1;
-    bool boundaryVisible=true, nameVisible=true, flagVisible=true, colorVisible=true;
+    bool boundaryVisible=true, nameVisible=true, colorVisible=true;
     std::string blendMode="normal";
 };
 std::string territorialGroup(const ProjectDocument&,const std::string& entityId);

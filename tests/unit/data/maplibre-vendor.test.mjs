@@ -40,7 +40,7 @@ test('label glyph masks are shared across atlases and survive tile transfers',()
  assert.equal(worker.build(weak,[quad(0,0),quad(8,0,{x:8,y:0,w:8,h:8})]),null);
 });
 
-test('country and place names can overlap while same-type text and flags retain collision rules',()=>{
+test('country and place names can overlap while same-type text retains collision rules',()=>{
  const worker=createLabelGlyphMasks(),collision=createLabelGlyphCollision();
  const a=worker.build(atlas(8,0),[quad(0,0)]).mask;
  const b=worker.build(atlas(8,7),[quad(0,0)]).mask;
@@ -61,8 +61,8 @@ test('country and place names can overlap while same-type text and flags retain 
  collision.inserted(cityKey,cityBox);
  assert.equal(collision.predicate({kind:'place'})(cityKey),true);
  assert.equal(collision.predicate(overlap)(cityKey),false);
- assert.equal(collision.predicate({kind:'country'})(cityKey),false,'a city name must not hide a country flag and its paired name');
- assert.equal(collision.predicate({kind:'country'})(key),true,'country flags still participate in country-label collision');
+ assert.equal(collision.predicate({kind:'country'})(cityKey),false,'a city name must not hide a country name');
+ assert.equal(collision.predicate({kind:'country'})(key),true,'country text without a glyph mask retains conservative box collision');
 });
 
 test('a retained symbol bucket updates only its supplementary size buffer at the next stop band',()=>{
@@ -73,9 +73,9 @@ test('a retained symbol bucket updates only its supplementary size buffer at the
   possiblyEvaluate:zoom=>({evaluate:feature=>sizes[zoom-3]+feature.offset})};
  const bucket={zoom:4,layers:[{_unevaluatedLayout:{_values:{'text-size':value}}}]};
  const buffers={placedSymbolArray:{length:1},layoutVertexBuffer:{length:12}};
- worker.add(bucket,buffers,'text-size',{offset:0},{},4,4,zoom=>zoom);
+ worker.add(bucket,buffers,{offset:0},{},4,4,zoom=>zoom);
  buffers.placedSymbolArray.length++;
- worker.add(bucket,buffers,'text-size',{offset:3},{},12,8,zoom=>zoom);
+ worker.add(bucket,buffers,{offset:3},{},12,8,zoom=>zoom);
  const uploads=[];
  const read=data=>uploads.push(Array.from(new Uint16Array(data.arrayBuffer)));
  let destroyed=0;

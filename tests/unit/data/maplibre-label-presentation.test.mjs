@@ -246,7 +246,7 @@ test('text-only territorial labels reuse tiles and change selection without feat
   }),addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),removeSource:id=>sources.delete(id),setPaintProperty(){assert.fail('Unchanged paint must not be reapplied');},setFeatureState:assert.fail,removeFeatureState:assert.fail};
  const resources={getState:()=>({layerVisibility:{labels:false}}),getTerritorialLabelRef:id=>({id,key:'territorial:entity:'+id}),automaticLabelSettings:()=>({}),labelSettings:()=>({}),countryLabelAnchors:()=>new Map(['a','b','c'].map(id=>[id,[0,0]])),selectionHas:ref=>ref.id===selected};
  let activeLayout;
- const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onError:error=>errors.push(error)});
+ const presentation=createMapLibreLabelPresentation({renderer:{map},labels:resources,onChange(){},onSourceError:error=>errors.push(error)});
  const layout=ids=>({territorialLabels:ids.map(id=>({id})),territorialLabelRows:new Map(ids.map(id=>[id,[{text:id}]])),territorialLabelShortSides:new Map(ids.map(id=>[id,8])),userLabels:[]});
  const flush=()=>new Promise(resolve=>setImmediate(resolve));
  const show=async ids=>{activeLayout=layout(ids);presentation.renderTerritorialLabels(activeLayout);await flush();};

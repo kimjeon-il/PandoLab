@@ -50,8 +50,8 @@ function addLabelGlyphMasks(source){
 function addLabelZoomStops(source){
  const append='e.placedSymbolArray.emplaceBack(s.x,s.y,g,this.glyphOffsetArray.length-g,_,c,l,s.segment,n?n[0]:0,n?n[1]:0,r[0],r[1],o,0,!1,0,u,f)';
  source=replaceOnce(source,append,append+
-  ';if(this.layerIds.includes(`viewer-label-country`)&&!this.iconsInText&&!i)pandoLabelZoom.add(this,e,'+
-  'e===this.text?`text-size`:`icon-size`,a,d,m.length,t.length*4,zoom=>new K(zoom))');
+  ';if(this.layerIds.includes(`viewer-label-country`)&&e===this.text&&!this.iconsInText&&!i)'+
+  'pandoLabelZoom.add(this,e,a,d,m.length,t.length*4,zoom=>new K(zoom))');
  return 'const pandoLabelZoom=('+createLabelZoomWorker.toString()+')();\n'+source;
 }
 
@@ -70,24 +70,19 @@ function addLabelGlyphCollision(source){
  const bucket='!r.collisionArrays&&d&&r.deserializeCollisionBoxes(d);let D=';
  source=replaceOnce(source,bucket,bucket.replace('let D=',
   'const pandoKind=r.layerIds.includes(`viewer-label-country`)?`country`:r.layerIds.includes(`viewer-label-text`)?`place`:null;'+
-  'const pandoZoom=this.transform.zoom,pandoTextBand=pandoLabelZoom.band(r.text,r.textSizeData,pandoZoom),'+
-  'pandoIconBand=pandoLabelZoom.band(r.icon,r.iconSizeData,pandoZoom);let D='));
+  'const pandoZoom=this.transform.zoom,pandoTextBand=pandoLabelZoom.band(r.text,r.textSizeData,pandoZoom);let D='));
  const call='this.collisionIndex.placeCollisionBox(t,g,l,D,s,x,b,a,p.predicate,O,void 0,k,C,w)';
  source=replaceOnce(source,'let i='+call,
   'const pandoIndex=e.centerJustifiedTextSymbolIndex,pandoMask=n===1&&r.pandoLabelMasks?.[pandoIndex];'+
   'const pandoSize=n===1&&pandoLabelZoom.collision(r.text,pandoTextBand,pandoIndex,t,pandoZoom,Bv,zv);'+
   'let i='+call.replace('placeCollisionBox(t,','placeCollisionBox(pandoSize?pandoSize.box:t,').slice(0,-1)+
   ',pandoKind?{kind:pandoKind,mask:pandoMask,size:pandoMask?(pandoSize?.size??zv(r.textSizeData,f,r.text.placedSymbolArray.get(pandoIndex))):0}:null)');
- const icon='if(d.iconFeatureIndex&&(le=d.iconFeatureIndex),d.iconBox){let e=e=>this.collisionIndex.placeCollisionBox(e,v,l,D,s,x,b,o,p.predicate,O,S&&te?te:void 0,k,C,w)';
- source=replaceOnce(source,icon,'const pandoIconIndex=e.placedIconSymbolIndex;'+
-  icon.replace('placeCollisionBox(e,','placeCollisionBox(pandoLabelZoom.collision(r.icon,pandoIconBand,pandoIconIndex,e,pandoZoom,Bv,zv)?.box??e,').slice(0,-1)+
-  ',pandoKind?{kind:pandoKind}:null)');
  return 'const pandoLabelCollision=('+createLabelGlyphCollision.toString()+')();\n'+source;
 }
 
 function addLabelZoomDrawing(source){
- // These two Viewer shaders share the same static attributes and native
- // composite interpolation. Leave the mixed text-and-inline-icon shader alone.
+ // Only the text shader needs supplementary sizes for territorial names.
+ // Preserve the stock icon and mixed text-and-inline-icon shaders.
  const start=source.indexOf('symbolIcon:DO('),end=source.indexOf('symbolTextAndIcon:DO(');
  if(start<0||end<=start)throw Error('MapLibre symbol shader boundary changed');
  const shader=source.slice(start,end);
@@ -95,9 +90,13 @@ function addLabelZoomDrawing(source){
  const size='size=mix(a_size_min,a_size[1],u_size_t)/128.0;';
  if(shader.split(attribute).length!==3||shader.split(size).length!==3)
   throw Error('MapLibre symbol size shader hook changed');
- source=source.slice(0,start)+shader.replaceAll(attribute,attribute+'layout(location=6) in vec2 a_pando_label_size;')
-  .replaceAll(size,'size=(a_pando_label_size.x>0.0?mix(a_pando_label_size.x,a_pando_label_size.y,u_size_t):'+
-   'mix(a_size_min,a_size[1],u_size_t))/128.0;')+source.slice(end);
+ // The pinned range contains symbolIcon first and the text shader second.
+ // Exactly two matched vertex attributes and size expressions are required above.
+ const textStart=shader.lastIndexOf(attribute);
+ const textShader=replaceOnce(replaceOnce(shader.slice(textStart),attribute,attribute+'layout(location=6) in vec2 a_pando_label_size;'),
+  size,'size=(a_pando_label_size.x>0.0?mix(a_pando_label_size.x,a_pando_label_size.y,u_size_t):'+
+   'mix(a_size_min,a_size[1],u_size_t))/128.0;');
+ source=source.slice(0,start)+shader.slice(0,textStart)+textShader+source.slice(end);
  const draw='k=Bv(S,h.zoom),A=f.getTerrainDataForTile(s)';
  source=replaceOnce(source,draw,'k=Bv(pandoLabelZoom.prepare(u,S,h.zoom,f.context),h.zoom),A=f.getTerrainDataForTile(s)');
  const buffers='e.dynamicLayoutVertexBuffer,e.opacityVertexBuffer)}function ZM';

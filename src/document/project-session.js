@@ -48,7 +48,6 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
       genericFeatures: true,
       labels: true,
       objectNames: true,
-      objectFlags: true,
     }));
 
     const prefs = loadUserPreferences();
@@ -162,7 +161,10 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
       .map(([group,values])=>[group,Object.fromEntries(Object.entries(values).filter(([id])=>!valid[group]||valid[group].has(id)))]))});
   }
   function applyViewingPresentation(payload, {notify=true}={}) {
-    if (payload.action === 'visibility') setViewingPresentation({ layerVisibility: { ...state.layerVisibility, [payload.key]: payload.visible } });
+    if (payload.action === 'visibility') {
+      if (!Object.hasOwn(DEFAULT_LAYER_VISIBILITY, payload.key)) throw new TypeError(`Unknown visibility group: ${payload.key}`);
+      setViewingPresentation({ layerVisibility: { ...state.layerVisibility, [payload.key]: payload.visible } });
+    }
     else if(payload.action==='objectVisibility'||payload.action==='distributionLayerVisibility') {
       const refs=payload.action==='distributionLayerVisibility'?[{group:'distributions',id:payload.id}]:payload.refs.map(ref=>{
         const web=coreSelectionRefToWeb(ref);return {group:resolveVisibilityGroup(web),id:web.id};});
