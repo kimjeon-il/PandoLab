@@ -1,7 +1,7 @@
 {
   "schema": "pandoeditor-core-wasm",
   "abiVersion": 1,
-  "sourceSha256": "ea13e3e981ff0db1d71c32085ba427fc6c73ffa955ec4bfda53ab962f0e0e9df",
+  "sourceSha256": "f38e434dcca43ebdc45b3672765d89e1a1eeb5f75a7e701e986e6df2ae6f3f5f",
   "compiler": {
     "name": "emscripten",
     "version": "6.0.3"
@@ -57,7 +57,7 @@
     },
     {
       "path": "src/data/native/src/projectcodec.cpp",
-      "sha256": "a8bb5de34402a70fc6623d672317960cfd11903ed2abd912d68401010442f5c1"
+      "sha256": "5e7a5737c159a9f09265eb3c10779c5f04420d9ae0defc3b7629714b110f95c0"
     },
     {
       "path": "src/data/native/src/referenceimage.cpp",
@@ -113,7 +113,7 @@
     },
     {
       "path": "src/document/native/include/pandoeditor/presentation.h",
-      "sha256": "60916fa004f73eebb33fc5dc0c5279bde903d4def49ec03179157e463af3ecc0"
+      "sha256": "1f9d76ac37532d9f5e6190ca20fe6f2031f07258999eacd708c293f2617a6bb5"
     },
     {
       "path": "src/document/native/include/pandoeditor/project.h",
@@ -201,7 +201,7 @@
     },
     {
       "path": "src/document/native/src/presentation.cpp",
-      "sha256": "e7d40af3ca7b2823d262518fd10f4502331047e5e978014255283283995f1be6"
+      "sha256": "6bf5d393be9991c0cc6074c3fc88eec9a2917789542c81bea7adbbb809f6dbb2"
     },
     {
       "path": "src/document/native/src/project.cpp",
@@ -467,7 +467,7 @@
     },
     "wasm": {
       "file": "pandoeditor-core.wasm",
-      "sha256": "25e45ef32727e09fdb140c7808a1a50e262c74ecd7f1cb8a56ad15be038892b6"
+      "sha256": "edfc55b6779de179b149f2656d7f5b203dcde7f9f96f2fa3ac14e839a699c079"
     }
   }
 }
