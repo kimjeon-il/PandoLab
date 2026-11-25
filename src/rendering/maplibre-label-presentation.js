@@ -1,12 +1,10 @@
 import {temporalMonthEnd} from '../document/temporal.js';
-import {MAP_LABEL_SIZE_STOPS,TERRITORIAL_NAME_SIZE,TERRITORIAL_ICON_SIZE,TERRITORIAL_FLAG_BASE_HEIGHT} from './label-layout.js';
+import {MAP_LABEL_SIZE_STOPS,TERRITORIAL_NAME_SIZE,territorialNameUnits} from './label-layout.js';
 import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
-import {retainViewportItems} from '../runtime/resource-dependency-policy.js';
 import {sameRenderIdentity} from './render-identity.js';
 
 /** Ordinary geographic labels use MapLibre symbols, shaping and collision placement. */
 const labelTextLayers=['viewer-label-text','viewer-label-country'];
-const flagStandbyLimit=32;
 export const MAPLIBRE_LABEL_LAYERS=Object.freeze(['viewer-label-dot',...labelTextLayers]);
 export const MAPLIBRE_LABEL_MIN_ZOOM=Object.freeze({country:3,places:PLACE_DISPLAY_ZOOM_FLOOR});
 
@@ -16,228 +14,42 @@ const markerRing=['boolean',['get','markerRing'],false];
 const markerRadius=zoomSize(stop=>['case',markerRing,stop.cityDiameter/2+1.5,urbanSize(stop.cityDiameter/2,2.5)]);
 const cityNameSize=zoomSize(stop=>urbanSize(stop.cityName,12));
 
-export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlagsReady=onChange,onError,onSourceError=onError}){
- const sourceId='viewer-labels';let requestedLayout=null,failedKey='',pending=false,disposed=false,sequence=0,tail=Promise.resolve(),nextImageId=0;
+export function createMapLibreLabelPresentation({renderer,labels,onChange,onError,onSourceError=onError}){
+ const sourceId='viewer-labels';let requestedLayout=null,failedKey='',pending=false,disposed=false,sequence=0,tail=Promise.resolve();
  const measure=renderer.measureWork??((_name,work)=>work());
- const measureSync=renderer.measureSyncWork??((_name,work)=>work());
- const images=new Map();
- const flagQueue=new Map();let flagsInFlight=0,cancelStandby=null;
- const imageKeys=new Map();let imageBase=null,imageBasePath='';
- const decodedImages=new Map();let imageFrame=null,unusedFlagKeys=[],paintKey='',flagPublicationTimer=null;
- const registeredFlags=new Set();
- let flagOwners=new Map();
- let activeFlagWrite=null;
- function withFlagIcon(row,icon){
-  return {...row,properties:{...row.properties,icon}};
- }
- function scheduleImages(){if(imageFrame!==null)return;imageFrame=0;if(typeof requestAnimationFrame==='function')imageFrame=requestAnimationFrame(installDecodedImages);else queueMicrotask(installDecodedImages);}
- function canInstallFlags(){
-  const runtime=renderer.getRuntimeState?.();
-  return !disposed&&!renderer.map.isMoving?.()&&!pending&&runtime?.mapReady!==false
-   &&!runtime?.temporalPresentationPending&&!runtime?.temporalViewPending;
- }
- function publishRegisteredFlags(){
-  clearTimeout(flagPublicationTimer);flagPublicationTimer=null;
-  if(!registeredFlags.size||!canInstallFlags())return;
-  const source=observedSource,version=sequence,update=[];
-  const changedRows=new Map();
-  for(const key of registeredFlags){
-   const icon=images.get(key)?.id;
-   for(const id of flagOwners.get(key)||[]){
-    const row=sourceRows?.get(id);
-    if(icon&&row&&row.properties.icon!==icon){
-     changedRows.set(id,withFlagIcon(row,icon));
-     update.push({id,addOrUpdateProperties:[{key:'icon',value:icon}]});
-    }
-   }
-  }
-  const submittedFlags=[...registeredFlags];
-  registeredFlags.clear();
-  if(!update.length){onFlagsReady();return;}
-  pending=true;
-  tail=tail.catch(()=>{}).then(async()=>{
-   if(disposed||version!==sequence||renderer.map.getSource(sourceId)!==source)return;
-   if(renderer.map.isMoving?.()){
-    for(const key of submittedFlags)registeredFlags.add(key);
-    pending=false;
-    return;
-   }
-   activeFlagWrite={version,changedRows};
-   await measure('labels.source.write',()=>source.updateData({remove:[],add:[],update}));
-   if(disposed||renderer.map.getSource(sourceId)!==source)return;
-   for(const [id,row]of changedRows)sourceRows.set(id,row);
-   if(version===sequence){pending=false;onFlagsReady();}
-  }).catch(error=>{if(!disposed&&version===sequence&&renderer.map.getSource(sourceId)===source)sourceFailed(error);})
-   .finally(()=>{activeFlagWrite=null;});
- }
- function installDecodedImages(){
-  imageFrame=null;if(disposed){decodedImages.clear();return;}
-  if(!canInstallFlags())return;
-  const map=renderer.map;
-  let remaining=8;
-  for(const [key,entry]of decodedImages){
-   if(remaining===0)break;
-   decodedImages.delete(key);
-   if(images.get(key)!==entry||!entry.visible)continue;
-   remaining--;
-   try{
-    if(!map.hasImage(entry.id))measureSync('labels.flag.register',()=>map.addImage(entry.id,entry.image,{pixelRatio:Math.max(.01,entry.image.height/TERRITORIAL_FLAG_BASE_HEIGHT)}));
-    entry.ready=map.hasImage(entry.id);
-    if(entry.ready)registeredFlags.add(key);
-   }
-   catch(error){entry.failed=true;onError(error);}
-  }
-  if(decodedImages.size)scheduleImages();
-  else if(registeredFlags.size){
-   // Publish one source delta for a burst of uploads, while a slow optional
-   // flag can delay publication for at most this batching interval.
-   if(!flagQueue.size&&!flagsInFlight)publishRegisteredFlags();
-   else flagPublicationTimer??=setTimeout(publishRegisteredFlags,150);
-  }
- }
- function publishOptionalFlags(){
-  const map=renderer.map;
-  // A GeoJSON update resolves before all its tiles have stopped using the old icons.
-  if(unusedFlagKeys.length&&!pending&&observedSource&&map.getSource(sourceId)===observedSource&&map.isSourceLoaded(sourceId)){
-   for(const key of unusedFlagKeys){
-    const entry=images.get(key);
-    images.delete(key);decodedImages.delete(key);flagQueue.delete(key);
-    if(map.hasImage(entry.id))map.removeImage(entry.id);
-   }
-   unusedFlagKeys=[];
-  }
-  startFlagDownloads();
-  if(decodedImages.size||registeredFlags.size)scheduleImages();
- }
- // Only bundled immutable paths share the build's cache-busting alias.
- // User URLs, SVG fragments and other query parameters retain their identity.
- const imageKey=value=>{
-  if(typeof value!=='string'||!value.includes('assets/vendor/'))return value;
-  if(imageKeys.has(value))return imageKeys.get(value);
-  try{if(!imageBase){imageBase=new URL(document.baseURI);imageBasePath=new URL('.',imageBase).pathname;}const url=new URL(value,imageBase);
-   if(url.origin!==imageBase.origin||!/^assets\/vendor\/(?:country-flags\/[a-f0-9]{40}\/svg|flag-icons\/[\d.]+\/flags\/(?:4x3|1x1)|political-flags)\/[^/]+\.svg$/.test(url.pathname.slice(imageBasePath.length)))return value;
-   url.searchParams.delete('v');const key=url.href;if(imageKeys.size>=1024)imageKeys.delete(imageKeys.keys().next().value);imageKeys.set(value,key);return key;
-  }catch{return value;}
- };
- let flagRequests=0;
+ let paintKey='';
  let observedSource=null,observedError=null,sourceRows=null;
  const font='Pando Pretendard';
  const territorialFont='Pando Pretendard ExtraBold';
  function sourceFailed(error){
   if(disposed)return;const map=renderer.map;pending=false;
-  // An optional icon write changes the effective rows without running sync().
   // Suppress automatic resubmission of the failed layout until explicit retry.
-  const changedRows=activeFlagWrite?.version===sequence?activeFlagWrite.changedRows:null;
   failedKey=JSON.stringify(requestedLayout??{
-   features:Array.from(sourceRows??[],([id,row])=>changedRows?.get(id)??row),palette:paintKey?JSON.parse(paintKey):null,
+   features:Array.from(sourceRows?.values()??[]),palette:paintKey?JSON.parse(paintKey):null,
   });
   requestedLayout=null;paintKey='';sequence++;
   for(const id of MAPLIBRE_LABEL_LAYERS)if(map.getLayer(id))map.removeLayer(id);
   const source=map.getSource(sourceId);observedSource?.off?.('error',observedError);observedSource=null;sourceRows=null;if(source)map.removeSource(sourceId);
   onSourceError(error.error||error);
  }
- function startFlagDownloads(allowStandby=false){
-  const map=renderer.map;
-  if(disposed||map.isMoving?.())return;
-  for(const [key,{flag,visible}] of flagQueue){
-   if(flagsInFlight>=8)break;
-   if(!visible){
-    if(flagsInFlight)continue;
-    if(!allowStandby){
-     if(!cancelStandby){
-      const resume=()=>{cancelStandby=null;startFlagDownloads(true);};
-      if(typeof requestIdleCallback==='function'){
-       const id=requestIdleCallback(resume);cancelStandby=()=>globalThis.cancelIdleCallback?.(id);
-      }else{
-       const id=setTimeout(resume,0);cancelStandby=()=>clearTimeout(id);
-      }
-     }
-     continue;
-    }
-   }
-   flagQueue.delete(key);
-   const entry=images.get(key);
-   entry.started=true;flagRequests++;flagsInFlight++;
-   const loadDom=async()=>{
-    const image=new Image();
-    image.crossOrigin='anonymous';
-    image.src=flag.url;
-    await image.decode();
-    return {data:image};
-   };
-   (async()=>measure('labels.flag.decode',()=>typeof Image==='function'&&/\.svg(?:[?#]|$)/i.test(flag.url)?loadDom():map.loadImage(flag.url).catch(loadDom)))()
-    .then(result=>{
-     if(disposed||images.get(key)!==entry)return;
-     entry.image=result.data;
-     if(entry.visible)decodedImages.set(key,entry);
-    },error=>{
-     if(disposed||images.get(key)!==entry)return;
-     entry.failed=true;
-     onError(error);
-    }).finally(()=>{
-     flagsInFlight--;
-     startFlagDownloads();
-     if(!disposed&&(decodedImages.size||registeredFlags.size))scheduleImages();
-    });
-  }
- }
- function prepareFlags(layout,load=true){
-  flagQueue.clear();
-  for(const entry of images.values())entry.visible=false;
-  const nearThreshold=!load&&renderer.map.getZoom?.()>=MAPLIBRE_LABEL_MIN_ZOOM.country-1;
-  let prefetchRemaining=8;
-  for(const [owner,flag]of layout.territorialFlags||[]){
-   if(!flag?.url)continue;
-   const key=imageKey(flag.url);
-   let entry=images.get(key);
-   if(!entry){
-    const id='pando-flag-'+nextImageId++;
-    entry={id,ready:false,failed:false,started:false};
-   }
-   images.delete(key);images.set(key,entry);
-   const inView=!layout.visibleFlagIds||layout.visibleFlagIds.has(owner);
-   entry.visible||=load&&inView;
-   if(load&&entry.visible&&entry.image&&!entry.ready&&!entry.failed)decodedImages.set(key,entry);
-   if(load&&!entry.started){
-    flagQueue.set(key,{flag,visible:entry.visible});
-   }else if(nearThreshold&&inView&&prefetchRemaining>0){
-    // Reserve the first few visible icons for the next zoom, after the current frame.
-    if(!entry.started)flagQueue.set(key,{flag,visible:false});
-    prefetchRemaining--;
-   }
-  }
-  if(load)startFlagDownloads();
-  return true;
- }
  function sync(layout,{deferWhileMoving=false}={}){
   const map=renderer.map,state=labels.getState(),features=[];
-  flagOwners=new Map();
-  const activeFlags=new Set([...layout.territorialFlags.values()].map(flag=>imageKey(flag?.url)));
-  for(const key of activeFlags){
-   const entry=images.get(key);
-   if(entry?.ready&&!map.hasImage(entry.id))map.addImage(entry.id,entry.image,{pixelRatio:Math.max(.01,entry.image.height/TERRITORIAL_FLAG_BASE_HEIGHT)});
-  }
   const palette=labels.mapPalette?.().labels||{text:'#343840',halo:'#ffffff',point:'#373b42',selection:'#315e9d'};
   const hasCapitalPeriods=layout.userLabels?.some(item=>item.capitalPeriods?.length);
   const placeDate=hasCapitalPeriods&&state.timelineCursor?temporalMonthEnd(state.timelineCursor).canonical:null;
-  const add=(item,domain,coordinate,rows,flag)=>{
+  const add=(item,domain,coordinate,rows)=>{
    if(!coordinate)return;
    const ref=domain==='territorial'?labels.getTerritorialLabelRef(item.id):labels.normalizeObjectRef({domain:'label',type:item.kind||'label',id:item.id});
    if(!ref)return;
-   if(flag?.url){
-    const key=imageKey(flag.url);
-    if(!flagOwners.has(key))flagOwners.set(key,[]);
-    flagOwners.get(key).push(ref.key);
-   }
-   const selected=labels.selectionHas?.(ref),image=images.get(imageKey(flag?.url)),priority=(domain==='territorial'?layout.territorialLabelPriorities:layout.userLabelPriorities)?.get(String(item.id))??(domain==='territorial'?100:item.priority||40);
+   const selected=labels.selectionHas?.(ref),priority=(domain==='territorial'?layout.territorialLabelPriorities:layout.userLabelPriorities)?.get(String(item.id))??(domain==='territorial'?100:item.priority||40);
    const capital=domain==='label'&&placeDate!==null&&item.capitalPeriods?.some(({fromDate,untilDateExclusive})=>
     fromDate<=placeDate&&(untilDateExclusive===null||placeDate<untilDateExclusive));
    const row={type:'Feature',id:ref.key,geometry:{type:'Point',coordinates:coordinate},properties:{objectKey:ref.key,renderKey:ref.key,
     text:rows.map(row=>row.text).join('\n'),primary:rows[0]?.text||'',secondary:rows.slice(1).map(row=>row.text).join('\n'),kind:domain,rank:selected?-1e12:-priority,
-    selected:!!selected,capital:!!capital,icon:image?.ready&&map.hasImage(image.id)?image.id:'',
+    selected:!!selected,capital:!!capital,
     ...(domain==='label'?{viewerMinZoom:layout.userLabelMinZooms.get(String(item.id)),
      urban:!!capital||['capital','city','town'].includes(item.kind)}:{
-      territorialShortSide:layout.territorialLabelShortSides.get(String(item.id))})}};
+      territorialShortSide:layout.territorialLabelShortSides.get(String(item.id)),territorialNameUnits:territorialNameUnits(rows)})}};
    features.push(row);
    if(capital){
     const renderKey='capital-ring:'+ref.key;
@@ -245,12 +57,9 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    }
   };
   for(const item of layout.territorialLabels||[]){const settings=labels.automaticLabelSettings('country',labels.labelSettings(state,'territorial',labels.getTerritorialLabelRef(item.id).id));
-   add(item,'territorial',settings.pinned&&settings.manualPosition?settings.manualPosition:labels.countryLabelAnchors().get(String(item.id)),layout.territorialLabelNames.get(String(item.id))===false?[]:layout.territorialLabelRows.get(String(item.id))||[],layout.territorialFlags.get(String(item.id)));}
+   add(item,'territorial',settings.pinned&&settings.manualPosition?settings.manualPosition:labels.countryLabelAnchors().get(String(item.id)),layout.territorialLabelRows.get(String(item.id))||[]);}
   for(const item of state.layerVisibility.labels?layout.userLabels||[]:[]){const settings=labels.automaticLabelSettings(item.kind,labels.labelSettings(state,'label',item.id));
    add(item,'label',settings.pinned&&settings.manualPosition?settings.manualPosition:item.coordinates,layout.userLabelRows.get(String(item.id))||[{text:item.name}]);}
-  const reusable=[...images].filter(([,entry])=>!entry.failed).map(([key])=>key);
-  const resident=retainViewportItems(reusable,activeFlags,flagStandbyLimit);
-  unusedFlagKeys=[...images.keys()].filter(key=>!resident.has(key));
   const request={features,palette};
   if(failedKey&&JSON.stringify(request)===failedKey)return;
   const rows=new Map(features.map(feature=>[feature.id,feature]));
@@ -284,14 +93,9 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    'circle-radius':markerRadius,
   });
   const textLayout={'text-field':['format',['get','primary'],{'font-scale':1},['case',['==',['get','secondary'],''],'',['concat','\n',['get','secondary']]],{'font-scale':.82}],'text-letter-spacing':.015,'text-line-height':1.25,'symbol-sort-key':['get','rank'],'text-max-width':12};
-  const paired=['all',['!=',['get','primary'],''],['!=',['get','icon'],'']];
   const countryLayout={
    'text-font':[territorialFont],'text-size':TERRITORIAL_NAME_SIZE,'text-justify':'center',
-   'text-anchor':['case',paired,'top','center'],
-   'text-offset':['case',paired,['literal',[0,.15]],['literal',[0,0]]],
-   'icon-image':['get','icon'],'icon-size':TERRITORIAL_ICON_SIZE,
-   'icon-anchor':['case',paired,'bottom','center'],
-   'icon-optional':false,'text-optional':false,
+   'text-anchor':'center','text-offset':[0,0],
   };
   const cityLayout={'text-font':[font],'text-size':cityNameSize,'text-anchor':'left','text-offset':[.85,0],'text-justify':'left'};
   // Selection is part of the label row, so tile reloads never replay a separate feature state.
@@ -325,8 +129,8 @@ export function createMapLibreLabelPresentation({renderer,labels,onChange,onFlag
    requestedLayout=null;pending=false;onChange();
   }).catch(error=>{if(current())sourceFailed(error);});
  }
- return {prepareFlags,publishOptionalFlags,renderTerritorialLabels:sync,retry(){failedKey='';},getStats:()=>({flagRequests,imageCount:images.size}),
-  get pending(){return pending;},dispose(){disposed=true;sequence++;cancelStandby?.();if(imageFrame!==null)globalThis.cancelAnimationFrame?.(imageFrame);clearTimeout(flagPublicationTimer);decodedImages.clear();flagQueue.clear();observedSource?.off?.('error',observedError);for(const id of MAPLIBRE_LABEL_LAYERS)if(renderer.map.getLayer(id))renderer.map.removeLayer(id);if(renderer.map.getSource(sourceId))renderer.map.removeSource(sourceId);for(const entry of images.values())if(renderer.map.hasImage(entry.id))renderer.map.removeImage(entry.id);images.clear();imageKeys.clear();}};
+ return {renderTerritorialLabels:sync,retry(){failedKey='';},
+  get pending(){return pending;},dispose(){disposed=true;sequence++;observedSource?.off?.('error',observedError);for(const id of MAPLIBRE_LABEL_LAYERS)if(renderer.map.getLayer(id))renderer.map.removeLayer(id);if(renderer.map.getSource(sourceId))renderer.map.removeSource(sourceId);}};
 }
 
 function hasSourceDiff({remove,add,update}){return remove.length||add.length||update.length;}

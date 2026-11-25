@@ -183,7 +183,7 @@ test('camera frames reuse MapLibre symbols; viewport and quality work are scoped
   countryLabelAnchors:()=>new Map(),selectionHas:()=>false,
  };
  const layout={pending:false,territorialLabels:[],userLabels:[],
-  territorialFlags:new Map(),territorialLabelNames:new Map(),territorialLabelRows:new Map(),
+  territorialLabelRows:new Map(),
   territorialLabelPriorities:new Map(),userLabelRows:new Map(),userLabelPriorities:new Map()};
  const domain=createMapLibreRenderingDomain({
   mapRenderer:renderer,labelResources:labels,selectionDomain:{snapshot:()=>({selection:{items:[]}})},

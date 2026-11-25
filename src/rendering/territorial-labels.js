@@ -11,10 +11,8 @@ import {projectResourceOverlay} from "../document/project-resource-overlay.js";
 import { isBuiltinPlaceId } from "../document/place-contract.js";
 import { mapPlaceLabelRowsAtMonth } from "../data/place-name-policy.js";
 import { temporalMonthEnd } from "../document/temporal.js";
-import { territorialLabelFlag } from "./territorial-label-flags.js";
 import { territorialNativeLabelRows } from "../ui/territorial-native-label.js";
-import { effectiveTerritorialFlagUrl } from "../ui/country-flags.js";
-import { territorialPaintRole, territorialSymbolVisibility } from "../ui/layer-presentation.js";
+import { territorialSymbolVisibility } from "../ui/layer-presentation.js";
 
 import {resourceKey} from '../runtime/resource-dependency-policy.js';
 
@@ -111,18 +109,11 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     }
     const visibility = territorialSymbolVisibility(dependencies.projectState.state);
     const territorialRows = new Map();
-    const flagOptions = {
-      zoom, enabled: true,
-      isVisible: feature => visibility.flag,
-      flagUrl: feature => effectiveTerritorialFlagUrl(territorialPaintRole(feature) === 'country-fill'
-        ? dependencies.territorialModel.entityRepository.get(feature.id) : feature,
-        { assetRevision: dependencies.layerPresentation.ASSET_REVISION }),
-    };
     for (const feature of renderCountries.labelById.values()) {
       if (dependencies.projectState.state.countryVisualPhase === 'pending') continue;
       const id = String(feature.id || '');
       const group = 'objects';
-      const namesVisible = visibility.name;
+      if (!visibility.name) continue;
       const labelRef = renderCountries.labelRefs.get(id);
       const primaryName = dependencies.objectPresentation.territorialEntityName(
         dependencies.territorialModel.entityRepository.get(labelRef.id) || feature, { fallback: '' });
@@ -132,19 +123,17 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
       territorialRows.set(id, rows);
       if (!(0, dependencies.layerPresentation.isLayerItemVisible)(group, labelRef?.id || id)) continue;
       if (!(0, dependencies.layerPresentation.isLayerItemVisible)('objectLabels', id) || dependencies.labelPresentation.pendingCountryLabelAnchors.has(id)) continue;
-      const flag = territorialLabelFlag(feature, flagOptions);
-      if (!namesVisible && !flag) continue;
+      if (!rows.length) continue;
       const settings = (0, dependencies.labelPresentation.automaticLabelSettings)('country', dependencies.projectState.state.labelSettings[(0, dependencies.labelPresentation.labelKey)('territorial', labelRef.id)] || {});
       if (zoom < Number(settings.minZoom ?? -Infinity) || zoom > Number(settings.maxZoom ?? Infinity)) continue;
       const anchor = dependencies.labelPresentation.countryLabelAnchors.get(id);
       const coordinate = settings.pinned && settings.manualPosition ? settings.manualPosition : anchor;
       if (!Array.isArray(coordinate)) continue;
       const geometry = dependencies.territorialObjectModel.territorialScope.displayFeature(labelRef.id)?.geometry;
+      const shortSide = territorialLabelShortSide(componentBounds(id, geometry), coordinate);
       candidates.push({
-        sourceType: 'territorial', source: feature, nameVisible: namesVisible, flag,
-        viewportVisible: flag && coordinateInGeographicBounds(coordinate, frameContext.viewState.geographicBounds),
-        shortSide: territorialLabelShortSide(componentBounds(id, geometry), coordinate),
-        priority: settings.priority ?? dependencies.labelPresentation.LABEL_PRIORITIES.country,
+        sourceType: 'territorial', source: feature, shortSide,
+        priority: (settings.priority ?? dependencies.labelPresentation.LABEL_PRIORITIES.country) + Math.log2(1 + Math.max(0, shortSide)),
       });
     }
     const selectedIds = new Set(dependencies.domains.selectionDomain.snapshot().selection.items.filter(ref => ref.domain === 'label').map(ref => String(ref.id)));
@@ -188,17 +177,12 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     // MapLibre projects, occludes and places them on every camera frame.
     const countries=candidates.filter(item=>item.sourceType==='territorial');
     const places=selectPlaceLabelCandidates(candidates.filter(item=>item.sourceType==='label'),dependencies.renderScene.currentRenderQuality.labelCandidateLimit);
-    const territorialFlags = new Map(countries.filter(item => item.flag).map(item => [String(item.source.id), item.flag]));
-    const visibleFlagIds = new Set(countries.filter(item => item.viewportVisible).map(item => String(item.source.id)));
     const placedUserLabels = places;
     labelLayoutMetrics = nextLabelLayoutMetrics;
     if (dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label) dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label.finalVisibleCount = placedUserLabels.length;
     return {
       territorialLabels: countries.map(item => item.source),
-      territorialLabelNames: new Map(countries.map(item => [String(item.source.id), item.nameVisible])),
       territorialLabelRows: new Map(countries.map(item => [String(item.source.id), territorialRows.get(String(item.source.id)) || []])),
-      territorialFlags,
-      visibleFlagIds,
       territorialLabelShortSides: new Map(countries.map(item => [String(item.source.id), item.shortSide])),
       userLabels: placedUserLabels.map(item => item.source),
       userLabelRows: new Map(placedUserLabels.map(item => [String(item.source.id), item.rows])),

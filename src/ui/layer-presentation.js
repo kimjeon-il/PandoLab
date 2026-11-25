@@ -56,8 +56,7 @@ export function territorialPaintRole(feature) {
 
 export function territorialSymbolVisibility(state) {
   const visible = state.layerVisibility?.objects !== false;
-  return { name: visible && state.layerVisibility?.objectNames !== false,
-    flag: visible && state.layerVisibility?.objectFlags !== false };
+  return { name: visible && state.layerVisibility?.objectNames !== false };
 }
 
 export const OVERLAY_GROUPS = Object.freeze(['distributions', 'objects', 'genericFeatures']);

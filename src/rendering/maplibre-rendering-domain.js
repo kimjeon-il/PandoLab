@@ -37,7 +37,7 @@ export function createMapLibreRenderingDomain(options){
   },error=>{if(pendingPlaceViewport===task&&!disposed){pendingPlaceViewport=null;renderer.failMapPreparation(error);}});
  };
  const labels=createMapLibreLabelPresentation({renderer,labels:options.labelResources,
-  onChange:()=>invalidate('map-labels-ready',false,false),onFlagsReady:()=>invalidate('map-flags-ready',false,false),
+  onChange:()=>invalidate('map-labels-ready',false,false),
   onSourceError:renderer.failMapPreparation,
   onError:error=>reportDiagnostic({operation:'map-labels',stage:'prepare',result:'failed',message:error.message,error})});
  const content=createMapContentPresentation({mapPalette:options.mapPalette,
@@ -80,7 +80,6 @@ export function createMapLibreRenderingDomain(options){
    if(updateLabels){
     const layout=renderers.labelLayout(frame);
     if(!layout.pending){
-     labels.prepareFlags(layout,labelVisibility.country);
      labelsDirty=false;
      labels.renderTerritorialLabels(layout,{deferWhileMoving:!preserved});
     }
@@ -98,7 +97,6 @@ export function createMapLibreRenderingDomain(options){
    const result=renderer.renderFrame(frame,{physicalPrepared,domainPending});
    if(domainPending||result.deferred||!renderer.canPresentVisualFrame(frame,result))return;
    if(!renderer.commitVisualFrame(frame))return;
-   labels.publishOptionalFlags();
    stats.visualFrameCommittedCount++;stats.lastCommittedVisualFrameId=frame.frameId;
    options.onFrameComplete?.({durationMs:0,viewFrame:true,frameId:frame.frameId});
   }catch(error){renderer.failMapPreparation(error);}

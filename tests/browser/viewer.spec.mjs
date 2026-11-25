@@ -484,12 +484,11 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
    const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource('viewer-labels');
    const features=(await source.getData()).features;
    const layer=map.getLayer('viewer-label-country');
-   const nameSize=layer.layout.get('text-size').value,iconSize=layer.layout.get('icon-size').value;
+   const nameSize=layer.layout.get('text-size').value;
    const globals={zoom:map.getZoom()};
    return Object.fromEntries(ids.map(id=>{
     const feature=features.find(row=>row.id==='territorial:entity:'+id);
-    return [id,feature&&{name:feature.properties.primary,size:Math.round(nameSize.evaluate(globals,feature)*10)/10,
-     flag:Math.round(iconSize.evaluate(globals,feature)*120)/10,ready:!!feature.properties.icon&&map.hasImage(feature.properties.icon)}];
+    return [id,feature&&{name:feature.properties.primary,size:Math.round(nameSize.evaluate(globals,feature)*10)/10,ready:!Object.hasOwn(feature.properties,'icon')}];
    }));
   },ids);
   await camera(4);
@@ -498,9 +497,9 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
    {timeout:45_000}).toEqual([]);
   const rows=await labels();
   console.log('[territorial-label-sizes]',JSON.stringify({profile:mobile?'touch':'desktop',rows}));
-  expect(rows.LUX).toMatchObject({size:13,flag:12});
-  expect(rows.LIE).toMatchObject({size:13,flag:12});
-  for(const key of ['size','flag']){
+  expect(rows.LUX).toMatchObject({size:13});
+  expect(rows.LIE).toMatchObject({size:13});
+  for(const key of ['size']){
    expect(rows.NLD[key]).toBeGreaterThan(rows.LUX[key]);
    expect(rows.DEU[key]).toBeGreaterThan(rows.NLD[key]);
    expect(rows.FRA[key]).toBeGreaterThan(rows.DEU[key]);
@@ -537,18 +536,18 @@ for(const mobile of [false,true])test(`territorial symbols keep their scale from
   await camera(5);
   await expect.poll(async()=>(await labels()).NLD.size).toBeGreaterThan(rows.NLD.size);
   for(const [id,center,zoom,expected] of [
-   ['USA',[-99,39],3,{size:25.4,flag:23.7}],
-   ['USA',[-99,39],4,{size:28,flag:26}],
-   ['BRA',[-52,-11],3,{size:28,flag:26}],
-   ['USA',null,7.5,{size:44,flag:40}],
-   ['BRA',null,9,{size:50,flag:46}],
+   ['USA',[-99,39],3,[28,45]],
+   ['USA',[-99,39],4,[45,45]],
+   ['BRA',[-52,-11],3,[45,45]],
+   ['USA',null,7.5,[70,70]],
+   ['BRA',null,9,[80,80]],
   ]){
    const target=center??await page.evaluate(async id=>{
     const source=window.__PANDOLAB_MAPLIBRE__.getSource('viewer-labels');
     return (await source.getData()).features.find(row=>row.id==='territorial:entity:'+id).geometry.coordinates;
    },id);
    await camera(zoom,target);
-   await expect.poll(async()=>(await labels([id]))[id],{timeout:30_000}).toMatchObject({...expected,ready:true});
+   await expect.poll(async()=>{const row=(await labels([id]))[id];return !!row?.ready&&row.size>=expected[0]&&row.size<=expected[1];},{timeout:30_000}).toBe(true);
    await expect.poll(()=>page.evaluate(id=>{
     const map=window.__PANDOLAB_MAPLIBRE__,key='territorial:entity:'+id;
     return map.queryRenderedFeatures({layers:['viewer-label-country']}).some(row=>row.properties.objectKey===key);
@@ -592,7 +591,7 @@ test('country glyphs keep Jordan and Israel visible at the same anchors through 
      const id=index.feature(symbol.featureIndex).properties.objectKey?.split(':').at(-1);
      if(id!=='JOR'&&id!=='ISR')continue;
      const placement=map.style.placement?.placements[symbol.crossTileID];
-     if(placement?.text&&placement.icon)symbols[id]=true;
+     if(placement?.text)symbols[id]=true;
     }
    }
    return symbols;
@@ -640,7 +639,7 @@ test('retained country symbols follow native size stops while replacement label 
     for(let i=0;i<bucket.symbolInstances.length;i++){
      const symbol=bucket.symbolInstances.get(i),feature=index.feature(symbol.featureIndex);
      const id=feature.properties.objectKey?.split(':').at(-1);
-     if(!targets.has(id)||symbol.placedIconSymbolIndex<0||symbol.centerJustifiedTextSymbolIndex<0)continue;
+     if(!targets.has(id)||symbol.centerJustifiedTextSymbolIndex<0)continue;
      const size=(kind,symbolIndex,property,scale)=>{
       const buffers=bucket[kind],gpu=buffers.pandoActiveSizeBuffer;
       let {minZoom,maxZoom}=bucket[kind+'SizeData'];
@@ -660,8 +659,7 @@ test('retained country symbols follow native size stops while replacement label 
       return {corrected:Boolean(gpu),uploads:buffers.pandoSizeUploads,error:Math.abs(actual-expected)};
      };
      const text=size('text',symbol.centerJustifiedTextSymbolIndex,'text-size',1);
-     const icon=size('icon',symbol.placedIconSymbolIndex,'icon-size',12);
-     if(text&&icon)seen[id]={text,icon,tileZoom:tile.tileID.overscaledZ};
+     if(text)seen[id]={text,tileZoom:tile.tileID.overscaledZ};
     }
    }
    return seen;
@@ -669,18 +667,15 @@ test('retained country symbols follow native size stops while replacement label 
   for(const zoom of [5.15,5.7,4.7,5.7]){
    await page.evaluate(zoom=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom});},zoom);
    await expect.poll(async()=>Object.entries(await sample(zoom))
-    .filter(([,row])=>row.text.corrected===(zoom>5)&&row.icon.corrected===(zoom>5))
+    .filter(([,row])=>row.text.corrected===(zoom>5))
     .map(([id])=>id).sort(),{timeout:20_000}).toEqual(['DEU','FRA','LUX']);
-   for(const {text,icon,tileZoom} of Object.values(await sample(zoom))){
+   for(const {text,tileZoom} of Object.values(await sample(zoom))){
     expect(tileZoom).toBe(4);
     expect(text.corrected).toBe(zoom>5);
-    expect(icon.corrected).toBe(zoom>5);
     if(zoom>5){
      expect(text.uploads).toBe(1);
-     expect(icon.uploads).toBe(1);
     }
     expect(text.error).toBeLessThan(.15);
-    expect(icon.error).toBeLessThan(.15);
    }
   }
  }finally{
@@ -688,7 +683,7 @@ test('retained country symbols follow native size stops while replacement label 
  }
 });
 
-for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} names and flags stay attached during globe movement`,async({page})=>{
+for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} names stay attached during globe movement`,async({page})=>{
  await open(page);
  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.on('error',event=>{
   console.error('MapLibre tile error',JSON.stringify({source:event.sourceId,stack:event.error?.stack}));
@@ -710,7 +705,7 @@ for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} nam
   const trackedLayer=trackedKind==='territorial'?'viewer-label-country':'viewer-label-text';
   const key=target.properties.objectKey,coordinate=target.geometry.coordinates;
   const layout=map.setLayoutProperty.bind(map),filter=map.setFilter.bind(map);
-  const fixed={'text-variable-anchor':null,'text-anchor':'left','text-allow-overlap':true,'icon-allow-overlap':true,'icon-image':'tracking-flag-fixture'};
+  const fixed={'text-variable-anchor':null,'text-anchor':'left','text-allow-overlap':true};
   map.setLayoutProperty=(id,name,value)=>layout(id,name,id===trackedLayer&&Object.hasOwn(fixed,name)?fixed[name]:value);
   map.setFilter=(id,value)=>filter(id,id===trackedLayer?['==',['get','objectKey'],key]:value);
   map.setFilter(trackedLayer,['==',['get','objectKey'],key]);
@@ -719,7 +714,6 @@ for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} nam
   map.setLayoutProperty(trackedLayer,'text-variable-anchor',null);
   map.setLayoutProperty(trackedLayer,'text-anchor','left');
   map.setLayoutProperty(trackedLayer,'text-allow-overlap',true);
-  map.setLayoutProperty(trackedLayer,'icon-allow-overlap',true);
   const paint=map.setPaintProperty.bind(map);
   // Keep country fills out of the pixel classifier for the test symbol.
   const testPaint=(id,name,value)=>id===trackedLayer&&name==='text-color'?'#ff00ff':
@@ -728,19 +722,17 @@ for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} nam
   for(const layer of map.getStyle().layers)
    if(layer.type==='fill'&&layer.source===map.getLayer('territories').source)paint(layer.id,'fill-color','#f1f1f1');
   map.setPaintProperty(trackedLayer,'text-color','#ff00ff');
-  const data=new Uint8Array(12*8*4);for(let i=0;i<data.length;i+=4){data[i+1]=255;data[i+3]=255;}
-  map.addImage('tracking-flag-fixture',{width:12,height:8,data});map.setLayoutProperty(trackedLayer,'icon-image','tracking-flag-fixture');
   const canvas=map.getCanvas(),gl=canvas.getContext('webgl2'),pixels=new Uint8Array(canvas.width*canvas.height*4),ratio=canvas.width/canvas.clientWidth;
   // Track the anchored text edge: globe perspective can change a long word's
   // width and SDF pixel centroid even when its anchor follows perfectly.
   // Include antialiased magenta fringes: an opaque-only cutoff can lose an
   // entire thin first glyph as its subpixel coverage changes.
-  const locate=()=>{gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity,n=0,ix=0,iy=0,ni=0;for(let i=0;i<pixels.length;i+=4){const px=(i/4)%canvas.width,py=canvas.height-1-Math.floor(i/4/canvas.width);if(pixels[i]-pixels[i+1]>35&&pixels[i+2]-pixels[i+1]>35){left=Math.min(left,px);right=Math.max(right,px);top=Math.min(top,py);bottom=Math.max(bottom,py);n++;}if(pixels[i]<60&&pixels[i+1]>220&&pixels[i+2]<60){ix+=px;iy+=py;ni++;}}const p=map.project(coordinate);return {point:[p.x,p.y],text:n?[Math.max(left/ratio,Math.min(right/ratio,p.x)),Math.max(top/ratio,Math.min(bottom/ratio,p.y))]:null,flag:ni?[ix/ni/ratio,iy/ni/ratio]:null};};
+  const locate=()=>{gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity,n=0;for(let i=0;i<pixels.length;i+=4){const px=(i/4)%canvas.width,py=canvas.height-1-Math.floor(i/4/canvas.width);if(pixels[i]-pixels[i+1]>35&&pixels[i+2]-pixels[i+1]>35){left=Math.min(left,px);right=Math.max(right,px);top=Math.min(top,py);bottom=Math.max(bottom,py);n++;}}const p=map.project(coordinate);return {point:[p.x,p.y],text:n?[Math.max(left/ratio,Math.min(right/ratio,p.x)),Math.max(top/ratio,Math.min(bottom/ratio,p.y))]:null};};
   // The default WebGL drawing buffer is discarded after presentation. Read
   // pixels inside render, including on an otherwise idle city view.
   await new Promise((resolve,reject)=>{let attempts=0;const check=()=>{
    const sample=locate();
-   if(sample.text&&sample.flag){map.off('render',check);resolve();return;}
+   if(sample.text){map.off('render',check);resolve();return;}
    if(++attempts>=180){map.off('render',check);reject(Error('The native tracking fixture did not draw: '+JSON.stringify({sample,target,sourcePresent:!!map.getSource('viewer-labels')})));return;}
    map.triggerRepaint();
   };map.on('render',check);map.triggerRepaint();});
@@ -752,8 +744,8 @@ for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} nam
  await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-220,y+90,{steps:90});await page.mouse.up();
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
  const samples=await page.evaluate(()=>window.__finishLabelTracking());
- const visible=samples.filter(row=>row.text&&row.flag);expect(visible.length,JSON.stringify(samples)).toBeGreaterThanOrEqual(8);
- for(const kind of ['text','flag']){const first=visible[0],offset=first[kind].map((value,index)=>value-first.point[index]);const drift=visible.map(row=>Math.hypot(...row[kind].map((value,index)=>value-row.point[index]-offset[index])));expect(Math.max(...drift),JSON.stringify({kind,visible})).toBeLessThan(6);}
+ const visible=samples.filter(row=>row.text);expect(visible.length,JSON.stringify(samples)).toBeGreaterThanOrEqual(8);
+ for(const kind of ['text']){const first=visible[0],offset=first[kind].map((value,index)=>value-first.point[index]);const drift=visible.map(row=>Math.hypot(...row[kind].map((value,index)=>value-row.point[index]-offset[index])));expect(Math.max(...drift),JSON.stringify({kind,visible})).toBeLessThan(6);}
 });
 
 test('single white base and object-color toggle preserve boundaries, labels and selection',async({page})=>{
@@ -1180,35 +1172,17 @@ test('desktop Viewer presents the real map, changes year, searches and moves the
 });
 
 
-test('dated Viewer renders names while flag downloads are pending',async({page})=>{
- const warnings=[];let germanFlagRequested=false,release;
- const gate=new Promise(resolve=>{release=resolve;});
- page.on('console',message=>{
-  if(/Image "pando-flag-.*could not be loaded|feature index out of bounds/.test(message.text()))warnings.push(message.text());
- });
- await page.route(/\/assets\/vendor\/(?:country-flags|flag-icons|political-flags)\/.*\/de\.svg(?:\?|$)/,async route=>{
-  germanFlagRequested=true;
-  await gate;
-  await route.continue();
- });
- const labels=()=>page.evaluate(async()=>{
+test('dated Viewer uses text-only territorial labels without registering flag images',async({page})=>{
+ await open(page);
+ await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[15,48],zoom:4}));
+ await month(page,'2024-12');
+ await expect.poll(()=>page.evaluate(async()=>{
   const map=window.__PANDOLAB_MAPLIBRE__;
-  const data=await map.getSource('viewer-labels').getData();
-  const rows=data.features.filter(feature=>feature.properties.kind==='territorial').map(feature=>feature.properties);
-  const germany=rows.find(row=>row.objectKey==='territorial:entity:DEU');
-  return {name:germany?.primary,icon:germany?.icon,unregistered:rows.filter(row=>row.icon&&!map.hasImage(row.icon)).length};
- });
- try{
-  await open(page);
-  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[15,48],zoom:4}));
-  await expect.poll(()=>germanFlagRequested).toBe(true);
-  await month(page,'2024-12');
-  await expect.poll(async()=>(await labels()).name).toBeTruthy();
-  expect((await labels()).icon).toBe('');
- }finally{release();}
- await expect.poll(async()=>(await labels()).icon,{timeout:30_000}).toMatch(/^pando-flag-/);
- expect((await labels()).unregistered).toBe(0);
- expect(warnings).toEqual([]);
+  const rows=(await map.getSource('viewer-labels').getData()).features.filter(feature=>feature.properties.kind==='territorial');
+  const germany=rows.find(row=>row.properties.objectKey==='territorial:entity:DEU');
+  return !!germany?.properties.primary&&rows.every(row=>!Object.hasOwn(row.properties,'icon'))&&
+   !map.getLayoutProperty('viewer-label-country','icon-image')&&!map.listImages().some(id=>id.startsWith('pando-flag-'));
+ })).toBe(true);
 });
 
 test('MapLibre camera projection and map selection remain aligned after date changes',async({page})=>{
