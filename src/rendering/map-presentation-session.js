@@ -4,7 +4,8 @@ export function createMapPresentationSession({
   getGeneration, getContextRevision, isDisposed, getReadiness,
   invalidateFrame, prepareContentKey, sameContentKey=(a,b)=>a===b, isImmutableContentKey=()=>false, isProjectBlocked,
   isRecoveryFrameAdmissible, onTemporalFailure = () => {},
-  onTemporalRetired = () => {}, waitForCanonicalFrame,
+  onTemporalRetired = () => {}, onTemporalAdmitted = () => {}, waitForCanonicalFrame,
+  now=()=>performance.now(),
 }) {
   const mapWaiters = new Set();
   let committedGeneration = -1;
@@ -40,29 +41,34 @@ export function createMapPresentationSession({
     for (const waiter of mapWaiters) waiter.reject(error);
     mapWaiters.clear();
   }
+  function retireTicketWaiters(ticket) {
+    for(const waiter of mapWaiters)if(waiter.ticket===ticket){mapWaiters.delete(waiter);waiter.resolve(false);}
+  }
   function settleMapPresentationWaiters() {
     if (temporalPending() || !getReadiness().mapReady) return false;
     const generation = getGeneration();
     committedGeneration = generation;
     for (const waiter of mapWaiters) {
       if (waiter.generation !== generation) continue;
+      if(waiter.ticket&&waiter.ticket!==temporalTicket){mapWaiters.delete(waiter);waiter.resolve(false);continue;}
       mapWaiters.delete(waiter);
       waiter.resolve(true);
     }
     return true;
   }
-  function waitForMapPresentation(generation) {
+  function waitForMapPresentation(generation,ticket=null) {
     if (isDisposed() || Number(generation) !== getGeneration())
       return Promise.reject(abortError('Project map presentation was superseded.'));
     if (temporalPending() && temporalTicket.error) return Promise.reject(temporalTicket.error);
     if (!temporalPending() && committedGeneration === getGeneration() && getReadiness().mapReady)
       return Promise.resolve(true);
     return new Promise((resolve, reject) => {
-      mapWaiters.add({ generation, resolve, reject });
+      mapWaiters.add({ generation, ticket, resolve, reject });
       invalidateFrame('await-current-map-frame');
     });
   }
   function beginTemporalViewTransition(isCurrent = () => true, onPresented = () => {}) {
+    if(temporalTicket)retireTicketWaiters(temporalTicket);
     checkedTicket=checkedContent=checkedExpected=null;
     const token = ++viewSequence;
     temporalTicket = {
@@ -70,16 +76,59 @@ export function createMapPresentationSession({
       context: getContextRevision(), isCurrent: () => !isDisposed()
         && token === viewSequence && isCurrent(),
       onPresented, presented: false, sourceAdmitted: false,
+      admissionRequested:false,preparations:null,preparationStartedAt:null,preparationFinishedAt:null,
       error: null, frameId: null,
     };
     return token;
   }
-  function admitTemporalViewTransition(token) {
-    if (!temporalPending() || temporalTicket.token !== token || !temporalTicket.isCurrent())
-      return false;
-    temporalTicket.sourceAdmitted = true;
-    invalidateFrame('temporal-source-admitted');
+  function admitTemporalViewTransition(token,{country=null,physical=null}={}) {
+    const ticket=temporalTicket;
+    if(!temporalPending()||ticket.token!==token||!ticket.isCurrent())return false;
+    if(ticket.admissionRequested)return true;
+    ticket.admissionRequested=true;
+    if(ticket.error)return true;
+    const tasks=Object.entries({country,physical}).filter(([,task])=>task!=null);
+    ticket.preparationStartedAt=now();
+    ticket.preparations=Object.fromEntries(tasks.map(([name])=>[name,{status:'pending',elapsedMs:null}]));
+    const live=()=>ticket===temporalTicket&&ticket.isCurrent()&&!ticket.presented&&!ticket.error
+      &&ticket.generation===getGeneration();
+    const accept=()=>{
+      if(!live()||Object.values(ticket.preparations).some(row=>row.status!=='ready'))return;
+      ticket.preparationFinishedAt=now();
+      try{
+        ticket.sourceAdmitted=true;
+        onTemporalAdmitted(ticket);
+        invalidateFrame('temporal-source-admitted');
+      }catch(error){failTemporalPresentation(error);}
+    };
+    for(const [name,task] of tasks)Promise.resolve(task).then(value=>{
+      if(!live()){
+        if(ticket===temporalTicket&&!ticket.isCurrent())retireTicketWaiters(ticket);
+        return;
+      }
+      const row=ticket.preparations[name];
+      row.elapsedMs=Math.max(0,now()-ticket.preparationStartedAt);
+      if(name==='country'&&value!==true){
+        row.status='failed';failTemporalPresentation(Error('Country source preparation did not complete.'));return;
+      }
+      row.status='ready';accept();
+    },error=>{
+      if(!live()){
+        if(ticket===temporalTicket&&!ticket.isCurrent())retireTicketWaiters(ticket);
+        return;
+      }
+      const row=ticket.preparations[name];row.status='failed';row.elapsedMs=Math.max(0,now()-ticket.preparationStartedAt);
+      failTemporalPresentation(error);
+    });
+    if(!tasks.length)accept();
     return true;
+  }
+  function temporalPreparationStats(){
+    const ticket=temporalTicket;
+    if(!ticket?.preparations)return null;
+    return {token:ticket.token,sourceAdmitted:ticket.sourceAdmitted,
+      tasks:Object.fromEntries(Object.entries(ticket.preparations).map(([name,row])=>[name,{...row}])),
+      joinElapsedMs:ticket.preparationFinishedAt===null?null:Math.max(0,ticket.preparationFinishedAt-ticket.preparationStartedAt)};
   }
   async function prepareTemporalCountrySource(features) {
     const ticket = temporalTicket;
@@ -94,6 +143,7 @@ export function createMapPresentationSession({
   function finishTemporalViewTransition(token) {
     if (temporalTicket?.token !== token) return false;
     if (!temporalTicket.presented) {
+      retireTicketWaiters(temporalTicket);
       temporalTicket = null;
       onTemporalRetired();
       invalidateFrame('temporal-source-rejected');
@@ -119,20 +169,21 @@ export function createMapPresentationSession({
       && temporalTicket.frameId != null && temporalTicket.frameId === frame?.frameId;
   }
   function failTemporalPresentation(error) {
-    if (!temporalPending()) return;
+    if (!temporalPending()||temporalTicket.error) return;
     temporalTicket.error = error;
+    temporalTicket.sourceAdmitted=false;
     // The date change awaits the generation's certified visible frame. A
     // Worker error must reject that waiter immediately so the caller can
     // restore its prior C++ cursor instead of hanging behind a failed ticket.
     rejectMapPresentationWaiters(error);
     onTemporalFailure(error);
   }
-  function waitForTemporalPresentation() {
+  function waitForTemporalPresentation(token) {
+    if(token!==undefined&&temporalTicket?.token!==token)return Promise.resolve(false);
     if (!temporalPending()) return Promise.resolve(true);
     if (temporalTicket.error) return Promise.reject(temporalTicket.error);
-    if (!temporalTicket.isCurrent())
-      return Promise.reject(abortError('Temporal presentation superseded'));
-    return waitForCanonicalFrame();
+    if (!temporalTicket.isCurrent())return Promise.resolve(false);
+    return temporalTicket.kind==='view'?waitForMapPresentation(getGeneration(),temporalTicket):waitForCanonicalFrame();
   }
   // A restored GPU context needs a new draw for the same live date ticket.
   function rebaseContext() {
@@ -174,7 +225,7 @@ export function createMapPresentationSession({
   return Object.freeze({
     get ticket() { return temporalTicket; },
     get pendingMapWaiterCount() { return mapWaiters.size; },
-    temporalPending, countrySourceAdmitted, beginTemporalViewTransition, admitTemporalViewTransition,
+    temporalPending, countrySourceAdmitted, beginTemporalViewTransition, admitTemporalViewTransition,temporalPreparationStats,
     prepareTemporalCountrySource, finishTemporalViewTransition,
     canPresentVisualFrame, failTemporalPresentation, waitForTemporalPresentation,
     waitForMapPresentation, rejectMapPresentationWaiters, settleMapPresentationWaiters,

@@ -30,6 +30,8 @@ export function createMapLibreFrameController({
   prepareContentKey:async features=>countryContentIdentity(features),sameContentKey:sameRenderIdentity,isImmutableContentKey:isCountryContentIdentity,
   isProjectBlocked:()=>!!error,isRecoveryFrameAdmissible:()=>!error&&isLoaded()&&!contextLost&&!unavailable(),
   onTemporalRetired:()=>{if(presentation.ticket?.presented)releaseTemporalFrame();},
+  onTemporalAdmitted:()=>selection.onTemporalAdmission(),
+  onTemporalFailure:cause=>{if(!error)failMapPreparation(cause);},
   waitForCanonicalFrame:()=>presentation.waitForMapPresentation(generation)
  });
  function notify(status,label){
@@ -291,9 +293,8 @@ export function createMapLibreFrameController({
   }
   return ticket;
  }
- function admitTemporalViewTransition(ticket){
-  if(!presentation.admitTemporalViewTransition(ticket))return false;
-  selection.onTemporalAdmission();return true;
+ function admitTemporalViewTransition(ticket,preparations){
+  return presentation.admitTemporalViewTransition(ticket,preparations);
  }
  function finishTemporalViewTransition(ticket){
   const finished=presentation.finishTemporalViewTransition(ticket);
@@ -377,7 +378,8 @@ export function createMapLibreFrameController({
  function frameStats(){return {errorMessage:error?.message||null,generation,webglContextLost:contextLost,
   projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,
   mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},sourceRevision,certifiedRevision:certificate?.revision??-1,
-  nativeReadinessChecks,certificateWakeups,dirtyCalls,coalescedDirtyCalls,certificateInvalidations,certificateRepaintRequests,commitRejections};}
+  nativeReadinessChecks,certificateWakeups,dirtyCalls,coalescedDirtyCalls,certificateInvalidations,certificateRepaintRequests,commitRejections,
+  temporalPreparation:presentation.temporalPreparationStats()};}
  return Object.freeze({attachMap,notify,dirty,renderFrame,canPresentVisualFrame,commitVisualFrame,failMapPreparation,retryMapPreparation,
   beginTemporalViewTransition,admitTemporalViewTransition,finishTemporalViewTransition,
   prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,

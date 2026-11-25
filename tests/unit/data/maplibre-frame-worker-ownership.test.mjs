@@ -237,6 +237,70 @@ test('failed dates retain the previous frame and a cancelled style wait releases
  owner.dispose();assert.equal(f.listenerCount(),0);
 });
 
+
+test('dated preparation promises are admitted by the frame owner regardless of completion order',async()=>{
+ const f=fixture(),{owner,map,visual,overlays}=f;
+ let presented=0,id=1;
+ try{
+  for(const order of ['country','physical']){
+   const token=owner.beginTemporalViewTransition(()=>true,()=>presented++);
+   owner.preserveTemporalFrame();await owner.prepareTemporalCountrySource([]);
+   const releases={};
+   const tasks=Object.fromEntries(['country','physical'].map(name=>[name,new Promise(resolve=>{releases[name]=resolve;})]));
+   assert.equal(owner.admitTemporalViewTransition(token,tasks),true);
+   const waiting=owner.waitForTemporalPresentation(token);
+   let completed=false;waiting.then(value=>{completed=value;});
+   const blocked=()=>{map.emit('render');assert.equal(owner.renderFrame(visual(id++)).deferred,true);};
+   blocked();releases[order](order==='country'?true:null);await Promise.resolve();blocked();
+   assert.equal(overlays.size,1);assert.equal(completed,false);
+   const other=order==='country'?'physical':'country';releases[other](other==='country'?true:null);
+   await Promise.resolve();
+   assert.equal(owner.runtimeState().temporalSourceAdmitted,true);
+   map.emit('render');const next=visual(id++);
+   assert.equal(owner.renderFrame(next,{domainPending:true}).deferred,true);
+   const frame=visual(id++);assert.equal(owner.renderFrame(frame).succeeded,true);
+   assert.equal(completed,false);
+   assert.equal(owner.commitVisualFrame(frame),true);assert.equal(await waiting,true);
+   assert.equal(overlays.size,0);owner.finishTemporalViewTransition(token);
+  }
+  assert.equal(presented,2);
+ }finally{owner.dispose();}
+});
+
+test('superseded preparation cannot admit or fail a later date and retires its waiter',async()=>{
+ const f=fixture(),{owner,map,visual}=f;
+ try{
+  const old=owner.beginTemporalViewTransition();owner.preserveTemporalFrame();
+  let rejectOld;const obsolete=new Promise((_resolve,reject)=>{rejectOld=reject;});
+  owner.admitTemporalViewTransition(old,{country:obsolete});
+  const waiting=owner.waitForTemporalPresentation(old);
+  const current=owner.beginTemporalViewTransition();assert.equal(await waiting,false);
+  await owner.prepareTemporalCountrySource([]);
+  let finish;const country=new Promise(resolve=>{finish=resolve;});
+  owner.admitTemporalViewTransition(current,{country});
+  rejectOld(Error('obsolete source error'));await Promise.resolve();
+  assert.equal(f.errors.length,0);assert.equal(owner.runtimeState().temporalSourceAdmitted,false);
+  finish(true);await Promise.resolve();map.emit('render');
+  const next=visual(1);assert.equal(owner.renderFrame(next).succeeded,true);assert.equal(owner.commitVisualFrame(next),true);
+  assert.equal(await owner.waitForTemporalPresentation(current),true);
+ }finally{owner.dispose();}
+});
+
+test('failed registered preparation rejects the current frame wait and keeps old pixels',async()=>{
+ const f=fixture(),{owner}=f;
+ try{
+  const token=owner.beginTemporalViewTransition();owner.preserveTemporalFrame();
+  await owner.prepareTemporalCountrySource([]);
+  let reject;const physical=new Promise((_resolve,fail)=>{reject=fail;});
+  owner.admitTemporalViewTransition(token,{country:Promise.resolve(true),physical});
+  const waiting=owner.waitForTemporalPresentation(token);
+  const rejection=assert.rejects(waiting,/physical failure/);reject(Error('physical failure'));await rejection;
+  assert.equal(f.overlays.size,1);assert.equal(owner.runtimeState().projectRenderBlocked,true);
+  assert.equal(owner.runtimeState().temporalSourceAdmitted,false);
+  assert.equal(f.errors.length,1);
+ }finally{owner.dispose();}
+});
+
 test('geometry worker scopes cancel superseded country and frame work without retiring shared land cache',async()=>{
  const requests=[],stats={geometryWorkerRequests:0,geometryWorkerTransferBytes:0,physicalLandPreparations:0,physicalLandPreparationMs:0};
  let stopped=0,created=0;
