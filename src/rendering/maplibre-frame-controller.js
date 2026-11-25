@@ -12,8 +12,9 @@ export function createMapLibreFrameController({
  createElement=tag=>document.createElement(tag),isDocumentHidden=()=>document.hidden
 }){
  let generation=0,contextRevision=0,contextLost=false,closed=false;
- let sourceRevision=0,certifiedRevision=-1,certifiedGeneration=-1,certifiedContext=-1,certifiedCamera='';
+ let sourceRevision=0,certifiedRevision=-1,certifiedGeneration=-1,certifiedContext=-1,certifiedCamera='',certifiedStyle=null;
  let pendingFrame=null,ready=false,preparedReady=false,error=null,requestedCertificate=null,approvedFrame=null;
+ let certificateNotified=false,nativeReadinessChecks=0,certificateWakeups=0;
  let previousActiveRender=null,endSourceFrame=null,basemapRecovery=null;
  let initialMapLoading=false,initialFrameStaging=null,initialZoomHidden=false;
  let temporalOverlay=null,temporalInteractions=[],temporalOptionalLayers=[];
@@ -36,7 +37,7 @@ export function createMapLibreFrameController({
   onMapPreparationStatus?.(value,generation);
  }
  function dirty(){
-  sourceRevision++;ready=false;preparedReady=false;approvedFrame=null;stats.sourceUpdates++;
+  sourceRevision++;ready=false;preparedReady=false;approvedFrame=null;certificateNotified=false;stats.sourceUpdates++;
   endSourceFrame??=metrics.begin('source-to-render');
  }
  function suspendOptionalLayers(){
@@ -122,37 +123,55 @@ export function createMapLibreFrameController({
   if(!applying&&!isProjectReplacing())invalidate('maplibre-camera');
  }
  function invalidateCertificate(){
-  certifiedRevision=-1;certifiedGeneration=-1;certifiedContext=-1;certifiedCamera='';
-  requestedCertificate=null;approvedFrame=null;
+  certifiedRevision=-1;certifiedGeneration=-1;certifiedContext=-1;certifiedCamera='';certifiedStyle=null;
+  requestedCertificate=null;approvedFrame=null;certificateNotified=false;
  }
- function certificateCurrent(){
+ function certificateCurrent(cameraKey=camera.cameraKey(),style=getMap()?.style){
   return certifiedRevision===sourceRevision&&certifiedGeneration===generation
-    &&certifiedContext===contextRevision&&certifiedCamera===camera.cameraKey();
+    &&certifiedContext===contextRevision&&certifiedCamera===cameraKey&&certifiedStyle===style;
+ }
+ function nativeFrameReady(){
+  nativeReadinessChecks++;
+  return isStyleReady()&&isLoaded()&&!error&&!contextLost&&!polarDisplay.pending
+    &&!sourceWrites.pendingCount()&&scene.requiredSourcesReady();
+ }
+ function admissionPending(country,moving){
+  return (presentation.temporalPending()&&selection.selectionPending())
+    || scene.requiredVectorPending() || country.generation!==generation
+    || !presentation.countrySourceAdmitted(country.contentKey)
+    || !physicalResources.physicalContextState.ready || (zoomFramePending&&moving);
  }
  function onRender(){
   if(unavailable())return;
   stats.renderedFrames++;requestedCertificate=null;
   if(isLoaded()&&!contextLost)selection.onRender();
-  const requiredReady=isLoaded()&&!error&&!contextLost&&!polarDisplay.pending
-    &&!sourceWrites.pendingCount()&&scene.requiredSourcesReady();
-  const sampled=requiredReady&&!isDocumentHidden()&&getMap().isMoving()?performance.now():null;
+  const map=getMap(),moving=map.isMoving(),cameraKey=camera.cameraKey(),style=map.style;
+  const sameCertificate=certificateCurrent(cameraKey,style);
+  // Optional repaint traffic after a committed stationary frame does not
+  // need to rescan all required sources. Each new approval still checks live readiness.
+  if(ready&&!pendingFrame&&!moving&&sameCertificate&&!endSourceFrame&&isStyleReady()){
+   previousActiveRender=null;return;
+  }
+  const requiredReady=nativeFrameReady();
+  const sampled=requiredReady&&!isDocumentHidden()&&moving?performance.now():null;
   if(sampled!==null&&previousActiveRender!==null&&renderQuality?.renderQualityController.recordFrame(0,{frameIntervalMs:sampled-previousActiveRender}))
    renderQuality.queueAdaptiveRenderQualityRefresh('maplibre-frame-cadence');
   previousActiveRender=sampled;
-  if(!requiredReady)return;
-  certifiedRevision=sourceRevision;certifiedGeneration=generation;certifiedContext=contextRevision;certifiedCamera=camera.cameraKey();
+  if(!requiredReady){
+   if(sameCertificate){invalidateCertificate();ready=false;preparedReady=false;}
+   else certificateNotified=false;
+   return;
+  }
+  if(!sameCertificate){
+   certifiedRevision=sourceRevision;certifiedGeneration=generation;certifiedContext=contextRevision;
+   certifiedCamera=cameraKey;certifiedStyle=style;certificateNotified=false;
+  }
   endSourceFrame?.();endSourceFrame=null;
-  if(pendingFrame)invalidate('maplibre-presented');
- }
- function requiredFramePending(country,map){
-  return !!polarDisplay.pending
-    || (presentation.temporalPending()&&selection.selectionPending())
-    || !!error || !isLoaded() || contextLost
-    || sourceWrites.pendingCount() || scene.requiredVectorPending()
-    || country.generation!==generation
-    || !presentation.countrySourceAdmitted(country.contentKey)
-    || !physicalResources.physicalContextState.ready || !scene.requiredSourcesReady()
-    || (zoomFramePending&&map.isMoving());
+  // Wake the application once for a usable certificate, not once per render
+  // while a date, vector, selection, physical context or label is still pending.
+  if(pendingFrame&&!certificateNotified&&!admissionPending(getCountryStatus(),moving)){
+   certificateNotified=true;certificateWakeups++;invalidate('maplibre-presented');
+  }
  }
  function renderFrame(frame){
   stats.approvalAttempts++;approvedFrame=null;
@@ -163,11 +182,16 @@ export function createMapLibreFrameController({
   metrics.run('polar.sync',()=>{polarDisplay.syncPolar();polarDisplay.syncPolarLines();});
   if(initialMapLoading)syncInitialMapSkeleton();else syncLabelVisibility();
   const country=getCountryStatus(),map=getMap();
-  const pending=requiredFramePending(country,map);
-  if(pending||!certificateCurrent()){
-   ready=false;preparedReady=false;
-   if(!pending){
-    const certificate=generation+'|'+contextRevision+'|'+sourceRevision+'|'+camera.cameraKey();
+  // Cheap admission gates precede the native source scan. Never reuse a
+  // successful scan across asynchronous source or camera changes.
+  const pending=admissionPending(country,map.isMoving());
+  const nativeReady=!pending&&nativeFrameReady();
+  const cameraKey=nativeReady?camera.cameraKey():null;
+  if(!nativeReady||!certificateCurrent(cameraKey,map.style)){
+   ready=false;preparedReady=false;certificateNotified=false;
+   if(!pending&&!nativeReady)invalidateCertificate();
+   if(nativeReady){
+    const certificate=generation+'|'+contextRevision+'|'+sourceRevision+'|'+cameraKey;
     if(requestedCertificate!==certificate){requestedCertificate=certificate;map.triggerRepaint();}
    }
    return {succeeded:false,deferred:true,presentationReady:false};
@@ -177,7 +201,7 @@ export function createMapLibreFrameController({
    syncInitialMapSkeleton();dirty();map.triggerRepaint();
    return {succeeded:false,deferred:true,presentationReady:false};
   }
-  presentation.markTemporalFrame(frame);preparedReady=true;approvedFrame=frame;
+  presentation.markTemporalFrame(frame);preparedReady=true;approvedFrame=frame;certificateNotified=true;
   const result={succeeded:true,presentationReady:true,frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
   if(presentation.canPresentVisualFrame(frame,result)){
    markCanonicalFrame();if(stats.firstCanonicalFrameMs===null)stats.firstCanonicalFrameMs=performance.now();
@@ -303,7 +327,8 @@ export function createMapLibreFrameController({
   temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false};}
  function frameStats(){return {errorMessage:error?.message||null,generation,webglContextLost:contextLost,
   projectRenderBlocked:!!error,displayedRevision:ready?sourceRevision:0,
-  mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},sourceRevision,certifiedRevision};}
+  mapReadiness:{mapReady:ready,status:error?'error':ready?'ready':'loading'},sourceRevision,certifiedRevision,
+  nativeReadinessChecks,certificateWakeups};}
  return Object.freeze({attachMap,notify,dirty,renderFrame,canPresentVisualFrame,commitVisualFrame,failMapPreparation,retryMapPreparation,
   beginTemporalViewTransition,admitTemporalViewTransition,finishTemporalViewTransition,
   prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
