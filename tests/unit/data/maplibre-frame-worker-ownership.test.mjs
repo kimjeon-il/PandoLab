@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMapLibreFrameController} from '../../../src/rendering/maplibre-frame-controller.js';
 import {createMapLibreGeometryClient,createMapGeometryRequester} from '../../../src/rendering/maplibre-geometry-client.js';
+import {createGeometryWorkGate,createGeometryWorkActivity} from '../../../src/rendering/geometry-work-gate.js';
 
 function fixture(){
  const listeners=new Map(),layers=new Map([['optional',{id:'optional',source:'custom',layout:{visibility:'visible'}}]]);
@@ -299,6 +300,27 @@ test('failed registered preparation rejects the current frame wait and keeps old
   assert.equal(owner.runtimeState().temporalSourceAdmitted,false);
   assert.equal(f.errors.length,1);
  }finally{owner.dispose();}
+});
+
+test('geometry queue records slot wait and cross-gate async overlap',async()=>{
+ let time=0;const now=()=>time,sharedActivity=createGeometryWorkActivity(now);
+ const gate=createGeometryWorkGate(2,{now,sharedActivity}),boundaryGate=createGeometryWorkGate(1,{now,sharedActivity});
+ const context={priority:1,throwIfCancelled(){}},releases={};
+ const run=(owner,kind)=>owner.run(context,()=>new Promise(resolve=>{releases[kind]=resolve;}),kind);
+ const one=run(gate,'polar'),two=run(gate,'physical'),three=run(gate,'stroke'),four=run(boundaryGate,'boundary');
+ await Promise.resolve();
+ assert.equal(Object.keys(releases).length,3);assert.equal(gate.stats().waiting,1);
+ time=10;releases.polar();await one;await Promise.resolve();
+ assert.equal(typeof releases.stroke,'function');assert.equal(gate.stats().kinds.stroke.queueMs,10);
+ time=15;releases.physical();await two;
+ time=17;releases.boundary();await four;
+ time=20;releases.stroke();await three;
+ const result=gate.stats(),combined=sharedActivity.stats();
+ assert.equal(result.active,0);assert.equal(result.peakActive,2);
+ assert.equal(result.busyMs,20);assert.equal(result.overlapMs,15);
+ assert.equal(result.kinds.polar.workMs,10);assert.equal(result.kinds.physical.workMs,15);
+ assert.equal(result.kinds.stroke.workMs,10);assert.equal(boundaryGate.stats().kinds.boundary.workMs,17);
+ assert.equal(combined.peakActive,3);assert.equal(combined.busyMs,20);assert.equal(combined.overlapMs,17);
 });
 
 test('geometry worker scopes cancel superseded country and frame work without retiring shared land cache',async()=>{

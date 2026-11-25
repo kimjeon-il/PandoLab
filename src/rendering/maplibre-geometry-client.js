@@ -95,6 +95,11 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   },
   track:(operation,submit)=>{getStats().geometryWorkerRequests++;return metrics.track(operation,submit);},
  });
+ function recordGeometryQueue(snapshot){
+  if(!snapshot||!Number.isFinite(snapshot.sampledAt))return;
+  const stats=getStats();
+  if(!stats.geometryQueue||snapshot.sampledAt>=stats.geometryQueue.sampledAt)stats.geometryQueue=snapshot;
+ }
  function preparePhysicalDisplay(key,geometry){
   requireOpen();
   const cached=physicalDisplayCache.get(key);
@@ -106,7 +111,7 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   }
   const entry={controller:new AbortController(),geometry:null,task:null,bytes:0};physicalDisplayCache.set(key,entry);
   entry.task=requestMapGeometry('geometry.physical-land',{sourceKey:'physical-display-union-v1:'+key,geometry},getGeneration(),entry.controller.signal)
-   .then(result=>{entry.geometry=result.geometry;entry.bytes=physicalEstimate(result.geometry);
+   .then(result=>{recordGeometryQueue(result.geometryQueue);entry.geometry=result.geometry;entry.bytes=physicalEstimate(result.geometry);
     if(physicalDisplayCache.get(key)===entry)trimPhysical(key);
     getStats().physicalLandPreparations++;getStats().physicalLandPreparationMs+=result.durationMs;return result.geometry;},cause=>{if(physicalDisplayCache.get(key)===entry)physicalDisplayCache.delete(key);throw cause;});
   return entry.task;
@@ -116,6 +121,7 @@ export function createMapLibreGeometryClient({runtimeAssetUrl,isDisposed=()=>fal
   if(!items.length&&!boundary)return {packets:[]};
   const sentAt=performance.timeOrigin+performance.now();
   const result=await requestMapGeometry('geometry.prepare',{items,boundary},revision,signal);
+  recordGeometryQueue(result.geometryQueue);
   getStats().geometryWorkerTransferBytes+=result.stats?.transferBytes||0;
   const receivedAt=performance.timeOrigin+performance.now();
   if(result.boundaryMiss)return result;

@@ -28,7 +28,8 @@ export function createMapLibreRenderingDomain(options){
   const task=options.labelResources.preparePlaces();
   if(pendingPlaceViewport===task)return;
   pendingPlaceViewport=task;stats.placePreparations=(stats.placePreparations||0)+1;
-  task.then(()=>{
+  const observed=renderer.measureWork?.('dated.place.viewport',()=>task)??task;
+  observed.then(()=>{
    if(pendingPlaceViewport!==task||disposed)return;
    pendingPlaceViewport=null;
    // The place snapshot callback owns label invalidation; wake only admission.
@@ -42,7 +43,8 @@ export function createMapLibreRenderingDomain(options){
  const content=createMapContentPresentation({mapPalette:options.mapPalette,
   territorial:options.territorialResources,generic:options.genericResources,distribution:options.distributionResources,
   territorialBoundary:options.territorialBoundaryResources,base:options.baseResources,isDisposed:()=>disposed,
-  prepareMapDisplay:options.prepareMapDisplay,onMapDisplayReady:()=>{
+  prepareMapDisplay:options.prepareMapDisplay&&((...args)=>renderer.measureWork
+   ?renderer.measureWork('dated.internal-boundary.prepare',()=>options.prepareMapDisplay(...args)):options.prepareMapDisplay(...args)),onMapDisplayReady:()=>{
    boundaryDirty=true;invalidate('display-ready',false,false);
   },
   onMapDisplayFailed:()=>invalidate('display-failed',false,false),reportDiagnostic});
