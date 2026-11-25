@@ -7,7 +7,7 @@ import {deviceCurrentMonth} from "./calendar-month.js";
 export function createProjectMonthClock({
   applyMonth,now=()=>new Date(),window=null,document=null,
   canFollow=()=>true,initialAutomatic=true,onFollowChange=()=>{},
-  onCommitted=()=>{},onError=()=>{},coalesceRequests=true,
+  onCommitted=()=>{},onError=()=>{},onPendingChange=()=>{},coalesceRequests=true,
 }={}){
   if(typeof applyMonth!=='function')throw new TypeError('A common project timeline operation is required');
   if(typeof canFollow!=='function'||typeof onFollowChange!=='function'
@@ -15,12 +15,17 @@ export function createProjectMonthClock({
     throw new TypeError('Invalid project timeline follow policy');
   let automatic=initialAutomatic,committed=null,pendingMonth=null,pendingResult=null;
   let request=0,disposed=false,timer;
-  const clearPending=()=>{request++;pendingMonth=null;pendingResult=null;};
+  const setPendingMonth=month=>{
+    const changed=(pendingMonth===null)!==(month===null);
+    pendingMonth=month;
+    if(changed)onPendingChange(month!==null);
+  };
+  const clearPending=()=>{request++;pendingResult=null;setPendingMonth(null);};
   const isMonth=value=>parseTemporal(value,{nullable:false}).precision==='month';
   async function change(month,mode){
     if(!isMonth(month))throw new TypeError('A query month is required');
     const ticket=++request,isCurrent=()=>!disposed&&ticket===request;
-    pendingMonth=month;
+    setPendingMonth(month);
     let presented=false;
     const commit=()=>{
       if(!isCurrent()||presented)return false;
@@ -39,7 +44,7 @@ export function createProjectMonthClock({
     }).catch(error=>{
       if(!isCurrent()||error?.cancelled||error?.name==='AbortError')return false;
       throw error;
-    }).finally(()=>{if(isCurrent()){pendingMonth=null;pendingResult=null;}});
+    }).finally(()=>{if(isCurrent()){pendingResult=null;setPendingMonth(null);}});
     if(isCurrent())pendingResult=result;
     return result;
   }
@@ -68,14 +73,14 @@ export function createProjectMonthClock({
   schedule();
   return Object.freeze({
     month:()=>committed,
-    isAutomatic:()=>automatic,
+    isAutomatic:()=>automatic,isPending:()=>pendingMonth!==null,
     initialize:()=>change(deviceCurrentMonth(now()),'startup'),
     followNow:()=>{setFollow(true,'follow');return change(deviceCurrentMonth(now()),'follow');},
     selectMonth:month=>{setFollow(false,'manual');return change(month,'manual');},
     refresh,
     cancelPending:clearPending,
     dispose:()=>{
-      disposed=true;request++;pendingResult=null;
+      disposed=true;clearPending();
       window?.clearTimeout(timer);
       window?.removeEventListener('focus',wake);
       document?.removeEventListener('visibilitychange',wake);

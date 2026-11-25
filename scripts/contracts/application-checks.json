@@ -21,7 +21,8 @@
         "tests/unit/data/maplibre-hydro-loader.test.mjs",
         "tests/unit/data/maplibre-hydro-presentation.test.mjs",
         "tests/unit/data/maplibre-hydro-cancel.test.mjs",
-        "tests/unit/ui/object-details-panel.test.mjs"
+        "tests/unit/ui/object-details-panel.test.mjs",
+        "tests/unit/ui/timeline-controls.test.mjs"
       ]
     },
     {
@@ -80,7 +81,8 @@
         "tools",
         "tests/core",
         "tests/browser",
-        "tests/unit/data/maplibre-*.test.mjs"
+        "tests/unit/data/maplibre-*.test.mjs",
+        "tests/unit/ui/timeline-controls.test.mjs"
       ]
     }
   ]

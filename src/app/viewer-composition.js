@@ -303,6 +303,7 @@ export async function composeViewer({ productMode, meta }) {
         ?accepted.month:activeSession?.commandOwner.state().timelineCursor||null;
     },
     getRange:()=>projectDomain.timelineNavigation().range,
+    isPending:()=>projectClock?.isPending()===true,
     setMonth:async month=>{
       if(projectDomain.isOpening())throw new Error('지도를 여는 중입니다.');
       return projectClock.selectMonth(month);
@@ -440,6 +441,7 @@ export async function composeViewer({ productMode, meta }) {
   };
   projectClock=createProjectMonthClock({
     coalesceRequests:true,window,document,
+    onPendingChange:()=>window.dispatchEvent(new CustomEvent('pandolab:timeline-pending')),
     initialAutomatic:preferencePresentation.current.timeline.defaultWorldFollowCurrentMonth,
     canFollow:()=>!projectDomain.isOpening()
       &&(!projectDomain.activeProject()||projectDomain.activeProject().source==='builtin'),
