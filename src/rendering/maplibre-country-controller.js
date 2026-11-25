@@ -74,7 +74,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   if(canReuseCountryInputs(inputs)){
    territories=features;acceptedCountryInputs=inputs;countryContentKey=countryContentIdentity(features);return Promise.resolve(true);
   }
-  if(activeCountryTasks.size){countryDisplay.markSourceStale();countryTail=Promise.resolve();}
+  if(activeCountryTasks.size)countryTail=Promise.resolve();
   const signal=geometryClient.startCountryRequest(),ticket=isTemporalPending()?getTemporalTicket():null;
   territories=features;const sequence=++countrySequence,requestedGeneration=getGeneration();countryGeneration=-1;
   const task=countryTail.then(async()=>{
@@ -127,9 +127,10 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
   }else{
    const temporal=isTemporalPending();
    const startingId=datedSources.active('territories'),startingSource=map.getSource(startingId);
-   const canPreserve=temporal&&!!trustedTiles(datedSources.get(startingId),startingSource);
+   const activeBusy=sourceWrites.hasNativeWrite(startingSource);
+   const canPreserve=temporal&&(!!trustedTiles(datedSources.get(startingId),startingSource)||isFramePreserved()&&activeBusy);
    // A pending or unacknowledged source must never be a diff baseline.
-   if(!canPreserve&&(countryDisplay.needsSwap||sourceWrites.hasPendingWrite(startingSource))){
+   if(!canPreserve&&(countryDisplay.needsSwap||activeBusy)){
     countryDisplay.markSourceStale();
     countryDisplay.replaceObsoleteCountrySource({map,datedSources,sourceLayer,sourceLayers,countryTileSource,onCountrySourceRemoved:id=>scene.removeCountryFillSource(id),onStyleInvalidated:()=>{scene.invalidateLayerIndex();},dirty});
    }
@@ -140,7 +141,7 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
    for(const {feature} of borders)if(feature.geometry.coordinates.length)tileFeatures.push(feature);
    const diff=tiles=>tiles&&metrics.run('territorial.tile-diff',()=>countryTileDiff(tiles,tileFeatures));
    const activeRecord=datedSources.get(activeId),activeTiles=trustedTiles(activeRecord,activeSource);
-   const activeSafe=!!activeTiles&&!countryDisplay.needsSwap&&!sourceWrites.hasPendingWrite(activeSource);
+   const activeSafe=!!activeTiles&&!countryDisplay.needsSwap&&!sourceWrites.hasNativeWrite(activeSource);
    let delta=activeSafe&&(!temporal||isFramePreserved())?diff(activeTiles):null;
    const useActive=activeSafe&&(!canPreserve||isFramePreserved()&&countryDeltaPreferred(delta,geometryBytes));
    const requestedSource=canPreserve&&!useActive?datedSources.reserve('territories'):activeId;
@@ -206,7 +207,6 @@ export function createMapLibreCountryController({getMap,getGeneration,isDisposed
 
  function reset(){
   geometryClient.cancelCountryRequest();
-  if(activeCountryTasks.size)countryDisplay.markSourceStale();
   countryTail=Promise.resolve();countrySequence++;countryGeneration=-1;
   countryContentKey='';acceptedCountryInputs=null;
  }

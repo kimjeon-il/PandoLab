@@ -318,9 +318,10 @@ test('native source writes serialize and reject queued work from an obsolete gen
   isDisposed:()=>false,requiredSource:()=>true,dirty:()=>{dirty++;},track:(_name,run)=>run(),onError:error=>{throw error;}});
  const first=writes.update(()=>new Promise(resolve=>{release=resolve;started();}),'territories');
  const obsolete=writes.update(()=>{throw Error('obsolete source write ran');},'territories');
- await ready;assert.equal(writes.pendingCount(),2);
- generation++;assert.equal(writes.pendingCount(),0);release();
- assert.equal(await first,true);assert.equal(await obsolete,false);
+ assert.equal(writes.hasNativeWrite(source),false,'Queued work is not a running native write');
+ await ready;assert.equal(writes.pendingCount(),2);assert.equal(writes.hasNativeWrite(source),true);
+ generation++;assert.equal(writes.pendingCount(),0);assert.equal(writes.hasNativeWrite(source),true);release();
+ assert.equal(await first,true);assert.equal(writes.hasNativeWrite(source),false);assert.equal(await obsolete,false);
  assert.equal(dirty,2);
  assert.equal(await writes.update(()=>{},'territories'),true);
  assert.equal(writes.pendingCount(),0);
@@ -427,41 +428,62 @@ test('shared binary geometry rejects malformed offsets and inconsistent width pr
  assert.deepEqual(unpackHydroFeatures(packHydroFeatures([])),[]);
 });
 
-test('dated country standby is initialized without tiles and only the published slot is visible',async()=>{
+test('dated source lifecycle acknowledges prewarm, reuses slots and enforces the standby budget',async()=>{
  const active='territories',standby='territories-retained';
- const sources=new Map([[active,{}]]),layers=new Map([
-  ['territories',{id:'territories',type:'fill',source:active}],
-  ['borders',{id:'borders',type:'line',source:active}]
- ]);
- let created=0,temporal=false;
- const map={
-  getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
-  getStyle:()=>({layers:[...layers.values()]}),
-  addSource(id,spec){created++;sources.set(id,spec);},
-  removeSource:id=>sources.delete(id),
-  addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),
-  setLayoutProperty(id,name,value){const layer=layers.get(id);layer.layout={...layer.layout,[name]:value};},
-  setPaintProperty(id,name,value){const layer=layers.get(id);layer.paint={...layer.paint,[name]:value};}
+ const makeSource=spec=>{
+  const listeners=new Map();
+  return {...spec,on(name,fn){if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(fn);},
+   off(name,fn){listeners.get(name)?.delete(fn);},emit(name,event){for(const fn of [...(listeners.get(name)||[])])fn(event);},
+   listeners:()=>[...listeners.values()].reduce((sum,set)=>sum+set.size,0)};
  };
- const sourceLayer=(id,source)=>source===active?id:id+'--'+source;
+ const sources=new Map([[active,makeSource({})]]),layers=new Map([
+  ['territories',{id:'territories',type:'fill',source:active}],['borders',{id:'borders',type:'line',source:active}]]);
+ let created=0,temporal=false,moving=false;const pending=new Set(),busy=new Set();
+ const map={style:{},getSource:id=>sources.get(id),getLayer:id=>layers.get(id),
+  getStyle:()=>({layers:[...layers.values()]}),addSource(id,spec){created++;sources.set(id,makeSource(spec));},
+  removeSource:id=>sources.delete(id),addLayer:layer=>layers.set(layer.id,layer),removeLayer:id=>layers.delete(id),
+  setLayoutProperty(id,name,value){const layer=layers.get(id);layer.layout={...layer.layout,[name]:value};},
+  getPaintProperty:(id,name)=>layers.get(id)?.paint?.[name],
+  setPaintProperty(id,name,value){const layer=layers.get(id);layer.paint={...layer.paint,[name]:value};}};
+ const sourceLayer=(id,source)=>map.getLayer(id)?.source===source?id:id+'--'+source;
  const visible=id=>[...layers.values()].filter(layer=>layer.source===id&&layer.layout?.visibility!=='none').length;
  const owner=createMapLibreDatedSources({getMap:()=>map,sourceLayers:{territories:['territories','borders']},sourceLayer,
   mapSourceLayers:()=>[...layers.values()].map(layer=>({...layer,visible:layer.layout?.visibility!=='none'})),
   createCountrySource:()=>({type:'geojson',promoteId:'objectKey'}),createEmptySource:()=>({type:'geojson'}),
-  invalidateLayerIndex(){},dirty(){},canRetire:()=>!temporal,temporalPending:()=>temporal,graceMs:0});
+  invalidateLayerIndex(){},dirty(){},canRetire:()=>!temporal&&!moving,temporalPending:()=>temporal,standbyBudget:100,
+  hasPendingWrite:source=>pending.has(source),hasNativeWrite:source=>busy.has(source)});
+ const flush=async()=>{owner.scheduleRetirement();await new Promise(resolve=>setTimeout(resolve,0));};
  try{
-  owner.set(active,{kind:'territories',source:sources.get(active),key:'old'});
-  owner.scheduleRetirement();await new Promise(resolve=>setTimeout(resolve,0));
+  owner.set(active,{kind:'territories',source:sources.get(active),key:'old',estimatedBytes:80});
+  await flush();const warm=sources.get(standby);
   assert.equal(created,1);assert.equal(visible(standby),0);
-  temporal=true;
+  assert.equal(owner.stats().standbyWarmReady,0);
+  warm.emit('data',{sourceDataType:'content'});assert.equal(owner.stats().standbyWarmReady,0);
+  warm.emit('data',{sourceDataType:'metadata'});assert.equal(owner.stats().standbyWarmReady,1);
+  assert.equal(warm.listeners(),0);
+  temporal=true;pending.add(warm);
   assert.equal(owner.reserve('territories'),standby);assert.equal(created,1);
+  assert.equal(owner.stats().standbyWarmUsedReady,1);
   assert.equal(visible(active),2);assert.equal(visible(standby),0);
-  owner.set(standby,{kind:'territories',source:sources.get(standby),key:'new'});
+  pending.delete(warm);
+  owner.set(standby,{kind:'territories',source:warm,key:'new',estimatedBytes:120});
+  layers.set('extra-fill',{id:'extra-fill',type:'fill',source:standby,layout:{visibility:'none'}});
   owner.activate('territories',standby);
-  assert.equal(visible(active),0);assert.equal(visible(standby),2);
+  assert.equal(visible(active),0);assert.equal(visible(standby),3);
   assert.equal(owner.reuse('territories','old')[0],active);
   owner.activate('territories',active);
   assert.equal(visible(active),2);assert.equal(visible(standby),0);
+  temporal=false;moving=true;await flush();assert.equal(sources.get(standby),warm);
+  moving=false;pending.add(warm);await flush();assert.equal(sources.get(standby),warm);
+  pending.delete(warm);await flush();
+  assert.equal(sources.has(standby),false);assert.equal(owner.stats().standbyBytes,0);
+  assert.equal(owner.stats().evictions,1);assert.equal(created,1,'Eviction must not recreate a speculative source');
+  temporal=true;assert.equal(owner.reserve('territories'),standby);
+  const next=sources.get(standby);pending.add(next);
+  assert.equal(owner.reserve('territories'),standby);assert.equal(sources.get(standby),next);
+  busy.add(next);assert.equal(owner.reserve('territories'),standby);
+  assert.notEqual(sources.get(standby),next);assert.equal(owner.stats().replacements,1);
+  assert.equal(sources.get(standby).promoteId,'objectKey');assert.equal(visible(standby),0);
  }finally{owner.dispose();}
 });
 
@@ -506,7 +528,7 @@ test('historical country writes use acknowledged deltas and recover uncertain na
   state:{layerVisibility:{objects:true},layerPresentation:{}},layerPresentation:{isLayerItemVisible:()=>true},
   currentMapStyle:()=>({countryStroke:{color:'#fff',width:1},borderAlpha:1}),
   geometryClient:{startCountryRequest(){request?.abort();request=new AbortController();return request.signal;},cancelCountryRequest(){request?.abort();}},
-  countryDisplay:display,datedSources,sourceWrites:{hasPendingWrite:()=>false,update:(submit,id,current)=>current()?submit({updateData:delta=>writeDelta(id,delta)}):Promise.resolve(false)},
+  countryDisplay:display,datedSources,sourceWrites:{hasNativeWrite:()=>false,update:(submit,id,current)=>current()?submit({updateData:delta=>writeDelta(id,delta)}):Promise.resolve(false)},
   setData,scene:{syncCountryPaint(){},syncVectorGroups(){},orderSceneLayers(){},syncTerritorialFills(){}},
   metrics:{run:(_name,fn)=>fn(),track:(_name,fn)=>fn()},stats,dirty(){},prewarmCountryMeshes(){},
   prepareCountryBorders:async rows=>rows.map(row=>({key:'border:'+row.id,feature:{type:'Feature',id:'border:'+row.id,

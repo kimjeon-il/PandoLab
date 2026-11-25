@@ -61,6 +61,11 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    renderer.setInitialMapLoading(false);
    if(renderer.map.getCanvas().style.visibility==='hidden'||renderer.map.getLayer('initial-map-land')||document.querySelector('[data-map-preserved-frame]'))
     throw new Error('The first approved frame still shows the loading surface');
+   for(let i=0;i<200&&!renderer.getStats().datedSourceMemory.standbyWarmReady;i++)await new Promise(resolve=>setTimeout(resolve,10));
+   if(!renderer.getStats().datedSourceMemory.standbyWarmReady)
+    throw new Error('The empty dated country source did not acknowledge worker metadata');
+   if(renderer.map.style.tileManagers['territories-retained']?.used)
+    throw new Error('Speculative country source started tiling before it was requested');
    const mapForPan=renderer.map;
    const samplePan=()=>new Promise(resolve=>{
     mapForPan.once('render',()=>{
@@ -500,6 +505,20 @@ test('MapLibre certifies the admitted dated geometry before resolving its presen
    };
    if(!isInactiveSourceRetained())
     throw new Error('The old dated slot is still used for native tiling after publication');
+   const retainedCountrySource=map.getSource(inactiveCountry),newCountrySource=activeTerritories();
+   const revisit=async(features,source)=>{
+    const setData=source.setData,updateData=source.updateData;
+    let writes=0;
+    source.setData=function(...args){writes++;return setData.apply(this,args);};
+    source.updateData=function(...args){writes++;return updateData.apply(this,args);};
+    try{
+     const token=renderer.beginTemporalViewTransition();renderer.preserveTemporalFrame();
+     await renderer.prepareTemporalCountrySource(features);await renderer.setTerritorialFeatures(features);
+     renderer.admitTemporalViewTransition(token);await settle();renderer.finishTemporalViewTransition(token);
+     if(activeTerritories()!==source||writes)throw new Error('An exact dated revisit replaced or rewrote its native source');
+    }finally{source.setData=setData;source.updateData=updateData;}
+   };
+   await revisit([before],retainedCountrySource);await revisit([after],newCountrySource);
    renderer.map.panBy([1,0],{animate:false});await settle();
    if(!isInactiveSourceRetained())
     throw new Error('A camera move reactivated the inactive dated slot');

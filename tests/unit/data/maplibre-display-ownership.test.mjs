@@ -15,7 +15,7 @@ test('physical land and water keep their independent source identities and pendi
   isContextReady:()=>true,isTemporalPending:()=>false,physicalResources:{
    physicalLand:{revision:'land',waterRevision:'water',geometry:{type:'Polygon',coordinates:[]},
     water:{type:'Polygon',coordinates:[]},displayPrepared:true},physicalContextState:{ready:true}},
-  datedSources,setData:async id=>{writes.push(id);return true;},preparePhysicalDisplay:()=>{throw Error('already prepared');},
+  datedSources,sourceWrites:{hasNativeWrite:()=>false},setData:async id=>{writes.push(id);return true;},preparePhysicalDisplay:()=>{throw Error('already prepared');},
   orderSceneLayers(){},dirty(){},invalidate(){},failMapPreparation:cause=>{throw cause;},getStats:()=>stats});
  assert.equal(base.syncPhysicalContext(),true);
  assert.equal(base.isPending('physical-land'),true);

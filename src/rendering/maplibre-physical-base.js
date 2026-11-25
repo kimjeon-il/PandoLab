@@ -27,9 +27,9 @@ export function createMapLibrePhysicalBase({getMap,getGeneration,isDisposed,isCo
   }
   const active=datedSources.active(kind);
   const activeReady=datedSources.get(active)?.key;
-  const writePending=sourceWrites.hasPendingWrite(getMap().getSource(active));
+  const writePending=sourceWrites.hasNativeWrite(getMap().getSource(active));
   const useStandby=(isTemporalPending()&&activeReady)||previous?.id===active||writePending;
-  const id=useStandby?datedSources.reserve(kind,sourceWrites.hasPendingWrite):active;
+  const id=useStandby?datedSources.reserve(kind):active;
   const scope=lifetime.capture(),source=scope.map.getSource(id),entry=physicalPending.begin(kind,{key,source,id,generation:scope.generation});
   datedSources.set(id,{kind,source});
   const current=()=>physicalPending.current(kind,entry)&&scope.sourceCurrent(id,source);

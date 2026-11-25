@@ -112,11 +112,12 @@ export function createMapLibreViewerRenderer(deps,{presentMapPreparation,onMapPr
   invalidateLayerIndex:()=>scene.invalidateLayerIndex(),dirty,
   canRetire:()=>styleReady()&&!frame.temporalPending()&&!frame.zoomPending&&!map.isMoving(),
   temporalPending:()=>frame.temporalPending(),standbyBudget:renderCacheBudget().datedStandbyBytes,
-  hasPendingWrite:source=>sourceWrites.hasPendingWrite(source),
+  hasPendingWrite:source=>sourceWrites.hasPendingWrite(source),hasNativeWrite:source=>sourceWrites.hasNativeWrite(source),
   onEvict:(kind,id)=>{if(kind==='territories')scene.removeCountryFillSource(id);}});
  const lifetime=createRenderLifetime({getMap:()=>map,getGeneration:()=>frame.generation,getContextRevision:()=>frame.contextRevision,isDisposed:()=>disposed});
  const sourceWrites=createMapLibreSourceWrites({lifetime,getMap:()=>map,getGeneration:()=>frame.generation,getContextRevision:()=>frame.contextRevision,
   isDisposed:()=>disposed,requiredSource:id=>requiredSource(id),dirty,onError:failMapPreparation,
+  onIdle:()=>datedSources.scheduleRetirement(),
   track:(name,submit)=>metrics.track(name,()=>{stats.sourceWrites++;return submit();})});
  const scene=createMapLibreSceneController({getMap:()=>map,isLoaded:()=>loaded,isStyleReady:styleReady,isDisposed:()=>disposed,
  isTemporalOverlay:()=>frame.hasOverlay,isInitialMapLoading:()=>frame.initialMapLoading,getPolarLayer:()=>polarDisplay.layer,getHighlight:()=>selection,

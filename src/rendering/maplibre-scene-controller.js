@@ -178,8 +178,9 @@ export function createMapLibreSceneController({getMap,isLoaded,isStyleReady,isDi
    :ids.map(id=>({id:'territories-multiply-'+id+suffix,multiply:true,filter:['==',['get','objectKey'],id]})));
   const wanted=new Set(next.map(group=>group.id));
   for(const {id} of countryFillGroups.get(source)||[])if(id!==base&&!wanted.has(id)&&map.getLayer(id)){map.removeLayer(id);indexedStyle=null;}
+  const isActive=source===datedSources.active('territories');
   for(const {id,multiply,filter} of next)if(!map.getLayer(id)){
-   map.addLayer({id,type:'fill',source,filter,layout:{'fill-sort-key':['get','paintOrder'],visibility:'visible'},paint:{...paint,
+   map.addLayer({id,type:'fill',source,filter,layout:{'fill-sort-key':['get','paintOrder'],visibility:isActive?'visible':'none'},paint:{...paint,
     'fill-layer-blend':multiply&&colorsEnabled()?'multiply':'normal',
     'fill-layer-opacity':source===datedSources.active('territories')?1:0,'fill-layer-opacity-transition':{duration:0}}},sourceLayer('physical-water',datedSources.active('physical-water')));
    indexedStyle=null;

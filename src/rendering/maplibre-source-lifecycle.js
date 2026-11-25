@@ -3,7 +3,7 @@ import {createRenderLifetime} from './render-lifetime.js';
 // Owns native source writes and the two dated source slots. Rendering owns
 // frame admission; no document state or camera policy is stored here.
 export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevision,isDisposed,requiredSource,dirty,track,onError,
- lifetime=createRenderLifetime({getMap,getGeneration,getContextRevision,isDisposed})}) {
+ onIdle=()=>{},lifetime=createRenderLifetime({getMap,getGeneration,getContextRevision,isDisposed})}) {
  const pending=new Set(),queues=new WeakMap(),liveLanes=new Set(),handledErrors=new WeakSet();
  function pendingCount(){
   const map=getMap(),generation=getGeneration(),context=getContextRevision();
@@ -17,7 +17,7 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
  function pump(lane,source){
   if(lane.running)return;
   const entry=lane.waiting.shift();
-  if(!entry){if(queues.get(source)===lane)queues.delete(source);liveLanes.delete(lane);return;}
+  if(!entry){if(queues.get(source)===lane)queues.delete(source);liveLanes.delete(lane);onIdle();return;}
   lane.running=true;
   const {map,generation,id,isCurrent,shareAcrossGenerations,start,scope}=entry;
   const live=()=>scope.sourceCurrent(id,source);
@@ -32,11 +32,12 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
     }
    };
    source.on('error',onSourceError);
+   lane.nativePending=true;
    try{
     await track('source:'+id.replace(/-generation-\d+$/,''),()=>start(source));
     if(sourceError)throw sourceError;
     return true;
-   }finally{source.off('error',onSourceError);}
+   }finally{lane.nativePending=false;source.off('error',onSourceError);}
   };
   Promise.resolve().then(execute).then(value=>{
    pending.delete(entry);entry.resolve(value);
@@ -56,7 +57,7 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   if(requiredSource(id))dirty();
   if(!source)return Promise.resolve(false);
   let lane=queues.get(source);
-  if(!lane){lane={running:false,waiting:[]};queues.set(source,lane);liveLanes.add(lane);}
+  if(!lane){lane={running:false,nativePending:false,waiting:[]};queues.set(source,lane);liveLanes.add(lane);}
   const entry={map,id,source,generation,context,start,isCurrent,shareAcrossGenerations,coalesce,scope};
   if(coalesce){
    const last=lane.waiting.at(-1);
@@ -77,51 +78,85 @@ export function createMapLibreSourceWrites({getMap,getGeneration,getContextRevis
   }
   pending.clear();
  }
- return Object.freeze({update,pendingCount,hasPendingWrite:source=>queues.has(source),reset,handlesError:error=>handledErrors.has(error)});
+ return Object.freeze({update,pendingCount,hasPendingWrite:source=>queues.has(source),
+  hasNativeWrite:source=>!!queues.get(source)?.nativePending,reset,handlesError:error=>handledErrors.has(error)});
 }
 
 const slotOpacity=type=>type==='line'?'line-layer-opacity':'fill-layer-opacity';
 export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapSourceLayers,createCountrySource,createEmptySource,
- invalidateLayerIndex,dirty,canRetire,temporalPending,graceMs=5000,
- standbyBudget=Infinity,hasPendingWrite:sourcePending=()=>false,onEvict=()=>{}}){
+ invalidateLayerIndex,dirty,canRetire,temporalPending,standbyBudget=Infinity,
+ hasPendingWrite:sourcePending=()=>false,hasNativeWrite:sourceBusy=sourcePending,onEvict=()=>{}}){
  const activeIds=new Map(Object.keys(sourceLayers).map(kind=>[kind,kind]));
- const retained=new Map(),retiring=new Set(),geometryBytes=createGeometryByteEstimator();
- let timer=null,evictions=0;
+ const retained=new Map(),warmups=new Map(),geometryBytes=createGeometryByteEstimator();
+ let timer=null,closed=false,warmedMap=null,warmedStyle=null,evictions=0,replacements=0,cacheHits=0;
+ let warmStarted=0,warmReady=0,warmFailed=0,warmUsedReady=0,warmUsedCold=0;
+ const active=kind=>activeIds.get(kind);
+ function stopWarm(id){
+  const warm=warmups.get(id);
+  if(!warm)return null;
+  warm.detach();warmups.delete(id);return warm;
+ }
+ function watchWarm(id,source){
+  const warm={source,status:'pending',detach:null};
+  const finish=status=>{
+   if(closed||warmups.get(id)!==warm||warm.status!=='pending')return;
+   if(getMap().getSource(id)!==source){stopWarm(id);return;}
+   warm.status=status;warm.detach();
+   if(status==='ready')warmReady++;else warmFailed++;
+  };
+  // Metadata confirms worker acceptance, unlike a hidden source's loaded flag.
+  const onData=event=>{if(event.sourceDataType==='metadata')finish('ready');};
+  const onError=()=>finish('failed');
+  warm.detach=()=>{source.off('data',onData);source.off('error',onError);};
+  warmups.set(id,warm);warmStarted++;
+  source.on('data',onData);source.on('error',onError);
+ }
+ function pruneMissing(){
+  const map=getMap();let changed=false;
+  for(const [id,record]of retained)if(map.getSource(id)!==record.source){
+   stopWarm(id);retained.delete(id);onEvict(record.kind,id);changed=true;
+  }
+  if(changed)invalidateLayerIndex();
+ }
  function set(id,record){
-  if(record.estimatedBytes===undefined&&record.tiles)
-   record={...record,estimatedBytes:estimateFeatureRows(record.tiles.values(),geometryBytes)};
+  const prior=retained.get(id);
+  if(record.estimatedBytes===undefined){
+   if(record.tiles)record={...record,estimatedBytes:estimateFeatureRows(record.tiles.values(),geometryBytes)};
+   else if(prior?.source===record.source)record={...record,estimatedBytes:prior.estimatedBytes};
+  }
   retained.delete(id);retained.set(id,record);
  }
  function residency(){
   const current=new Set(activeIds.values());let activeBytes=0,standbyBytes=0;
   for(const [id,record]of retained){if(current.has(id))activeBytes+=record.estimatedBytes||0;else standbyBytes+=record.estimatedBytes||0;}
-  return {activeBytes,standbyBytes,standbyBudget,evictions};
+  return {activeBytes,standbyBytes,standbyBudget,evictions,replacements,cacheHits,standbyWarmStarted:warmStarted,
+   standbyWarmReady:warmReady,standbyWarmFailed:warmFailed,standbyWarmUsedReady:warmUsedReady,standbyWarmUsedCold:warmUsedCold};
  }
  function trimStandby(){
   const map=getMap(),current=new Set(activeIds.values());let bytes=residency().standbyBytes;
   for(const [id,record]of retained){
    if(bytes<=standbyBudget)break;
    if(current.has(id)||sourcePending(record.source)||map.getSource(id)!==record.source)continue;
-   for(const layer of map.getStyle().layers.filter(layer=>layer.source===id))if(map.getLayer(layer.id))map.removeLayer(layer.id);
-   map.removeSource(id);retained.delete(id);retiring.delete(id);onEvict(record.kind,id);invalidateLayerIndex();
+   stopWarm(id);
+   for(const layer of mapSourceLayers())if(layer.source===id&&map.getLayer(layer.id))map.removeLayer(layer.id);
+   map.removeSource(id);retained.delete(id);onEvict(record.kind,id);invalidateLayerIndex();
    bytes-=record.estimatedBytes||0;evictions++;
   }
  }
- const active=kind=>activeIds.get(kind);
- function slots(kind){
+ function slots(kind){pruneMissing();return [...retained].filter(([,record])=>record.kind===kind);}
+ function completeLayers(kind,id){
   const map=getMap();
-  const matches=[];
-  for(const [id,record]of retained){
-   if(map.getSource(id)!==record.source){retained.delete(id);retiring.delete(id);continue;}
-   if(record.kind===kind)matches.push([id,record]);
-  }
-  return matches;
+  return sourceLayers[kind].every(base=>map.getLayer(sourceLayer(base,id))?.source===id);
  }
- function reuse(kind,key,equals=(a,b)=>a===b){return slots(kind).find(([,record])=>equals(record.key,key));}
+ function reuse(kind,key,equals=(a,b)=>a===b){
+  const cached=slots(kind).find(([id,record])=>record.key!=null&&!sourceBusy(record.source)&&completeLayers(kind,id)&&equals(record.key,key));
+  if(cached&&cached[0]!==active(kind)){cacheHits++;set(...cached);}
+  return cached;
+ }
  function setVisibility(id,visible){
   const map=getMap();let changed=false;
   for(const layer of mapSourceLayers()){
-   if(layer.source===id&&layer.visible!==visible&&!layer.id.startsWith('initial-map-')&&map.getLayer(layer.id)){
+   if(layer.source===id&&layer.visible!==visible&&!layer.id.startsWith('initial-map-')&&map.getLayer(layer.id)?.source===id){
     map.setLayoutProperty(layer.id,'visibility',visible?'visible':'none');changed=true;
    }
   }
@@ -129,26 +164,30 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
  }
  const standbySlot=kind=>slots(kind).find(([id])=>id!==active(kind));
  const sourceSpec=kind=>kind==='territories'?createCountrySource():createEmptySource(kind);
- function ensureStandby(kind){
+ function ensureStandby(kind,prewarm=false){
   const existing=standbySlot(kind);
   if(existing)return existing;
   const map=getMap(),id=active(kind)===kind?kind+'-retained':kind;
-  if(!map.getSource(id))map.addSource(id,sourceSpec(kind));
+  const created=!map.getSource(id);
+  if(created)map.addSource(id,sourceSpec(kind));
   const record={kind,source:map.getSource(id)};
-  set(id,record);return [id,record];
+  set(id,record);
+  if(prewarm&&created)watchWarm(id,record.source);
+  return [id,record];
  }
  function needsCountryStandby(){
-  const kind='territories',id=active(kind),record=retained.get(id);
-  return standbyBudget>0&&record?.key!=null&&record.source===getMap().getSource(id)&&!standbySlot(kind);
+  const map=getMap(),kind='territories',id=active(kind),record=retained.get(id);
+  return standbyBudget>0&&(map!==warmedMap||map.style!==warmedStyle)
+   &&record?.key!=null&&record.source===map.getSource(id)&&!standbySlot(kind);
  }
- function reserve(kind,hasPendingWrite=sourcePending){
+ function reserve(kind){
   const map=getMap(),current=active(kind);
   const [id,record]=ensureStandby(kind);
-  retiring.delete(id);
-  // An opacity-zero visible layer still requests tiles. Keep the standby
-  // unused while native data is written, and activate only its new content.
+  const warm=stopWarm(id);
+  if(warm){if(warm.status==='ready')warmUsedReady++;else warmUsedCold++;}
   setVisibility(id,false);
-  if(hasPendingWrite(record.source)){
+  // Only a genuinely executing native write or failed prewarm needs isolation.
+  if(sourceBusy(record.source)||warm?.status==='failed'){
    const layers=map.getStyle().layers,owned=layers.filter(layer=>layer.source===id);
    for(const layer of owned)map.removeLayer(layer.id);
    map.removeSource(id);map.addSource(id,sourceSpec(kind));
@@ -156,16 +195,16 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
     const before=layers.slice(layers.indexOf(layer)+1).find(next=>map.getLayer(next.id));
     map.addLayer({...layer,layout:{...layer.layout,visibility:'none'}},before?.id);
    }
-   set(id,{kind,source:map.getSource(id)});invalidateLayerIndex();
+   set(id,{kind,source:map.getSource(id)});invalidateLayerIndex();replacements++;
   }
-  const layers=map.getStyle().layers;let changed=false;
+  let changed=false;
   for(const base of sourceLayers[kind]){
-   const spec=layers.find(layer=>layer.id===sourceLayer(base,current));
    const layerId=sourceLayer(base,id);
-   if(!map.getLayer(layerId)){
-    map.addLayer({...spec,id:layerId,source:id,layout:{...spec.layout,visibility:'none'},
-     paint:{...spec.paint,[slotOpacity(spec.type)]:0,[slotOpacity(spec.type)+'-transition']:{duration:0}}},spec.id);changed=true;
-   }
+   if(map.getLayer(layerId))continue;
+   const spec=map.getStyle().layers.find(layer=>layer.id===sourceLayer(base,current));
+   if(!spec)throw new Error('Missing active dated layer: '+base);
+   map.addLayer({...spec,id:layerId,source:id,layout:{...spec.layout,visibility:'none'},
+    paint:{...spec.paint,[slotOpacity(spec.type)]:0,[slotOpacity(spec.type)+'-transition']:{duration:0}}},spec.id);changed=true;
   }
   if(changed)invalidateLayerIndex();
   return id;
@@ -173,35 +212,37 @@ export function createMapLibreDatedSources({getMap,sourceLayers,sourceLayer,mapS
  function cancelRetirement(){clearTimeout(timer);timer=null;}
  function retire(){
   cancelRetirement();
-  if(!canRetire())return;
-  retiring.clear();trimStandby();
-  // Initialize only the empty country worker source, without visible layers
-  // or a duplicate world geometry upload, after a canonical frame.
-  if(needsCountryStandby())ensureStandby('territories');
+  if(closed||!canRetire()||temporalPending())return;
+  pruneMissing();trimStandby();
+  // Once per map/style: eviction must not recreate the speculative slot.
+  if(needsCountryStandby()){
+   const map=getMap();warmedMap=map;warmedStyle=map.style;
+   ensureStandby('territories',true);
+  }
  }
  function scheduleRetirement(){
-  if(timer!==null||temporalPending()||!canRetire())return;
-  if(needsCountryStandby())timer=setTimeout(retire,0);
-  else if(retiring.size)timer=setTimeout(retire,graceMs);
+  if(closed||timer!==null||temporalPending()||!canRetire())return;
+  pruneMissing();
+  if(residency().standbyBytes>standbyBudget||needsCountryStandby())timer=setTimeout(retire,0);
  }
  function activate(kind,id){
   const previous=active(kind);
   if(previous===id)return;
   const map=getMap();
-  // The acknowledged source becomes the only visible slot for this kind.
-  // Retain the old data for revisit, not a second active tile workload.
-  setVisibility(previous,false);retiring.delete(id);setVisibility(id,true);
-  for(const layer of map.getStyle().layers){
-   if(layer.source!==previous&&layer.source!==id)continue;
-   if(layer.id.startsWith('initial-map-')||!['fill','line'].includes(layer.type))continue;
-   map.setPaintProperty(layer.id,slotOpacity(layer.type),layer.source===id?1:0);
+  setVisibility(previous,false);setVisibility(id,true);
+  for(const row of mapSourceLayers()){
+   if(row.source!==previous&&row.source!==id||row.id.startsWith('initial-map-'))continue;
+   const layer=map.getLayer(row.id);
+   if(!layer||!['fill','line'].includes(layer.type))continue;
+   const property=slotOpacity(layer.type),value=row.source===id?1:0;
+   if(map.getPaintProperty(row.id,property)!==value)map.setPaintProperty(row.id,property,value);
   }
-  retiring.add(previous);activeIds.set(kind,id);invalidateLayerIndex();dirty();
+  activeIds.set(kind,id);invalidateLayerIndex();dirty();
  }
  function replaceActive(kind,id){
-  const old=active(kind);retiring.delete(old);retained.delete(old);activeIds.set(kind,id);
+  const old=active(kind);stopWarm(old);retained.delete(old);activeIds.set(kind,id);
  }
  return Object.freeze({active,reuse,reserve,activate,replaceActive,cancelRetirement,scheduleRetirement,
   get:id=>retained.get(id),set,has:id=>retained.has(id),stats:residency,
-  dispose(){cancelRetirement();retained.clear();retiring.clear();activeIds.clear();}});
+  dispose(){closed=true;cancelRetirement();for(const id of warmups.keys())stopWarm(id);retained.clear();activeIds.clear();warmedMap=warmedStyle=null;}});
 }
