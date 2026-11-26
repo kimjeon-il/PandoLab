@@ -52,14 +52,10 @@ function start() {
     const importTransportError = importing && error?.name === 'TypeError'
       && /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i.test(error.message);
     retryPending = !handedOff && (isRecoverableLoadError(error) || importTransportError);
-    presentViewerLoadStatus(status, retryPending ? '연결이 복구되면 지도를 다시 불러옵니다. ' : '지도를 열지 못했습니다. 새로고침해 다시 시도하세요.', {error: true});
-    if (retryPending) {
-      const button = document.createElement('button');
-      button.type = 'button'; button.className = 'ui-button btn'; button.textContent = '다시 시도';
-      // start contains its error boundary and never replays composed UI.
-      button.addEventListener('click', start);
-      status.appendChild(button);
-    } else detach();
+    // start contains its own error boundary and never replays composed UI.
+    presentViewerLoadStatus(status, retryPending ? '연결이 복구되면 지도를 다시 불러옵니다. ' : '지도를 열지 못했습니다. 새로고침해 다시 시도하세요.',
+      {error: true, retry: retryPending ? start : null});
+    if (!retryPending) detach();
   }).finally(() => {
     pending = null;
     if (retryPending && available() && wakeRevision > attemptWakeRevision) start();

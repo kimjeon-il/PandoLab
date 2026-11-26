@@ -18,20 +18,6 @@ import {createMapHost} from "../ui/map-workspace-host.js";
 import {createObjectPicking} from "../map/object-picking.js";
 import {mapProjectResourcePath} from "../data/map-project-manifest.js";
 
-// Phases retain late-bound dependencies without changing product startup policy.
-const READ_INITIALIZATION=Object.freeze({
-  queries:[['objectPresentation','initializeTerritorialScope'],['objectPresentation','initializeObjectPresentationModel']],
-  spatial:[['spatialIndex','initializeGeometryBoundsCache'],['spatialIndex','initializeMapObjectSpatialIndex'],['spatialIndex','initializeViewportCullingMetrics']],
-  labels:[['territorialLabels','initializePlaceRuntime']],
-  anchors:[['countryIndex','initializeCountryLandRevision'],['countryIndex','initializeCountryLabelAnchorWorker'],['countryIndex','initializeLabelFallbackQueue']],
-  projection:[['mapProjection','initializeMapLayoutMetricsSnapshot']],
-});
-export function initializeMapReadOwners(owners,phase){
-  const stages=READ_INITIALIZATION[phase];
-  if(!stages)throw new TypeError('Unknown map initialization phase: '+phase);
-  for(const [owner,method]of stages)owners[owner][method]();
-}
-
 /** One read-only map owner graph for the Web Viewer. */
 export function createMapOwners({productMode,readOnly=true,projection='globe',platform=null,buildMeta,isObjectVisible,resolveVisibilityGroup,closeActiveOverlay=null,onViewingChange=null}){
   if(productMode!=='viewer')throw new TypeError('Map composition requires viewer product mode.');

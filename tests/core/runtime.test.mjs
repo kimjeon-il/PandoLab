@@ -399,3 +399,31 @@ test('native boundary edge boxes are chunked without deleting or reordering GIS 
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:1_000_001,calculate:()=>[]}),/Invalid native boundary edge batch size/);
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:2,calculate:()=>[]}),/Native boundary edge box count mismatch/);
 });
+
+test('Viewer view storage keeps the revision-scoped view and project-scoped camera separate',async()=>{
+ const {createViewerViewStorage}=await import('../../src/data/browser-project-storage.js');
+ const written=[];
+ let camera={projection:'globe',center:[20,100],zoom:3,bearing:0,pitch:0,roll:0};
+ const storage={writeView:v=>written.push(['view',v]),writeCamera:(id,v)=>written.push(['camera',id,v]),
+  readView:id=>({documentId:id}),readCamera:()=>camera};
+ const owner=createViewerViewStorage({storage,projectId:'world',dataRevision:'rev',now:()=> 'date'});
+ await owner.writeView({x:1},camera);
+ assert.deepEqual(written[0],['view',{documentId:'map-project:world:rev',viewingPresentation:{x:1},savedAt:'date'}]);
+ assert.deepEqual(written[1],['camera','world',camera]);
+ assert.deepEqual(await owner.readView(),{documentId:'map-project:world:rev'});
+ assert.deepEqual(await owner.readCamera(),{globeRotation:[-20,-90,0],zoom:3,bearing:0,pitch:0,roll:0});
+ camera={projection:'flat',center:[20,20],zoom:3};
+ assert.equal(await owner.readCamera(),null);
+});
+
+test('Viewer loading notice owns one accessible retry button',async()=>{
+ const {presentViewerLoadStatus}=await import('../../src/app/viewer-load-status.js');
+ const attributes={},children=[];let retries=0;
+ const element={ownerDocument:{createElement:()=>({addEventListener:(type,fn)=>{assert.equal(type,'click');children.push(fn);}})},
+  setAttribute:(key,value)=>{attributes[key]=value;},appendChild:button=>{assert.equal(button.type,'button');}};
+ presentViewerLoadStatus(element,'retry',{error:true,retry:()=>retries++});
+ assert.equal(attributes.role,'alert');assert.equal(children.length,1);
+ children[0]();assert.equal(retries,1);
+ presentViewerLoadStatus(element,'loading');
+ assert.equal(attributes.role,'status');
+});

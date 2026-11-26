@@ -61,3 +61,20 @@ export function createBrowserProjectStorage({
     writeView: view => writeRecord(documentKey(view?.documentId), view, '보기 위치 저장 실패'),
   });
 }
+
+/** Current Viewer view records and validated globe-camera restoration. */
+export function createViewerViewStorage({storage,projectId,dataRevision,now=()=>new Date().toISOString()}){
+  const documentId=`map-project:${projectId}:${dataRevision}`;
+  function writeView(viewingPresentation,camera){
+    const record={documentId,viewingPresentation,savedAt:now()};
+    return Promise.all([storage.writeView(record),...(camera?.projection?[storage.writeCamera(projectId,camera)]:[])]);
+  }
+  async function readCamera(){
+    const camera=await storage.readCamera(projectId);
+    if(camera?.projection!=='globe'||!Array.isArray(camera.center)||camera.center.length!==2||
+      !camera.center.every(Number.isFinite)||!Number.isFinite(camera.zoom))return null;
+    return {globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],
+      zoom:camera.zoom,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll};
+  }
+  return Object.freeze({writeView,readCamera,readView:()=>storage.readView(documentId)});
+}

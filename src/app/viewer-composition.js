@@ -3,7 +3,7 @@ import {createRuntimeContext} from "../runtime/runtime-context.js";
 import {createMapProjectRuntime} from "../data/map-project-runtime.js";
 import {createPlatformPorts} from "../runtime/platform-ports.js";
 import {connectMapOwner} from "./map-owner-ports.js";
-import {createBrowserProjectStorage} from "../data/browser-project-storage.js";
+import {createBrowserProjectStorage,createViewerViewStorage} from "../data/browser-project-storage.js";
 import {createNotificationPresentation} from "../ui/notification-presentation.js";
 import {createApplicationLifecycle} from "./application-lifecycle.js";
 import {createPreferencePresentation} from "../ui/preference-presentation.js";
@@ -57,8 +57,7 @@ export async function composeViewer({ productMode, meta }) {
   }
   const runtimeMeta=Object.freeze({...meta,mapProject:projectRuntime.project,...physical});
   const runtimeContext=createRuntimeContext({productMode,meta:runtimeMeta,assetBaseUrl,platform:createPlatformPorts({kind:'browser'})});
-  const projection='globe';
-  let map,previousView,display,projectClock,syncStatus,preferencesDialog,presentedMonth=null;
+  let map,previousView,projectClock,syncStatus,preferencesDialog,presentedMonth=null;
   const inspectParams=new URLSearchParams(window.location.search);
   let inspectorController=null,objectDetailsPanel=null;
   const mapSkeleton=createViewerInitialMapSkeleton({
@@ -74,30 +73,28 @@ export async function composeViewer({ productMode, meta }) {
   const diagnostics=createDiagnosticLog({limit:250});
   const tooltipController=createTooltipController({document,window,tooltip:get('uiTooltip'),clamp:(value,min,max)=>Math.max(min,Math.min(max,value))});
   tooltipController.bind();
-  const viewStorage=createBrowserProjectStorage({productMode,indexedDB:window.indexedDB,databaseName:'pandolab-viewer',storeName:'views',viewKey:'active-view'});
-  const viewDocumentId=`map-project:${runtimeContext.meta.mapProject.projectId}:${runtimeContext.meta.dataRevision}`;
-  const persistViewing=()=>{if(!map||map.viewState.projectReplacing)return;const record={documentId:viewDocumentId,viewingPresentation:map.capturePresentation(),savedAt:new Date().toISOString()},camera=map.renderer.cameraSnapshot();
-    Promise.all([viewStorage.writeView(record),...(camera?.projection?[viewStorage.writeCamera(runtimeContext.meta.mapProject.projectId,camera)]:[])]).catch(error=>report(error,'보기 설정을 저장하지 못했습니다.','PL-WORKSPACE-WRITE-001'));syncStatus();};
-  const owners=createMapOwners({productMode,readOnly:true,projection,buildMeta:runtimeContext.meta,platform:runtimeContext.platform,onViewingChange:persistViewing,resolveVisibilityGroup:ref=>map.objectQuery.layerGroupForObjectRef(ref),isObjectVisible:(group,id)=>map.objectQuery.objectRefVisible(map.objectQuery.layerItemObjectRef(group,id)),closeActiveOverlay:()=>surfaces.closeMobileSheets()});
+  const viewStorage=createViewerViewStorage({
+    storage:createBrowserProjectStorage({productMode,indexedDB:window.indexedDB,databaseName:'pandolab-viewer',storeName:'views',viewKey:'active-view'}),
+    projectId:runtimeContext.meta.mapProject.projectId,dataRevision:runtimeContext.meta.dataRevision,
+  });
+  const persistViewing=()=>{
+    if(!map||map.viewState.projectReplacing)return;
+    viewStorage.writeView(map.capturePresentation(),map.renderer.cameraSnapshot())
+      .catch(error=>report(error,'보기 설정을 저장하지 못했습니다.','PL-WORKSPACE-WRITE-001'));
+    syncStatus();
+  };
+  const owners=createMapOwners({productMode,readOnly:true,buildMeta:runtimeContext.meta,platform:runtimeContext.platform,onViewingChange:persistViewing,resolveVisibilityGroup:ref=>map.objectQuery.layerGroupForObjectRef(ref),isObjectVisible:(group,id)=>map.objectQuery.objectRefVisible(map.objectQuery.layerItemObjectRef(group,id)),closeActiveOverlay:()=>surfaces.closeMobileSheets()});
   const surfaces=owners.workspaceSurfaces;
   const selectController=createSelectController({document,window});selectController.enhanceAll();
   const notifications=createNotificationPresentation({document,getElement:get,isMobile:()=>surfaces.isMobile(),protectErrorNotices:true});
   const report=(error,message='작업을 완료하지 못했습니다.',code='PL-MAP-OPERATION')=>notifications.reportOperationError(error,message,code);
-  const readSavedCamera=async()=>{
-    try {
-      const camera=await viewStorage.readCamera(runtimeContext.meta.mapProject.projectId);
-      if(camera?.projection==='globe'&&Array.isArray(camera.center)&&camera.center.length===2&&camera.center.every(Number.isFinite)&&Number.isFinite(camera.zoom)){
-        return {globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],
-          zoom:camera.zoom,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll};
-      }
-    } catch(error) {
-      report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');
-    }
+  const readSavedCamera=()=>viewStorage.readCamera().catch(error=>{
+    report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');
     return null;
-  };
+  });
   const documentSession=createDocumentSession({productMode,readOnly:true,initialProject:createInitialDocument({appVersion:meta.appVersion})});
   const disposables=[tooltipController,selectController,preferencePresentation,surfaces,notifications,documentSession.commandOwner,initialPresentation];
-  async function composeMap() {
+  function composeMap() {
   let openingPreserved=null;
   const projectDomain=createProjectDomain({productMode,readOnly:true,commandOwner:documentSession.commandOwner,documentModel:documentSession.documentModel,
     admitImportedProject:project=>bindProjectDocumentIdentity(project,runtimeContext.meta),
@@ -109,7 +106,7 @@ export async function composeViewer({ productMode, meta }) {
       if(openingPreserved)map.projectSession.restoreViewingPresentation({documentId:project.documentId,viewingPresentation:openingPreserved});
       else {
         let workspace=null;
-        try{workspace=await viewStorage.readView(viewDocumentId);}catch(error){report(error,'보기 설정을 복원하지 못했습니다.','PL-WORKSPACE-READ-001');}
+        try{workspace=await viewStorage.readView();}catch(error){report(error,'보기 설정을 복원하지 못했습니다.','PL-WORKSPACE-READ-001');}
         map.projectSession.restoreViewingPresentation(workspace?{...workspace,documentId:project.documentId}:null);
         if(!startupWorld){
           const camera=await readSavedCamera();
@@ -191,9 +188,9 @@ export async function composeViewer({ productMode, meta }) {
   disposables.push(objectDetailsPanel);
   const resetView=get('resetViewBtn');
   const syncResetView=()=>resetView.classList.toggle('is-world-view',map.renderer.isAtWorldView());
-  map=createViewerMap({owners,runtimeContext,element:get('map'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
+  map=createViewerMap({owners,runtimeContext,projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
     initialCamera:readSavedCamera(),onWorldFitChange:syncResetView,
-    onMapPreparationStatus:(presentation,generation)=>{initialPresentation.observe(presentation,generation);mapSkeleton.reconsider();},isInitialPresentation:()=>!initialPresentation.hasPresented()});
+    onMapPreparationStatus:(presentation,generation)=>{initialPresentation.observe(presentation,generation);mapSkeleton.reconsider();}});
   map.renderer.setInitialMapLoading(true);
   map.ready.then(()=>{
     const unsubscribe=map.renderer.subscribeInput('moveend',()=>{persistViewing();syncResetView();});
@@ -369,18 +366,6 @@ export async function composeViewer({ productMode, meta }) {
       }
     }
   };
-  const actionSubscriptions=[];
-  let actionsDisposed=false;
-  const action=(element,event,task)=>{
-    if(!element)return;
-    const handler=e=>{Promise.resolve().then(()=>{if(!actionsDisposed)return task(e);}).catch(report);};
-    element.addEventListener(event,handler);
-    actionSubscriptions.push(()=>element.removeEventListener(event,handler));
-  };
-  disposables.push({dispose(){
-    actionsDisposed=true;
-    for(const unsubscribe of actionSubscriptions.splice(0))unsubscribe();
-  }});
   const changeProjectCursor=async(month,{isCurrent,commit})=>{
     projectDomain.requireTimelineMonth(month);
     const scope=projectDomain.activeProjectScope();
@@ -472,7 +457,7 @@ export async function composeViewer({ productMode, meta }) {
     onError:report,
   });
   disposables.push(projectClock);
-  display=createMapSettings({capabilities:owners.capabilities,viewPresentation:map});
+  const display=createMapSettings({capabilities:owners.capabilities,viewPresentation:map});
   display.connect({
     layerResources:{loadHydroData:owners.physicalResources.loadHydroData,preparePlaces:owners.territorialLabels.preparePlaces},
     platform:{$:id=>get(id==='app'?'viewer':id),deepClone:structuredClone,clamp:(value,min,max)=>Math.max(min,Math.min(max,value))},
@@ -523,15 +508,17 @@ export async function composeViewer({ productMode, meta }) {
       const [,accepted]=await Promise.all([rendererReady,projectClock.initialize()]);
       return accepted;
     },
+    onReady:async()=>{
+      preferencesDialog.sync();
+      await inspectorController?.openAfterStartup();
+    },
     shouldRetryCompose:(error,index)=>index===0&&isRecoverableLoadError(error),
     shouldRetryStartup:isRecoverableLoadError,
     getDisposables:()=>[...disposables].reverse(),
     onRecoverableError:(error,{retry})=>{
       console.warn('[PL-MAP-START-RETRY]',error);
       status.dataset.ready='false';
-      presentViewerLoadStatus(status,'연결이 복구되면 지도를 다시 불러옵니다. ',{error:true});
-      const button=document.createElement('button');button.type='button';button.className='ui-button btn';button.textContent='다시 시도';
-      button.addEventListener('click',()=>{retry().catch(report);});status.appendChild(button);
+      presentViewerLoadStatus(status,'연결이 복구되면 지도를 다시 불러옵니다. ',{error:true,retry:()=>{retry().catch(report);}});
     },
     onError:error=>{
       get('viewer').dataset.initialLoading='false';
@@ -540,6 +527,4 @@ export async function composeViewer({ productMode, meta }) {
       report(error,'지도를 불러오지 못했습니다.','PL-MAP-START');
     },reportDisposeError:error=>console.error('[PL-DISPOSE]',error)});
   await lifecycle.start();
-  preferencesDialog.sync();
-  await inspectorController?.openAfterStartup();
 }
