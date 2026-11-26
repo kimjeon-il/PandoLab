@@ -1,18 +1,18 @@
-import { pickProjectFields, PROJECT_STATE_FIELDS } from "./project-state.js";
-import { normalizeLayerPresentation } from "../ui/layer-presentation.js";
-import { createEmptyTerritorialState } from "./territorial-entity-store.js";
-import {createBuiltinProjectSetup} from "./project-setup.js";
+import { pickProjectFields, PROJECT_STATE_FIELDS } from './project-state.js';
+import { normalizeLayerPresentation } from '../ui/layer-presentation.js';
+import { createEmptyTerritorialState } from './territorial-entity-store.js';
+import { createBuiltinProjectSetup } from './project-setup.js';
 import { PROJECT_SCHEMA_VERSION, LAND_OBJECT_SCHEMA_VERSION, SOURCE_PROVENANCE_SCHEMA_VERSION,
   TERRITORIAL_MODEL_SCHEMA_VERSION, DISTRIBUTION_MODEL_SCHEMA_VERSION } from "../runtime/version-contract.js";
 
 export const BASE_DATASET = 'Pando 국가 경계 정본 · LSIB 11.4 기반';
 
-/** Detached startup input shared by both products; C++ is the admission owner. */
+/** Detached Viewer startup input; C++ is the admission owner. */
 export function createInitialDocument({ appVersion, baseDataset = BASE_DATASET, state = {}, physicalSourceInfo = {} } = {}) {
   const empty = createEmptyTerritorialState();
   const defaults = Object.fromEntries(PROJECT_STATE_FIELDS.filter(field => !(field.name in empty) && field.name!=='projectSetup')
     .map(field => [field.name, field.fallback()]));
-  const now=new Date(),initialMonth=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const now = new Date(), initialMonth = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   const input = {projectSetup:createBuiltinProjectSetup(initialMonth), ...defaults, ...empty, layerPresentation: normalizeLayerPresentation(), ...state };
   return { format: 'pandolab-project-state', schemaVersion: PROJECT_SCHEMA_VERSION,
     documentId: state.documentId || crypto.randomUUID(),

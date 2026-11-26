@@ -1,7 +1,7 @@
-import {isBuiltinPlaceId} from "./place-contract.js";
-import { temporalContains,temporalMonthEnd } from "./temporal.js";
-import { effectiveTerritorialFlagUrl } from "../ui/country-flags.js";
-import { placeLabelRowsAtMonth } from "../ui/place-name-display.js";
+import { isBuiltinPlaceId } from './place-contract.js';
+import { temporalContains, temporalMonthEnd } from './temporal.js';
+import { effectiveTerritorialFlagUrl } from '../ui/country-flags.js';
+import { placeLabelRowsAtMonth } from '../ui/place-name-display.js';
 export function createObjectQuery(dependencies) {
   // Cursor-only changes invalidate this small clock cache; object membership
   // remains owned by the authoritative document and presentation domains.
@@ -22,7 +22,7 @@ export function createObjectQuery(dependencies) {
 
   function layerItemObjectRef(group, id) {
     const key = String(id);
-    if (group === 'objects' || group === 'objectLabels') return dependencies.selectionServices.normalizeObjectRef({domain:'territorial',type:'entity',id:key});
+    if (group === 'objects' || group === 'objectLabels') return dependencies.selectionServices.normalizeObjectRef({domain:'territorial', type:'entity', id:key});
     if (group === 'distributions') return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'distribution', type: 'distribution', id: key });
     if (group === 'hydro' && (0, dependencies.hydroPresentation.projectHydroById)(key)) return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'hydro', type: (0, dependencies.hydroPresentation.projectHydroById)(key)?.properties?.category || 'river', id: key });
     if (group === 'genericFeatures') return (0, dependencies.selectionServices.normalizeObjectRef)({ domain: 'generic', type: 'feature', id: key });
@@ -31,12 +31,12 @@ export function createObjectQuery(dependencies) {
   }
 
   function objectForRef(value) {
-    const ref=dependencies.selectionServices.normalizeObjectRef(value);
-    if(!ref)return null;
-    if(ref.domain==='territorial')return territorialEntityForRef(ref);
-    if(ref.domain==='distribution')return dependencies.objectLookup.distributionLayerById(ref.id);
-    if(ref.domain==='generic')return dependencies.projectState.state.genericFeatures.find(item=>String(item.id)===ref.id)||null;
-    if(ref.domain==='hydro')return dependencies.hydroModel.hydroFeatureById(ref.id);
+    const ref = dependencies.selectionServices.normalizeObjectRef(value);
+    if (!ref)return null;
+    if (ref.domain==='territorial')return territorialEntityForRef(ref);
+    if (ref.domain==='distribution')return dependencies.objectLookup.distributionLayerById(ref.id);
+    if (ref.domain==='generic')return dependencies.projectState.state.genericFeatures.find(item => String(item.id)===ref.id)||null;
+    if (ref.domain==='hydro')return dependencies.hydroModel.hydroFeatureById(ref.id);
     return dependencies.labelPresentation.labelById(ref.id);
   }
 
@@ -44,30 +44,30 @@ export function createObjectQuery(dependencies) {
 
   function objectRefVisible(value) {
     const ref = dependencies.selectionServices.normalizeObjectRef(value);
-    if(!ref||!isObjectAvailable(ref))return false;
-    const state=dependencies.projectState.state;
-    const group=layerGroupForObjectRef(ref);
-    const master=ref.domain==='hydro'?(ref.type==='lake'?'lakes':'rivers'):group;
-    if(!group||state.layerVisibility[master]===false)return false;
-    if(ref.domain==='label'&&isBuiltinPlaceId(ref.id)&&state.resourceCapabilities?.builtinPlaces===false)return false;
-    if(ref.domain==='hydro'&&!dependencies.hydroPresentation.projectHydroById(ref.id)) {
-      const feature=dependencies.hydroModel.hydroFeatureById(ref.id);
-      const id=String(feature?.properties?.pandolab_id||feature?.id||ref.id);
+    if (!ref||!isObjectAvailable(ref))return false;
+    const state = dependencies.projectState.state;
+    const group = layerGroupForObjectRef(ref);
+    const master = ref.domain==='hydro'?(ref.type==='lake'?'lakes':'rivers'):group;
+    if (!group||state.layerVisibility[master]===false)return false;
+    if (ref.domain==='label'&&isBuiltinPlaceId(ref.id)&&state.resourceCapabilities?.builtinPlaces===false)return false;
+    if (ref.domain==='hydro'&&!dependencies.hydroPresentation.projectHydroById(ref.id)) {
+      const feature = dependencies.hydroModel.hydroFeatureById(ref.id);
+      const id = String(feature?.properties?.pandolab_id||feature?.id||ref.id);
       return state.resourceCapabilities?.builtinHydro!==false&&state.itemVisibility.hydro?.[id]!==false
         && state.physicalSettings?.hydroLayers?.[feature?.properties?.layer_id]!==false;
     }
-    return dependencies.layerPresentation.isLayerItemVisible(group,ref.id);
+    return dependencies.layerPresentation.isLayerItemVisible(group, ref.id);
   }
 
   function isObjectAvailable(value) {
-    const ref=dependencies.selectionServices.normalizeObjectRef(value);
-    const object=objectForRef(value);
-    if(ref?.domain==='label'&&isBuiltinPlaceId(ref.id)&&object&&!placeLabelRowsAtMonth(object,dependencies.projectState.state.timelineCursor).length)return false;
-    return !!object && temporalContains(object.properties||object,monthEnd());
+    const ref = dependencies.selectionServices.normalizeObjectRef(value);
+    const object = objectForRef(value);
+    if (ref?.domain==='label'&&isBuiltinPlaceId(ref.id)&&object&&!placeLabelRowsAtMonth(object, dependencies.projectState.state.timelineCursor).length)return false;
+    return !!object && temporalContains(object.properties||object, monthEnd());
   }
 
   const visibleTerritorialCount = () => dependencies.territorialModel.entityRepository.list()
-    .filter(entity=>objectRefVisible({domain:'territorial',type:'entity',id:String(entity.id)})).length;
+    .filter(entity => objectRefVisible({domain:'territorial', type:'entity', id:String(entity.id)})).length;
 
   function objectDisplayInfo(value) {
     const ref = (0, dependencies.selectionServices.normalizeObjectRef)(value);
@@ -142,5 +142,5 @@ export function createObjectQuery(dependencies) {
     return '';
   }
 
-  return Object.freeze({layerGroupForObjectRef,objectForRef,isObjectAvailable,visibleTerritorialCount,territorialEntityForRef,layerItemObjectRef,objectRefExists,objectRefVisible,objectDisplayInfo,focusObjectRef});
+  return Object.freeze({layerGroupForObjectRef, objectForRef, isObjectAvailable, visibleTerritorialCount, territorialEntityForRef, layerItemObjectRef, objectRefExists, objectRefVisible, objectDisplayInfo, focusObjectRef});
 }

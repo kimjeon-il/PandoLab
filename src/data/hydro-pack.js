@@ -1,8 +1,8 @@
 // The source pack format is shared by offline display preparation and GIS tools.
-export function decodeHydroMetadata(bytes){
-  const payload=JSON.parse(new TextDecoder().decode(bytes));
-  if(Number(payload?.version)!==5||!Array.isArray(payload?.features))throw Error('수계 메타데이터 버전이 올바르지 않습니다.');
-  return new Map(payload.features.map(row=>[Number(row.fid),row]));
+export function decodeHydroMetadata(bytes) {
+  const payload = JSON.parse(new TextDecoder().decode(bytes));
+  if (Number(payload?.version)!==5||!Array.isArray(payload?.features))throw Error('수계 메타데이터 버전이 올바르지 않습니다.');
+  return new Map(payload.features.map(row => [Number(row.fid), row]));
 }
 
 export function decodeHydroIndex(bytes, { tilePacks = new Map(), packSpecs = new Map(), logicalPacks = null } = {}) {

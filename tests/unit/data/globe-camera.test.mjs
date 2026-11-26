@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createGlobeCamera, globeVector} from '../../../src/rendering/globe-camera.js';
+import {createGlobeViewerInput} from '../../../src/map/globe-viewer-input.js';
 
 const viewport = { width: 900, height: 650 };
 const view = { center: [179, 25], zoom: 2, bearing: 18, pitch: 15, roll: 2 };
@@ -174,4 +175,25 @@ test('accepted map camera state is published before temporal presentation listen
  assert.equal(session.commitVisualFrame(frame,()=>order.push('published-camera')),true);
  assert.deepEqual(order,['published-camera','presented']);
  session.dispose();
+});
+
+test('globe gesture owner publishes one movement lifecycle for an explicit pan', () => {
+  const events = [], controller = new AbortController();
+  let camera = {frame:{center:[10,20]},drag(from,to){events.push(['drag',from,to]);return this;}};
+  const input = createGlobeViewerInput({
+    getCamera:()=>camera,getViewport:()=>viewport,setCamera:value=>{camera=value;},
+    invalidate:()=>{},beforeMovement:()=>events.push('before'),
+    onMovementStart:()=>events.push('start'),onMovementEnd:()=>events.push('end'),
+    signal:controller.signal,
+  });
+  const offStart=input.subscribeInput('movestart',()=>events.push(['movestart',input.isMoving()]));
+  input.subscribeInput('moveend',()=>events.push(['moveend',input.isMoving()]));
+  assert.equal(input.panBy(3,-4),true);
+  assert.deepEqual(events,['before',['movestart',true],'start',['drag',[10,20],[13,16]],['moveend',false],'end']);
+  assert.equal(input.isMoving(),false);
+  offStart();
+  camera=null;
+  assert.equal(input.panBy(1,1),false);
+  controller.abort();
+  input.dispose();
 });

@@ -21,6 +21,13 @@ Web Viewer와 내장 읽기 전용 점검 UI가 제품이다. 폐기된 편집�
 - 원본 경로와 공개 URL은 [frontend layout](../../scripts/lib/frontend-layout.mjs)이 구분한다. 소스 이동 시 static/dynamic import·classic Worker·자산 수집·CI 소비자를 함께 전환한다. Pages에는 선택된 Viewer 의존 closure만 발행하고 비공개 자료·도구·원본 GIS를 넣지 않는다.
 - 라이브러리의 자료·비 Viewer 작성·QGIS·저장소 이력 도구와 Map Toolkit의 분석·학습·배포는 각각 독립 소유자다. 공용 계산을 복사하거나 퇴역 앱 경로를 복원하지 않는다.
 
+## 코드 작성 스타일
+
+- 편집기 설정은 [EditorConfig](../../.editorconfig)를 따른다. JS·CSS·HTML은 두 칸, C++·CMake는 네 칸 들여쓰기를 기본으로 사용한다. 소유 소스의 인코딩과 줄바꿈은 UTF-8·LF를 기본으로 한다.
+- JS 모듈 import는 단일 인용부호와 명시적 세미콜론, 이름 목록의 일관된 간격을 사용한다. 제어 키워드·대입·쉼표 주변의 간격은 일관되게 정리하고, 여러 문장이 과밀한 줄은 책임 단위로 읽을 수 있게 작성한다. 이름은 역할을 드러내며 단순 전달·재노출·중복 별칭을 늘리지 않는다.
+- 템플릿 리터럴·셰이더·정규식·C++ raw string·EM_JS·매크로는 의미 있는 공백과 내용을 보존한다. 제3자 코드, 생성물, 원자료, 증거 archive, 테스트 원문 fixture에는 소스 서식 변환을 적용하지 않는다.
+- 대규모 순수 서식 변경과 동작 변경은 구분해 커밋한다. 서식 때문에 전체 자료나 생성물을 강제로 다시 만들지 않으며, native 입력이 바뀐 경우 선언된 CI·생성 그래프의 정합 조건을 그대로 적용한다.
+
 ## 도구와 생성물
 
 - Node·pnpm·CMake·Emscripten 버전은 [도구 구성](../../config/toolchain-versions.json)이 소유한다. [네이티브 실행 정책](native-execution.json)에 따라 로컬 SDK·컴파일러·학습/검사 환경을 자동 설치하지 않는다. 필요한 native/WASM은 선택한 기존 CI에서 준비한다.

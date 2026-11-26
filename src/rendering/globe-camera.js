@@ -91,46 +91,46 @@ export function createGlobeCamera(view, viewport) {
 
   function worldRay(point) {
     if (!inside(point)) return null;
-    const unit=rayDirection(point);
+    const unit = rayDirection(point);
     const b = dot(frame.eye, unit), c = dot(frame.eye, frame.eye) - 1;
     const discriminant = b * b - c;
     if (b >= 0 || discriminant < 0) return null;
     // Near hit to tangent plane is the portion of the sphere drawn by the shader.
-    return {origin:frame.eye,direction:unit,start:c/(-b+Math.sqrt(discriminant)),end:-b};
+    return {origin:frame.eye, direction:unit, start:c/(-b+Math.sqrt(discriminant)),end:-b};
   }
 
-  let bounds=null;
-  function geographicBounds(){
-    if(bounds)return bounds;
+  let bounds = null;
+  function geographicBounds() {
+    if (bounds)return bounds;
     // Enclose the viewport cone in a circle about the eye-to-globe-center
     // ray. Its rim meets the near surface or the horizon, whichever is closer.
-    const distance=length(frame.eye), radial=scale(frame.eye,1/distance), axis=scale(radial,-1);
-    const corners=[[0,0],[viewport.width,0],[0,viewport.height],[viewport.width,viewport.height]];
-    const cone=Math.acos(clamp(Math.min(...corners.map(point=>dot(axis,rayDirection(point)))),-1,1));
-    const radius=Math.min(Math.acos(1/distance),cone>=Math.asin(1/distance)
+    const distance = length(frame.eye), radial = scale(frame.eye, 1/distance), axis=scale(radial,-1);
+    const corners = [[0, 0], [viewport.width, 0], [0, viewport.height], [viewport.width, viewport.height]];
+    const cone = Math.acos(clamp(Math.min(...corners.map(point => dot(axis, rayDirection(point)))), -1, 1));
+    const radius = Math.min(Math.acos(1/distance),cone>=Math.asin(1/distance)
       ?Math.PI/2:Math.asin(clamp(distance*Math.sin(cone),0,1))-cone)+1e-9;
-    const [lon,lat]=mapCoordinate(radial), extent=radius/radians;
-    const south=Math.max(-90,lat-extent),north=Math.min(90,lat+extent);
-    const longExtent=Math.asin(clamp(Math.sin(radius)/Math.cos(lat*radians),0,1))/radians;
-    bounds=Object.freeze(south<=-90||north>=90?[-180,south,180,north]:[lon-longExtent,south,lon+longExtent,north]);
+    const [lon, lat] = mapCoordinate(radial), extent = radius/radians;
+    const south = Math.max(-90, lat-extent), north = Math.min(90, lat+extent);
+    const longExtent = Math.asin(clamp(Math.sin(radius)/Math.cos(lat*radians),0,1))/radians;
+    bounds = Object.freeze(south<=-90||north>=90?[-180, south, 180, north]:[lon-longExtent, south, lon+longExtent, north]);
     return bounds;
   }
 
-  function projectVisibleVector(vector,{allowOutsideViewport=false}={}){
-    if(dot(vector,frame.eye)<1)return null;
-    const point=projectVector(vector,frame);
+  function projectVisibleVector(vector, {allowOutsideViewport = false} = {}) {
+    if (dot(vector, frame.eye)<1)return null;
+    const point = projectVector(vector, frame);
     return point&&(allowOutsideViewport||inside(point))?point:null;
   }
-  function projectVisibleCoordinate(coordinate,options){
-    return projectVisibleVector(globeVector(coordinate),options);
+  function projectVisibleCoordinate(coordinate, options) {
+    return projectVisibleVector(globeVector(coordinate), options);
   }
 
-  function projectStroke(start,end){
-    const a=dot(start,subtract(start,frame.eye)),b=dot(end,subtract(end,frame.eye));
-    if(a>=0&&b>=0)return null;
-    const left=projectVector(a>=0?add(start,scale(subtract(end,start),a/(a-b))):start,frame);
-    const right=projectVector(b>=0?add(end,scale(subtract(start,end),b/(b-a))):end,frame);
-    return left&&right?[left,right]:null;
+  function projectStroke(start, end) {
+    const a = dot(start, subtract(start, frame.eye)), b = dot(end, subtract(end, frame.eye));
+    if (a>=0&&b>=0)return null;
+    const left = projectVector(a>=0?add(start, scale(subtract(end, start), a/(a-b))):start,frame);
+    const right = projectVector(b>=0?add(end, scale(subtract(start, end), b/(b-a))):end,frame);
+    return left&&right?[left, right]:null;
   }
 
   function drag(from, to) {
@@ -151,7 +151,7 @@ export function createGlobeCamera(view, viewport) {
   }
 
   return Object.freeze({ view: snapshot, frame: Object.freeze(frame),
-    projectCoordinate: coordinate => projectVector(globeVector(coordinate), frame), projectVisibleCoordinate,projectVisibleVector,
-    screenToGeo: point => { const ray=worldRay(point);return ray?mapCoordinate(add(ray.origin,scale(ray.direction,ray.start))):null; },
-    worldRay,geographicBounds,projectStroke,drag,zoomAt });
+    projectCoordinate: coordinate => projectVector(globeVector(coordinate), frame), projectVisibleCoordinate, projectVisibleVector,
+    screenToGeo: point => { const ray = worldRay(point); return ray?mapCoordinate(add(ray.origin, scale(ray.direction, ray.start))):null; },
+    worldRay, geographicBounds, projectStroke, drag, zoomAt });
 }

@@ -1,12 +1,12 @@
-import {compactNotificationMessage} from "./notification-copy.js";
-export function createNotificationPresentation(ports){
-  const getElement=(...args)=>ports.getElement(...args),isMobile=()=>ports.isMobile();
-  let errorHoldUntil=0;
-  let notificationTimer=null, disposed=false;
+import { compactNotificationMessage } from './notification-copy.js';
+export function createNotificationPresentation(ports) {
+  const getElement = (...args) => ports.getElement(...args), isMobile = () => ports.isMobile();
+  let errorHoldUntil = 0;
+  let notificationTimer = null, disposed = false;
   function clearNotification() {
-    errorHoldUntil=0;
+    errorHoldUntil = 0;
     clearTimeout(notificationTimer);
-    notificationTimer=null;
+    notificationTimer = null;
     const notice = getElement('actionStatus');
     if (!notice) return;
     notice.classList.add('hidden');
@@ -21,7 +21,7 @@ export function createNotificationPresentation(ports){
   }
 
   function setActionStatus(message, tone = 'success', timeout = 1800, { forceVisible = false } = {}) {
-    if(disposed)return;
+    if (disposed)return;
     const notice = getElement('actionStatus');
     if (!notice) return;
     // Background readiness/success must not immediately erase a user's file
@@ -32,7 +32,7 @@ export function createNotificationPresentation(ports){
     const isTopLevelNotice = ['working', 'success', 'error', 'info', 'warning'].includes(tone)
       || forceVisible;
     clearTimeout(notificationTimer);
-    notificationTimer=null;
+    notificationTimer = null;
     if (!fullMessage || !isTopLevelNotice) {
       clearNotification();
       return;
@@ -48,7 +48,7 @@ export function createNotificationPresentation(ports){
     notice.classList.remove('hidden');
     notice.classList.remove('ready', 'working', 'success', 'error', 'info', 'warning');
     notice.classList.add(tone);
-    errorHoldUntil=tone==='error' ? (timeout>0?Date.now()+timeout:Infinity) : 0;
+    errorHoldUntil = tone==='error' ? (timeout>0?Date.now()+timeout:Infinity) : 0;
     notice.setAttribute('role', tone === 'error' ? 'alert' : 'status');
     notice.setAttribute('aria-label', fullMessage);
     if (visibleMessage !== fullMessage) notice.dataset.tooltip = fullMessage;
@@ -57,7 +57,7 @@ export function createNotificationPresentation(ports){
     if (strong) strong.textContent = visibleMessage;
     ports.document.body.classList.add('notification-visible');
     if (tone === 'error' || timeout <= 0) return;
-    notificationTimer=setTimeout(clearNotification, timeout);
+    notificationTimer = setTimeout(clearNotification, timeout);
   }
 
   function isSafeKoreanErrorMessage(error) {
@@ -77,6 +77,6 @@ export function createNotificationPresentation(ports){
     return message;
   }
 
-  return Object.freeze({clearNotification,clearErrorNotification,setActionStatus,isSafeKoreanErrorMessage,reportOperationError,
-    dispose(){if(disposed)return;disposed=true;clearNotification();}});
+  return Object.freeze({clearNotification, clearErrorNotification, setActionStatus, isSafeKoreanErrorMessage, reportOperationError,
+    dispose() {if (disposed)return; disposed = true; clearNotification();}});
 }

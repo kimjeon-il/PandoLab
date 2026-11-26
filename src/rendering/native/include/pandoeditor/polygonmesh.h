@@ -7,13 +7,13 @@
 #include <vector>
 
 namespace pandoeditor {
-inline constexpr std::uint32_t kPolygonMeshAlgorithmRevision=6;
-using MeshPosition=std::array<double,2>;
-using MeshTriangle=std::array<std::uint32_t,3>;
+inline constexpr std::uint32_t kPolygonMeshAlgorithmRevision = 6;
+using MeshPosition = std::array<double, 2>;
+using MeshTriangle = std::array<std::uint32_t, 3>;
 struct MeshParameterSpace {
-    int pole=0;
+    int pole = 0;
     MeshPosition project(const MeshPosition&) const;
-    MeshPosition unproject(const MeshPosition&,double longitudeAnchor) const;
+    MeshPosition unproject(const MeshPosition&, double longitudeAnchor) const;
 };
 struct MeshBoundaryChain {
     std::vector<std::uint32_t> vertices;
@@ -21,14 +21,14 @@ struct MeshBoundaryChain {
 };
 struct PolygonFillMesh {
     MeshParameterSpace space;
-    std::vector<MeshPosition> geographic,parameter;
-    std::vector<MeshTriangle> triangles,removedTriangles;
+    std::vector<MeshPosition> geographic, parameter;
+    std::vector<MeshTriangle> triangles, removedTriangles;
     std::vector<MeshBoundaryChain> boundaryChains;
 };
 // Display-only mesh: seam unwrap, polar projection, checked hole triangulation
 // and conforming spherical refinement have one owner for Qt and Web/WASM.
 // Callers own packed output buffers and flat-view longitude clones.
 PolygonFillMesh buildPolygonFillMesh(const Polygon&,
-    double maxEdgeDegrees=kDefaultBoundaryEdgeDegrees,bool validate=true,
-    const std::function<void()>& checkCancelled={});
+    double maxEdgeDegrees = kDefaultBoundaryEdgeDegrees, bool validate = true,
+    const std::function<void()>& checkCancelled = {});
 }

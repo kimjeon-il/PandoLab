@@ -6,19 +6,19 @@
 
 namespace pandoeditor {
 struct TemporalKey {
-    int year=0, month=1, day=1;
+    int year = 0, month = 1, day = 1;
     bool operator==(const TemporalKey& b) const {
-        return std::tie(year,month,day)==std::tie(b.year,b.month,b.day);
+        return std::tie(year, month, day)==std::tie(b.year, b.month, b.day);
     }
     bool operator<(const TemporalKey& b) const {
-        return std::tie(year,month,day)<std::tie(b.year,b.month,b.day);
+        return std::tie(year, month, day)<std::tie(b.year, b.month, b.day);
     }
 };
 struct TemporalValue {
     std::string text, precision; // precision: year, month, or date.
-    std::int64_t start=0, end=0; // Existing YYYYMMDD public keys.
+    std::int64_t start = 0, end = 0; // Existing YYYYMMDD public keys.
     std::string canonical;
-    int year=0;
+    int year = 0;
     std::optional<int> month, day; // Month precision leaves day unset.
     TemporalKey startKey, endKey;
 };
@@ -37,11 +37,11 @@ std::string shiftTemporalMonth(const std::string& month, int offset);
 // Inclusive timeline event scheduling: the next day may be an out-of-range end sentinel.
 TemporalKey temporalFollowingDay(const TemporalKey& date);
 std::optional<std::string> normalizeTemporal(const std::optional<std::string>&);
-int compareTemporal(const TemporalValue&,const TemporalValue&,
-                    TemporalBoundary left=TemporalBoundary::Start,
-                    TemporalBoundary right=TemporalBoundary::Start);
+int compareTemporal(const TemporalValue&, const TemporalValue&,
+                    TemporalBoundary left = TemporalBoundary::Start,
+                    TemporalBoundary right = TemporalBoundary::Start);
 TemporalInterval normalizeTemporalInterval(const std::optional<std::string>& validFrom,
                                            const std::optional<std::string>& validTo);
-bool temporalContains(const TemporalInterval&,const TemporalValue&);
-bool temporalIntervalsOverlap(const TemporalInterval&,const TemporalInterval&);
+bool temporalContains(const TemporalInterval&, const TemporalValue&);
+bool temporalIntervalsOverlap(const TemporalInterval&, const TemporalInterval&);
 }

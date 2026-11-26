@@ -1,4 +1,4 @@
-import {geometryCoordinateFingerprint} from '../geometry/geometry-versions.js';
+import { geometryCoordinateFingerprint } from '../geometry/geometry-versions.js';
 
 // Keep the published boundary seed fingerprint format unchanged.
 export const countryGeometrySignature = feature => geometryCoordinateFingerprint(feature?.geometry);

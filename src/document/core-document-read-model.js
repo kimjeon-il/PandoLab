@@ -1,21 +1,21 @@
-import {sameStructuredValue} from '../runtime/structured-value.js';
-import { timelineObjectKey } from "./timeline-records.js";
-import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
-import { projectTimelineIdentity } from "./timeline-resolver.js";
-import {rememberWorldViewChange} from './world-view-change.js';
-import {createWorldLookup} from './world-view-lookup.js';
-import { normalizeTemporalInterval, temporalMonthEnd } from "./temporal.js";
-import {createWorldBindingIndex,sourceBindingCertificate} from './world-binding-index.js';
+import { sameStructuredValue } from '../runtime/structured-value.js';
+import { timelineObjectKey } from './timeline-records.js';
+import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from '../geometry/geometry-version-store.js';
+import { projectTimelineIdentity } from './timeline-resolver.js';
+import { rememberWorldViewChange } from './world-view-change.js';
+import { createWorldLookup } from './world-view-lookup.js';
+import { normalizeTemporalInterval, temporalMonthEnd } from './temporal.js';
+import { createWorldBindingIndex, sourceBindingCertificate } from './world-binding-index.js';
 
 const fields = Object.freeze({ territorial: 'territorialEntities', label: 'labels', hydro: 'hydroEdits',
   generic: 'genericFeatures', distributionLayer: 'distributionLayers', distributionEntry: 'distributionEntries' });
 const refKey = ref => JSON.stringify([ref.id, ref.version]);
-const headerFields=new Set(['format','schemaVersion','version','savedAt','baseDataset','landObjectModel','territorialModel',
+const headerFields = new Set(['format','schemaVersion','version','savedAt','baseDataset','landObjectModel','territorialModel',
   'distributionModel','projectSetup','documentId','physicalSourceInfo','sourceInfo']);
 const invalid = message => { throw Object.assign(new Error(message), { code: 'PL-CORE-RESPONSE' }); };
-const sameCoordinates = (left,right) => Array.isArray(left) && Array.isArray(right)
-  ? left.length===right.length && left.every((value,index) => sameCoordinates(value,right[index]))
-  : Object.is(left,right);
+const sameCoordinates = (left, right) => Array.isArray(left) && Array.isArray(right)
+  ? left.length===right.length && left.every((value, index) => sameCoordinates(value, right[index]))
+  : Object.is(left, right);
 // Preserve the document admission path's Object.is semantics.
 const sameDisplayValue = (left, right) => sameStructuredValue(left, right, Object.is);
 function freeze(value) {
@@ -41,36 +41,36 @@ export function createCoreDocumentReadModel(initialProject) {
   let hydroViews = Object.freeze([]);
   // Cache indexes by immutable source collections, not the whole project
   // snapshot: a geometry-only delta does not invalidate object identities.
-  const identityIndexes=new WeakMap(),bindingIndexes=new WeakMap(),projectionSources=new WeakMap();
-  const worldBindingWindows=new WeakMap(),viewsByRow=new WeakMap(),worldLookups=new WeakMap(),viewOffsets=new WeakMap();
-  function identityIndex(identities){
-    let index=identityIndexes.get(identities);
-    if(!index){index=new Map(identities.map(identity=>[identity.id,identity]));identityIndexes.set(identities,index);}
+  const identityIndexes = new WeakMap(), bindingIndexes = new WeakMap(), projectionSources = new WeakMap();
+  const worldBindingWindows = new WeakMap(), viewsByRow = new WeakMap(), worldLookups = new WeakMap(), viewOffsets = new WeakMap();
+  function identityIndex(identities) {
+    let index = identityIndexes.get(identities);
+    if (!index) {index = new Map(identities.map(identity => [identity.id, identity])); identityIndexes.set(identities, index);}
     return index;
   }
-  function sourceBindingCandidates(identity,ref){
-    const bindings=identity.properties?.metadata?.historicalTimeline?.geometryBindings;
-    if(!Array.isArray(bindings))return [];
-    let index=bindingIndexes.get(bindings);
-    if(!index){
-      index=new Map();
-      for(const binding of bindings){
-        if(!binding.geometryRef)continue;
-        const key=refKey(binding.geometryRef);
-        if(!index.has(key))index.set(key,[]);
-        index.get(key).push({binding,interval:null});
+  function sourceBindingCandidates(identity, ref) {
+    const bindings = identity.properties?.metadata?.historicalTimeline?.geometryBindings;
+    if (!Array.isArray(bindings))return [];
+    let index = bindingIndexes.get(bindings);
+    if (!index) {
+      index = new Map();
+      for (const binding of bindings) {
+        if (!binding.geometryRef)continue;
+        const key = refKey(binding.geometryRef);
+        if (!index.has(key))index.set(key, []);
+        index.get(key).push({binding, interval:null});
       }
-      bindingIndexes.set(bindings,index);
+      bindingIndexes.set(bindings, index);
     }
     return index.get(refKey(ref))||[];
   }
-  function bindingInterval(row){
-    return row.interval??=normalizeTemporalInterval(row.binding.validFrom,row.binding.validTo);
+  function bindingInterval(row) {
+    return row.interval??=normalizeTemporalInterval(row.binding.validFrom, row.binding.validTo);
   }
-  function canReuseWorldAt(month){
-    if(worldSourceProject!==project)return false;
-    if(month===world.month)return true;
-    const window=worldBindingWindows.get(world.entities);
+  function canReuseWorldAt(month) {
+    if (worldSourceProject!==project)return false;
+    if (month===world.month)return true;
+    const window = worldBindingWindows.get(world.entities);
     return !!window&&window.allows(temporalMonthEnd(month));
   }
   function acceptLoadedProject(value) {
@@ -472,43 +472,43 @@ export function createCoreDocumentReadModel(initialProject) {
     let nextGeometries = geometries;
     if (delta.geometries.length || delta.removedGeometryRefs.length) {
       const removed = new Set(delta.removedGeometryRefs.map(refKey));
-      const admitted=new Set();
+      const admitted = new Set();
       for (const entry of delta.geometries) {
-        const key=refKey(entry);
+        const key = refKey(entry);
         if (admitted.has(key)) invalid('Duplicate C++ geometry delta version.');
         admitted.add(key);
-        const existing=geometries.get({ id: entry.id,version: entry.version });
+        const existing = geometries.get({ id: entry.id, version: entry.version });
         if (existing && (existing.type!==entry.geojson?.type
-          || !sameCoordinates(existing.coordinates,entry.geojson.coordinates)))
+          || !sameCoordinates(existing.coordinates, entry.geojson.coordinates)))
           invalid('A C++ geometry delta cannot replace the coordinates of an existing immutable version.');
       }
       // Canonical archive admission can expose an already-stored reference.
       // Upsert its identical version while retaining the geometry allocation.
       const entries = project.geometries.filter(row => !removed.has(refKey(row)) && !admitted.has(refKey(row))).concat(delta.geometries);
-      const verifiedContentHashes=verifiedResources&&new Map(verifiedResources.map(row=>[refKey(row),row.contentSha256]));
+      const verifiedContentHashes = verifiedResources&&new Map(verifiedResources.map(row => [refKey(row), row.contentSha256]));
       nextGeometries = createGeometryVersionStore(entries, { reuse: geometries, verifiedContentHashes });
       candidate.geometries = nextGeometries.snapshot();
     }
     if (delta.timelineRecords !== null) candidate.timelineRecords = freeze(structuredClone(delta.timelineRecords));
     if (delta.presentation !== null) Object.assign(candidate, freeze(structuredClone(delta.presentation)));
     if (delta.header!==null) {
-      const { set,removedKeys }=delta.header;
+      const { set, removedKeys } = delta.header;
       if (!set || typeof set!=='object' || Array.isArray(set) || !Array.isArray(removedKeys)
-        || new Set(removedKeys).size!==removedKeys.length || [...Object.keys(set),...removedKeys].some(key => !headerFields.has(key))
-        || removedKeys.some(key => Object.hasOwn(set,key))) invalid('A disjoint authoritative C++ root-field patch is required.');
+        || new Set(removedKeys).size!==removedKeys.length || [...Object.keys(set), ...removedKeys].some(key => !headerFields.has(key))
+        || removedKeys.some(key => Object.hasOwn(set, key))) invalid('A disjoint authoritative C++ root-field patch is required.');
       for (const key of removedKeys) delete candidate[key];
-      Object.assign(candidate,freeze(structuredClone(set)));
+      Object.assign(candidate, freeze(structuredClone(set)));
     }
     const nextProvenance = delta.provenance === null ? provenance : freeze(structuredClone(delta.provenance));
-    return { project: freeze(candidate),geometries: nextGeometries,provenance: nextProvenance };
+    return { project: freeze(candidate), geometries: nextGeometries, provenance: nextProvenance };
   }
-  function apply(delta,verifiedResources) {
-    const next=candidateForDelta(delta,verifiedResources);
-    project=next.project;
-    geometries=next.geometries;
-    provenance=next.provenance;
+  function apply(delta, verifiedResources) {
+    const next = candidateForDelta(delta, verifiedResources);
+    project = next.project;
+    geometries = next.geometries;
+    provenance = next.provenance;
     return project;
   }
   return Object.freeze({ snapshot: () => project, get, list, geometry: ref => geometries.get(ref), provenance: () => provenance,
-    acceptLoadedProject,apply,projectWorld,acceptWorld,acceptTransition,world: () => world,territorialViews: () => territorialViews });
+    acceptLoadedProject, apply, projectWorld, acceptWorld, acceptTransition, world: () => world, territorialViews: () => territorialViews });
 }

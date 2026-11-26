@@ -1,4 +1,4 @@
-import { normalizeTemporalInterval, parseTemporal } from "./temporal.js";
+import { normalizeTemporalInterval, parseTemporal } from './temporal.js';
 
 export const REVIEW_BUNDLE_SCHEMA_VERSION = 1;
 export const REVIEW_DATA_REPOSITORY = 'kimjeon-il/PandoLab-Data';
@@ -307,9 +307,9 @@ export function indexReviewHistory(values) {
       appliedRevision: snapshot.appliedRevision, evidenceIds: row.evidenceIds,
     });
   }
-  const cmp=(a,b)=>a<b?-1:a>b?1:0;
-  rows.sort((a,b)=>cmp(a.sourceEntityId,b.sourceEntityId)||cmp(a.createdAt,b.createdAt)
-    ||cmp(a.proposalId,b.proposalId)||cmp(a.kind,b.kind)||cmp(a.field,b.field)
-    ||cmp(a.validFrom??'',b.validFrom??'')||cmp(a.validTo??'',b.validTo??''));
+  const cmp = (a, b) => a<b?-1:a>b?1:0;
+  rows.sort((a, b) => cmp(a.sourceEntityId, b.sourceEntityId)||cmp(a.createdAt, b.createdAt)
+    ||cmp(a.proposalId, b.proposalId)||cmp(a.kind, b.kind)||cmp(a.field, b.field)
+    ||cmp(a.validFrom??'', b.validFrom??'')||cmp(a.validTo??'', b.validTo??''));
   return freeze(rows);
 }

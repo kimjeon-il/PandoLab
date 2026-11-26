@@ -43,15 +43,15 @@ export function renderQualityProfile(tier, {
   devicePixelRatio = 1,
 } = {}) {
   const normalized = normalizedTier(tier);
-  const nativeDpr=Number(devicePixelRatio);
-  const admittedDpr=Number.isFinite(nativeDpr)&&nativeDpr>0?nativeDpr:1;
+  const nativeDpr = Number(devicePixelRatio);
+  const admittedDpr = Number.isFinite(nativeDpr)&&nativeDpr>0?nativeDpr:1;
   // Only live Viewer consumers own quality fields. Old mesh LOD, GPU upload
   // and cache budgets do not change the base globe.
   return Object.freeze({
     tier:normalized,
     phase:phase==='interaction'?'interaction':'settle',
     revision:Number(revision)||0,
-    labelCandidateLimit:{coarse:128,medium:256,high:512}[normalized],
+    labelCandidateLimit:{coarse:128, medium:256, high:512}[normalized],
     dprCap:admittedDpr,
     metrics:Object.freeze({
       p95FrameMs:Number(metrics.p95FrameMs)||0,
@@ -85,7 +85,7 @@ export function createAdaptiveRenderQualityController({
   let longFrameCount = 0;
   const frameSamples = [];
   const maximumTierIndex = 2;
-  let memoryPressure=false, stableActiveMs=0, windowActiveMs=0;
+  let memoryPressure = false, stableActiveMs = 0, windowActiveMs = 0;
 
   function metrics() {
     return {
@@ -111,7 +111,7 @@ export function createAdaptiveRenderQualityController({
     lastReason = String(reason || 'runtime-frame-budget');
     overBudgetWindows = 0;
     underBudgetWindows = 0;
-    stableActiveMs=0; windowActiveMs=0;
+    stableActiveMs = 0; windowActiveMs = 0;
     return true;
   }
 
@@ -121,7 +121,7 @@ export function createAdaptiveRenderQualityController({
     phase = normalized;
     revision += 1;
     lastReason = String(reason || normalized);
-    if(phase==='settle')promoteIfStable();
+    if (phase==='settle')promoteIfStable();
     return true;
   }
 
@@ -143,25 +143,25 @@ export function createAdaptiveRenderQualityController({
     stableActiveMs = comfortable ? stableActiveMs + windowActiveMs : 0;
     windowActiveMs = 0;
     const index = TIER_ORDER.indexOf(tier);
-    if(overBudgetWindows>=degradeWindows){
-      if(index>0)return changeTier(TIER_ORDER[index-1],'frame-p95-over-budget');
+    if (overBudgetWindows>=degradeWindows) {
+      if (index>0)return changeTier(TIER_ORDER[index-1],'frame-p95-over-budget');
     }
     return promoteIfStable();
   }
 
   function promoteIfStable() {
-    const index=TIER_ORDER.indexOf(tier);
+    const index = TIER_ORDER.indexOf(tier);
     if (phase === 'settle' && !memoryPressure && underBudgetWindows >= upgradeWindows
       && stableActiveMs >= 15000) {
-      if(index<maximumTierIndex)return changeTier(TIER_ORDER[index + 1],'frame-budget-stable');
+      if (index<maximumTierIndex)return changeTier(TIER_ORDER[index + 1],'frame-budget-stable');
     }
     return false;
   }
 
-  function recordFrame(durationMs, { frameIntervalMs=0,suspended=false,waiting=false,memoryPressure:pressure=false } = {}) {
-    if(suspended||waiting){stableActiveMs=0;windowActiveMs=0;underBudgetWindows=0;return false;}
-    memoryPressure=pressure;
-    const duration = Math.max(0, Number(durationMs) || 0,Number(frameIntervalMs)||0);
+  function recordFrame(durationMs, { frameIntervalMs = 0, suspended = false, waiting = false, memoryPressure:pressure = false } = {}) {
+    if (suspended||waiting) {stableActiveMs = 0; windowActiveMs = 0; underBudgetWindows = 0; return false;}
+    memoryPressure = pressure;
+    const duration = Math.max(0, Number(durationMs) || 0, Number(frameIntervalMs)||0);
     if (!duration) return false;
     windowActiveMs += duration;
     frameSamples.push(duration);

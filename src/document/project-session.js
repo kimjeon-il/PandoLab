@@ -1,28 +1,27 @@
-import {coreSelectionRefToWeb} from "./core-object-ref.js";
-import {projectResourceOverlay} from "./project-resource-overlay.js";
-import {loadUserPreferences} from "../ui/user-preferences.js";
-import { createMapWorkScheduler } from "../runtime/map-work-scheduler.js";
-import { createEmptyTerritorialState } from "./territorial-entity-store.js";
-import { createInitialDocument } from "./initial-document.js";
-import { resourceCapabilities } from "../runtime/resource-capabilities.js";
-import { createProductModePolicy } from "../app/product-mode-policy.js";
-const readonlyIds=ids => Object.freeze({ get size() { return ids.length; },has: id => ids.includes(id),
+import { coreSelectionRefToWeb } from './core-object-ref.js';
+import { projectResourceOverlay } from './project-resource-overlay.js';
+import { loadUserPreferences } from '../ui/user-preferences.js';
+import { createMapWorkScheduler } from '../runtime/map-work-scheduler.js';
+import { createEmptyTerritorialState } from './territorial-entity-store.js';
+import { createInitialDocument } from './initial-document.js';
+import { resourceCapabilities } from '../runtime/resource-capabilities.js';
+import { createProductModePolicy } from '../app/product-mode-policy.js';
+const readonlyIds = ids => Object.freeze({ get size() { return ids.length; }, has: id => ids.includes(id),
   [Symbol.iterator]: () => ids[Symbol.iterator]() });
 /** ProjectSession: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
  */
-export function createProjectSession({productMode='viewer',readOnly=true,projection='globe',capabilities=resourceCapabilities(productMode,null,{projection}),resolveVisibilityGroup,onViewingChange=null}={}) {
-  if(productMode!=='viewer')throw new TypeError('Project session requires viewer product mode.');
-  const productPolicy=createProductModePolicy(productMode,{readOnly,projection});
-  const viewingFields=new Set(['layerVisibility','layerPresentation','itemVisibility','physicalSettings','distributionSettings']);
-  let viewingPresentation=null,documentProjection=null,physicalSettings;
+export function createProjectSession({productMode = 'viewer', readOnly = true, projection = 'globe', capabilities = resourceCapabilities(productMode, null, {projection}), resolveVisibilityGroup, onViewingChange = null} = {}) {
+  const productPolicy = createProductModePolicy(productMode, {readOnly, projection});
+  const viewingFields = new Set(['layerVisibility','layerPresentation','itemVisibility','physicalSettings','distributionSettings']);
+  let viewingPresentation = null, documentProjection = null, physicalSettings;
   let dependencies;
   let mapWorkScheduler;
   let DEFAULT_LAYER_VISIBILITY;
   let state;
   let atomicMapStateController;
-  let projectionInstalled=false;
+  let projectionInstalled = false;
   function connect(ports) {
     if (dependencies) throw new Error('project-session already connected');
     dependencies = ports;
@@ -38,7 +37,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
   }
 
   function initializeMapWorkScheduler() {
-    mapWorkScheduler=createMapWorkScheduler();
+    mapWorkScheduler = createMapWorkScheduler();
 
     (DEFAULT_LAYER_VISIBILITY = Object.freeze({
       objects: true,
@@ -51,7 +50,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     }));
 
     const prefs = loadUserPreferences();
-    const background = prefs.backgrounds[productMode] || prefs.backgrounds.viewer;
+    const background = prefs.backgrounds.viewer;
     (state = {
       ...createEmptyTerritorialState(),
       countryVisualPhase: 'pending',
@@ -121,60 +120,60 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
 
   }
 
-  function setViewingPresentation(patch={}, {reset=false}={}){
-    if(!documentProjection)throw new Error('The accepted document projection is required.');
-    for(const field of Object.keys(patch))if(!viewingFields.has(field))throw new TypeError(`Unknown viewing state: ${field}`);
-    if(patch.physicalSettings)physicalSettings=structuredClone(patch.physicalSettings);
-    if(reset||!viewingPresentation)viewingPresentation={layerVisibility:{...DEFAULT_LAYER_VISIBILITY},
-      itemVisibility:Object.fromEntries(['objects','distributions','hydro','genericFeatures','labels','objectLabels'].map(group=>[group,{}])),
+  function setViewingPresentation(patch = {}, {reset = false} = {}) {
+    if (!documentProjection)throw new Error('The accepted document projection is required.');
+    for (const field of Object.keys(patch))if (!viewingFields.has(field))throw new TypeError(`Unknown viewing state: ${field}`);
+    if (patch.physicalSettings)physicalSettings = structuredClone(patch.physicalSettings);
+    if (reset||!viewingPresentation)viewingPresentation = {layerVisibility:{...DEFAULT_LAYER_VISIBILITY},
+      itemVisibility:Object.fromEntries(['objects','distributions','hydro','genericFeatures','labels','objectLabels'].map(group => [group, {}])),
       distributionSettings:structuredClone(documentProjection.snapshot().distributionSettings),
-      physicalSettings:structuredClone(physicalSettings),layerPresentation:structuredClone(documentProjection.snapshot().layerPresentation)};
-    for(const [field,value] of Object.entries(patch))viewingPresentation[field]=structuredClone(value);
-    viewingPresentation.layerVisibility=normalizeLayerVisibility(viewingPresentation.layerVisibility);
+      physicalSettings:structuredClone(physicalSettings), layerPresentation:structuredClone(documentProjection.snapshot().layerPresentation)};
+    for (const [field, value] of Object.entries(patch))viewingPresentation[field] = structuredClone(value);
+    viewingPresentation.layerVisibility = normalizeLayerVisibility(viewingPresentation.layerVisibility);
     return viewingPresentation;
   }
-  function restoreViewingPresentation(viewRecord){
-    if(!viewRecord||viewRecord.documentId!==documentProjection.snapshot().documentId)return false;
-    const stored=viewRecord.viewingPresentation;
-    if(stored&&typeof stored==='object') {
-      const patch={};
-      if(stored.layerVisibility&&typeof stored.layerVisibility==='object')patch.layerVisibility={...state.layerVisibility,...Object.fromEntries(Object.entries(stored.layerVisibility).filter(([key,value])=>Object.hasOwn(state.layerVisibility,key)&&typeof value==='boolean'))};
-      if(stored.itemVisibility&&typeof stored.itemVisibility==='object')patch.itemVisibility=Object.fromEntries(Object.keys(state.itemVisibility).map(group=>[group,Object.fromEntries(Object.entries(stored.itemVisibility[group]||{}).filter(([,value])=>typeof value==='boolean'))]));
-      if(stored.distributionSettings&&typeof stored.distributionSettings==='object') {
-        const value=stored.distributionSettings;patch.distributionSettings={...state.distributionSettings};
-        if(['single','overlap'].includes(value.renderMode))patch.distributionSettings.renderMode=value.renderMode;
-        if(typeof value.boundaryVisible==='boolean')patch.distributionSettings.boundaryVisible=value.boundaryVisible;
-        if(value.activeLayerId===''||state.distributionLayers.some(layer=>layer.id===value.activeLayerId))patch.distributionSettings.activeLayerId=value.activeLayerId;
+  function restoreViewingPresentation(viewRecord) {
+    if (!viewRecord||viewRecord.documentId!==documentProjection.snapshot().documentId)return false;
+    const stored = viewRecord.viewingPresentation;
+    if (stored&&typeof stored==='object') {
+      const patch = {};
+      if (stored.layerVisibility&&typeof stored.layerVisibility==='object')patch.layerVisibility = {...state.layerVisibility, ...Object.fromEntries(Object.entries(stored.layerVisibility).filter(([key, value]) => Object.hasOwn(state.layerVisibility, key)&&typeof value==='boolean'))};
+      if (stored.itemVisibility&&typeof stored.itemVisibility==='object')patch.itemVisibility = Object.fromEntries(Object.keys(state.itemVisibility).map(group => [group, Object.fromEntries(Object.entries(stored.itemVisibility[group]||{}).filter(([, value]) => typeof value==='boolean'))]));
+      if (stored.distributionSettings&&typeof stored.distributionSettings==='object') {
+        const value = stored.distributionSettings; patch.distributionSettings = {...state.distributionSettings};
+        if (['single','overlap'].includes(value.renderMode))patch.distributionSettings.renderMode = value.renderMode;
+        if (typeof value.boundaryVisible==='boolean')patch.distributionSettings.boundaryVisible = value.boundaryVisible;
+        if (value.activeLayerId===''||state.distributionLayers.some(layer => layer.id===value.activeLayerId))patch.distributionSettings.activeLayerId = value.activeLayerId;
       }
-      if(readOnly&&stored.layerPresentation)patch.layerPresentation=dependencies.modelValidation.normalizeLayerPresentation(stored.layerPresentation);
+      if (stored.layerPresentation)patch.layerPresentation = dependencies.modelValidation.normalizeLayerPresentation(stored.layerPresentation);
       setViewingPresentation(patch);
     }
     return true;
   }
-  function pruneViewingItems({countryLabelIds}){
-    const project=documentProjection.snapshot(),ids=rows=>new Set(rows.map(row=>String(row.id)));
-    const territorial=ids(project.territorialEntities),valid={objects:territorial,objectLabels:new Set([...territorial,...countryLabelIds]),
-      distributions:ids(project.distributionLayers),genericFeatures:ids(project.genericFeatures)};
+  function pruneViewingItems({countryLabelIds}) {
+    const project = documentProjection.snapshot(), ids = rows => new Set(rows.map(row => String(row.id)));
+    const territorial = ids(project.territorialEntities), valid = {objects:territorial, objectLabels:new Set([...territorial, ...countryLabelIds]),
+      distributions:ids(project.distributionLayers), genericFeatures:ids(project.genericFeatures)};
     // Places and hydro also contain lazy builtin identities. The document and
     // currently hydrated resource catalogs cannot prove those IDs obsolete.
     setViewingPresentation({itemVisibility:Object.fromEntries(Object.entries(viewingPresentation.itemVisibility)
-      .map(([group,values])=>[group,Object.fromEntries(Object.entries(values).filter(([id])=>!valid[group]||valid[group].has(id)))]))});
+      .map(([group, values]) => [group, Object.fromEntries(Object.entries(values).filter(([id]) => !valid[group]||valid[group].has(id)))]))});
   }
-  function applyViewingPresentation(payload, {notify=true}={}) {
+  function applyViewingPresentation(payload, {notify = true} = {}) {
     if (payload.action === 'visibility') {
       if (!Object.hasOwn(DEFAULT_LAYER_VISIBILITY, payload.key)) throw new TypeError(`Unknown visibility group: ${payload.key}`);
       setViewingPresentation({ layerVisibility: { ...state.layerVisibility, [payload.key]: payload.visible } });
     }
-    else if(payload.action==='objectVisibility'||payload.action==='distributionLayerVisibility') {
-      const refs=payload.action==='distributionLayerVisibility'?[{group:'distributions',id:payload.id}]:payload.refs.map(ref=>{
-        const web=coreSelectionRefToWeb(ref);return {group:resolveVisibilityGroup(web),id:web.id};});
-      if(!refs.length||refs.some(ref=>!ref.group))throw new TypeError('Known visibility references are required.');
-      const visible=typeof payload.visible==='boolean'?payload.visible:!refs.every(ref=>state.itemVisibility[ref.group]?.[ref.id]!==false);
+    else if (payload.action==='objectVisibility'||payload.action==='distributionLayerVisibility') {
+      const refs = payload.action==='distributionLayerVisibility'?[{group:'distributions', id:payload.id}]:payload.refs.map(ref => {
+        const web = coreSelectionRefToWeb(ref); return {group:resolveVisibilityGroup(web), id:web.id};});
+      if (!refs.length||refs.some(ref => !ref.group))throw new TypeError('Known visibility references are required.');
+      const visible = typeof payload.visible==='boolean'?payload.visible:!refs.every(ref => state.itemVisibility[ref.group]?.[ref.id]!==false);
       // Repeating the same explicit visibility is not a state mutation.
-      if(!refs.some(ref=>(state.itemVisibility[ref.group]?.[ref.id]!==false)!==visible))
-        return {ok:true,changed:false};
-      const items=structuredClone(viewingPresentation.itemVisibility);
-      for(const ref of refs){items[ref.group]||={};if(visible)delete items[ref.group][ref.id];else items[ref.group][ref.id]=false;}
+      if (!refs.some(ref => (state.itemVisibility[ref.group]?.[ref.id]!==false)!==visible))
+        return {ok:true, changed:false};
+      const items = structuredClone(viewingPresentation.itemVisibility);
+      for (const ref of refs) {items[ref.group]||={}; if (visible)delete items[ref.group][ref.id]; else items[ref.group][ref.id] = false;}
       setViewingPresentation({itemVisibility:items});
     }
     else if (payload.action === 'groupStyle') setViewingPresentation({ layerPresentation: dependencies.modelValidation.normalizeLayerPresentation({
@@ -184,10 +183,10 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
       if (!key) throw new TypeError(`Unknown viewing action: ${payload.action}`);
       setViewingPresentation({ distributionSettings: { ...state.distributionSettings, [key]: payload.value } });
     }
-    if(notify&&onViewingChange)onViewingChange();
+    if (notify&&onViewingChange)onViewingChange();
     return { ok: true, changed: true };
   }
-  const captureViewingPresentation=()=>structuredClone(Object.fromEntries(Object.entries(viewingPresentation || {}).filter(([key])=>key!=='physicalSettings'&&(readOnly||key!=='layerPresentation'))));
+  const captureViewingPresentation = () => structuredClone(Object.fromEntries(Object.entries(viewingPresentation || {}).filter(([key]) => key!=='physicalSettings')));
 
   // A detached, empty startup input. C++ validates and owns it before any
   // source geometry or editable UI is admitted.
@@ -197,48 +196,48 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     });
   }
 
-  function installDocumentProjection({ documentModel,commandOwner,entityStore }) {
+  function installDocumentProjection({ documentModel, commandOwner, entityStore }) {
     if (projectionInstalled) throw new Error('The accepted C++ document projection is already installed.');
     if (typeof documentModel?.snapshot!=='function' || typeof documentModel.geometry!=='function'
       || typeof commandOwner?.state!=='function' || typeof entityStore?.snapshot!=='function')
       throw new TypeError('The canonical C++ document and its read-only territorial projection are required.');
-    const coreState=() => {
-      const value=commandOwner.state();
-      if (!value) throw Object.assign(new Error('The C++ document owner is unavailable.'),{ code: 'PL-CORE-NOT-LOADED' });
+    const coreState = () => {
+      const value = commandOwner.state();
+      if (!value) throw Object.assign(new Error('The C++ document owner is unavailable.'), { code: 'PL-CORE-NOT-LOADED' });
       return value;
     };
-    const geometries=Object.freeze({ get: documentModel.geometry,snapshot: () => documentModel.snapshot().geometries });
-    let dirtyIdsSource,dirtyIdsProjection;
-    const historyDirtyEntityIds=() => {
-      const ids=coreState().dirtyTerritorialIds;
-      if(!Array.isArray(ids))throw new TypeError('The ordered canonical C++ territorial dirty IDs are required.');
-      if(ids!==dirtyIdsSource) { dirtyIdsSource=ids;dirtyIdsProjection=readonlyIds(ids); }
+    const geometries = Object.freeze({ get: documentModel.geometry, snapshot: () => documentModel.snapshot().geometries });
+    let dirtyIdsSource, dirtyIdsProjection;
+    const historyDirtyEntityIds = () => {
+      const ids = coreState().dirtyTerritorialIds;
+      if (!Array.isArray(ids))throw new TypeError('The ordered canonical C++ territorial dirty IDs are required.');
+      if (ids!==dirtyIdsSource) { dirtyIdsSource = ids; dirtyIdsProjection = readonlyIds(ids); }
       return dirtyIdsProjection;
     };
-    documentProjection=documentModel;physicalSettings=structuredClone(state.physicalSettings);
+    documentProjection = documentModel; physicalSettings = structuredClone(state.physicalSettings);
     setViewingPresentation({}, {reset:true});
     // Accepted C++ hydro lists are immutable. Reuse the hidden-source mask
     // across repeated visibility reads; invalidate only on a new list identity
-    // (date change, project adoption, editing or history).
-    let maskedHydroRows=null,maskedHydroSources=null;
-    const effectiveItemVisibility=()=>{
-      const rows=documentModel.list('hydro');
-      if(rows!==maskedHydroRows){
-        const replaced=projectResourceOverlay('hydro',rows).replacedSourceIds;
-        maskedHydroSources=replaced.length?Object.fromEntries(replaced.map(id=>[id,false])):null;
-        maskedHydroRows=rows;
+    // (date change or project adoption).
+    let maskedHydroRows = null, maskedHydroSources = null;
+    const effectiveItemVisibility = () => {
+      const rows = documentModel.list('hydro');
+      if (rows!==maskedHydroRows) {
+        const replaced = projectResourceOverlay('hydro', rows).replacedSourceIds;
+        maskedHydroSources = replaced.length?Object.fromEntries(replaced.map(id => [id, false])):null;
+        maskedHydroRows = rows;
       }
       return maskedHydroSources?{...viewingPresentation.itemVisibility,
-        hydro:{...viewingPresentation.itemVisibility.hydro,...maskedHydroSources}}:viewingPresentation.itemVisibility;
+        hydro:{...viewingPresentation.itemVisibility.hydro, ...maskedHydroSources}}:viewingPresentation.itemVisibility;
     };
-    const properties=Object.fromEntries(['documentId','projectSetup','sourceInfo','labels','labelSettings','genericFeatures','hydroEdits','distributionLayers',
+    const properties = Object.fromEntries(['documentId','projectSetup','sourceInfo','labels','labelSettings','genericFeatures','hydroEdits','distributionLayers',
       'distributionEntries','distributionSettings','physicalSettings','layerVisibility','itemVisibility','layerPresentation','timelineRecords']
-      .map(name => [name,{ enumerable: true,get: () => name==='hydroEdits'?documentModel.list('hydro'):name==='itemVisibility'?effectiveItemVisibility():viewingFields.has(name)&&(readOnly||name!=='layerPresentation')?viewingPresentation[name]:documentModel.snapshot()[name] }]));
-    Object.assign(properties,{ territorialEntities: { enumerable: true,get: entityStore.snapshot },geometries: { enumerable: true,get: () => geometries },
-      stateRevision: { enumerable: true,get: () => coreState().stateRevision },timelineCursor: { enumerable: true,get: () => coreState().timelineCursor },
-      historyDirtyEntityIds: { enumerable: true,get: historyDirtyEntityIds } });
-    Object.defineProperties(state,properties);
-    projectionInstalled=true;
+      .map(name => [name, { enumerable: true, get: () => name==='hydroEdits'?documentModel.list('hydro'):name==='itemVisibility'?effectiveItemVisibility():viewingFields.has(name)?viewingPresentation[name]:documentModel.snapshot()[name] }]));
+    Object.assign(properties, { territorialEntities: { enumerable: true, get: entityStore.snapshot }, geometries: { enumerable: true, get: () => geometries },
+      stateRevision: { enumerable: true, get: () => coreState().stateRevision }, timelineCursor: { enumerable: true, get: () => coreState().timelineCursor },
+      historyDirtyEntityIds: { enumerable: true, get: historyDirtyEntityIds } });
+    Object.defineProperties(state, properties);
+    projectionInstalled = true;
   }
 
   return Object.freeze({
@@ -246,7 +245,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     initializeMapWorkScheduler,
     initialDocument,
     installDocumentProjection,
-    setViewingPresentation,captureViewingPresentation,applyViewingPresentation,restoreViewingPresentation,pruneViewingItems,
+    setViewingPresentation, captureViewingPresentation, applyViewingPresentation, restoreViewingPresentation, pruneViewingItems,
     get atomicMapStateController() { return atomicMapStateController; },
     get mapWorkScheduler() { return mapWorkScheduler; },
     get normalizeLayerVisibility() { return normalizeLayerVisibility; },

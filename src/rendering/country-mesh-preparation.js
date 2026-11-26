@@ -1,4 +1,4 @@
-import { polygonGeometryDigest } from "./prepared-polygon-mesh.js";
+import { polygonGeometryDigest } from './prepared-polygon-mesh.js';
 
 // Display-only tile parts share the existing source-aware LRU with canonical
 // country parts. The renderer still receives one ordered country slot per ID.

@@ -5,8 +5,8 @@ namespace pandoeditor {
 std::string trimWebText(const std::string&);
 std::string objectDisplayName(const TerritorialUnit&);
 std::uint32_t effectiveObjectColor(const ProjectDocument&, const ObjectRef&,
-                                  std::uint32_t countryDefault=0xcccccc,
-                                  std::uint32_t fallback=0x8c68d8, bool ignoreOwnExplicit=false);
-struct ObjectPropertyView { std::string displayName; std::uint32_t effectiveColor=0; };
-std::map<ObjectRef,ObjectPropertyView> objectPropertyViews(const ProjectDocument&);
+                                  std::uint32_t countryDefault = 0xcccccc,
+                                  std::uint32_t fallback = 0x8c68d8, bool ignoreOwnExplicit = false);
+struct ObjectPropertyView { std::string displayName; std::uint32_t effectiveColor = 0; };
+std::map<ObjectRef, ObjectPropertyView> objectPropertyViews(const ProjectDocument&);
 }

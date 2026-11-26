@@ -1,23 +1,22 @@
-import {builtinCountryAssets} from './builtin-country-files.js';
-import {regionalLandLayout} from './physical-land-patch.js';
-import {preparedMeshDeltaLayout} from './prepared-mesh-delta.js';
-import {isPublishedPreparedMeshSpec} from './prepared-mesh-publication.js';
-import {MAP_PROJECT_ROLES,validateMapProjectManifest} from './map-project-manifest.js';
+import { builtinCountryAssets } from './builtin-country-files.js';
+import { preparedMeshDeltaLayout } from './prepared-mesh-delta.js';
+import { isPublishedPreparedMeshSpec } from './prepared-mesh-publication.js';
+import { MAP_PROJECT_ROLES, regionalLandLayout, validateMapProjectManifest } from './map-project-manifest.js';
 
 /** All independently source-verified name receipts that belong with a Hydro release.
  * Prehistoric/old production manifests may only have the 42-system receipt.
  */
-function hydroSourceReceiptFiles(manifest){
-  const kinds=['independentHydronymReplacements','independentHydronymFollowup',
+function hydroSourceReceiptFiles(manifest) {
+  const kinds = ['independentHydronymReplacements','independentHydronymFollowup',
     'independentHydronymBulk'];
-  return kinds.flatMap(key=>{
-    const value=manifest.sources?.[key];
-    if(!value) return [];
-    if(value.file==null){
-      if(value.replacedSystems>0)throw Error('Nonzero independent count without receipt: '+key);
+  return kinds.flatMap(key => {
+    const value = manifest.sources?.[key];
+    if (!value) return [];
+    if (value.file==null) {
+      if (value.replacedSystems>0)throw Error('Nonzero independent count without receipt: '+key);
       return [];
     }
-    if(typeof value.file!=='string'||!/^[\w.-]+\.json$/.test(value.file)
+    if (typeof value.file!=='string'||!/^[\w.-]+\.json$/.test(value.file)
       ||!/^[0-9a-f]{64}$/.test(value.sha256||''))
       throw Error('Invalid independent source receipt: '+key);
     return [value.file];
@@ -25,59 +24,59 @@ function hydroSourceReceiptFiles(manifest){
 }
 
 
-export function collectRuntimeDataAssets({availablePaths,readManifest,entryPaths=[],projectManifest=null,
-  preparedMeshesCurrent=true,verifyAsset=()=>{}}){
- const available=new Set(availablePaths),selected=new Set();
- const include=(path,spec)=>{
-  if(typeof path!=='string'||!path.startsWith('assets/data/')||!/^[-A-Za-z0-9_./]+$/.test(path)||path.split('/').some(part=>!part||part==='.'||part==='..'))throw Error('Invalid runtime data dependency: '+path);
-  if(!available.has(path))throw Error('Missing runtime data dependency: '+path);
-  if(spec)verifyAsset(path,spec);
-  selected.add(path);return path;
+export function collectRuntimeDataAssets({availablePaths, readManifest, entryPaths = [], projectManifest = null,
+  preparedMeshesCurrent = true, verifyAsset = () => {}}) {
+ const available = new Set(availablePaths), selected = new Set();
+ const include = (path, spec) => {
+  if (typeof path!=='string'||!path.startsWith('assets/data/')||!/^[-A-Za-z0-9_./]+$/.test(path)||path.split('/').some(part=>!part||part==='.'||part==='..'))throw Error('Invalid runtime data dependency: '+path);
+  if (!available.has(path))throw Error('Missing runtime data dependency: '+path);
+  if (spec)verifyAsset(path, spec);
+  selected.add(path); return path;
  };
   // Current runtime manifests own data dependencies. Source/provenance fields
   // describe how data was built and must not publish the original GIS inputs.
-  if(!projectManifest)throw new TypeError('Runtime asset selection requires a map project manifest.');
-  const project=validateMapProjectManifest(projectManifest);
-  const catalogs=MAP_PROJECT_ROLES.map(role=>[role,project.resources[role].catalog]);
-  const dataAsset=(url,base,spec)=>{
-    if(spec?.storageLayout!==undefined){
-      if(![regionalLandLayout,preparedMeshDeltaLayout].includes(spec.storageLayout)||spec.base?.storageLayout!==undefined||!spec.base||!spec.replacement)throw Error('Invalid composed resource dependencies');
-      dataAsset(spec.base.url,'assets/data/',spec.base);dataAsset(spec.replacement.url,'assets/data/',spec.replacement);return;
+  if (!projectManifest)throw new TypeError('Runtime asset selection requires a map project manifest.');
+  const project = validateMapProjectManifest(projectManifest);
+  const catalogs = MAP_PROJECT_ROLES.map(role => [role, project.resources[role].catalog]);
+  const dataAsset = (url, base, spec) => {
+    if (spec?.storageLayout!==undefined) {
+      if (![regionalLandLayout, preparedMeshDeltaLayout].includes(spec.storageLayout)||spec.base?.storageLayout!==undefined||!spec.base||!spec.replacement)throw Error('Invalid composed resource dependencies');
+      dataAsset(spec.base.url,'assets/data/', spec.base); dataAsset(spec.replacement.url,'assets/data/', spec.replacement); return;
     }
     if(typeof url!=='string'||!url||/[?#\\]/.test(url))throw Error(`Invalid manifest resource: ${url}`);
-    return include(url.startsWith('assets/')?url:base+url,spec);
+    return include(url.startsWith('assets/')?url:base+url, spec);
   };
   for (const path of entryPaths) if (available.has(path)) include(path);
-  const visited=new Set();
-  for(const [role,path] of catalogs){
-    if(visited.has(path))continue;
+  const visited = new Set();
+  for (const [role, path] of catalogs) {
+    if (visited.has(path))continue;
     visited.add(path);
-    if(!available.has(path)){
+    if (!available.has(path)) {
       throw Error('Missing project-owned catalog: '+role+' '+path);
     }
     include(path);
-    if(role==='world'||role==='placeLifetimes')continue;
-    const manifest=readManifest(path),base=path.slice(0,path.lastIndexOf('/')+1);
-    if(role==='territorial'){
-      for(const item of builtinCountryAssets(manifest))dataAsset(item.file,base,item);
+    if (role==='world'||role==='placeLifetimes')continue;
+    const manifest = readManifest(path), base = path.slice(0, path.lastIndexOf('/')+1);
+    if (role==='territorial') {
+      for (const item of builtinCountryAssets(manifest))dataAsset(item.file, base, item);
     }
-    else if(role==='preparedMeshes'){
+    else if (role==='preparedMeshes') {
       // Immutable source catalog remains published. Optional accelerator packets
       // outside the bounded Viewer subset are reconstructed from canonical geometry.
-      if(preparedMeshesCurrent)
-        for(const item of Object.values(manifest.meshes))
-          if(isPublishedPreparedMeshSpec(item))dataAsset(item.url,base,item);
-    }else if(role==='rivers'||role==='lakes'){
-      dataAsset(manifest.container.url,base,manifest.container);
-      for(const item of [manifest.index,manifest.metadata?.core,manifest.metadata?.detail,...manifest.shards])if(item?.url)dataAsset(item.url,base,item);
-      for(const receipt of hydroSourceReceiptFiles(manifest))dataAsset(receipt,base);
-    }else if(role==='places'){
-      for(const item of Object.values(manifest.shards))dataAsset(item.url,base,item);
-    }else if(role==='physicalLand'){
-      dataAsset(manifest.asset.url,base,manifest.asset);
-      if(manifest.modernCoast)dataAsset(manifest.modernCoast.asset.url,base,manifest.modernCoast.asset);
-      for(const context of manifest.waterObjects?.geometries||[])
-        for(const item of [context.land,context.asset])dataAsset(item.url,'assets/data/',item);
+      if (preparedMeshesCurrent)
+        for (const item of Object.values(manifest.meshes))
+          if (isPublishedPreparedMeshSpec(item))dataAsset(item.url, base, item);
+    }else if (role==='rivers'||role==='lakes') {
+      dataAsset(manifest.container.url, base, manifest.container);
+      for (const item of [manifest.index, manifest.metadata?.core, manifest.metadata?.detail, ...manifest.shards])if (item?.url)dataAsset(item.url, base, item);
+      for (const receipt of hydroSourceReceiptFiles(manifest))dataAsset(receipt, base);
+    }else if (role==='places') {
+      for (const item of Object.values(manifest.shards))dataAsset(item.url, base, item);
+    }else if (role==='physicalLand') {
+      dataAsset(manifest.asset.url, base, manifest.asset);
+      if (manifest.modernCoast)dataAsset(manifest.modernCoast.asset.url, base, manifest.modernCoast.asset);
+      for (const context of manifest.waterObjects?.geometries||[])
+        for (const item of [context.land, context.asset])dataAsset(item.url,'assets/data/', item);
     }
 
   }

@@ -23,7 +23,7 @@ export function createApplicationLifecycle({
     if (retryPending && !running) resume();
   };
   function resume() {
-    start().catch(error => {
+    start().catch (error => {
       try { reportDisposeError(error); } catch (_) { /* Do not leak event rejections. */ }
     });
   }
@@ -80,11 +80,11 @@ export function createApplicationLifecycle({
       const accepted = await startup();
       if (disposed || (accepted === false && (shouldRetryStartup || shouldRetryCompose))) return false;
       phase = 'ready';
-      await onReady({isActive:()=>!disposed});
+      await onReady({isActive:() => !disposed});
       if (disposed) return false;
       window.dispatchEvent(new window.CustomEvent('pandolab:ready'));
       return true;
-    }).catch(error => {
+    }).catch (error => {
       if (disposed) return false;
       try {
         if ((phase === 'startup' && shouldRetryStartup?.(error))

@@ -6,7 +6,8 @@ import {decodeTerritorialSource,encodeTerritorialSource} from '../data/territori
 import {selectTerritorialChunkBytes} from '../data/territorial-chunk-compression.mjs';
 import {assertIndexedTerritorialChunk} from '../data/territorial-metadata-projection.mjs';
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountry} from '../data/builtin-country-bytes.mjs';
-import {assertHistoricalCompiledChanges,assertHistoricalDisplayChanges,assertHistoricalSourceStorageChanges,readWorldPolygonsPartition,worldPolygonsCompositionGeometry,worldPolygonsDisplayEvidencePath,worldPolygonsReviewedGeometry,worldPolygonsViewerGeometry} from '../gis/historical-display-review.mjs';
+import {approvedLsibSource} from '../data/lsib-display-sources.mjs';
+import {assertHistoricalCompiledChanges,assertHistoricalDisplayChanges,assertHistoricalSourceStorageChanges,historicalLsibDisplayEvidencePath,lsibDisplayEvidencePath,readHistoricalLsibDisplayEvidence,readWorldPolygonsPartition,worldPolygonsCompositionGeometry,worldPolygonsDisplayEvidencePath,worldPolygonsReviewedGeometry,worldPolygonsViewerGeometry} from '../gis/historical-display-review.mjs';
 import {assertHistoricalStorageChanges} from '../gis/historical-display-storage.mjs';
 import {assertOriginalAuthoringSourceStorageChanges} from '../data/territorial-original-authoring.mjs';
 import {historicalWorldClipper as clip} from '../gis/historical-world-territories.mjs';
@@ -405,7 +406,7 @@ export function replaceReviewedDisplayBinding(rows,before,geometryRef,binding,pr
  return next;
 }
 
-function findWorldPolygonsTimelineBinding(country,binding){
+function findReviewedTimelineBinding(country,binding){
  const rows=country.timelineRecords.geometryBindings.filter(row=>equal(row.geometryRef,binding.geometryRef)
   &&row.validTo===binding.validTo);
  const exact=rows.find(row=>row.validFrom===binding.validFrom);
@@ -419,9 +420,52 @@ function findWorldPolygonsTimelineBinding(country,binding){
 }
 
 export function applyWorldPolygonsDisplay(country,replacements,source,cutover){
+ return applyReviewedDisplayGeometry(country,replacements,source,cutover,'worldPolygonsDisplay');
+}
+
+export function applyLsibDisplay(country,feature,source,cutover,readBaseline){
+ const timeline=country.identity.properties.metadata.historicalTimeline;
+ const current=country.sourceBindings.filter(row=>row.validTo===null);
+ const [binding]=current;
+ const properties=feature.properties;
+ if(current.length!==1||country.entityId!==feature.id||timeline.entityId!==properties?.sourceEntityId
+  ||!equal(binding.geometryRef,properties.before)||!Array.isArray(properties.wpIds)||!properties.wpIds.length)
+  fail('LSIB display candidate differs from the current object or geometry');
+ const version=timeline.geometryVersions.find(row=>row.versionId===binding.sourceVersionId);
+ const provenance=version?.historicalProvenance;
+ const approved=[...(provenance?.lsibDisplay??[]),...(provenance?.worldPolygonsDisplay??[])]
+  .find(row=>row.validFrom===binding.validFrom&&row.validTo===binding.validTo);
+ const {wpIds,division}=approvedLsibSource({sourceId:timeline.entityId,review:approved},readBaseline);
+ if(!equal(properties.wpIds,wpIds)||!equal(properties.divisionSource,division?.source))
+  fail('LSIB display differs from the approved World Polygons source');
+ assertLsibPolygon(feature.geometry);
+ return applyReviewedDisplayGeometry(country,[{binding,geometry:feature.geometry,featureIds:properties.wpIds,
+  ...(division?{divisionSource:division.source}:{})}],
+  source,cutover,'lsibDisplay');
+}
+
+function assertLsibPolygon(geometry){
+ if(!['Polygon','MultiPolygon'].includes(geometry?.type)||!Array.isArray(geometry.coordinates)||!parts(geometry).length
+  ||parts(geometry).some(polygon=>!Array.isArray(polygon)||!polygon.length||polygon.some(ring=>
+   !Array.isArray(ring)||ring.length<4||!equal(ring[0],ring.at(-1))||!ring.every(point))))
+  fail('LSIB display candidate requires closed geographic polygon rings');
+}
+
+export function applyHistoricalLsibDisplay(country,row,source){
+ const timeline=country.identity.properties.metadata.historicalTimeline;
+ const bindings=country.sourceBindings.filter(binding=>binding.sourceVersionId===row.sourceVersionId
+  &&binding.validFrom===row.validFrom&&binding.validTo===row.validTo&&equal(binding.geometryRef,row.before));
+ if(country.entityId!==row.entityId||timeline.entityId!==row.sourceEntityId||row.validTo==null||bindings.length!==1)
+  fail('historical display binding differs from the selected object, dates or previous shape');
+ assertLsibPolygon(row.geometry);
+ return applyReviewedDisplayGeometry(country,[{binding:bindings[0],geometry:row.geometry}],
+  source,undefined,'historicalLsibDisplay');
+}
+
+function applyReviewedDisplayGeometry(country,replacements,source,cutover,provenanceField){
  const next=structuredClone(country);
  const timeline=next.identity.properties.metadata.historicalTimeline;
- for(const {binding,geometry,featureId,featureIds,sourceMemberEntityId} of replacements){
+ for(const {binding,geometry,featureId,featureIds,sourceMemberEntityId,divisionSource} of replacements){
   const before=next.geometries.find(g=>equal({id:g.id,version:g.version},binding.geometryRef));
   const version=timeline.geometryVersions.find(v=>v.versionId===binding.sourceVersionId);
   if(!before||!version||!['Polygon','MultiPolygon'].includes(geometry?.type)||!parts(geometry).length)
@@ -430,21 +474,171 @@ export function applyWorldPolygonsDisplay(country,replacements,source,cutover){
   const ref={id:'historical-world:'+coordinateDigest(geometry),version:1};
   const {previousDisplayThrough,validFrom,validTo}=cutover?reviewedDisplayPeriod([binding],[version],cutover):binding;
   const dates={validFrom,validTo};
-  const scheduled=findWorldPolygonsTimelineBinding(next,binding);
+  const scheduled=findReviewedTimelineBinding(next,binding);
   if(!scheduled)fail('invalid World Polygons timeline binding '+country.entityId);
   next.sourceBindings=replaceReviewedDisplayBinding(next.sourceBindings,binding,ref,dates,previousDisplayThrough);
   next.timelineRecords.geometryBindings=replaceReviewedDisplayBinding(next.timelineRecords.geometryBindings,
    scheduled.row,ref,dates,previousDisplayThrough??scheduled.previousDisplayThrough);
   if(!next.geometries.some(g=>g.id===ref.id&&g.version===ref.version))next.geometries.push({...ref,geojson:geometry});
   const provenance=version.historicalProvenance??={};
-  const previousReviews=(provenance.worldPolygonsDisplay??[]).filter(row=>row.validFrom!==dates.validFrom||row.validTo!==dates.validTo);
-  provenance.worldPolygonsDisplay=[...previousReviews,{...dates,...(featureIds?{featureIds}:{featureId}),source,
+  const previousReviews=(provenance[provenanceField]??[]).filter(row=>row.validFrom!==dates.validFrom||row.validTo!==dates.validTo);
+  provenance[provenanceField]=[...previousReviews,{...dates,...(featureIds?{featureIds}:featureId?{featureId}:{}),source,
    ...(sourceMemberEntityId?{sourceMemberEntityId}:{}),
+   ...(divisionSource?{divisionSource}:{}),
    previousGeometrySha256:geometryDigest(before.geojson),geometrySha256:geometryDigest(geometry)}];
  }
  const retained=[...next.sourceBindings,...next.timelineRecords.geometryBindings];
  next.geometries=next.geometries.filter(g=>retained.some(r=>r.geometryRef.id===g.id&&r.geometryRef.version===g.version));
  return next;
+}
+
+export function buildLsibDisplayEdition({baseline,readBaseline,indexPath,sourceBytes,expectedDisplayValidFrom}){
+ const evidence=JSON.parse(gunzipSync(sourceBytes));
+ const {features,displayValidFrom,previousDisplayThrough}=evidence;
+ if(evidence.type!=='FeatureCollection'||evidence.baseline!==baseline||displayValidFrom!==expectedDisplayValidFrom
+  ||!Array.isArray(features)||!features.length
+  ||new Set(features.map(row=>row.id)).size!==features.length||evidence.method!=='geos-coverage-visvalingam-whyatt')
+  fail('LSIB display evidence does not match the pinned Viewer edition');
+ const lsib=JSON.parse(readBaseline('tools/historical-library/sources/lsib-11.4/provenance.json'));
+ const wp=JSON.parse(gunzipSync(readBaseline(worldPolygonsDisplayEvidencePath())));
+ if(evidence.source?.lsibVersion!=='11.4'||evidence.source.boundarySha256!==lsib.masterSha256
+  ||evidence.source.worldPolygonsSha256!==wp.sourcePackageSha256
+  ||evidence.source.shorelineLayer!=='DoS_WP_Shoreline'||evidence.source.polygonLayer!=='DoS_WP_11_4'
+  ||!Number.isFinite(evidence.toleranceDegrees)||evidence.toleranceDegrees<=0||evidence.toleranceDegrees>=1)
+  fail('LSIB display evidence uses an unverified GIS source or tolerance');
+ const sha256=digest(sourceBytes),reference=lsibDisplayEvidencePath(sha256);
+ const index=JSON.parse(readBaseline(indexPath)),nextIndex=structuredClone(index);
+ const directory=indexPath.slice(0,indexPath.lastIndexOf('/')+1);
+ const bySourceId=new Map(features.map(row=>[row.properties.sourceEntityId,row]));
+ for(const {properties} of features){
+  if(!properties.divisionSource)continue;
+  const {reference:proofPath,sha256:proofHash}=properties.divisionSource;
+  const proof=readBaseline(proofPath);
+  if(digest(proof)!==proofHash)fail('LSIB retained division evidence differs');
+  const division=JSON.parse(gunzipSync(proof)).partitions?.find(row=>row.featureId===properties.wpIds[0]
+   &&[row.ownerEntityId,row.memberEntityId].includes(properties.sourceEntityId));
+  if(!division||![division.ownerEntityId,division.memberEntityId].every(id=>
+   equal(bySourceId.get(id)?.properties.divisionSource,properties.divisionSource)))
+   fail('LSIB display requires both sides of the approved division');
+ }
+ const changed=features.map(feature=>{
+  const entry=index.entities.find(row=>row.entityId===feature.id);
+  if(!entry)fail('LSIB display candidate has no existing Viewer object '+feature.id);
+  const prior=readBuiltinCountry(entry,index,file=>readBaseline(directory+file));
+  const next=applyLsibDisplay(prior,feature,{reference,sha256},{displayValidFrom,previousDisplayThrough},readBaseline);
+  if(assertHistoricalCompiledChanges(next,prior,{readDisplayEvidence:p=>p===reference?sourceBytes:null})!==1)
+   fail('LSIB display candidate did not produce exactly one new display binding '+feature.id);
+  return next;
+ });
+ const encoded=encodeBuiltinCountries(nextIndex,changed,new Map());
+ finalizeBuiltinWorldFiles(nextIndex,encoded,{previousIndex:index});
+ for(const field of ['lifetimes','parentRelations','propertyBindings'])
+  if(!equal(index.readIndex.records[field],nextIndex.readIndex.records[field]))fail('LSIB display changed '+field);
+ const files=new Map([...encoded].map(([file,bytes])=>[directory+file,bytes]));
+ files.set(reference,sourceBytes);
+ return issue({baseline,files,reports:{},plan:{changed:changed.map(country=>country.entityId),held:evidence.held}});
+}
+
+const reviewedSudanCoast='reports/borders/validation/ne-world-map-rebase-2026-11-08/historical-modern-reuse-local-20261109/sdn-red-sea-coast-20261110/safe-coast-source-provenance.json';
+const reviewedIndonesiaUnion='reports/borders/validation/ne-world-map-rebase-2026-11-08/historical-modern-reuse-local-20261109/idn-complete-modern-union-correction-20261110/source-provenance.json';
+
+function readHistoricalGeometryProof(proof,readBaseline){
+ const bytes=readBaseline(proof.reference);
+ if(digest(bytes)!==proof.sha256)fail('historical LSIB geometry proof differs');
+ return JSON.parse(bytes);
+}
+
+function assertHistoricalLsibCoast(row,readBaseline){
+ if(row.sourceEntityId!=='state:SDN'||row.donorSourceEntityId!==row.sourceEntityId
+  ||row.sourceVersionId!=='state:sudan:1956-2011-r1'||row.validFrom!=='1956-01-01'||row.validTo!=='2011-07-08'
+  ||row.review?.reference!==reviewedSudanCoast)
+  fail('unreviewed historical LSIB coastline '+row.entityId);
+ const {topology}=readHistoricalGeometryProof(row.review,readBaseline);
+ const record=readHistoricalGeometryProof(topology,readBaseline);
+ if(record.status!=='passed-for-safe-coast-source-change'||!record.allOriginalPoliticalEdgesExact)
+  fail('missing protected historical LSIB coastline limits');
+}
+
+function readHistoricalLsibDonor(country,sourceEntityId,geometryRef){
+ const timeline=country.identity.properties.metadata.historicalTimeline;
+ const current=country.sourceBindings.filter(binding=>binding.validTo===null&&equal(binding.geometryRef,geometryRef));
+ const [modern]=current;
+ const version=timeline.geometryVersions.find(row=>row.versionId===modern?.sourceVersionId);
+ if(current.length!==1||timeline.entityId!==sourceEntityId
+  ||!version?.historicalProvenance?.lsibDisplay?.some(claim=>claim.validFrom===modern.validFrom&&claim.validTo===null))
+  fail('unverified current LSIB display donor '+country.entityId);
+ return modern;
+}
+
+function assertHistoricalLsibUnion(row,readBaseline,readCountry){
+ if(row.sourceEntityId!=='state:IDN'||row.donorSourceEntityId!==row.sourceEntityId
+  ||row.review?.reference!==reviewedIndonesiaUnion||row.additionalDonor?.entityId!=='TLS'
+  ||row.additionalDonor.sourceEntityId!=='state:TLS')fail('unreviewed historical LSIB union '+row.entityId);
+ const review=readHistoricalGeometryProof(row.review,readBaseline);
+ const target=review.originalVersion;
+ if(target?.versionId!==row.sourceVersionId||target.validFrom!==row.validFrom||target.validTo!==row.validTo
+  ||!equal(review.donors?.map(donor=>donor.versionId.split(':').slice(0,2).join(':')),['state:IDN','state:TLS']))
+  fail('historical LSIB union differs from the reviewed territorial grouping');
+ const {entityId,sourceEntityId,geometryRef}=row.additionalDonor;
+ readHistoricalLsibDonor(readCountry(entityId),sourceEntityId,geometryRef);
+}
+
+export function buildHistoricalLsibDisplayEdition({baseline,readBaseline,indexPath,sourceBytes,includeSameSource=false}){
+ const {data,sha256}=readHistoricalLsibDisplayEvidence(sourceBytes);
+ if(data.baseline!==baseline||!data.rows.length)fail('historical LSIB display evidence differs from the pinned Viewer edition');
+ const reference=historicalLsibDisplayEvidencePath(sha256),source={reference,sha256};
+ const wp=JSON.parse(gunzipSync(readBaseline(worldPolygonsDisplayEvidencePath())));
+ const index=JSON.parse(readBaseline(indexPath)),nextIndex=structuredClone(index);
+ const directory=indexPath.slice(0,indexPath.lastIndexOf('/')+1);
+ const entries=new Map(index.entities.map(entry=>[entry.entityId,entry]));
+ const countries=new Map(),replacements=new Map(),counts=new Map();
+ const readCountry=id=>{
+  if(!entries.has(id))fail('missing historical LSIB display object '+id);
+  if(!countries.has(id))countries.set(id,readBuiltinCountry(entries.get(id),index,file=>readBaseline(directory+file)));
+  return countries.get(id);
+ };
+ for(const row of data.rows){
+  const country=readCountry(row.entityId),donor=readCountry(row.donor);
+  const modern=readHistoricalLsibDonor(donor,row.donorSourceEntityId,row.donorGeometryRef);
+  const start=parseTemporal(modern.validFrom)?.startKey;
+  const prior=start&&donor.sourceBindings.find(binding=>binding.validTo&&binding.sourceVersionId===modern.sourceVersionId
+   &&equal(temporalFollowingDay(parseTemporal(binding.validTo).endKey),start));
+  if(!prior)fail('missing previous LSIB display donor '+row.donor);
+  const scopeApproved=wp.historical.some(review=>review.outcome==='candidate'&&review.entityId===row.sourceEntityId
+   &&review.versionId===row.sourceVersionId&&review.donor===row.donorSourceEntityId
+   &&(review.validFrom==null||(row.validFrom!=null&&compareTemporal(review.validFrom,row.validFrom)<=0))
+   &&compareTemporal(review.validTo,row.validTo,{leftBoundary:'end',rightBoundary:'end'})>=0);
+  const sameOutline=equal(prior.geometryRef,row.before);
+  if(row.kind==='same-source'){
+   if(!includeSameSource||row.entityId!==row.donor||row.sourceVersionId!==prior.sourceVersionId||!sameOutline||row.validTo!==prior.validTo)
+    fail('historical LSIB same-source window is outside the selected scope '+row.entityId);
+  }else if(row.kind==='reviewed-coast'){
+   assertHistoricalLsibCoast(row,readBaseline);
+  }else if(row.kind==='reviewed-union'){
+   assertHistoricalLsibUnion(row,readBaseline,readCountry);
+  }else if(row.kind!=='approved-copy'||!scopeApproved||!sameOutline){
+   fail('missing reviewed historical donor relationship '+row.entityId);
+  }
+  if(row.application==='approved-outline'){
+   const geometry=donor.geometries.find(asset=>equal({id:asset.id,version:asset.version},row.donorGeometryRef));
+   if(!sameOutline||!equal(row.geometry,geometry?.geojson))fail('historical LSIB outline differs from the approved donor');
+  }else if(row.application!=='common-sections')fail('unrecognized historical LSIB display application');
+  replacements.set(row.entityId,applyHistoricalLsibDisplay(replacements.get(row.entityId)??country,row,source));
+  counts.set(row.entityId,(counts.get(row.entityId)??0)+1);
+ }
+ const changed=[...replacements.values()];
+ for(const country of changed){
+  const prior=countries.get(country.entityId);
+  const checked=assertHistoricalCompiledChanges(country,prior,{readDisplayEvidence:path=>path===reference?sourceBytes:null});
+  if(checked!==counts.get(country.entityId))fail('historical LSIB display did not replace every selected binding '+country.entityId);
+ }
+ const encoded=encodeBuiltinCountries(nextIndex,changed,new Map());
+ finalizeBuiltinWorldFiles(nextIndex,encoded,{previousIndex:index});
+ for(const field of ['lifetimes','parentRelations','propertyBindings'])
+  if(!equal(index.readIndex.records[field],nextIndex.readIndex.records[field]))fail('historical LSIB display changed '+field);
+ const files=new Map([...encoded].map(([file,bytes])=>[directory+file,bytes]));
+ files.set(reference,sourceBytes);
+ return issue({baseline,files,reports:{},plan:{changed:changed.map(country=>country.entityId),bindings:data.rows.length,reference}});
 }
 
 export function buildWorldPolygonsDisplayEdition({baseline,readBaseline,indexPath,sourcePath,sourceBytes}){

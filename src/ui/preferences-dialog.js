@@ -1,8 +1,9 @@
-import { defaultUserPreferences } from "./user-preferences.js";
-import { setDialogReturnFocus } from "./dialog-accessibility-controller.js";
+import { defaultUserPreferences } from './user-preferences.js';
+import { distributionValueRange } from '../document/distribution-model.js';
+import { setDialogReturnFocus } from './dialog-accessibility-controller.js';
 
 /** One settings dialog. No detached View surface, DOM reparenting or duplicate state. */
-export function createPreferencesDialog({ document, window = globalThis.window, productMode,
+export function createPreferencesDialog({ document, window = globalThis.window, productMode = 'viewer',
   getPreferences, applyPreferences, mapSettings, getMapState,
   returnFocus = null, onError = () => {} }) {
   if (productMode !== 'viewer') throw new TypeError('Preference dialog requires viewer product mode.');
@@ -38,7 +39,7 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
       : '표시 중인 분포를 목록 순서대로 겹쳐 그립니다.';
     const select = get('distributionActiveLayerInput');
     select.replaceChildren(...visibleLayers.map(layer => {
-      const option = element('option',null,layer.name);
+      const option = element('option', null, layer.name);
       option.value = layer.id;
       return option;
     }));
@@ -48,15 +49,15 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     const legend = get('distributionLegend');
     legend.replaceChildren(...chosen.map(layer => {
       const entries = (stateSnapshot.distributionEntries || []).filter(entry => entry.layerId === layer.id);
-      const range = mapSettings.distributionValueRange(layer,entries);
+      const range = distributionValueRange(layer, entries);
       const row = element('div','distribution-legend-row');
-      const title = element('strong',null,layer.name);
+      const title = element('strong', null, layer.name);
       const bar = element('span','distribution-legend-bar');
       bar.style.background = `linear-gradient(90deg, color-mix(in srgb, ${layer.color} 12%, transparent), color-mix(in srgb, ${layer.color} 70%, transparent))`;
       const label = !range ? '데이터 없음' : range.min === range.max
         ? `${range.min}${layer.unit ? ` ${layer.unit}` : ''}`
         : `${range.min}–${range.max}${layer.unit ? ` ${layer.unit}` : ''}`;
-      row.append(title,bar,element('span',null,label));
+      row.append(title, bar, element('span', null, label));
       return row;
     }));
   }
@@ -65,14 +66,14 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     const preferences = getPreferences(), view = state();
     get('preferencesThemeInput').value = preferences.appearance.theme;
     for (const button of modal.querySelectorAll('[data-preference-theme]'))
-      button.setAttribute('aria-pressed',String(button.dataset.preferenceTheme === preferences.appearance.theme));
+      button.setAttribute('aria-pressed', String(button.dataset.preferenceTheme === preferences.appearance.theme));
     get('preferencesObjectColorsInput').checked = view.layerPresentation?.styles?.objects?.colorVisible !== false;
     get('preferencesNativeNamesInput').checked = preferences.labels.place.showNativeNames;
     get('preferencesSmoothLinesInput').checked = preferences.appearance.smoothLines;
     get('preferencesFormalCountryNamesInput').checked = preferences.appearance.showFormalCountryNames;
     get('preferencesGraticuleInput').checked = view.backgroundSettings?.graticule !== false;
-    for (const [id,group] of [['preferencesRiversInput','rivers'],['preferencesLakesInput','lakes'],
-      ['genericFeaturesVisible','genericFeatures'],['distributionsVisible','distributions']])
+    for (const [id, group] of [['preferencesRiversInput','rivers'], ['preferencesLakesInput','lakes'],
+      ['genericFeaturesVisible','genericFeatures'], ['distributionsVisible','distributions']])
       get(id).checked = view.layerVisibility?.[group] !== false;
     const hasGeneric = (view.genericFeatures || []).length > 0;
     const layerIds = new Set((view.distributionLayers || []).map(layer => layer.id));
@@ -82,7 +83,7 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     if (hasDistribution) renderDistribution(view);
   }
   function schedule(operation) {
-    pending = pending.catch(()=>{}).then(operation).catch(error => {
+    pending = pending.catch (() => {}).then(operation).catch (error => {
       onError(error,'설정을 변경하지 못했습니다.','PL-PREFERENCES-CHANGE');
     }).then(sync);
     return pending;
@@ -95,7 +96,7 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
   };
   function applyAppearance(patch, options) {
     const current = getPreferences();
-    applyPreferences({...current,appearance:{...current.appearance,...patch}}, options);
+    applyPreferences({...current, appearance:{...current.appearance, ...patch}}, options);
     sync();
   }
   function close() {
@@ -103,59 +104,59 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     (returnFocus?.() || trigger)?.focus?.({preventScroll:true});
     trigger = null;
   }
-  listen(get('preferencesBtn'),'click',event => {
+  listen(get('preferencesBtn'),'click', event => {
     trigger = event.currentTarget;
-    setDialogReturnFocus(modal,()=>returnFocus?.() || trigger);
+    setDialogReturnFocus(modal, () => returnFocus?.() || trigger);
     sync();
     modal.classList.remove('hidden');
     get('preferencesObjectColorsInput').focus({preventScroll:true});
   });
-  listen(get('preferencesCloseBtn'),'click',close);
-  listen(modal.querySelector('.ui-dialog-backdrop'),'click',close);
-  listen(modal,'keydown',event => {
-    if (event.key === 'Escape') { event.preventDefault();event.stopPropagation();close(); }
+  listen(get('preferencesCloseBtn'),'click', close);
+  listen(modal.querySelector('.ui-dialog-backdrop'),'click', close);
+  listen(modal,'keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
   });
   for (const button of modal.querySelectorAll('[data-preference-theme]'))
-    listen(button,'click',()=>applyAppearance({theme:button.dataset.preferenceTheme}));
-  listen(get('preferencesSmoothLinesInput'),'change',event=>applyAppearance({smoothLines:event.currentTarget.checked}));
-  listen(get('preferencesFormalCountryNamesInput'),'change',event=>
-    applyAppearance({showFormalCountryNames:event.currentTarget.checked},{reason:'formal-country-name-display'}));
-  listen(get('preferencesObjectColorsInput'),'change',event =>
-    queueInput(event.currentTarget,value=>mapSettings.updateLayerPresentationStyle('objects',{colorVisible:value})));
-  listen(get('preferencesNativeNamesInput'),'change',event=>
-    queueInput(event.currentTarget,value=>mapSettings.setNativeNameOverlay(value)));
-  for (const [id,group] of [['preferencesRiversInput','rivers'],['preferencesLakesInput','lakes'],
-    ['genericFeaturesVisible','genericFeatures'],['distributionsVisible','distributions']])
-    listen(get(id),'change',event=>
-      queueInput(event.currentTarget,value=>mapSettings.setLayerVisibility(group,value)));
-  listen(get('preferencesGraticuleInput'),'change',event=>
-    queueInput(event.currentTarget,value=>mapSettings.setBackgroundSetting('graticule',value)));
-  listen(get('preferencesDistributionBlendInput'),'change',event=>
-    queueInput(event.currentTarget,value=>mapSettings.updateLayerPresentationStyle('distributions',{blendMode:value})));
+    listen(button,'click', () => applyAppearance({theme:button.dataset.preferenceTheme}));
+  listen(get('preferencesSmoothLinesInput'),'change', event => applyAppearance({smoothLines:event.currentTarget.checked}));
+  listen(get('preferencesFormalCountryNamesInput'),'change', event =>
+    applyAppearance({showFormalCountryNames:event.currentTarget.checked}, {reason:'formal-country-name-display'}));
+  listen(get('preferencesObjectColorsInput'),'change', event =>
+    queueInput(event.currentTarget, value => mapSettings.updateLayerPresentationStyle('objects', {colorVisible:value})));
+  listen(get('preferencesNativeNamesInput'),'change', event =>
+    queueInput(event.currentTarget, value => mapSettings.setNativeNameOverlay(value)));
+  for (const [id, group] of [['preferencesRiversInput','rivers'], ['preferencesLakesInput','lakes'],
+    ['genericFeaturesVisible','genericFeatures'], ['distributionsVisible','distributions']])
+    listen(get(id),'change', event =>
+      queueInput(event.currentTarget, value => mapSettings.setLayerVisibility(group, value)));
+  listen(get('preferencesGraticuleInput'),'change', event =>
+    queueInput(event.currentTarget, value => mapSettings.setBackgroundSetting('graticule', value)));
+  listen(get('preferencesDistributionBlendInput'),'change', event =>
+    queueInput(event.currentTarget, value => mapSettings.updateLayerPresentationStyle('distributions', {blendMode:value})));
   for (const input of modal.querySelectorAll('input[name="distributionLayerMode"]'))
-    listen(input,'change',event => {
+    listen(input,'change', event => {
       if (event.currentTarget.checked)
-        queueInput(event.currentTarget,value=>mapSettings.setDistributionControl('distributionRenderMode',value));
+        queueInput(event.currentTarget, value => mapSettings.setDistributionControl('distributionRenderMode', value));
     });
-  listen(get('distributionActiveLayerInput'),'change',event=>
-    queueInput(event.currentTarget,value=>mapSettings.setDistributionControl('distributionActiveLayer',value)));
-  listen(get('distributionBoundaryVisibleInput'),'change',event=>
-    queueInput(event.currentTarget,value=>mapSettings.setDistributionControl('distributionBoundaryVisible',value)));
-  listen(get('preferencesResetBtn'),'click',()=>schedule(async() => {
+  listen(get('distributionActiveLayerInput'),'change', event =>
+    queueInput(event.currentTarget, value => mapSettings.setDistributionControl('distributionActiveLayer', value)));
+  listen(get('distributionBoundaryVisibleInput'),'change', event =>
+    queueInput(event.currentTarget, value => mapSettings.setDistributionControl('distributionBoundaryVisible', value)));
+  listen(get('preferencesResetBtn'),'click', () => schedule(async() => {
     const defaults = defaultUserPreferences(), current = getPreferences();
-    applyPreferences({...current,appearance:defaults.appearance,labels:{...current.labels,place:{
-      ...current.labels.place,showNativeNames:false,
+    applyPreferences({...current, appearance:defaults.appearance, labels:{...current.labels, place:{
+      ...current.labels.place, showNativeNames:false,
     }}});
     if (state().layerPresentation?.styles?.objects?.colorVisible === false)
-      await mapSettings.updateLayerPresentationStyle('objects',{colorVisible:true});
+      await mapSettings.updateLayerPresentationStyle('objects', {colorVisible:true});
     for (const group of ['rivers','lakes']) if (state().layerVisibility?.[group] === false)
-      await mapSettings.setLayerVisibility(group,true);
+      await mapSettings.setLayerVisibility(group, true);
     if (state().backgroundSettings?.graticule === false)
-      await mapSettings.setBackgroundSetting('graticule',true);
+      await mapSettings.setBackgroundSetting('graticule', true);
     // Conditional project-owned settings are intentionally not reset.
   }));
-  listen(window,'pandolab:project-changed',sync);
-  return Object.freeze({sync,close,dispose(){
+  listen(window,'pandolab:project-changed', sync);
+  return Object.freeze({sync, close, dispose() {
     if (disposed) return;
     disposed = true;
     for (const unsubscribe of listeners.splice(0)) unsubscribe();

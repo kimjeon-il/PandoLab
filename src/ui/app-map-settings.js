@@ -1,5 +1,3 @@
-import { distributionValueRange } from "../document/distribution-model.js";
-
 /** The single viewing-presentation adapter for settings.
  * DOM/keyboard behavior belongs exclusively to preferences-dialog.
  */
@@ -28,12 +26,12 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     ports.objectDisplay.invalidateObjectPresentation();
     ports.domains.objectSearchController?.render();
     if (key === 'distributions') ports.distributionPresentation.bumpVisibilityRevision();
-    if (key === 'objects') ports.rendering.mapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-layer-visibility');
+    if (key === 'objects') ports.rendering.mapRenderer.invalidateCountryPalette({base:true, emphasis:true},'country-layer-visibility');
     if (key === 'rivers' || key === 'lakes') ports.rendering.mapRenderer.invalidateHydroVisibility();
     if (key === 'labels' || key === 'objectNames')
       ports.domains.renderingDomain.invalidateLabels('label-visibility');
     else {
-      ports.domains.renderingDomain.invalidateBaseScene('layer-visibility');
+      ports.domains.renderingDomain.invalidateProject('layer-visibility');
       if (key === 'objects') ports.domains.renderingDomain.invalidateLabels('layer-visibility');
     }
     if (key === 'rivers' || key === 'lakes') await ports.layerResources.loadHydroData(true);
@@ -43,15 +41,15 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
 
   async function updateLayerPresentationStyle(group, patch) {
     const current = ports.layerStyleServices.layerStyle(state().layerPresentation, group);
-    if (Object.entries(patch).every(([key,value]) => current[key] === value)) return false;
+    if (Object.entries(patch).every(([key, value]) => current[key] === value)) return false;
     const result = await viewPresentation.applyPresentation({ action: 'groupStyle', group, patch });
     if (!result) throw new Error('Layer style command rejected: ' + group);
-    if(group==='objects'&&Object.keys(patch).length===1&&Object.hasOwn(patch,'colorVisible')){
+    if (group==='objects'&&Object.keys(patch).length===1&&Object.hasOwn(patch,'colorVisible')) {
       ports.rendering.mapRenderer.invalidateCountryColors();
       return true;
     }
     if (group === 'objects')
-      ports.rendering.mapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-presentation');
+      ports.rendering.mapRenderer.invalidateCountryPalette({base:true, emphasis:true},'country-presentation');
     if (group === 'rivers' || group === 'lakes')
       ports.rendering.mapRenderer.invalidatePhysicalStyle('hydro-presentation');
     ports.domains.renderingDomain.invalidateOverlayStyle('layer-presentation-style');
@@ -61,8 +59,8 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
   async function setNativeNameOverlay(enabled) {
     const current = ports.preferences.userPreferences;
     if (current.labels.place.showNativeNames === enabled) return false;
-    const next = ports.preferences.saveUserPreferences({...current,labels:{
-      ...current.labels,place:{...current.labels.place,showNativeNames:enabled},
+    const next = ports.preferences.saveUserPreferences({...current, labels:{
+      ...current.labels, place:{...current.labels.place, showNativeNames:enabled},
     }});
     ports.preferences.setUserPreferences(next);
     ports.domains.renderingDomain.invalidateLabels('native-name-visibility');
@@ -73,27 +71,26 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (state().backgroundSettings?.[key] === visible) return false;
     state().backgroundSettings[key] = visible;
     const current = ports.preferences.userPreferences;
-    const next = ports.preferences.saveUserPreferences({...current,backgrounds:{
-      ...current.backgrounds,viewer:{...current.backgrounds.viewer,[key]:visible},
+    const next = ports.preferences.saveUserPreferences({...current, backgrounds:{
+      ...current.backgrounds, viewer:{...current.backgrounds.viewer, [key]:visible},
     }});
     ports.preferences.setUserPreferences(next);
-    ports.domains.renderingDomain.invalidateBaseScene('background-preference');
+    ports.domains.renderingDomain.invalidateProject('background-preference');
     return true;
   }
-  async function setDistributionControl(action,value) {
+  async function setDistributionControl(action, value) {
     const current = state().distributionSettings;
-    const property = {distributionRenderMode:'renderMode',distributionActiveLayer:'activeLayerId',
+    const property = {distributionRenderMode:'renderMode', distributionActiveLayer:'activeLayerId',
       distributionBoundaryVisible:'boundaryVisible'}[action];
     if (!property) throw new TypeError('Unknown distribution setting: ' + action);
     if (current[property] === value) return false;
-    const result = await viewPresentation.applyPresentation({action,value});
+    const result = await viewPresentation.applyPresentation({action, value});
     if (!result) throw new Error('Distribution setting command rejected: ' + action);
     if (action === 'distributionActiveLayer') ports.distributionPresentation.bumpVisibilityRevision();
     ports.domains.renderingDomain.invalidateOverlayStyle('distribution-setting');
     return true;
   }
 
-  return Object.freeze({connect,dispose(){ports=null;},setLayerVisibility,
-    updateLayerPresentationStyle,setNativeNameOverlay,setBackgroundSetting,setDistributionControl,
-    distributionValueRange});
+  return Object.freeze({connect, dispose() {ports = null;}, setLayerVisibility,
+    updateLayerPresentationStyle, setNativeNameOverlay, setBackgroundSetting, setDistributionControl});
 }

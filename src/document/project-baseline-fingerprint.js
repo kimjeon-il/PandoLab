@@ -1,5 +1,5 @@
 // Pure deterministic project source fingerprint, shared by GIS data and Core fixtures.
-import {normalizeTerritorialEntities} from "./territorial-units.js";
+import { normalizeTerritorialEntities } from './territorial-units.js';
 
 /** Hash the canonical baseline, including every omitted identity and exact shape. */
 export async function fingerprintProjectBaseline(features) {

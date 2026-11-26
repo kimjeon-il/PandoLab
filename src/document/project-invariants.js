@@ -1,6 +1,7 @@
-import { normalizeTerritorialEntities, normalizeTerritorialIdentities } from "./territorial-units.js";
-import { normalizeTemporalInterval, sharedCalculationCore } from "./temporal.js";
-import { validateSourceProvenance } from "./source-provenance.js";
+import { normalizeTerritorialEntities, normalizeTerritorialIdentities } from './territorial-units.js';
+import { normalizeTemporalInterval, sharedCalculationCore } from './temporal.js';
+import { validateSourceProvenance } from './source-provenance.js';
+import { graphDiagnostics } from './reference-graph-diagnostics.js';
 
 const text = value => String(value ?? '').trim();
 const POLYGON_TYPES = new Set(['Polygon', 'MultiPolygon']);
@@ -13,14 +14,6 @@ function issue(code, message, objectIds = [], field = '') {
     objectIds: [...new Set(objectIds.map(String).filter(Boolean))],
     field,
   });
-}
-
-function graphDiagnostics(rows, idOf, parentOf = () => '') {
-  if (typeof sharedCalculationCore.referenceGraphDiagnostics !== 'function') {
-    throw Object.assign(new Error('Canonical C++ reference graph validator is unavailable.'), { code: 'PL-CORE-WASM-CAPABILITY' });
-  }
-  const items = rows || [];
-  return sharedCalculationCore.referenceGraphDiagnostics(items.map(row => text(idOf(row))), items.map(row => text(parentOf(row))));
 }
 
 function duplicateIssues(rows, idOf, code, label, diagnostics = null) {

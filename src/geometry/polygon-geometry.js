@@ -58,11 +58,9 @@
     return keys.size;
   }
 
-  // The signed spherical integral has a single owner: shared/core.
-  // In Web workers it is exposed by verified WASM, and in Qt's QJSEngine
-  // by a narrow QObject bridge. Keep UI-specific planar utilities below.
+  // The signed spherical integral is owned by the verified shared WASM Core.
   function areaCore() {
-    const owner = root.PandoLabSphericalAreaCore || root.PandoLabSphericalCore;
+    const owner = root.PandoLabSphericalCore;
     if (typeof owner?.sphericalRingSignedArea !== 'function'
       || typeof owner?.sphericalRingSignedAreas !== 'function') {
       throw Object.assign(new Error('공통 C++ 구면 면적 계산기를 불러오지 못했습니다.'),
@@ -129,20 +127,20 @@
         const a=ids[i],b=ids[(i+1)%ids.length];
         if(a===b)continue;
         const key=a<b?`${a}:${b}`:`${b}:${a}`;
-        balanced.set(key,(balanced.get(key)||0)+(a<b?1:-1));
+        balanced.set(key, (balanced.get(key)||0)+(a<b?1:-1));
       }
-      if(!balanced.size||[...balanced.values()].some(count=>count!==0))return null;
-      const bounds=[Infinity,Infinity,-Infinity,-Infinity],origin=ring[0];
-      let twiceArea=0;
-      for(let i=0;i+1<ring.length;i++){
-        const a=ring[i],b=ring[i+1];
-        bounds[0]=Math.min(bounds[0],a[0]);bounds[1]=Math.min(bounds[1],a[1]);
-        bounds[2]=Math.max(bounds[2],a[0]);bounds[3]=Math.max(bounds[3],a[1]);
+      if (!balanced.size||[...balanced.values()].some(count => count!==0))return null;
+      const bounds = [Infinity, Infinity, -Infinity, -Infinity], origin = ring[0];
+      let twiceArea = 0;
+      for (let i = 0; i+1<ring.length; i++) {
+        const a = ring[i], b = ring[i+1];
+        bounds[0] = Math.min(bounds[0], a[0]); bounds[1] = Math.min(bounds[1], a[1]);
+        bounds[2] = Math.max(bounds[2], a[0]); bounds[3] = Math.max(bounds[3], a[1]);
         twiceArea+=(a[0]-origin[0])*(b[1]-origin[1])-(b[0]-origin[0])*(a[1]-origin[1]);
       }
-      if(bounds[2]-bounds[0]>1||bounds[3]-bounds[1]>1
-        ||Math.max(Math.abs(bounds[1]),Math.abs(bounds[3]))>=85)return null;
-      const areaM2=Math.abs(twiceArea)/2*(111195**2)
+      if (bounds[2]-bounds[0]>1||bounds[3]-bounds[1]>1
+        ||Math.max(Math.abs(bounds[1]), Math.abs(bounds[3]))>=85)return null;
+      const areaM2 = Math.abs(twiceArea)/2*(111195**2)
         *Math.cos((bounds[1]+bounds[3])/2*Math.PI/180);
       return Number.isFinite(areaM2)&&areaM2<=0.1?areaM2:null;
     }

@@ -9,7 +9,7 @@ namespace projectcodec { struct PlatformPorts; }
 struct WebTerritorialFeature {
     TerritorialUnit identity;
     Geometry geometry;
-    std::string parentId,coverageMode;
+    std::string parentId, coverageMode;
     Validity validity;
     ObjectStyle style;
     std::optional<CountryDetails> countryDetails;
@@ -20,7 +20,7 @@ struct WebTerritorialFeature {
 struct WebTerritorialSource {
     std::vector<WebTerritorialFeature> features;
 };
-WebTerritorialSource readWebTerritorialSource(const codecjson::Value&,const projectcodec::PlatformPorts&);
+WebTerritorialSource readWebTerritorialSource(const codecjson::Value&, const projectcodec::PlatformPorts&);
 codecjson::Value normalizeWebTerritorialResolvedFeature(const codecjson::Value&);
-ProjectDocument applyWebTerritorialSource(const ProjectSnapshot&,const WebTerritorialSource&);
+ProjectDocument applyWebTerritorialSource(const ProjectSnapshot&, const WebTerritorialSource&);
 }

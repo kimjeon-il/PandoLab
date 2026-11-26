@@ -15,7 +15,6 @@ import {createStoredAssetLoader} from '../../src/data/stored-asset-loader.js';
 import {loadVerifiedCore} from '../../src/runtime/core-wasm-loader.js';
 import {decodeCountryMesh, encodeCountryMesh} from '../../src/rendering/country-mesh-codec.js';
 import {createApplicationLifecycle} from '../../src/app/application-lifecycle.js';
-import {createPhysicalAssetReader} from '../../src/data/physical-asset-reader.js';
 
 import {createAdaptiveRenderQualityController, renderQualityProfile, resolveInitialRenderQuality} from '../../src/rendering/adaptive-render-quality.js';
 
@@ -351,23 +350,25 @@ test('required physical resource failure ends startup loading with an error and 
   const window=new EventTarget();window.CustomEvent=CustomEvent;
   window.addEventListener('pandolab:ready',()=>events.push('ready'));
   window.addEventListener('pandolab:error',event=>events.push(event.detail));
-  const reader=createPhysicalAssetReader({buildMeta:{dataRevision:'selected-pin',physicalLand:{
-    url:'assets/data/physical/land.json',encoding:'identity',sha256:hash('{}'),compressedBytes:2}},
-    resolveBaseUrl:()=>new URL('https://fixture.invalid/data/'),
-    createLoader:options=>createStoredAssetLoader({...options,cacheStorage:null,subtle:webcrypto.subtle,
-      fetchFn:()=>{requested.resolve();return network.promise;}})});
-  const lifecycle=createApplicationLifecycle({window,startup:()=>reader.loadPhysicalLand(),
+  const spec={url:'https://fixture.invalid/globe/water.bin',encoding:'identity',sha256:hash('{}'),compressedBytes:2};
+  const loader=createStoredAssetLoader({dataRevision:'selected-pin',cachePolicy:'immutable',resolveUrl:asset=>asset.url,
+    cacheStorage:null,subtle:webcrypto.subtle,fetchFn:()=>{requested.resolve();return network.promise;}});
+  let admitted=false;
+  const lifecycle=createApplicationLifecycle({window,startup:async()=>{
+    await loader.loadAsset(spec,'startup','water','Water surface',bytes=>bytes);
+    admitted=true;
+  },
     onReady:()=>{ready++;},onError:error=>errors.push(error),
     getDisposables:()=>[{dispose(){disposed++;}}]});
   try {
     const completion=lifecycle.start();
     await requested.promise;
-    assert.equal(ready,0);assert.equal(disposed,0);assert.equal(reader.physicalLand,null);
+    assert.equal(ready,0);assert.equal(disposed,0);assert.equal(admitted,false);
     network.resolve(new Response('missing',{status:404}));
     assert.equal(await completion,false,'required resource rejection settles the startup attempt');
     assert.equal(errors.length,1);assert.match(errors[0].message,/404/);
     assert.deepEqual(events,[errors[0].message],'error event replaces the ready event');
-    assert.equal(ready,0);assert.equal(disposed,1);assert.equal(reader.physicalLand,null);
+    assert.equal(ready,0);assert.equal(disposed,1);assert.equal(admitted,false);
     assert.equal(await lifecycle.start(),false,'a failed disposed startup cannot remain pending');
   } finally {lifecycle.dispose();}
 });
@@ -398,4 +399,82 @@ test('native boundary edge boxes are chunked without deleting or reordering GIS 
   assert.deepEqual(result,rows.map(({a,b})=>[[...a,...b]]));
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:1_000_001,calculate:()=>[]}),/Invalid native boundary edge batch size/);
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:2,calculate:()=>[]}),/Native boundary edge box count mismatch/);
+});
+
+test('Viewer view storage keeps the revision-scoped view and project-scoped camera separate',async()=>{
+ const {createViewerViewStorage}=await import('../../src/data/browser-project-storage.js');
+ const written=[];
+ let camera={projection:'globe',center:[20,100],zoom:3,bearing:0,pitch:0,roll:0};
+ const storage={writeView:v=>written.push(['view',v]),writeCamera:(id,v)=>written.push(['camera',id,v]),
+  readView:id=>({documentId:id}),readCamera:()=>camera};
+ const owner=createViewerViewStorage({storage,projectId:'world',dataRevision:'rev',now:()=> 'date'});
+ await owner.writeView({x:1},camera);
+ assert.deepEqual(written[0],['view',{documentId:'map-project:world:rev',viewingPresentation:{x:1},savedAt:'date'}]);
+ assert.deepEqual(written[1],['camera','world',camera]);
+ assert.deepEqual(await owner.readView(),{documentId:'map-project:world:rev'});
+ assert.deepEqual(await owner.readCamera(),{globeRotation:[-20,-90,0],zoom:3,bearing:0,pitch:0,roll:0});
+ camera={projection:'flat',center:[20,20],zoom:3};
+ assert.equal(await owner.readCamera(),null);
+});
+
+test('Viewer loading notice owns one accessible retry button',async()=>{
+ const {presentViewerLoadStatus}=await import('../../src/app/viewer-load-status.js');
+ const attributes={},children=[];let retries=0;
+ const element={ownerDocument:{createElement:()=>({addEventListener:(type,fn)=>{assert.equal(type,'click');children.push(fn);}})},
+  setAttribute:(key,value)=>{attributes[key]=value;},appendChild:button=>{assert.equal(button.type,'button');}};
+ presentViewerLoadStatus(element,'retry',{error:true,retry:()=>retries++});
+ assert.equal(attributes.role,'alert');assert.equal(children.length,1);
+ children[0]();assert.equal(retries,1);
+ presentViewerLoadStatus(element,'loading');
+ assert.equal(attributes.role,'status');
+});
+
+test('distribution hierarchy normalization shares the compiled Core reference graph',async()=>{
+ const {normalizeDistributionLayers}=await import('../../src/document/distribution-model.js');
+ const layer=(id,parentId='')=>({id,parentId,schemaVersion:3});
+ assert.deepEqual(normalizeDistributionLayers([layer('root'),layer('leaf','root')]).map(row=>row.id),['root','leaf']);
+ assert.throws(()=>normalizeDistributionLayers([layer('leaf','missing')]),/leaf의 상위 분포 레이어가 존재하지 않거나/);
+ assert.throws(()=>normalizeDistributionLayers([layer('self','self')]),/self의 상위 분포 레이어가 존재하지 않거나/);
+ assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','a')]),/a의 상위 분포 레이어 관계가 순환/);
+ assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','missing')]),/b의 상위 분포 레이어가 존재하지 않거나/);
+});
+
+test('read-only Viewer rejects an editor geometry context and requests eager built-in resources',async()=>{
+ const {createPlatformPorts,assertPlatformPorts}=await import('../../src/runtime/platform-ports.js');
+ const {resourceCapabilities}=await import('../../src/runtime/resource-capabilities.js');
+ const platform=createPlatformPorts({kind:'browser'});
+ assert.equal(assertPlatformPorts(platform,{productMode:'viewer'}),platform);
+ const resources=resourceCapabilities('viewer',platform);
+ assert.equal(resources.eagerBuiltinHydro,true);
+ assert.equal(resources.eagerBuiltinPlaces,true);
+ assert.throws(()=>createPlatformPorts({kind:'browser',library:{geometryContext:{}}}),/unsupported field library/);
+ assert.throws(()=>createPlatformPorts({kind:'native'}),/requires kind browser/);
+ assert.throws(()=>createPlatformPorts({kind:'browser',resources:{startupMesh:'project'}}),/unsupported field startupMesh/);
+ assert.throws(()=>createPlatformPorts({kind:'browser',storage:{namespace:'old'}}),/unsupported field storage/);
+ assert.throws(()=>assertPlatformPorts({...platform,kind:'native'},{productMode:'viewer'}),/requires kind browser/);
+ assert.throws(()=>assertPlatformPorts({...platform,library:{}},{productMode:'viewer'}),/unsupported field library/);
+ assert.throws(()=>assertPlatformPorts({...platform,resources:{...platform.resources,startupMesh:'builtin'}},{productMode:'viewer'}),/unsupported field startupMesh/);
+ const loader={loadProject(){}};
+ const custom=createPlatformPorts({kind:'browser',resources:{builtinHydro:false},world:{builtinLoader:loader}});
+ assert.equal(custom.resources.builtinHydro,false);
+ assert.equal(custom.resources.builtinPlaces,true);
+ assert.equal(custom.world.builtinLoader,loader);
+ assert.throws(()=>resourceCapabilities('editor',platform),/Viewer product mode/);
+});
+
+test('reference graph diagnostics share the compiled chain kernel for authoring and distribution validation',async()=>{
+ const {graphDiagnostics}=await import('../../src/document/reference-graph-diagnostics.js');
+ const rows=[{id:' a ',parent:'b'},{id:'b',parent:'a'},{id:'c',parent:'missing'}];
+ const result=graphDiagnostics(rows,row=>row.id,row=>row.parent);
+ assert.equal(result[0].cycle,true);assert.equal(result[1].cycle,true);
+ assert.equal(result[2].missing,true);
+});
+
+test('split document calculation bindings retain the compiled public ABI',async()=>{
+  const {sharedCalculationCore:core}=await import('../../src/document/temporal.js');
+  for(const name of ["sphericalRingSignedArea","validateTerritorialRing","validateClippedTerritorialRing","referenceGraphDiagnostics","planGisCountryMerge","planGisCountryGeometry","gisCountryMergeCanCommit","resolveTerritorialRoot","distributionReferenceDiagnostics","sphericalRingSignedAreas","temporalParse","temporalMonthEnd","temporalCompare","temporalNormalizeInterval","temporalContains","temporalIntervalsOverlap","temporalShiftMonth","temporalCompareKeys","temporalFollowingDay","normalizePolygonGeometry","normalizePolygonRing","hasCanonicalPolygonWinding","hasCanonicalClippedPolygonWinding"])assert.equal(typeof core[name],'function',name);
+  assert.equal(typeof core.DocumentSession,'function');
+  assert.equal(core.coreAbiVersion,1);
+  assert.equal(core.temporalCompareKeys([2020,1,1],[2020,1,2]),-1);
+  assert.equal(core.referenceGraphDiagnostics(['a','b'],['b','a'])[0].cycle,true);
 });

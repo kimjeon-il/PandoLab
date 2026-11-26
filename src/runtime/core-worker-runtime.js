@@ -1,5 +1,5 @@
-import { createDocumentSessionRuntime } from "../document/core-document-runtime.js";
-import { createProductModePolicy } from "../app/product-mode-policy.js";
+import { createDocumentSessionRuntime } from '../document/core-document-runtime.js';
+import { createProductModePolicy } from '../app/product-mode-policy.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const documentMethods = Object.freeze({
@@ -29,7 +29,7 @@ export function createCoreWorkerRuntime({ loadModule, validateFlagDataUrl, produ
   const policy = createProductModePolicy(productMode);
   let modulePromise = null;
   const loadOnce = () => {
-    if (!modulePromise) modulePromise = Promise.resolve().then(loadModule).catch(error => {
+    if (!modulePromise) modulePromise = Promise.resolve().then(loadModule).catch (error => {
       // A failed download is not a reusable module. Keep successful engines.
       modulePromise = null;
       throw error;
@@ -37,7 +37,7 @@ export function createCoreWorkerRuntime({ loadModule, validateFlagDataUrl, produ
     return modulePromise;
   };
   const document = createDocumentSessionRuntime({ loadModule: loadOnce, validateFlagDataUrl });
-  let loaded=false;
+  let loaded = false;
   let queue = Promise.resolve();
   function dispatch(operation, payload, context) {
     const result = queue.then(async () => {
@@ -45,15 +45,15 @@ export function createCoreWorkerRuntime({ loadModule, validateFlagDataUrl, produ
       context.throwIfCancelled();
       const method = documentMethods[operation];
       if (!method) fail('PL-CORE-OPERATION', `Unknown core operation: ${operation}`);
-      const admission=['core.document-load','core.document-initialize'].includes(operation);
+      const admission = ['core.document-load','core.document-initialize'].includes(operation);
       if (!loaded && !admission) fail('PL-CORE-NOT-LOADED','The complete C++ document is not active.');
-      const outcome=await document[method](payload,context);
-      if (admission) loaded=true;
+      const outcome = await document[method](payload, context);
+      if (admission) loaded = true;
       return outcome;
     });
-    queue = result.catch(() => {});
+    queue = result.catch (() => {});
     return result;
   }
-  async function dispose() { await queue;loaded=false;await document.dispose(); }
+  async function dispose() { await queue; loaded = false; await document.dispose(); }
   return Object.freeze({ productMode: policy.productMode, dispatch, dispose, operations: Object.freeze(Object.keys(documentMethods)) });
 }

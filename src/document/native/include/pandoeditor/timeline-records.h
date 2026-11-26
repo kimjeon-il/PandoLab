@@ -18,7 +18,7 @@ struct TimelineGeometryBinding {
     ObjectRef objectRef;
     Validity validity;
     GeometryRef geometryRef;
-    std::string rendering="{}";
+    std::string rendering = "{}";
 };
 struct TimelineParentRelation {
     std::string id;
@@ -44,7 +44,7 @@ struct TimelineRecords {
 struct TimelineEntityIdentity { ObjectRef objectRef; std::string entityKind; };
 struct TimelineValidationContext {
     std::vector<TimelineEntityIdentity> entities;
-    std::function<bool(const ObjectRef&,const GeometryRef&)> geometryExists;
+    std::function<bool(const ObjectRef&, const GeometryRef&)> geometryExists;
 };
 class TimelineError : public std::invalid_argument {
 public:
@@ -57,5 +57,5 @@ public:
 TimelineRecords normalizeTimelineRecords(const TimelineRecords&, const TimelineValidationContext&);
 codecjson::Value normalizeTerritorialNames(const codecjson::Value&);
 std::string territorialCommonName(const codecjson::Value&);
-codecjson::Value territorialLibraryNames(const codecjson::Value&,const std::optional<std::string>&);
+codecjson::Value territorialLibraryNames(const codecjson::Value&, const std::optional<std::string>&);
 }

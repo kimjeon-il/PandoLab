@@ -47,15 +47,15 @@ export function createMapLayoutMetricsSnapshot({
 
   let globeBaseScale = Math.max(60, Math.min(contentWidth, scaleContentHeight) * 0.455);
   if (projectBounds) {
-    const {west,east,south,north} = projectBounds;
-    if (![west,east,south,north].every(Number.isFinite) || south >= north || west === east)
+    const {west, east, south, north} = projectBounds;
+    if (![west, east, south, north].every(Number.isFinite) || south >= north || west === east)
       throw new TypeError('Project reference bounds must be finite and nonempty.');
     const radians = Math.PI / 180, span = (east - west + 360) % 360 || 360;
     if (span < 180) {
       const mid = (south+north)*radians/2, half = span*radians/2;
-      const cosine = Math.min(...[south,north].map(lat => Math.sin(mid)*Math.sin(lat*radians)
+      const cosine = Math.min(...[south, north].map(lat => Math.sin(mid)*Math.sin(lat*radians)
         + Math.cos(mid)*Math.cos(lat*radians)*Math.cos(half)));
-      const angle = Math.acos(Math.max(-1,Math.min(1,cosine)));
+      const angle = Math.acos(Math.max(-1, Math.min(1, cosine)));
       if (angle < Math.PI/2) globeBaseScale = Math.min(contentWidth,contentHeight)*.88
         /(2*Math.max(1e-8,Math.sin(angle)));
     }

@@ -70,44 +70,44 @@ export function encodeCountryMesh(mesh, ids, sourceCoordinateCount) {
     || !Number.isSafeInteger(sourceCoordinateCount) || sourceCoordinateCount < 1) throw new Error('Invalid mesh slot identity');
   const fields = ['positions','countryIndices','triangleIndices','lineIndices','countryTriangleRanges',
     'countryBoundaryRanges','countryBounds','countryBoundsFlags'];
-  const types = [Int32Array,Uint16Array,Uint32Array,Uint32Array,Uint32Array,Uint32Array,Int32Array,Uint32Array];
-  for (let i=0;i<fields.length;i++) if (!(mesh[fields[i]] instanceof types[i])) throw new Error('Invalid mesh array '+fields[i]);
+  const types = [Int32Array, Uint16Array, Uint32Array, Uint32Array, Uint32Array, Uint32Array, Int32Array, Uint32Array];
+  for (let i = 0; i<fields.length; i++) if (!(mesh[fields[i]] instanceof types[i])) throw new Error('Invalid mesh array '+fields[i]);
   if (mesh.positions.length !== mesh.countryIndices.length*2) throw new Error('Invalid mesh vertex count');
-  const size = 48 + fields.reduce((sum,key)=>sum+((mesh[key].byteLength+3)&~3),0), buffer=new ArrayBuffer(size);
-  new Uint32Array(buffer,0,12).set([0x434d4731,2,ids.length,mesh.countryIndices.length,
-    mesh.triangleIndices.length,mesh.lineIndices.length,sourceCoordinateCount,MESH_ALGORITHM_REVISION,
-    mesh.countryTriangleRanges.length,mesh.countryBoundaryRanges.length,mesh.countryBounds.length,mesh.countryBoundsFlags.length]);
-  let offset=48;
-  for (const key of fields) { const source=mesh[key];new Uint8Array(buffer,offset,source.byteLength)
-    .set(new Uint8Array(source.buffer,source.byteOffset,source.byteLength));offset+=(source.byteLength+3)&~3; }
-  decodeCountryMesh(buffer,ids);
+  const size = 48 + fields.reduce((sum, key) => sum+((mesh[key].byteLength+3)&~3), 0), buffer = new ArrayBuffer(size);
+  new Uint32Array(buffer, 0, 12).set([0x434d4731, 2, ids.length, mesh.countryIndices.length,
+    mesh.triangleIndices.length, mesh.lineIndices.length, sourceCoordinateCount, MESH_ALGORITHM_REVISION,
+    mesh.countryTriangleRanges.length, mesh.countryBoundaryRanges.length, mesh.countryBounds.length, mesh.countryBoundsFlags.length]);
+  let offset = 48;
+  for (const key of fields) { const source = mesh[key]; new Uint8Array(buffer, offset, source.byteLength)
+    .set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength)); offset+=(source.byteLength+3)&~3; }
+  decodeCountryMesh(buffer, ids);
   return buffer;
 }
 
 /** Copy a verified source slot; never assume its ordinal is the Viewer ID. */
 export function extractCountryMeshSlot(mesh, slot) {
-  const count=mesh.countryBoundsFlags?.length;
+  const count = mesh.countryBoundsFlags?.length;
   if (!Number.isInteger(slot)||slot<0||slot>=count) throw new Error('Invalid source mesh slot');
-  const sourceVertices=[],remap=new Map();
+  const sourceVertices = [], remap = new Map();
   // Explicit remapping handles interleaved layouts and rejects cross-country primitives.
   for (let i = 0; i < mesh.countryIndices.length; i++) {
     if (mesh.countryIndices[i] === slot) {
-      remap.set(i,sourceVertices.length);sourceVertices.push(i);
+      remap.set(i, sourceVertices.length); sourceVertices.push(i);
     }
   }
-  const positions=new Int32Array(sourceVertices.length*2);
-  sourceVertices.forEach((value,index)=>positions.set(mesh.positions.subarray(value*2,value*2+2),index*2));
-  const select=(indices,ranges)=>{
-    const first=ranges[slot*2],length=ranges[slot*2+1];
-    if(first+length>indices.length)throw new Error('Invalid source slot range');
-    return Uint32Array.from(indices.subarray(first,first+length),index=>{
-      const next=remap.get(index);if(next===undefined)throw new Error('Source slot has another owner');return next;
+  const positions = new Int32Array(sourceVertices.length*2);
+  sourceVertices.forEach((value, index) => positions.set(mesh.positions.subarray(value*2, value*2+2), index*2));
+  const select = (indices, ranges) => {
+    const first = ranges[slot*2], length = ranges[slot*2+1];
+    if (first+length>indices.length)throw new Error('Invalid source slot range');
+    return Uint32Array.from(indices.subarray(first, first+length), index => {
+      const next = remap.get(index); if (next===undefined)throw new Error('Source slot has another owner'); return next;
     });
   };
-  const triangleIndices=select(mesh.triangleIndices,mesh.countryTriangleRanges);
-  const lineIndices=select(mesh.lineIndices,mesh.countryBoundaryRanges);
-  return {positions,countryIndices:new Uint16Array(sourceVertices.length),triangleIndices,lineIndices,
-    countryTriangleRanges:Uint32Array.of(0,triangleIndices.length),countryBoundaryRanges:Uint32Array.of(0,lineIndices.length),
-    countryBounds:mesh.countryBounds.slice(slot*4,slot*4+4),countryBoundsFlags:mesh.countryBoundsFlags.slice(slot,slot+1),
-    stats:{algorithmRevision:MESH_ALGORITHM_REVISION,polygonCount:0,polarPolygonCount:0,maxEdgeDegrees:0,removedDegenerateTriangleCount:0}};
+  const triangleIndices = select(mesh.triangleIndices, mesh.countryTriangleRanges);
+  const lineIndices = select(mesh.lineIndices, mesh.countryBoundaryRanges);
+  return {positions, countryIndices:new Uint16Array(sourceVertices.length), triangleIndices, lineIndices,
+    countryTriangleRanges:Uint32Array.of(0, triangleIndices.length), countryBoundaryRanges:Uint32Array.of(0, lineIndices.length),
+    countryBounds:mesh.countryBounds.slice(slot*4, slot*4+4), countryBoundsFlags:mesh.countryBoundsFlags.slice(slot, slot+1),
+    stats:{algorithmRevision:MESH_ALGORITHM_REVISION, polygonCount:0, polarPolygonCount:0, maxEdgeDegrees:0, removedDegenerateTriangleCount:0}};
 }

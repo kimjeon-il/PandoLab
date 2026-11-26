@@ -1,4 +1,4 @@
-import { createTerritorialFeature } from "./territorial-units.js";
+import { createTerritorialFeature } from './territorial-units.js';
 const text = value => String(value ?? '').trim();
 export const countryId = feature => text(feature?.id);
 export const countryName = feature => text(feature?.properties?.name) || countryId(feature) || '국가';

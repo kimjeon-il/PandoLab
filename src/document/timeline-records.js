@@ -1,11 +1,11 @@
-import { sharedCalculationCore } from "./temporal.js";
+import { sharedCalculationCore } from './temporal.js';
 
 export const TIMELINE_RECORD_SCHEMA_VERSION = 3;
 
-export const timelineObjectKey = ref => JSON.stringify([ref.domain,ref.id]);
+export const timelineObjectKey = ref => JSON.stringify([ref.domain, ref.id]);
 export function timelineObjectCatalog(project) {
-  return [...project.territorialEntities.map(row=>({objectRef:{domain:'territorial',id:row.id},entityKind:row.properties.entityKind})),
-    ...(project.hydroEdits || []).map(row=>({objectRef:{domain:'hydro',id:row.id},entityKind:row.properties.category}))];
+  return [...project.territorialEntities.map(row => ({objectRef:{domain:'territorial', id:row.id}, entityKind:row.properties.entityKind})),
+    ...(project.hydroEdits || []).map(row => ({objectRef:{domain:'hydro', id:row.id}, entityKind:row.properties.category}))];
 }
 
 if (typeof sharedCalculationCore.timelineNormalizeRecords !== 'function') {
@@ -20,7 +20,7 @@ function immutableRecords(records) {
       if (row.objectRef) Object.freeze(row.objectRef);
       if (row.geometryRef) Object.freeze(row.geometryRef);
       if (row.value) Object.freeze(row.value);
-      if(row.rendering){for(const part of row.rendering.stroke_widths || [])Object.freeze(part);if(row.rendering.stroke_widths)Object.freeze(row.rendering.stroke_widths);Object.freeze(row.rendering);}
+      if (row.rendering) {for (const part of row.rendering.stroke_widths || [])Object.freeze(part); if (row.rendering.stroke_widths)Object.freeze(row.rendering.stroke_widths); Object.freeze(row.rendering);}
       Object.freeze(row);
     }
     Object.freeze(records[name]);

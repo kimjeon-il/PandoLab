@@ -1,5 +1,5 @@
-import "./polygon-geometry.js";
-import { coordinateBounds } from "./coordinate-bounds.js";
+import './polygon-geometry.js';
+import { coordinateBounds } from './coordinate-bounds.js';
 
 const { normalizePolygonGeometry, normalizeClippedPolygonGeometry, wrapPolygonGeometry, ringSignedArea, hasCanonicalPolygonWinding, hasCanonicalClippedPolygonWinding } = globalThis.PandoLabPolygonGeometry;
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));

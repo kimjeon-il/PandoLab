@@ -43,34 +43,34 @@ private:
     explicit JobTicket(std::shared_ptr<const Data> data):data_(std::move(data)) {}
     std::shared_ptr<const Data> data_;
 };
-struct JobStats { std::uint64_t submitted=0, started=0, cancelled=0, coalesced=0, staleDiscarded=0; std::size_t maxQueueDepth=0; };
+struct JobStats { std::uint64_t submitted = 0, started = 0, cancelled = 0, coalesced = 0, staleDiscarded = 0; std::size_t maxQueueDepth = 0; };
 // Owner-thread scheduler; no Project mutation and no executor ownership.
 // One physical running task, priority then FIFO, latest queued successor/key.
 class JobScheduler {
 public:
-    JobScheduler()=default;
+    JobScheduler() = default;
     ~JobScheduler() { close(); }
-    JobScheduler(const JobScheduler&)=delete;
-    JobScheduler& operator=(const JobScheduler&)=delete;
-    JobScheduler(JobScheduler&&)=delete;
-    JobScheduler& operator=(JobScheduler&&)=delete;
-    JobTicket enqueue(ProjectSnapshot snapshot,std::string key,int priority=0);
+    JobScheduler(const JobScheduler&) = delete;
+    JobScheduler& operator = (const JobScheduler&) = delete;
+    JobScheduler(JobScheduler&&) = delete;
+    JobScheduler& operator = (JobScheduler&&) = delete;
+    JobTicket enqueue(ProjectSnapshot snapshot, std::string key, int priority = 0);
     std::optional<JobTicket> takeNext();
-    JobDisposition finish(const JobTicket&,const Project& current) noexcept;
-    bool cancel(std::uint64_t id,JobStop reason=JobStop::Cancelled) noexcept;
-    bool cancelKey(const std::string& key,JobStop reason=JobStop::Cancelled) noexcept;
-    void cancelAll(JobStop reason=JobStop::Cancelled) noexcept;
+    JobDisposition finish(const JobTicket&, const Project& current) noexcept;
+    bool cancel(std::uint64_t id, JobStop reason = JobStop::Cancelled) noexcept;
+    bool cancelKey(const std::string& key, JobStop reason = JobStop::Cancelled) noexcept;
+    void cancelAll(JobStop reason = JobStop::Cancelled) noexcept;
     void close() noexcept;
     bool closed() const noexcept { return closed_; }
     std::size_t queueDepth() const noexcept { return queue_.size(); }
     std::size_t runningCount() const noexcept { return running_?1:0; }
     JobStats stats() const noexcept { return stats_; }
 private:
-    bool stop(const JobTicket&,JobStop) noexcept;
+    bool stop(const JobTicket&, JobStop) noexcept;
     std::list<JobTicket> queue_;
     std::optional<JobTicket> running_;
     JobStats stats_;
-    std::uint64_t sequence_=0;
-    bool closed_=false;
+    std::uint64_t sequence_ = 0;
+    bool closed_ = false;
 };
 }

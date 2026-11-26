@@ -1,5 +1,5 @@
-import { PLACE_LIMITS } from "./place-limits.js";
-export { PLACE_LIMITS } from "./place-limits.js";
+import { PLACE_LIMITS } from './place-limits.js';
+export { PLACE_LIMITS } from './place-limits.js';
 
 /** Builtin places share label identity but not project storage. */
 export const PLACE_KINDS = Object.freeze(['capital', 'city', 'region', 'town', 'mountain', 'water', 'custom']);

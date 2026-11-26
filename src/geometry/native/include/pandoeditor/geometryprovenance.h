@@ -13,28 +13,28 @@ struct ProjectDocument;
 struct InlineGeometryAllocation {
     ObjectRef createdFor;
     std::string geometrySha256;
-    bool promoted=false;
+    bool promoted = false;
     bool operator==(const InlineGeometryAllocation& other) const {
-        return std::tie(createdFor,geometrySha256,promoted)==
-               std::tie(other.createdFor,other.geometrySha256,other.promoted);
+        return std::tie(createdFor, geometrySha256, promoted)==
+               std::tie(other.createdFor, other.geometrySha256, other.promoted);
     }
 };
 class GeometryProvenance {
 public:
     std::set<GeometryRef> originalArchive;
-    std::map<GeometryRef,InlineGeometryAllocation> inlineAllocations;
-    std::map<std::string,std::string> opaqueBaseline;
-    bool opaqueUncertain=false;
+    std::map<GeometryRef, InlineGeometryAllocation> inlineAllocations;
+    std::map<std::string, std::string> opaqueBaseline;
+    bool opaqueUncertain = false;
     bool operator==(const GeometryProvenance& other) const {
-        return std::tie(originalArchive,inlineAllocations,opaqueBaseline,opaqueUncertain)==
-               std::tie(other.originalArchive,other.inlineAllocations,other.opaqueBaseline,other.opaqueUncertain);
+        return std::tie(originalArchive, inlineAllocations, opaqueBaseline, opaqueUncertain)==
+               std::tie(other.originalArchive, other.inlineAllocations, other.opaqueBaseline, other.opaqueUncertain);
     }
 private:
     struct OpaqueBaselineEvidence;
     std::shared_ptr<const OpaqueBaselineEvidence> cleanEvidence_;
     friend class GeometryProvenanceCodecAccess;
     friend void validateGeometryProvenance(const ProjectDocument&);
-    friend void reconcileGeometryProvenance(const ProjectDocument&,ProjectDocument&);
+    friend void reconcileGeometryProvenance(const ProjectDocument&, ProjectDocument&);
 };
 // Trusted codec/import boundary only. Call after verifying canonical slot hashes
 // against opaqueBaseline (or calculating them for a new web import). Never use
@@ -42,23 +42,23 @@ private:
 class GeometryProvenanceCodecAccess {
 public:
     static void sealVerifiedOpaqueBaseline(ProjectDocument&);
-    static void admitCreatedOpaqueBaseline(const ProjectDocument& before,ProjectDocument& candidate,
+    static void admitCreatedOpaqueBaseline(const ProjectDocument& before, ProjectDocument& candidate,
                                           const std::set<ObjectRef>& createdOwners);
-    static void admitPresentationMetadata(const ProjectDocument& before,ProjectDocument& candidate);
+    static void admitPresentationMetadata(const ProjectDocument& before, ProjectDocument& candidate);
     // Only the four physical view controls may change during a trusted rebase.
-    static void admitPhysicalViewMetadata(const ProjectDocument& before,ProjectDocument& candidate);
-    static void admitProjectSetupMetadata(const ProjectDocument& before,ProjectDocument& candidate);
+    static void admitPhysicalViewMetadata(const ProjectDocument& before, ProjectDocument& candidate);
+    static void admitProjectSetupMetadata(const ProjectDocument& before, ProjectDocument& candidate);
     // Own the single setup-field mutation so unchanged opaque slots need not be enumerated twice.
-    static void setProjectSetupMetadata(ProjectDocument& candidate,const codecjson::Value& setup);
-    static void admitSourceInfoMetadata(const ProjectDocument& before,ProjectDocument& candidate);
+    static void setProjectSetupMetadata(ProjectDocument& candidate, const codecjson::Value& setup);
+    static void admitSourceInfoMetadata(const ProjectDocument& before, ProjectDocument& candidate);
 private:
-    static void sealVerifiedOpaqueSlots(ProjectDocument& document,std::map<std::string,std::string> slots);
+    static void sealVerifiedOpaqueSlots(ProjectDocument& document, std::map<std::string, std::string> slots);
 };
 // One owner-keyed inventory shared by core transitions and codec hashing.
-std::map<std::string,std::string> geometryProvenanceOpaqueSlots(const ProjectDocument&);
+std::map<std::string, std::string> geometryProvenanceOpaqueSlots(const ProjectDocument&);
 // Structural enumeration: deliberately does not call final document validation.
-std::map<GeometryRef,std::vector<ObjectRef>> geometryProvenanceUsers(const ProjectDocument&);
+std::map<GeometryRef, std::vector<ObjectRef>> geometryProvenanceUsers(const ProjectDocument&);
 void validateGeometryProvenance(const ProjectDocument&);
 // Forward edit transition only; whole-document load uses validation instead.
-void reconcileGeometryProvenance(const ProjectDocument& before,ProjectDocument& candidate);
+void reconcileGeometryProvenance(const ProjectDocument& before, ProjectDocument& candidate);
 } // namespace pandoeditor

@@ -1,4 +1,4 @@
-import { normalizeObjectRef, objectRefKey } from "./object-ref-identity.js";
+import { normalizeObjectRef, objectRefKey } from './object-ref-identity.js';
 
 const empty = Object.freeze({ primaryKey: null, keys: Object.freeze([]), items: Object.freeze([]) });
 const invalid = message => { throw Object.assign(new Error(message), { code: 'PL-CORE-RESPONSE' }); };
@@ -15,19 +15,19 @@ export function createSelectionDomain({
   if (typeof refAdapter?.toCore !== 'function' || typeof refAdapter?.fromCore !== 'function') {
     throw new TypeError('An explicit Core selection reference adapter is required.');
   }
-  const activeScope=()=>projectDomain?.activeProjectScope?.()??null;
-  const activeProjectId=()=>projectDomain?.activeProject?.()?.projectId??null;
+  const activeScope = () => projectDomain?.activeProjectScope?.()??null;
+  const activeProjectId = () => projectDomain?.activeProject?.()?.projectId??null;
   // Keep the pre-existing public snapshot shape; the project gate is readable
   // but non-enumerable so consumers and persistence never acquire new fields.
-  const scopedSnapshot=(value,projectId=activeProjectId(),projectScope=activeScope())=>{
-    Object.defineProperties(value,{
-      projectId:{value:projectId,enumerable:false},
-      projectScope:{value:projectScope,enumerable:false},
+  const scopedSnapshot = (value, projectId = activeProjectId(), projectScope = activeScope()) => {
+    Object.defineProperties(value, {
+      projectId:{value:projectId, enumerable:false},
+      projectScope:{value:projectScope, enumerable:false},
     });
     return Object.freeze(value);
   };
   let current = scopedSnapshot({ revision: 0, hoverRevision: 0,
-    projectGeneration: Number(projectDomain?.getGeneration?.() || 0),selection: empty, hover: null });
+    projectGeneration: Number(projectDomain?.getGeneration?.() || 0), selection: empty, hover: null });
   let disposed = false, lastNative = null, lastChanged = false;
   const contexts = new WeakMap();
   const metrics = { mutationCount: 0, noOpCount: 0, renderInvalidationCount: 0 };
@@ -55,7 +55,7 @@ export function createSelectionDomain({
     const hover = native.hover === null ? null : webRef(native.hover);
     if (new Set(keys).size !== keys.length || (preferred && !keys.includes(preferred.key))
       || (items.length && !preferred) || (!items.length && preferred)) invalid('Invalid authoritative C++ selection order/primary.');
-    const scopeChanged=projectScope!==current.projectScope;
+    const scopeChanged = projectScope!==current.projectScope;
     const selectionChanged = native.selectionRevision !== current.revision||scopeChanged;
     const hoverChanged = native.hoverRevision !== current.hoverRevision||scopeChanged;
     const generationChanged = projectGeneration !== current.projectGeneration;
@@ -70,7 +70,7 @@ export function createSelectionDomain({
     current = scopedSnapshot({ revision: native.selectionRevision, hoverRevision: native.hoverRevision,
       projectGeneration,
       selection: selectionChanged ? Object.freeze({ primaryKey: preferred?.key || null, keys, items }) : current.selection, hover },
-      activeProjectId(),projectScope);
+      activeProjectId(), projectScope);
     if (reset || reason === 'project-reset' || generationChanged) {
       metrics.mutationCount += 1;
       onSelectionChanged(current, reason, previous);
@@ -121,7 +121,7 @@ export function createSelectionDomain({
     const epoch = commandOwner.state()?.epoch;
     if (!Number.isSafeInteger(epoch)) throw Object.assign(new Error('The Core document must be loaded before selecting objects.'), { code: 'PL-CORE-NOT-LOADED' });
     const request = { ...payload };
-    const projectScope=activeScope();
+    const projectScope = activeScope();
     const context = { reason, projectGeneration, projectScope,
       reset: payload.action === 'resetProject', observed: false, changed: false };
     contexts.set(request, context);
@@ -161,7 +161,7 @@ export function createSelectionDomain({
   function dispose() { if (disposed) return; disposed = true; unsubscribe(); }
   return Object.freeze({ replace, toggle, selectRange, setMany, remove, prune, clear, setHover, resetProject, refresh, acceptCoreSnapshot,
     snapshot: () => current.projectScope===activeScope()?current:scopedSnapshot({...current,
-      projectGeneration:generation(),selection:empty,hover:null}),
+      projectGeneration:generation(), selection:empty, hover:null}),
     primary: () => current.projectScope===activeScope()
       ?current.selection.items.find(ref => ref.key === current.selection.primaryKey)||null:null,
     has: value => current.projectScope===activeScope()&&current.selection.keys.includes(

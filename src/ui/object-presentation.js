@@ -3,8 +3,8 @@ export function hydroDisplayName(value, fallback) {
     if (/^미명명 수계(?:\s+\d+)?$/.test(name)) return fallback;
     return name || fallback;
   }
-import { resolveTerritorialColor } from "./color-adapter.js";
-import {createTerritorialScopeResolver} from "../document/territorial-scope.js";
+import { resolveTerritorialColor } from './color-adapter.js';
+import { createTerritorialScopeResolver } from '../document/territorial-scope.js';
 /** ObjectPresentation: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
@@ -89,7 +89,7 @@ export function createObjectPresentation() {
   }
 
   function initializeTerritorialScope() {
-    if(territorialScope)throw new Error('Territorial read model already initialized');
+    if (territorialScope)throw new Error('Territorial read model already initialized');
     (territorialScope = createTerritorialScopeResolver({
       entityRepository: dependencies.territorialModel.entityRepository,
       clipper: () => dependencies.platform.polygonClipping,

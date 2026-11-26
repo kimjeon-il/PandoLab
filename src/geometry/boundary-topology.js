@@ -1,11 +1,11 @@
-import { buildRefinedBoundarySegments } from "./geographic-boundary.js";
-import "./polygon-geometry.js";
-import { createBoundarySpatialIndex, segmentBounds, padBoundaryBounds } from "./boundary-spatial-index.js";
-import { countryGeometrySignature } from "../rendering/country-shared-boundary-cache.js";
-import { territorialRootId } from "../document/territorial-units.js";
-import { sharedCalculationCore } from "../document/temporal.js";
-import { computeCountrySharedContacts } from "./country-contact-core.js";
-import { multiCoordinates } from "./polygon-geometry-utils.js";
+import { buildRefinedBoundarySegments } from './geographic-boundary.js';
+import './polygon-geometry.js';
+import { createBoundarySpatialIndex, segmentBounds, padBoundaryBounds } from './boundary-spatial-index.js';
+import { countryGeometrySignature } from '../rendering/country-shared-boundary-cache.js';
+import { territorialRootId } from '../document/territorial-units.js';
+import { sharedCalculationCore } from '../document/temporal.js';
+import { computeCountrySharedContacts } from './country-contact-core.js';
+import { multiCoordinates } from './polygon-geometry-utils.js';
 
 for (const capability of ['boundaryOpposingInteriors', 'boundaryOpposingInteriorsBatch', 'boundaryEdgeBoxesBatch']) {
   if (typeof sharedCalculationCore?.[capability] !== 'function') {

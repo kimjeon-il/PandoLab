@@ -16,7 +16,7 @@ struct GeometryOperationRequest {
 };
 enum class GeometryOperationStatus { Completed, Empty, Cancelled, Failed };
 struct GeometryOperationResult {
-    GeometryOperationStatus status=GeometryOperationStatus::Failed;
+    GeometryOperationStatus status = GeometryOperationStatus::Failed;
     Geometry geometry;
     std::string detail;
     bool succeeded() const noexcept {
@@ -25,13 +25,13 @@ struct GeometryOperationResult {
 };
 // The callback must be thread-safe. Empty is a successful calculation, not a
 // valid replacement: the territorial plan owns object lifetime decisions.
-using GeometryCancellation=std::function<bool()>;
-using GeometryCalculator=std::function<GeometryOperationResult(
+using GeometryCancellation = std::function<bool()>;
+using GeometryCalculator = std::function<GeometryOperationResult(
     const GeometryOperationRequest&, const GeometryCancellation&)>;
 // A scalar predicate result cannot be used as a replacement or archive entry.
 struct GeometryOperationAreaResult {
-    GeometryOperationStatus status=GeometryOperationStatus::Failed;
-    double area=0;
+    GeometryOperationStatus status = GeometryOperationStatus::Failed;
+    double area = 0;
     std::string detail;
     bool succeeded() const noexcept {
         return status==GeometryOperationStatus::Completed||status==GeometryOperationStatus::Empty;

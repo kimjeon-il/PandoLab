@@ -1,7 +1,7 @@
-import "../../runtime/workers/worker-rpc-host.js";
-import { createCoreWorkerRuntime } from "../../runtime/core-worker-runtime.js";
-import { loadVerifiedCore } from "../../runtime/core-wasm-loader.js";
-import { validateWebFlagDataUrl } from "../../ui/country-flags.js";
+import '../../runtime/workers/worker-rpc-host.js';
+import { createCoreWorkerRuntime } from '../../runtime/core-worker-runtime.js';
+import { loadVerifiedCore } from '../../runtime/core-wasm-loader.js';
+import { validateWebFlagDataUrl } from '../../ui/country-flags.js';
 
 const runtime = createCoreWorkerRuntime({
   productMode: 'viewer',

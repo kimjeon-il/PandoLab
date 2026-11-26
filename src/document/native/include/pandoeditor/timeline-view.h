@@ -15,7 +15,7 @@ struct TimelineDocumentView {
 };
 // Project the document from an already admitted immutable resolution, without
 // allocating another copy of that resolution.
-TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument&,const ResolvedWorld&);
+TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument&, const ResolvedWorld&);
 
 // A read-only static projection for existing render and pick consumers. The
 // source document and its dated records remain the only persistent state.
@@ -24,8 +24,8 @@ TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument&,const 
 TimelineDocumentView timelineDocumentView(const ProjectDocument&, const std::string& month,
                                           const ResolvedWorld* resolved = nullptr);
 // Capture only effective property differences, then restore immutable defaults.
-void captureTimelinePropertyChanges(const ProjectDocument& source,const ProjectDocument& beforeView,
-    ProjectDocument& candidate,const std::string& month);
+void captureTimelinePropertyChanges(const ProjectDocument& source, const ProjectDocument& beforeView,
+    ProjectDocument& candidate, const std::string& month);
 // Validate affected parent relationships at every geometry/relation boundary.
-void validateTimelineParentChanges(const ProjectDocument& before,const ProjectDocument& after);
+void validateTimelineParentChanges(const ProjectDocument& before, const ProjectDocument& after);
 }

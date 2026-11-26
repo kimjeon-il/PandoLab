@@ -1,17 +1,17 @@
-import { geometryHitsScreenPoint as screenGeometryHit } from "../geometry/geometry-screen-hit.js";
-import { layerObjectRank, territorialPaintRole } from "../ui/layer-presentation.js";
+import { geometryHitsScreenPoint as screenGeometryHit } from '../geometry/geometry-screen-hit.js';
+import { layerObjectRank, territorialPaintRole } from '../ui/layer-presentation.js';
 /** ObjectPicking: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
  */
-export function createObjectPicking({performanceRecorder=null,closeActiveOverlay=null}={}) {
+export function createObjectPicking({performanceRecorder = null, closeActiveOverlay = null} = {}) {
   let dependencies;
   let objectPickRevision = 0;
-  let clickController=null;
+  let clickController = null;
   let objectChooserPresentationRevision = 0;
-  let chooserCandidates=[];
+  let chooserCandidates = [];
   let objectChooserIntentMode = 'replace';
-  let chooserSelection=null;
+  let chooserSelection = null;
 
   function connect(ports) {
     if (dependencies) throw new Error('object-picking already connected');
@@ -52,7 +52,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     else if (ref.domain === 'hydro') group = 'hydro';
     const index = order.indexOf(group);
     // General hierarchy fills claim land before independent overlays are drawn.
-    if (ref.domain==='territorial') {const role=territorialPaintRole(dependencies.territorialModel.entityRepository.get(ref.id));if(role==='country-fill')return 500;if(role==='territorial-fill')return 600;}
+    if (ref.domain==='territorial') {const role = territorialPaintRole(dependencies.territorialModel.entityRepository.get(ref.id)); if (role==='country-fill')return 500; if (role==='territorial-fill')return 600;}
     if (index >= 0) return 1000 + index;
     return { labels: 1300, hydro: 850, objects: 500 }[group] || 700;
   }
@@ -68,26 +68,26 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
 
   async function selectableObjectsAt(screenPoint, coord, { seedRefs = [], includeLabels = true, includeHydro = true, signal } = {}) {
     signal?.throwIfAborted();
-    const candidates = [],keys=new Set();
+    const candidates = [], keys = new Set();
     const add = ref => {
       const normalized = (0, dependencies.selectionServices.normalizeObjectRef)(ref);
-      if (objectRefSelectable(normalized) && !keys.has(normalized.key)){keys.add(normalized.key);candidates.push(normalized);}
+      if (objectRefSelectable(normalized) && !keys.has(normalized.key)) {keys.add(normalized.key); candidates.push(normalized);}
     };
     seedRefs.forEach(add);
-    (await dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint,{includeHydro,includeLabels,signal})).forEach(ref=>{
-      if((includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))add(ref);
+    (await dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint, {includeHydro, includeLabels, signal})).forEach(ref => {
+      if ((includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))add(ref);
     });
-    signal?.throwIfAborted();return candidates.sort(compareVisualOrder);
+    signal?.throwIfAborted(); return candidates.sort(compareVisualOrder);
   }
 
   function closeObjectChooser({ restoreFocus = false, cancelPending = true } = {}) {
-    if (cancelPending){objectPickRevision += 1;clickController?.abort();clickController=null;}
+    if (cancelPending) {objectPickRevision += 1; clickController?.abort(); clickController = null;}
     objectChooserPresentationRevision += 1;
     objectChooserIntentMode = 'replace';
-    const hadCandidates=chooserCandidates.length>0&&!chooserSelection;
-    chooserSelection=null;
-    chooserCandidates=[];
-    if(hadCandidates)dependencies.rendering.invalidateChooserHighlight?.();
+    const hadCandidates = chooserCandidates.length>0&&!chooserSelection;
+    chooserSelection = null;
+    chooserCandidates = [];
+    if (hadCandidates)dependencies.rendering.invalidateChooserHighlight?.();
     const chooser = (0, dependencies.platform.$)('objectChooser');
     if (!chooser) return;
     chooser.classList.add('hidden');
@@ -95,16 +95,16 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     if (restoreFocus) (0, dependencies.platform.$)('map')?.focus();
   }
 
-  function openObjectChooser(candidates, screenPoint, intentMode,options={}) {
-    chooserSelection=options.onChoose||null;
+  function openObjectChooser(candidates, screenPoint, intentMode, options = {}) {
+    chooserSelection = options.onChoose||null;
     const chooser = (0, dependencies.platform.$)('objectChooser');
     const list = (0, dependencies.platform.$)('objectChooserList');
     if (!chooser || !list || candidates.length < 2) return closeObjectChooser();
-    if(dependencies.surfaces.isMobile()&&closeActiveOverlay)closeActiveOverlay();
+    if (dependencies.surfaces.isMobile()&&closeActiveOverlay)closeActiveOverlay();
     objectChooserIntentMode = intentMode === 'toggle' ? 'toggle' : 'replace';
-    chooserCandidates=candidates.slice();
+    chooserCandidates = candidates.slice();
     list.replaceChildren(...candidates.map((ref, index) => {
-      const info = options.describe ? options.describe(ref,index) : (0, dependencies.objectOperations.objectDisplayInfo)(ref);
+      const info = options.describe ? options.describe(ref, index) : (0, dependencies.objectOperations.objectDisplayInfo)(ref);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `ui-button ui-row ui-card ui-selectable-row object-chooser-item${(!options.onChoose&&dependencies.domains.selectionDomain.has(ref)) ? ' is-selected' : ''}`;
@@ -123,7 +123,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       return button;
     }));
     chooser.classList.remove('hidden');
-    if(!chooserSelection)dependencies.rendering.invalidateChooserHighlight?.();
+    if (!chooserSelection)dependencies.rendering.invalidateChooserHighlight?.();
     const presentationRevision = ++objectChooserPresentationRevision;
     if ((0, dependencies.surfaces.isMobile)()) {
       chooser.removeAttribute('style');
@@ -147,7 +147,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
 
   async function chooseObjectCandidate(index, { toggle = false } = {}) {
     const ref = chooserCandidates[Number(index)];
-    if(chooserSelection){const choose=chooserSelection;closeObjectChooser();return await choose(ref);}
+    if (chooserSelection) {const choose = chooserSelection; closeObjectChooser(); return await choose(ref);}
     if (!objectRefSelectable(ref)) return false;
     const mode = toggle || objectChooserIntentMode === 'toggle' ? 'toggle' : 'replace';
     await dependencies.domains.selectionUiController.applyIntent(ref, { mode, scope: 'map' });
@@ -155,9 +155,9 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
   }
 
   async function handleObjectSelectionAt(screenPoint, { sourceEvent = dependencies.platform.d3.event, hitRef = null } = {}) {
-    if(dependencies.rendering.mapRenderer.canPickFrame?.()===false)return false;
+    if (dependencies.rendering.mapRenderer.canPickFrame?.()===false)return false;
     const requestRevision = ++objectPickRevision;
-    clickController?.abort();const controller=new AbortController();clickController=controller;
+    clickController?.abort(); const controller = new AbortController(); clickController = controller;
     const projectGeneration = dependencies.domains.projectDomain?.getGeneration?.() ?? 0;
     const pickViewRevision = dependencies.mapLayout.viewRevision;
     const source = sourceEvent?.sourceEvent || sourceEvent || {};
@@ -174,20 +174,20 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     if (!coord) {
       closeObjectChooser();
       await dependencies.domains.selectionUiController.clear({ reason: 'map-background-selection-clear' });
-      if(projectGeneration!==dependencies.domains.projectDomain.getGeneration())return false;
+      if (projectGeneration!==dependencies.domains.projectDomain.getGeneration())return false;
       return false;
     }
     let candidates;
-    try{candidates=(await selectableObjectsAt(screenPoint,coord,{seedRefs:[normalizedHit],signal:controller.signal})).filter(objectRefSelectable);}
-    catch(error){if(controller.signal.aborted||error?.name==='AbortError'||error?.cancelled)return false;throw error;}
-    finally{if(clickController===controller)clickController=null;}
+    try {candidates = (await selectableObjectsAt(screenPoint, coord, {seedRefs:[normalizedHit], signal:controller.signal})).filter(objectRefSelectable);}
+    catch (error) {if (controller.signal.aborted||error?.name==='AbortError'||error?.cancelled)return false; throw error;}
+    finally {if (clickController===controller)clickController = null;}
     if (requestRevision !== objectPickRevision
       || projectGeneration !== (dependencies.domains.projectDomain?.getGeneration?.() ?? 0)
       || pickViewRevision !== dependencies.mapLayout.viewRevision) return false;
     if (!candidates.length) {
       closeObjectChooser({ cancelPending: false });
       await dependencies.domains.selectionUiController.clear({ reason: 'map-background-selection-clear' });
-      if(projectGeneration!==dependencies.domains.projectDomain.getGeneration())return false;
+      if (projectGeneration!==dependencies.domains.projectDomain.getGeneration())return false;
       return false;
     }
     if (candidates.length > 1) {
@@ -196,9 +196,9 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     }
     const target = candidates[0];
     await dependencies.domains.selectionUiController.applyIntent(target, { mode: intentMode, scope: 'map' });
-    if(projectGeneration!==dependencies.domains.projectDomain.getGeneration() || pickViewRevision!==dependencies.mapLayout.viewRevision)return false;
+    if (projectGeneration!==dependencies.domains.projectDomain.getGeneration() || pickViewRevision!==dependencies.mapLayout.viewRevision)return false;
     dependencies.rendering.selectionPerformanceMetrics.handlerMs = performance.now() - inputStartedAt;
-    if(performanceRecorder)requestAnimationFrame(()=>performanceRecorder.publish(inputStartedAt,performanceBefore,`map:${target.key}`));
+    if (performanceRecorder)requestAnimationFrame(() => performanceRecorder.publish(inputStartedAt, performanceBefore,`map:${target.key}`));
     return true;
   }
 
@@ -233,13 +233,13 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     }
   }
 
-  function bindChooser(){
+  function bindChooser() {
     (0, dependencies.platform.$)('objectChooserCloseBtn')?.addEventListener('click', () => (0, closeObjectChooser)({ restoreFocus: true }));
     (0, dependencies.platform.$)('objectChooserList')?.addEventListener('click', async event => {
       const button = event.target.closest('[data-object-chooser-index]');
       if (!button) return;
-      try { await chooseObjectCandidate(button.dataset.objectChooserIndex,{ toggle: event.ctrlKey || event.metaKey }); }
-      catch(error) { dependencies.feedback.reportOperationError(error,'겹친 객체를 선택하지 못했습니다.','PL-SELECTION-CHOOSER-001',4200); }
+      try { await chooseObjectCandidate(button.dataset.objectChooserIndex, { toggle: event.ctrlKey || event.metaKey }); }
+      catch (error) { dependencies.feedback.reportOperationError(error,'겹친 객체를 선택하지 못했습니다.','PL-SELECTION-CHOOSER-001', 4200); }
     });
     (0, dependencies.platform.$)('objectChooserList')?.addEventListener('keydown', event => {
       const items = [...event.currentTarget.querySelectorAll('[data-object-chooser-index]')];
@@ -261,17 +261,17 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       }
     });
 
-    document.addEventListener('keydown',event=>{if(event.key==='Escape')closeObjectChooser({restoreFocus:true});});
-    document.addEventListener('pointerdown',event=>{if(!event.target.closest('#objectChooser,#map'))closeObjectChooser();});
+    document.addEventListener('keydown', event => {if (event.key==='Escape')closeObjectChooser({restoreFocus:true});});
+    document.addEventListener('pointerdown', event => {if (!event.target.closest('#objectChooser,#map'))closeObjectChooser();});
   }
   return Object.freeze({
     connect,
 
-    get openVertexChooser(){return (candidates,screenPoint,onChoose)=>openObjectChooser(candidates,screenPoint,'replace',{onChoose,describe:(row,index)=>({name:'꼭짓점 '+(index+1),type:row.fixed?'고정점':'이동 가능',detail:(row.coordinate||row.coord||[]).map(n=>Number(n).toFixed(3)).join(', ')})});},
+    get openVertexChooser() {return (candidates, screenPoint, onChoose) => openObjectChooser(candidates, screenPoint,'replace', {onChoose, describe:(row, index) => ({name:'꼭짓점 '+(index+1), type:row.fixed?'고정점':'이동 가능', detail:(row.coordinate||row.coord||[]).map(n => Number(n).toFixed(3)).join(', ')})});},
     get closeObjectChooser() { return closeObjectChooser; },
     get chooseObjectCandidate() { return chooseObjectCandidate; },
     selectableObjectsAt,
-    highlightCandidates:()=>chooserSelection?[]:chooserCandidates.slice(),
+    highlightCandidates:() => chooserSelection?[]:chooserCandidates.slice(),
     bindChooser,
     get geometryHitsScreenPoint() { return geometryHitsScreenPoint; },
     get handleMapClick() { return handleMapClick; },

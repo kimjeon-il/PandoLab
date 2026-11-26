@@ -1,4 +1,4 @@
-import { LAYER_PRESENTATION_SCHEMA_VERSION } from "../runtime/version-contract.js";
+import { LAYER_PRESENTATION_SCHEMA_VERSION } from '../runtime/version-contract.js';
 
 // Presentation policy, not project state. GPU fills claim pixels front-to-back;
 // Each role has one WebGL2 visual owner.

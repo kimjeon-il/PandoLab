@@ -10,12 +10,12 @@ public:
     explicit PreparedCutGeometry(const Geometry&);
     ~PreparedCutGeometry();
     PreparedCutGeometry(PreparedCutGeometry&&) noexcept;
-    PreparedCutGeometry& operator=(PreparedCutGeometry&&) noexcept;
-    codecjson::Value prepare(const codecjson::Value& request,const GeometryCancellation& = {}) const;
+    PreparedCutGeometry& operator = (PreparedCutGeometry&&) noexcept;
+    codecjson::Value prepare(const codecjson::Value& request, const GeometryCancellation& = {}) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-Geometry wrapClippedPolygonGeometry(const Geometry&,const GeometryCancellation& = {});
-codecjson::Value cutSegmentIntersection(Point,Point,Point,Point,double epsilon=1e-10);
+Geometry wrapClippedPolygonGeometry(const Geometry&, const GeometryCancellation& = {});
+codecjson::Value cutSegmentIntersection(Point, Point, Point, Point, double epsilon = 1e-10);
 }

@@ -87,3 +87,13 @@ test('verified immutable data can be consumed before its background cache write 
  }finally{release.resolve();}
  await completed.promise;
 });
+
+test('immutable reads ignore retired URL-keyed cache entries',async()=>{
+ const storage=storageFixture();let downloads=0;
+ storage.values.set(spec.url,new Response('globe'));
+ const loader=loaderFor({cacheStorage:storage.cacheStorage,fetchFn(){downloads++;return new Response('globe');}});
+ assert.equal(await loader.loadCachedAsset(spec,'startup','lines','map lines',decode),null);
+ const result=await load(loader);
+ assert.equal(result.value,'globe');assert.equal(result.cacheHit,false);assert.equal(downloads,1);
+ assert.ok(storage.values.has(cacheKey));
+});

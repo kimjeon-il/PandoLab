@@ -78,11 +78,11 @@ export function createSpatialIndex() {
   // Spatial records contain IDs and bounds, not feature property snapshots.
   // Retargeting the source array prevents a pointless coordinate reindex while
   // queries keep using the current accepted C++ projection.
-  function retainTerritorialSpatialIndex(entities){
-    const previous=mapObjectSpatialIndexSources?.get('territorial');
-    if(!previous||!Array.isArray(entities)
+  function retainTerritorialSpatialIndex(entities) {
+    const previous = mapObjectSpatialIndexSources?.get('territorial');
+    if (!previous||!Array.isArray(entities)
       ||previous[1]!==mapObjectGeometryRevisions.territorial)return false;
-    mapObjectSpatialIndexSources.set('territorial',[entities,previous[1]]);
+    mapObjectSpatialIndexSources.set('territorial', [entities, previous[1]]);
     return true;
   }
 

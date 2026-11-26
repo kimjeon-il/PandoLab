@@ -86,6 +86,22 @@ export async function storeWorldPolygonsDisplay({root=defaultRoot,sourceBytes,re
   return {...stored,plan};
 }
 
+export async function storeLsibDisplay({root=defaultRoot,sourceBytes,displayValidFrom,historical=false,includeSameSource=false}){
+  const {buildHistoricalLsibDisplayEdition,buildLsibDisplayEdition,assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
+  const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  let plan;
+  const stored=storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:historical?'historical LSIB 11.4 display':'LSIB 11.4 display',
+    advanceWorkBranch:true,prepare:readBaseline=>{
+      const inputs={baseline:baselineRevision,readBaseline,indexPath:'assets/data/builtin-world/generated/v1/index.json',sourceBytes};
+      const edition=historical?buildHistoricalLsibDisplayEdition({...inputs,includeSameSource})
+        :buildLsibDisplayEdition({...inputs,expectedDisplayValidFrom:displayValidFrom});
+      assertReviewedBorderEdition(edition);
+      plan=edition.plan;
+      return edition.files;
+    }});
+  return {...stored,plan};
+}
+
 export async function storeLocalTerritorialRetirement({root=defaultRoot,retirement,engine,replacementSource}){
   const split=retirement?.kind==='split-us-minor-outlying-islands';
   const independent=Object.hasOwn(INDEPENDENT_WORLD_RETIREMENT_IDS,retirement?.kind);
@@ -599,7 +615,8 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
     assertOriginalAuthoringSourceStorageChanges(raw,previous,{prefixes,readEvidence:readSourceEvidence});
     const metadataCorrection=retirementPlan?.mixed&&retirementPlan.metadataUpdates.get(raw.entityId);
     if(metadataCorrection){if(!isDeepStrictEqual(JSON.parse(newBytes(p)),metadataCorrection.afterDescriptor))throw Error('Territorial retirement: source differs from verified metadata-only correction');}
-    else assertHistoricalSourceStorageChanges(raw,previous,{prefixes,readEvidence:readSourceEvidence,getSourceSnapshot});
+    else assertHistoricalSourceStorageChanges(raw,previous,{prefixes,readEvidence:readSourceEvidence,getSourceSnapshot,
+      sourceDataRevision:pinnedRevision,readCandidateDescriptor:path=>JSON.parse(newBytes(path)),readPreviousDescriptor:path=>JSON.parse(oldBytes(path))});
   }
   const reviewScopes=['assets/data/territorial-entities','assets/data/builtin-world'];
   if(prefixes.some(p=>reviewScopes.some(s=>p===s||p.startsWith(s+'/')||s.startsWith(p+'/')))){

@@ -1,7 +1,7 @@
-import { fetchWithRetry, isRetryableHttpStatus, withRetry } from "../runtime/reliability-core.js";
+import { fetchWithRetry, isRetryableHttpStatus, withRetry } from '../runtime/reliability-core.js';
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
-import {maintainStoredContent,touchStoredContent} from './stored-content-cache.js';
-import {decodeStoredBuffer,validateAssetLength} from './asset-decompression.js';
+import { maintainStoredContent, touchStoredContent } from './stored-content-cache.js';
+import { decodeStoredBuffer, validateAssetLength } from './asset-decompression.js';
 
 const immutableFlightsByStorage = new WeakMap();
 const HASH = /^[a-f0-9]{64}$/;
@@ -17,12 +17,12 @@ function waitForConsumer(promise, signal) {
 }
 
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
-export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',deferCacheWrite = false,reserveDeferredWrite=null,subtle=globalThis.crypto?.subtle}) {
+export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision', deferCacheWrite = false, reserveDeferredWrite = null, subtle = globalThis.crypto?.subtle}) {
  const flightScope = cacheStorage ?? fetchFn;
  if (cachePolicy === 'immutable' && !immutableFlightsByStorage.has(flightScope))
    immutableFlightsByStorage.set(flightScope, new Map());
  const storedFlights = immutableFlightsByStorage.get(flightScope);
- fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META,fetchFn});
+ fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META, fetchFn});
  const DATA_CACHE_PREFIX = 'pandolab-data-';
  const DATA_CACHE_NAME = DATA_CACHE_PREFIX + dataRevision;
  const IMMUTABLE_WORLD_CACHE_NAME = 'pandolab-world-content-v1';
@@ -31,30 +31,27 @@ export function createStoredAssetLoader({dataRevision, resolveUrl, report = () =
  const LEGACY_CORE_CACHE_PREFIX = 'pandolab-core-';
  let dataCachePromise = null;
  let oldCacheCleanupPromise = null;
- function storedKey(spec,url){
-   if(cachePolicy!=='immutable'||!HASH.test(spec.sha256||''))return url;
-   try{return new URL('/.pandolab-cache/content/'+spec.sha256,url).href;}
+ function storedKey(spec, url) {
+   if (cachePolicy!=='immutable'||!HASH.test(spec.sha256||''))return url;
+   try {return new URL('/.pandolab-cache/content/'+spec.sha256, url).href;}
    catch{return url;}
  }
- async function findStored(cache,spec,url){
-   if(!cache)return null;
-   const key=storedKey(spec,url);
-   const response=await cache.match(key).catch(()=>null);
-   if(response)return {key,response};
-   if(String(key)===String(url))return null;
-   const legacy=await cache.match(url).catch(()=>null);
-   return legacy?{key:url,response:legacy}:null;
+ async function findStored(cache, spec, url) {
+   if (!cache)return null;
+   const key = storedKey(spec, url);
+   const response = await cache.match(key).catch (() => null);
+   return response?{key, response}:null;
  }
- async function hasStoredAsset(spec){
-   const match=await findStored(await openDataCache(),spec,resolveAssetUrl(spec));
-   if(!match)return false;
+ async function hasStoredAsset(spec) {
+   const match = await findStored(await openDataCache(), spec, resolveAssetUrl(spec));
+   if (!match)return false;
    // A cache hit here is only a planning hint. Actual reads always verify.
-   try{match.response.body?.cancel().catch(()=>{});}catch{}
+   try {match.response.body?.cancel().catch (() => {});}catch{}
    return true;
  }
 async function openDataCache() {
   if (!cacheStorage) return null;
-  if (!dataCachePromise) dataCachePromise = cacheStorage.open(ACTIVE_CACHE_NAME).catch(() => null);
+  if (!dataCachePromise) dataCachePromise = cacheStorage.open(ACTIVE_CACHE_NAME).catch (() => null);
   return dataCachePromise;
 }
 
@@ -66,26 +63,26 @@ async function cleanupOldCoreCaches() {
       .filter(name => (typeof dataRevision==='string' && name.startsWith(DATA_CACHE_PREFIX) && name !== DATA_CACHE_NAME)
         || name.startsWith(LEGACY_CORE_CACHE_PREFIX))
         .map(name => cacheStorage.delete(name))))
-      .catch(() => []);
+      .catch (() => []);
   }
   await oldCacheCleanupPromise;
 }
 
-async function cacheStoredBuffer(cache,url,storedBuffer,headers=null){
-  if(!cache)return false;
-  const immutable=cachePolicy==='immutable';
-  const write=async()=>{
-    const metadata=new Headers(headers||undefined);
-    if(immutable){metadata.set('x-pandolab-stored-bytes',String(storedBuffer.byteLength));metadata.set('x-pandolab-stored-at',String(Date.now()));}
-    await cache.put(url,new Response(storedBuffer,{headers:metadata}));
-    if(immutable){touchStoredContent(cache,url);await maintainStoredContent(cache);}
+async function cacheStoredBuffer(cache, url, storedBuffer, headers = null) {
+  if (!cache)return false;
+  const immutable = cachePolicy==='immutable';
+  const write = async() => {
+    const metadata = new Headers(headers||undefined);
+    if (immutable) {metadata.set('x-pandolab-stored-bytes', String(storedBuffer.byteLength)); metadata.set('x-pandolab-stored-at', String(Date.now()));}
+    await cache.put(url, new Response(storedBuffer, {headers:metadata}));
+    if (immutable) {touchStoredContent(cache, url); await maintainStoredContent(cache);}
     return true;
   };
-  try{return await write();}
-  catch(_){
+  try {return await write();}
+  catch (_) {
     await cleanupOldCoreCaches();
-    if(immutable)await maintainStoredContent(cache,{force:true});
-    try{return await write();}catch{return false;}
+    if (immutable)await maintainStoredContent(cache, {force:true});
+    try {return await write();}catch{return false;}
   }
 }
 
@@ -351,20 +348,20 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
 }
 
 
-const loadAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresentation(spec,phase,key,label,validate,signal,'decoded');
-const loadStoredAsset=(spec,phase,key,label,validateStoredBytes,signal=null)=>{
- if(typeof validateStoredBytes!=='function')throw new TypeError('A stored-byte format validator is required.');
- return loadRepresentation(spec,phase,key,label,validateStoredBytes,signal,'stored');
+const loadAsset = (spec, phase, key, label, validate, signal = null) => loadRepresentation(spec, phase, key, label, validate, signal,'decoded');
+const loadStoredAsset = (spec, phase, key, label, validateStoredBytes, signal = null) => {
+ if (typeof validateStoredBytes!=='function')throw new TypeError('A stored-byte format validator is required.');
+ return loadRepresentation(spec, phase, key, label, validateStoredBytes, signal,'stored');
 };
-const loadCachedAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresentation(spec,phase,key,label,validate,signal,'decoded',true);
-const loadCachedStoredAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresentation(spec,phase,key,label,validate,signal,'stored',true);
-async function decodeStoredAsset(storedBuffer,spec,phase,key,label,validate,{persist=false}={}) {
- await validateStoredAsset(storedBuffer,spec,label);
- const result=await decodeStoredBuffer(storedBuffer,spec,phase,key,label,null,report);
- validateAssetLength(result,spec,label);
- const value=await validate(result.buffer,label);
- if(persist)await cacheStoredBuffer(await openDataCache(),storedKey(spec,resolveAssetUrl(spec)),storedBuffer);
- return {...result,value};
+const loadCachedAsset = (spec, phase, key, label, validate, signal = null) => loadRepresentation(spec, phase, key, label, validate, signal,'decoded', true);
+const loadCachedStoredAsset = (spec, phase, key, label, validate, signal = null) => loadRepresentation(spec, phase, key, label, validate, signal,'stored', true);
+async function decodeStoredAsset(storedBuffer, spec, phase, key, label, validate, {persist = false} = {}) {
+ await validateStoredAsset(storedBuffer, spec, label);
+ const result = await decodeStoredBuffer(storedBuffer, spec, phase, key, label, null, report);
+ validateAssetLength(result, spec, label);
+ const value = await validate(result.buffer, label);
+ if (persist)await cacheStoredBuffer(await openDataCache(), storedKey(spec, resolveAssetUrl(spec)), storedBuffer);
+ return {...result, value};
 }
-return Object.freeze({loadAsset,loadStoredAsset,loadCachedAsset,loadCachedStoredAsset,hasStoredAsset,decodeStoredAsset,cleanupOldCoreCaches});
+return Object.freeze({loadAsset, loadStoredAsset, loadCachedAsset, loadCachedStoredAsset, hasStoredAsset, decodeStoredAsset, cleanupOldCoreCaches});
 }

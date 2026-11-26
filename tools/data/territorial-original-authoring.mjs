@@ -78,7 +78,12 @@ export function normalizeOriginalAuthoringSource(entity,{readEvidence}={}){
 }
 /** Revalidated by the archive store as well as the explicit writer. */
 export function assertOriginalAuthoringSourceStorageChanges(next,previous,{prefixes,readEvidence}={}){
- if(!next.geometryVersions?.some(v=>v.modernBoundarySupplement?.originalAuthoringReview)){for(const v of next.geometryVersions||[])createGeometryVersionStore([{id:v.versionId,version:1,geojson:v.geometry}]);return 0;}
+ if(!next.geometryVersions?.some(v=>v.modernBoundarySupplement?.originalAuthoringReview)){
+  const old=new Map((previous?.geometryVersions||[]).map(v=>[v.versionId,v.geometry]));
+  for(const v of next.geometryVersions||[])if(!equal(v.geometry,old.get(v.versionId)))
+   createGeometryVersionStore([{id:v.versionId,version:1,geojson:v.geometry}]);
+  return 0;
+ }
  const normalized=normalizeOriginalAuthoringSource(next,{readEvidence}),v=normalized.geometryVersions[0],review=archived(v.modernBoundarySupplement.originalAuthoringReview,readEvidence);
  if(!previous||previous.geometryVersions?.length!==1||review.previousGeometrySha256!==digest(previous.geometryVersions[0].geometry)||review.originalAuthoring.preservedMetadataSha256!==originalAuthoringPreservedDigest(previous)||!equal(v.modernBoundarySupplement.priorPreparedAttribution,previous.geometryVersions[0].modernBoundarySupplement))fail('source preimage or metadata changed');
  const resource=encodeTerritorialSource(normalized).descriptor.geometryVersions[0].geometryResource,exact=[base+'countries/'+entityFileName(next.entityId),base+resource.file];if(!Array.isArray(prefixes)||prefixes.length!==2||!equal([...prefixes].sort(),exact.sort()))fail('exact descriptor and original resource scope required');

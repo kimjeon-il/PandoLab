@@ -1,10 +1,10 @@
-import { timelineObjectCatalog } from "./timeline-records.js";
-import {normalizeProjectSetup} from "./project-setup.js";
-import { normalizeTerritorialIdentities, TERRITORIAL_IDENTITY_FIELDS, TERRITORIAL_SCHEMA_VERSION, TERRITORIAL_ENTITY_KINDS } from "./territorial-units.js";
-import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
-import { restoreTimelineStorage } from "./timeline-storage.js";
-import { normalizeDistributionLayers, normalizeDistributionEntries } from "./distribution-model.js";
-import { validateSourceProvenance } from "./source-provenance.js";
+import { timelineObjectCatalog } from './timeline-records.js';
+import { normalizeProjectSetup } from './project-setup.js';
+import { normalizeTerritorialIdentities, TERRITORIAL_IDENTITY_FIELDS, TERRITORIAL_SCHEMA_VERSION, TERRITORIAL_ENTITY_KINDS } from './territorial-units.js';
+import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from '../geometry/geometry-version-store.js';
+import { restoreTimelineStorage } from './timeline-storage.js';
+import { normalizeDistributionLayers, normalizeDistributionEntries } from './distribution-model.js';
+import { validateSourceProvenance } from './source-provenance.js';
 import {
   PROJECT_SCHEMA_VERSION,
   LAND_OBJECT_SCHEMA_VERSION,
@@ -65,7 +65,7 @@ export function restoreEntitiesFromDelta(project, { base, baseDataset, baseDatas
   }).concat([...changes.values()].map(entity => clone(entity)));
   const result = normalizeTerritorialIdentities(entities);
   restoreTimelineStorage({ schemaVersion: 1, records: project.timelineRecords, geometries: project.geometries },
-    timelineObjectCatalog({...project,territorialEntities:result}));
+    timelineObjectCatalog({...project, territorialEntities:result}));
   return result;
 }
 
@@ -104,7 +104,6 @@ function prepareProjectForValidation(project) {
 export function assertCurrentProjectSchema(input, { baseEntities = null, baseDataset = null, baseDatasetFingerprint = null } = {}) {
   const project = prepareProjectForValidation(input);
   if (!PROJECT_FORMATS.has(text(project.format))) throw schemaError(`지원하지 않는 프로젝트 형식입니다: ${text(project.format) || '(없음)'}`, 'PL-SCHEMA-FORMAT');
-  requireSchemaVersion(project.schemaVersion, '프로젝트');
   requireSchemaVersion(project.landObjectModel?.schemaVersion, '지형지물 모델', LAND_OBJECT_SCHEMA_VERSION);
   requireSchemaVersion(project.territorialModel?.schemaVersion, '영토 모델', TERRITORIAL_MODEL_SCHEMA_VERSION);
   requireSchemaVersion(project.distributionModel?.schemaVersion, '분포 모델', DISTRIBUTION_MODEL_SCHEMA_VERSION);
@@ -185,7 +184,7 @@ export function assertCurrentProjectSchema(input, { baseEntities = null, baseDat
     allEntities = restoreEntitiesFromDelta(project, { base: baseEntities, baseDataset, baseDatasetFingerprint });
   }
 
-  restoreTimelineStorage({ schemaVersion: 1, records: project.timelineRecords, geometries: project.geometries },
+  if (project.format !== 'pandolab-autosave-delta') restoreTimelineStorage({ schemaVersion: 1, records: project.timelineRecords, geometries: project.geometries },
     timelineObjectCatalog({...project,territorialEntities:allEntities}));
 
   assertUniqueProjectIds(project.distributionLayers, '분포 레이어');
