@@ -83,28 +83,36 @@ const vertexShader=`
   attribute float instanceRow;
   uniform sampler2D boxes;
   uniform vec2 viewport;
-  uniform float capacity;
+  uniform float capacity, atlasSize;
   varying vec2 texCoord;
+  varying float texelsPerCssPixel;
   void main(){
     float row = (instanceRow + 0.5) / capacity;
     vec4 box = texture2D(boxes, vec2(0.25, row));
     vec4 uvRect = texture2D(boxes, vec2(0.75, row));
     vec2 pixel = mix(box.xy, box.zw, position.xy);
     texCoord = mix(uvRect.xy, uvRect.zw, position.xy);
+    texelsPerCssPixel = (uvRect.z - uvRect.x) * atlasSize / (box.z - box.x);
     gl_Position = vec4(2.0 * pixel.x / viewport.x - 1.0, 1.0 - 2.0 * pixel.y / viewport.y, 0.0, 1.0);
   }
 `;
 const fragmentShader=`
   uniform sampler2D atlas;
   uniform vec3 textColor, haloColor;
+  uniform float atlasSize;
   varying vec2 texCoord;
+  varying float texelsPerCssPixel;
   void main(){
-    float distance = texture2D(atlas,texCoord).r - 0.5;
-    float width = max(fwidth(distance), 0.001);
-    float ink = smoothstep(-0.5*width, 0.5*width, distance);
-    float halo = smoothstep(-0.5*width, 0.5*width, distance + width);
-    if (halo <= 0.0) discard;
-    gl_FragColor = vec4(mix(haloColor,textColor,ink),halo);
+    float distanceCss = (texture2D(atlas,texCoord).r - 0.5) * ${(2*outlineRange).toFixed(1)} / texelsPerCssPixel;
+    // The quad supplies a stable footprint independent of the glyph gradient.
+    float pixelWidth = max(abs(dFdx(texCoord.x)), abs(dFdy(texCoord.y))) * atlasSize / texelsPerCssPixel;
+    float fillEdge = 0.5 * pixelWidth;
+    float haloEdge = fillEdge + 0.35;
+    float ink = smoothstep(-fillEdge, fillEdge, distanceCss);
+    float halo = smoothstep(-haloEdge, haloEdge, distanceCss + 1.0);
+    float coverage = max(ink, halo);
+    if (coverage <= 0.0) discard;
+    gl_FragColor = vec4(mix(haloColor,textColor,ink/coverage),coverage);
     #include <colorspace_fragment>
   }
 `;
@@ -416,7 +424,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     geometry.setAttribute('instanceRow', new THREE.InstancedBufferAttribute(Float32Array.from({length:allocated}, (_, i) => i), 1));
     geometry.setIndex([0, 2, 1, 2, 3, 1]);
     const material = new THREE.ShaderMaterial({vertexShader, fragmentShader, depthTest:false, depthWrite:false, transparent:true,
-      uniforms:{atlas:{value:page.atlas}, boxes:{value:boxes}, capacity:{value:allocated}, viewport, textColor:{value:textColor}, haloColor:{value:haloColor}}});
+      uniforms:{atlas:{value:page.atlas}, atlasSize:{value:size}, boxes:{value:boxes}, capacity:{value:allocated}, viewport, textColor:{value:textColor}, haloColor:{value:haloColor}}});
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false; mesh.renderOrder = 7; geometry.instanceCount = 0; mesh.visible = false; scene.add(mesh);
     cacheDirty = true; return {values, boxes, upload:textureState(boxes), mesh, capacity:allocated, count:0};

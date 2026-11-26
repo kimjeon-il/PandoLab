@@ -152,6 +152,16 @@ test('SDF transform consumes a single-channel mask and preserves signed distance
  assert.equal(field[1],field[3]);assert.equal(field[5],field[7]);
 });
 
+test('SDF retains coverage on both sides of a fractional glyph edge',async()=>{
+ const {distanceMask}=await import('../../../src/rendering/globe-label-sdf.js');
+ const edge=Uint8Array.of(0,32,96,127,128,159,223,255);
+ const sdf=distanceMask(edge,edge.length,1,10);
+ assert.deepEqual([...sdf.slice(3,5)],[127,128]);
+ assert.ok(sdf.every((value,i)=>i===0||sdf[i-1]<value));
+ const binary=distanceMask(edge.map(value=>value<128?0:255),edge.length,1,10);
+ assert.notDeepEqual(sdf,binary);
+});
+
 test('single-channel hydro upload rectangles merge only compatible changed slots',async()=>{
  const {globeHydroTextureRects}=await import('../../../src/rendering/three-globe-surface.js');
  assert.deepEqual(globeHydroTextureRects(new Set([1,2,5,6,11]),4),[

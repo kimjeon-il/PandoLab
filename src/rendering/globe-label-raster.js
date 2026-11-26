@@ -1,7 +1,8 @@
 // Identical drawing commands for document and Worker OffscreenCanvas.
 // Preserve the existing text, alignment, marker and font-weight policy.
-export const GLOBE_LABEL_FONT_SIZE = 56, GLOBE_LABEL_OUTLINE_RANGE = 7;
-export const GLOBE_LABEL_PADDING = GLOBE_LABEL_OUTLINE_RANGE+2;
+export const GLOBE_LABEL_FONT_SIZE = 56, GLOBE_LABEL_OUTLINE_RANGE = 12;
+// Leave room for the softened outline even at the minimum displayed font size.
+export const GLOBE_LABEL_PADDING = 11;
 export const GLOBE_LABEL_FONT_PATH = 'assets/fonts/pretendard-v1.3.9/PretendardVariable.woff2';
 export function globeLabelFont(place) {
   return `${place?600:800} ${GLOBE_LABEL_FONT_SIZE}px "Pretendard Variable", sans-serif`;
