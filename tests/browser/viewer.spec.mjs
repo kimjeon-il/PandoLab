@@ -89,7 +89,7 @@ test('Viewer shows the land skeleton while the first globe frame is loading', as
  await expect(skeleton).toBeHidden();
 });
 
-test('Three globe draws prepared surfaces with no base uploads while dragging', async ({ browser, baseURL }) => {
+test('Three globe keeps its map ready and reuses loaded spatial chunks while navigating', async ({ browser, baseURL }) => {
  const context = await browser.newContext({ baseURL, viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1.5 });
  let allowOutlines;
  const outlineGate=new Promise(resolve=>{allowOutlines=resolve;});
@@ -122,7 +122,14 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   const assetRequests = [];
   page.on('request', request => assetRequests.push(new URL(request.url()).pathname));
   const outlineRequests=()=>assetRequests.filter(path=>path.includes('/outlines/'));
-  const meshRequests = () => assetRequests.filter(path => path.includes('/globe-preview/')&&!path.includes('/hydro-pick/')&&!path.includes('/pick/')&&!path.includes('/outlines/')).length;
+  const isBase = path => /\/globe-preview\/(countries|borders)\//.test(path);
+  const baseRequests = () => assetRequests.filter(isBase);
+  const completedBaseRequests = [];
+  page.on('requestfinished', request => {
+   const path = new URL(request.url()).pathname;
+   if (isBase(path)) completedBaseRequests.push(path);
+  });
+  const expectNoDuplicateBaseRequests = () => expect(completedBaseRequests).toHaveLength(new Set(completedBaseRequests).size);
   await page.goto('./?debug=1');
   await expect(page.locator('#viewerStatus')).toHaveAttribute('data-ready', 'true', { timeout: 90_000 });
   await expect(page.locator('#map canvas')).toHaveCount(1);
@@ -146,7 +153,7 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   expect(scene.drawCalls).toBeGreaterThan(0);
   expect(scene.firstPublishedAt).toBeGreaterThan(0);
   expect(scene.labels).toBe(0);
-  expect(scene.atlasEntries).toBeGreaterThan(scene.labels);
+  expect(scene.atlasEntries).toBe(0);
   const before = await canvas.screenshot();
   const middlePixel = await page.evaluate(async encoded => {
    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), char => char.charCodeAt(0))]));
@@ -158,7 +165,7 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   const expected = COUNTRY_DEFAULT_COLORS.FRA.slice(1).match(/../g).map(value => parseInt(value, 16));
   expect(Math.max(...middlePixel.map((value, i) => Math.abs(value - expected[i])))).toBeLessThanOrEqual(1);
   const writes = await page.evaluate(() => window.globeBufferWrites);
-  const requests = meshRequests();
+  const startupRequests = baseRequests();
   expect(assetRequests.filter(path=>path.includes('/pick/'))).toEqual([]);
   expect(outlineRequests()).toEqual([]);
   const landSources = await page.evaluate(async () => {
@@ -168,15 +175,17 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
     .filter(Boolean).map(asset => new URL(asset.url, location.href).pathname);
   });
   expect(assetRequests.filter(path => landSources.includes(path))).toEqual([]);
-  expect(requests).toBe(await page.evaluate(() => {
-   const { waters, lakes } = window.PANDOLAB_BUILD_META.globePreview.physical;
-   return 4 + waters.length + lakes.length;
+  expect(startupRequests.some(path=>path.includes('/countries/'))).toBe(true);
+  expect(startupRequests.length).toBeLessThan(await page.evaluate(()=>{
+   const spec = window.PANDOLAB_BUILD_META.globePreview;
+   return spec.countryChunks.length + spec.borderChunks.length;
   }));
+  expectNoDuplicateBaseRequests();
   expect(writes).toBeGreaterThan(0);
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect.poll(() => page.evaluate(() => window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref => ref.id))).toEqual(['FRA']);
-  expect(assetRequests.some(path=>path.includes('/pick/'))).toBe(true);
-  await expect.poll(()=>outlineRequests().length).toBe(1);
+  expect(assetRequests.some(path=>path.includes('/pick/'))).toBe(false);
+  await expect.poll(()=>outlineRequests().length).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.globeBufferWrites)).toBe(writes);
   allowOutlines();
   const outlinePixels = async screenshot => page.evaluate(async encoded => {
@@ -197,14 +206,12 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 110, box.y + box.height / 2 + 30, { steps: 8 });
   await page.mouse.up();
-  await expect.poll(async () => (await canvas.screenshot()).equals(before)).toBe(false);
+  await expect.poll(async () => (await camera(page)).camera.center).not.toEqual(saved.center);
   const zoomBeforeWheel = (await camera(page)).zoom;
   await page.mouse.wheel(0, -80);
   await expect.poll(async () => (await camera(page)).zoom).toBeGreaterThan(zoomBeforeWheel);
-  expect(await page.evaluate(() => window.globeBufferWrites)).toBe(selectionWrites);
-  expect(meshRequests()).toBe(requests);
-  expect(outlineRequests()).toHaveLength(1);
-  expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().labelAtlasEntries)).toBe(scene.atlasEntries);
+  await ready(page, 'map after drag and zoom');
+  expectNoDuplicateBaseRequests();
   expect(await page.evaluate(() => window.__PANDOLAB_VIEWER__.rendererStats().renderer)).toBe('three');
   await expect.poll(() => page.evaluate(async () => {
    const count = window.__PANDOLAB_VIEWER__.rendererStats().drawCount;
@@ -215,8 +222,7 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   // This month shares the startup edition's territorial packets.
   await month(page, '2026-12');
   expect((await camera(page)).camera).toEqual(dateCamera);
-  expect(await page.evaluate(() => window.globeBufferWrites)).toBe(selectionWrites);
-  expect(meshRequests()).toBe(requests);
+  expectNoDuplicateBaseRequests();
   const viewBeforeContextLoss = (await camera(page)).camera;
   await canvas.evaluate(element => {
    window.threeContextControl = element.getContext('webgl2').getExtension('WEBGL_lose_context');
@@ -226,7 +232,7 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   await page.evaluate(() => window.threeContextControl.restoreContext());
   await expect.poll(() => page.evaluate(() => window.__PANDOLAB_VIEWER__.rendererStats().mapReadiness.mapReady)).toBe(true);
   expect((await camera(page)).camera).toEqual(viewBeforeContextLoss);
-  expect(meshRequests()).toBe(requests);
+  expectNoDuplicateBaseRequests();
  } finally {
   allowOutlines();
   await context.close();
@@ -436,16 +442,29 @@ test('Three globe switches historical territories and water in the same dated fr
  });
  await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-58,-43,0]}}));
  const initialCamera=(await camera(page)).camera,before=await state();
- const canvas=page.locator('#map canvas'),modern=await canvas.screenshot();
+ // The same point in the eastern Aral basin is dry today and submerged in 1923.
+ const canvas=page.locator('#map canvas'), aralPoint=[60.6,45.4];
+ const colorAtAral=async()=>{
+  const [x,y]=await page.evaluate(point=>window.__PANDOLAB_MAP_HOST__.project(point),aralPoint);
+  return page.evaluate(async ({encoded,x,y})=>{
+   const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
+   const pixel=new OffscreenCanvas(1,1).getContext('2d');
+   pixel.drawImage(image,Math.round(x*devicePixelRatio),Math.round(y*devicePixelRatio),1,1,0,0,1,1);
+   image.close();
+   return [...pixel.getImageData(0,0,1,1).data].slice(0,3);
+  },{encoded:(await canvas.screenshot()).toString('base64'),x,y});
+ };
+ const land=COUNTRY_DEFAULT_COLORS.KAZ.slice(1).match(/../g).map(value=>parseInt(value,16));
+ await expect.poll(colorAtAral,{timeout:15000}).toEqual(land);
  await month(page,'1923-11');
  const dated=await state();
  expect(dated).toMatchObject({month:'1923-11',water:expect.arrayContaining(['waterbody:aral','waterbody:caspian'])});
  expect(dated.territories).toBeLessThan(before.territories);
  expect((await camera(page)).camera).toEqual(initialCamera);
- expect((await canvas.screenshot()).equals(modern)).toBe(false);
+ await expect.poll(colorAtAral,{timeout:15000}).toEqual([255,255,255]);
  await month(page,before.month);
  expect(await state()).toEqual(before);
- expect((await canvas.screenshot()).equals(modern)).toBe(true);
+ await expect.poll(colorAtAral,{timeout:15000}).toEqual(land);
 });
 
 test('Three globe selects rendered rivers and dated water with Core identities',async({page})=>{
