@@ -197,7 +197,8 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
    return window.__PANDOLAB_VIEWER__.rendererStats().drawCount - count;
   })).toBe(0);
   const dateCamera = (await camera(page)).camera;
-  await month(page, '2026-10');
+  // This month shares the startup edition's territorial packets.
+  await month(page, '2026-12');
   expect((await camera(page)).camera).toEqual(dateCamera);
   expect(await page.evaluate(() => window.globeBufferWrites)).toBe(selectionWrites);
   expect(meshRequests()).toBe(requests);
@@ -356,7 +357,7 @@ test('Three globe switches to changed historical meshes and reuses them on retur
  expect((await active()).count).toBeLessThan(earlier.count);
 });
 
-test('Three globe uses territorial coastlines and preserves polar, date-line and microstate surfaces',async({page})=>{
+async function openGeographicSampleMap(page){
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,backgrounds:{viewer:{graticule:false}}})));
  await page.goto('./?debug=1');
  await ready(page,'geographic samples startup');
@@ -379,10 +380,19 @@ test('Three globe uses territorial coastlines and preserves polar, date-line and
   const actual=await pixel(coordinate);
   return Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value)));
  }).toBeLessThanOrEqual(1);
- const ant=[20,-85],north=[0,89.9];
+ return {canvas,go,paint};
+}
+
+test('Three globe uses territorial coastlines for coastal fill',async({page})=>{
+ const {go,paint}=await openGeographicSampleMap(page);
  // Samples in the ocean just beyond the territory polygons on these coasts.
  await go([166.32,-22.17],10);await paint([166.216213,-22.126016],'#ffffff');
  await go([-73.86,-43.07],10);await paint([-74.209291,-42.942997],'#ffffff');
+});
+
+test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{
+ const {canvas,go,paint}=await openGeographicSampleMap(page);
+ const ant=[20,-85],north=[0,89.9];
  await go(ant,5);await paint(ant,'#f1f1f1');
  await go(north,5);await paint(north,'#ffffff');
  await go([180,-16.86],12);
