@@ -1,15 +1,15 @@
-import { subscribeAbort } from '../runtime/async-request.js';
+import { createWorkerAdmissionQueue } from '../runtime/worker-admission-queue.js';
 // Shared CPU admission for packet restoration and label SDF. Queued priority
 // is live: a speculative read may become a required read without restarting.
 // Device hints are ceilings, not a promise of available CPU or memory.
 export function createGlobeWorkScheduler({maxConcurrent = 2, residency = null, now = () => performance.now()} = {}) {
   const limit = Math.max(1, Math.min(3, Math.floor(maxConcurrent)||1));
-  let target = limit, closed = false, sequence = 0, scheduled = false, serviceMs = 0, waitMs = 0, completed = 0, failed = 0, peak = 0, adjustments = 0;
-  const queue = [], active = new Set();
-  const priorityOf = row => typeof row.priority==='function'?Number(row.priority())||0:Number(row.priority)||0;
+  let target = limit, closed = false, scheduled = false, serviceMs = 0, waitMs = 0, completed = 0, failed = 0, peak = 0, adjustments = 0;
+  const active = new Set();
   const schedule = () => {if (closed||scheduled)return; scheduled = true; queueMicrotask(() => {scheduled = false; pump();});};
+  const pending = createWorkerAdmissionQueue(schedule), queue = pending.rows;
   function adjust() {
-    const pressure = residency?.stats();
+    const pressure = residency?.pressure();
     // Estimate pressure including all active reservations, not just JS heap.
     const pressured = !!pressure&&pressure.totalBytes>pressure.byteBudget*.9;
     let next = target;
@@ -19,12 +19,11 @@ export function createGlobeWorkScheduler({maxConcurrent = 2, residency = null, n
   }
   function pump() {
     if (closed)return; adjust();
-    queue.sort((a, b) => priorityOf(b)-priorityOf(a)||a.id-b.id);
+    pending.sort();
     while (queue.length&&active.size<target) {
-      const row = queue[0], priority = priorityOf(row);
+      const row = queue[0], priority = row.priority;
       if (priority<0&&active.size)break;
-      queue.shift();
-      row.detach();
+      pending.take();
       if (row.signal?.aborted) {row.reject(row.signal.reason); continue;}
       const started = now(); waitMs = completed?waitMs*.8+(started-row.queuedAt)*.2:started-row.queuedAt;
       active.add(row); peak = Math.max(peak, active.size);
@@ -37,19 +36,11 @@ export function createGlobeWorkScheduler({maxConcurrent = 2, residency = null, n
   const off = residency?.onChange(schedule);
   function run({priority = 0, signal, kind = 'packet'}, task) {
     if (closed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Globe work scheduler closed','AbortError'));
-    return new Promise((resolve, reject) => {
-      const row = {id:++sequence, priority, signal, kind, task, resolve, reject, queuedAt:now()};
-      row.abort = () => {const at = queue.indexOf(row); if (at<0)return; queue.splice(at, 1); row.detach(); reject(signal.reason); schedule();};
-      const unsubscribe = priority?.subscribe?.(schedule);
-      const detachAbort = subscribeAbort(signal, row.abort);
-      row.detach = () => {unsubscribe?.(); detachAbort();};
-      queue.push(row);
-      if (signal?.aborted)row.abort(); else schedule();
-    });
+    return pending.enqueue({priority, signal, kind, queuedAt:now()}, task);
   }
   function dispose() {
     closed = true; off?.();
-    for (const row of queue.splice(0)) {row.detach(); row.reject(new DOMException('Globe work scheduler closed','AbortError'));}
+    pending.rejectAll(new DOMException('Globe work scheduler closed','AbortError'));
   }
   function stats() {return {workerLimit:limit, concurrency:target, queued:queue.length, running:active.size, peakRunning:peak, completed, failed, adjustments, meanServiceMs:serviceMs, meanQueueMs:waitMs,
     byKind:[...active].reduce((out, row) => (out[row.kind] = (out[row.kind]??0)+1, out), {})};}

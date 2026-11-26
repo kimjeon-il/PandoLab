@@ -1,4 +1,5 @@
 import { subscribeAbort } from './async-request.js';
+import { sortWorkerJobs } from './worker-admission-queue.js';
 
 function defaultNow() {
   return globalThis.performance?.now?.() ?? Date.now();
@@ -151,7 +152,7 @@ export function createLatestWorkerJobScheduler({
   function pump() {
     if (closed) return;
     while (running.size < concurrency && queue.length) {
-      queue.sort((left, right) => right.priority - left.priority || left.requestId - right.requestId);
+      sortWorkerJobs(queue, row => row.requestId);
       const entry = queue.shift();
       if (queuedByKey.get(entry.jobKey) === entry) queuedByKey.delete(entry.jobKey);
       if (entry.obsolete) continue;

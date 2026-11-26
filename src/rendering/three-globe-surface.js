@@ -1,3 +1,4 @@
+import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourceFootprint, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
 import { createGlobeOutlineCache } from './globe-outline-cache.js';
@@ -5,7 +6,7 @@ import { planGlobeCompactionUpdates, mergeGlobeDrawRanges, copyGlobeDrawWrites, 
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges } from './globe-outline-cache.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
-import { renderCacheBudget, renderPacketBytes, renderPacketBuffers, renderBufferBytes, touchRenderCache, trimRenderCache } from './render-cache-budget.js';
+import { renderCacheBudget, renderPacketBuffers, renderFootprintBytes, touchRenderCache, trimRenderCache } from './render-cache-budget.js';
 import { createGlobeSpatialSelection, createGlobeRangeCuller, globeStrokeRange } from './globe-spatial-partition.js';
 
 const surfaceVertex = `
@@ -84,7 +85,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const channels = new Uint8Array(countryWidth*countryHeight*4), countryVisible = new Uint8Array(countryCount);
   let countryVisibilityRevision = 0, borderVisibilityRevision = 0;
   const countrySlotRevisions = new Float64Array(countryCount), borderSlotRevisions = new Float64Array(Math.max(1, packets.borderGroupCount));
-  const texture = new THREE.DataTexture(channels, countryWidth, countryHeight);
+  const texture = createGlobeDataTexture(THREE, channels, countryWidth, countryHeight);
   texture.colorSpace = THREE.SRGBColorSpace;
   let countryTextureUploaded = false, countryPendingFull = true;
   const countryDirtySlots = new Set();
@@ -92,9 +93,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   texture.needsUpdate = true;
   const hydroWidth = Math.min(1024, Math.max(1, hydroCount)), hydroHeight = Math.ceil(Math.max(1, hydroCount)/hydroWidth);
   const hydroBytes = new Uint8Array(hydroWidth*hydroHeight);
-  const hydroTexture = new THREE.DataTexture(hydroBytes, hydroWidth, hydroHeight, THREE.RedFormat);
-  const hydroUploadSource = new THREE.DataTexture(null, 1, 1, THREE.RedFormat), hydroDirtySlots = new Set();
-  const hydroCopyRegion = new THREE.Box2(new THREE.Vector2(), new THREE.Vector2()), hydroCopyPosition = new THREE.Vector2();
+  const hydroTexture = createGlobeDataTexture(THREE, hydroBytes, hydroWidth, hydroHeight, {format:THREE.RedFormat});
+  const hydroCopier = createGlobeTextureCopier(THREE, renderer), hydroDirtySlots = new Set();
   let hydroUploaded = false;
   const hydroUploadStats = {fullUploads:0, partialUploads:0, fullBytes:0, partialBytes:0};
   hydroTexture.onUpdate = () => {hydroUploaded = true; hydroUploadStats.fullUploads++; hydroUploadStats.fullBytes+=hydroBytes.byteLength;};
@@ -138,6 +138,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     texture.needsUpdate = true;
   }
   const layers = new Map(), residentMeshes = new Map();
+  let meshResidentBytes = 0;
   const spatialResources = new Set(), activeSpatialResources = new Set(), dirtyOutlineOwners = new Map();
   const strokeResources = {country:new Set(), river:new Set()};
   let spatialStats = {triangles:0, submittedTriangles:0, segments:0, submittedSegments:0, ranges:0, visibleRanges:0, strokeBatches:0, strokeDrawCalls:0, directStrokeSegments:0, compactionUploadBytes:0, meshDrawCalls:0, immutableIndexTriangles:0, rewrittenBlocks:0};
@@ -150,26 +151,18 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (!layers.has(name))layers.set(name, []);
     layers.get(name).push(mesh);
   }
-  function geometryBytes(mesh) {
-    const attributes = mesh.geometry.attributes;
-    return Object.values(attributes).reduce((sum, attribute) => sum+attribute.array.byteLength, 0)
-      +(mesh.geometry.index?.array.byteLength??0);
-  }
   // The logical visibility/ownership of a packet is independent of which
   // spatial ranges its current camera actually submits.
   function spatialResource(objects, material, update, pointResources = [], retained = null, {geometries = null, workspace = () => [], disposeExtra = () => {}} = {}) {
     let enabled = true, disposed = false;
-    const materials = new Set(objects.flatMap(mesh => Array.isArray(mesh.material)?mesh.material:[mesh.material]));
+    const materials = globeMeshMaterials(objects);
     if (material)materials.add(material);
     function footprint() {
-      const geometriesNow = geometries?geometries():objects.map(mesh => mesh.geometry);
-      const attrs = new Set(geometriesNow.flatMap(geometry => [...Object.values(geometry.attributes), geometry.index]).filter(Boolean));
-      const buffers = renderPacketBuffers([retained, ...[...attrs].map(attribute => attribute.array), ...pointResources.map(row => row.texture.image.data), workspace()]);
-      const extraBytes = [...attrs].reduce((sum, attribute) => sum+attribute.array.byteLength, 0)+pointResources.reduce((sum, row) => sum+row.bytes, 0);
-      return {buffers, extraBytes};
+      return gpuResourceFootprint(geometries?geometries():objects.map(mesh => mesh.geometry),
+        pointResources.map(row => row.texture), [retained, workspace()]);
     }
     const resource = {
-      material, update, lastUsed:performance.now(), get bytes() {return footprint().extraBytes;}, get buffers() {return footprint().buffers;}, get deviceBytes() {return footprint().extraBytes;}, footprint,
+      material, update, lastUsed:performance.now(), footprint,
       setOrder(order, span = 0) {objects.forEach((mesh, i) => {mesh.renderOrder = order+span*i/Math.max(1,objects.length);});},
       setStrokeStyle(style) {for (const material of materials) {const u = material.uniforms; if (u.radius)u.radius.value = style.width/2;if(u.strokeColor)u.strokeColor.value.set(style.color);if(u.strokeOpacity)u.strokeOpacity.value=style.opacity??style.alpha??1;}},
       get visible() {return enabled;},
@@ -182,11 +175,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       dispose() {
         if (disposed)return;
         disposed = true; activeSpatialResources.delete(resource); spatialResources.delete(resource);
-        for (const mesh of objects) {scene.remove(mesh);}
-        for (const geometry of new Set(geometries?geometries():objects.map(mesh => mesh.geometry)))geometry.dispose();
-        disposeExtra();
-        for (const item of materials)item.dispose();
-        for (const item of pointResources)item.texture.dispose();
+        disposeGlobeGpuResources(scene, objects, {
+          geometries:geometries?geometries():objects.map(mesh => mesh.geometry), materials,
+          textures:pointResources.map(row => row.texture), afterGeometry:disposeExtra,
+        });
       },
     };
     for (const mesh of objects) {mesh.visible = false; scene.add(mesh);}
@@ -311,8 +303,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       ownerRevision:style==='country'?localOwnerRevision(row.packet.slots, countrySlotRevisions, () => countryVisibilityRevision):() => 0,
     }));
     const primitiveCount = packet.indices.length/3;
-    const mesh = new THREE.Mesh(sourceGeometry, [material]);
-    mesh.frustumCulled = false; mesh.renderOrder = order;
+    const mesh = createGlobeMesh(THREE, sourceGeometry, [material], order);
     let priorSelection = new Uint32Array(), submitted = 0, visibleLeaves = 0, totalLeaves = parts.reduce((sum, row) => sum+row.index.leafCount, 0), activeCalls = 0;
     function releaseDynamic() {
       if (!dynamicGeometry)return;
@@ -403,7 +394,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const resource = riverMesh(packet, row.minZoom);
     const order = Math.max(0, row.order??0); resource.setOrder(4+.49*order/(order+1));
     resource.externalOwner = true;
-    return {residentBytes:renderBufferBytes(resource.buffers, resource.deviceBytes), footprint:resource.footprint, setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
+    return {residentBytes:renderFootprintBytes(resource.footprint()), footprint:resource.footprint, setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
   }
   const countryStrokeStyle = {...palette.strokes.country};
   const strokeOptions = {style:countryStrokeStyle, cameraUniforms, viewport, margin, multisampling, strokeKind:'country'};
@@ -415,14 +406,14 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     addLayer('graticule', graticule); graticule.visible = graticuleVisible;
   }
   if (packets.graticule)installGraticule(packets.graticule);
-  function releaseMesh(resource) {resource.dispose();}
   function useMesh(role, identity, prepare) {
     const key = role+':'+identity;
     const existing = touchRenderCache(residentMeshes, key);
     if (existing)return existing.mesh;
     const mesh = prepare();
     // Buffer attributes retain their CPU arrays alongside the device copy.
-    residentMeshes.set(key, {mesh, bytes:renderBufferBytes(mesh.buffers, mesh.deviceBytes)}); residencyDirty = true;
+    const bytes = renderFootprintBytes(mesh.footprint());
+    residentMeshes.set(key, {mesh, bytes}); meshResidentBytes+=bytes; residencyDirty = true;
     return mesh;
   }
   function activatePhysicalContext(parts) {
@@ -473,14 +464,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     }
     // RedFormat is one component; Three.js generic updateRanges assumes
     // RGBA, so use its supported CPU rectangular copy path instead.
-    hydroUploadSource.image = hydroTexture.image;
-    try {
-      for (const {x, y, width, height} of rects) {
-        hydroCopyRegion.min.set(x, y); hydroCopyRegion.max.set(x+width, y+height); hydroCopyPosition.set(x, y);
-        renderer.copyTextureToTexture(hydroUploadSource, hydroTexture, hydroCopyRegion, hydroCopyPosition);
-        hydroUploadStats.partialUploads++; hydroUploadStats.partialBytes+=width*height;
-      }
-    }finally {hydroUploadSource.image = null;}
+    hydroCopier.copy(hydroTexture, rects, pixels => {hydroUploadStats.partialUploads++; hydroUploadStats.partialBytes+=pixels;});
   }
   const borderBytes = new Uint8Array(Math.max(1, packets.borderGroupCount)).fill(255);
 
@@ -558,7 +542,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   // previously published scene while a replacement is still being drawn.
   function activeMeshesNow() {return new Set([...activeBase, ...activeBorders, ...Object.values(physicalLayers??{}).flat()]);}
   function evictMesh(key, entry) {
-    residentMeshes.delete(key); releaseMesh(entry.mesh);
+    if (residentMeshes.get(key)!==entry)return;
+    residentMeshes.delete(key); meshResidentBytes-=entry.bytes; entry.mesh.dispose();
   }
   function meshMemoryEntries() {
     const rows = [], protectedMeshes = activeMeshesNow(), owned = new Set();
@@ -582,10 +567,13 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (meshChanged) {
       residencyDirty = false;
       const activeMeshes = activeMeshesNow(), protectedMeshes = new Set();
-      for (const [key, entry] of residentMeshes) {if (activeMeshes.has(entry.mesh))protectedMeshes.add(key); const footprint = entry.mesh.footprint(); entry.bytes = renderBufferBytes(footprint.buffers, footprint.extraBytes);}
-      trimRenderCache(residentMeshes, protectedMeshes, cacheBudget.residentMeshBytes, entry => entry.bytes, (_key, entry) => {
-        releaseMesh(entry.mesh);
-      }, {entryLimit:512});
+      meshResidentBytes = 0;
+      for (const [key, entry] of residentMeshes) {
+        if (activeMeshes.has(entry.mesh))protectedMeshes.add(key);
+        entry.bytes = renderFootprintBytes(entry.mesh.footprint()); meshResidentBytes+=entry.bytes;
+      }
+      meshResidentBytes = trimRenderCache(residentMeshes, protectedMeshes, cacheBudget.residentMeshBytes,
+        entry => entry.bytes, (_key, entry) => entry.mesh.dispose(), {entryLimit:512, residentBytes:meshResidentBytes});
       refreshMeshLedger();
     }
     for (const [entry, slot] of dirtyOutlineOwners) {
@@ -596,8 +584,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   function cacheStats() {
     const outlineChunks = {residentChunks:0, visibleChunks:0, activeChunks:0, evictedChunks:0, createdChunks:0, shrunkBuffers:0, updatedChunks:0, subsetHits:0, subsetBuilds:0};
-    for (const entry of outlineCache.values())for (const [key, value] of Object.entries(entry.stats()))outlineChunks[key]+=value;
-    return {meshes:residentMeshes.size, meshResidentBytes:[...residentMeshes.values()].reduce((sum, row) => sum+row.bytes, 0), outlines:outlineCache.size, outlineResidentBytes:[...outlineCache.values()].reduce((sum, row) => sum+row.bytes(), 0), outlineChunks};
+    let outlineResidentBytes = 0;
+    for (const entry of outlineCache.values()) {
+      outlineResidentBytes+=entry.bytes();
+      for (const [key, value] of Object.entries(entry.stats()))outlineChunks[key]+=value;
+    }
+    return {meshes:residentMeshes.size, meshResidentBytes, outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
   }
 
   function resize(width, height, dpr) {
@@ -636,11 +628,11 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function dispose() {
     labels.dispose();
     for (const entry of outlineCache.values())entry.dispose();
-    outlineCache.clear(); paintedOutlines.clear(); dirtyOutlineOwners.clear(); residentMeshes.clear();
+    outlineCache.clear(); paintedOutlines.clear(); dirtyOutlineOwners.clear(); residentMeshes.clear(); meshResidentBytes = 0;
     refreshMeshLedger.dispose(); refreshLabelLedger.dispose();
     for (const resource of [...spatialResources])resource.dispose();
     layers.clear(); waterMeshes.clear(); activeBorders = []; activeBase = []; activeTerritoryInput = null; physicalLayers = activePhysical = null; graticule = null;
-    texture.dispose(); hydroTexture.dispose(); hydroUploadSource.dispose();
+    texture.dispose(); hydroTexture.dispose(); hydroCopier.dispose();
     renderer.dispose();
   }
   return Object.freeze({resize, draw, setPalette, setCountryPaint, restoreCountryPaint, installGraticule, hasGraticule:() => graticule!==null, installBaseBorders, hasBaseBorders:() => baseBordersInstalled, installOutlines, hasOutlines:slot => outlineCache.has(slot), setOutlinePaint, setHydroPaint, setLayerVisibility, attachRiverDetail, activateTerritorialChunks, activatePhysicalContext, prepareLabels, trimResidency, cacheStats, labels, dispose,

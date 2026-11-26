@@ -1,3 +1,5 @@
+import { createGlobeDataTexture, createGlobeMesh } from './globe-gpu-resources.js';
+
 export const hydroStyleLookup=`
   uniform sampler2D hydroRoles;
   uniform vec2 hydroSize;
@@ -137,9 +139,7 @@ export function createGlobeStrokePointTexture(THREE, points, maxTextureSize) {
   if (height>maxTextureSize)throw Error('Globe stroke point texture capacity exceeded');
   const data = points.length===width*height*4?points:new Float32Array(width*height*4);
   if (data!==points)data.set(points);
-  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.FloatType);
-  texture.minFilter = texture.magFilter = THREE.NearestFilter;
-  texture.generateMipmaps = false; texture.needsUpdate = true;
+  const texture = createGlobeDataTexture(THREE, data, width, height, {format:THREE.RGBAFormat, type:THREE.FloatType, upload:true});
   return {texture, bytes:data.byteLength, uniforms:{pointCoordinates:{value:texture}, pointTextureWidth:{value:width}, pointTextureMask:{value:width-1}, pointTextureShift:{value:shift}}};
 }
 
@@ -165,8 +165,5 @@ export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, 
     uniforms: { ...cameraUniforms, viewport, margin, minZoom: { value: minZoom },
       radius: { value: style.width / 2 }, strokeColor: { value: new THREE.Color(style.color) },
       strokeOpacity:{value:style.opacity??1}, ...pointUniforms, ...outlineUniforms, ...hydroUniforms } });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.frustumCulled = false;
-  mesh.renderOrder = order;
-  return mesh;
+  return createGlobeMesh(THREE, geometry, material, order);
 }

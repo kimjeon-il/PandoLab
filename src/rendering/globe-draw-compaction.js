@@ -89,10 +89,13 @@ export function writeDirectGlobeStrokes(output, packet, writes) {
 export function globeDrawBlockSize(count) {
   return count<=32768?Math.max(1, count):Math.max(16384, Math.ceil(count/4));
 }
-export function globeDrawCapacity(current, needed, limit) {
-  if (!needed)return 0;
+export function globeBufferCapacity(current, needed, limit, minimum, empty = 0) {
+  if (!needed)return empty;
   if (current>=needed&&needed>current/4)return current;
-  return Math.min(limit, Math.max(128, 2**Math.ceil(Math.log2(needed))));
+  return Math.min(limit, Math.max(minimum, 2**Math.ceil(Math.log2(needed))));
+}
+export function globeDrawCapacity(current, needed, limit) {
+  return globeBufferCapacity(current, needed, limit, 128);
 }
 export function splitGlobeDrawRanges(ranges, count, blockSize = globeDrawBlockSize(count)) {
   const blocks = new Map();

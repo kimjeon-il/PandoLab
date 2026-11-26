@@ -1,8 +1,9 @@
+import { gpuResourceFootprint, disposeGlobeGpuResources } from './globe-gpu-resources.js';
 import { touchLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 import { createGlobeSpatialSelection } from './globe-spatial-partition.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture } from './three-globe-strokes.js';
-import { renderPacketBuffers, renderBufferBytes } from './render-cache-budget.js';
-import { planGlobeCompactionUpdates, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes } from './globe-draw-compaction.js';
+import { renderPacketBuffers, renderFootprintBytes } from './render-cache-budget.js';
+import { planGlobeCompactionUpdates, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, globeBufferCapacity } from './globe-draw-compaction.js';
 
 import { indexGlobeOutlineChunks, selectGlobeOutlineGroups } from './globe-outline-index.js';
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges, indexGlobeOutlineChunks } from './globe-outline-index.js';
@@ -34,10 +35,7 @@ export function buildGlobeOutlinePointSubset(packet, ranges) {
 
 export function outlineInstanceCapacity(current, needed, limit) {
   if (needed>limit)throw Error('Outline selection exceeds chunk capacity');
-  if (!needed)return current;
-  if (current>=needed&&needed>current/4)return current;
-  const desired = Math.max(32, 2**Math.ceil(Math.log2(needed)));
-  return Math.min(limit, desired);
+  return globeBufferCapacity(current, needed, limit, 32, current);
 }
 
 export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedIndex = null, strokeOptions, maxTextureSize, orderForChunk, residency, onResidencyChange = () => {}}) {
@@ -58,7 +56,7 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
   function disposeGpu(chunk, {keepTexture = false} = {}) {
     const gpu = chunk.gpu;
     if (!gpu)return;
-    scene.remove(gpu.mesh); gpu.mesh.geometry.dispose(); gpu.mesh.material.dispose(); if (!keepTexture)gpu.texture?.texture.dispose();
+    disposeGlobeGpuResources(scene, [gpu.mesh], {textures:!keepTexture&&gpu.texture?[gpu.texture.texture]:[]});
     chunk.gpu = null; markChunk(chunk);
   }
   function evictChunk(chunk) {
@@ -206,16 +204,10 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
   }
   function chunkFootprint(chunk) {
     const gpu = chunk.gpu;
-    const buffers = renderPacketBuffers([chunk.selection?.footprint(), chunk.selected?.ranges, ...chunk.subsets.values(), gpu?.subset, gpu?.output, gpu?.ranges]);
-    let extraBytes = chunk.roles.size*48+96;
-    if (gpu) {
-      const geometry = gpu.mesh.geometry;
-      for (const attribute of [...Object.values(geometry.attributes), geometry.index]) {
-        buffers.add(attribute.array.buffer); extraBytes+=attribute.array.byteLength;
-      }
-      if (gpu.texture) {buffers.add(gpu.texture.texture.image.data.buffer); extraBytes+=gpu.texture.bytes;}
-    }
-    return {buffers, extraBytes};
+    const row = gpuResourceFootprint(gpu?[gpu.mesh.geometry]:[], gpu?.texture?[gpu.texture.texture]:[],
+      [chunk.selection?.footprint(), chunk.selected?.ranges, ...chunk.subsets.values(), gpu?.subset, gpu?.output, gpu?.ranges]);
+    row.extraBytes+=chunk.roles.size*48+96;
+    return row;
   }
   function footprint() {
     const buffers = new Set(packetBuffers); let extraBytes = index.metadataBytes;
@@ -226,7 +218,7 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
     }
     return {buffers, extraBytes};
   }
-  function bytes() {const row = footprint(); return renderBufferBytes(row.buffers)+row.extraBytes;}
+  function bytes() {return renderFootprintBytes(footprint());}
   // Only altered chunk records enter the global ledger. An active base
   // packet no longer forces its entire cache to be traversed on each hover.
   function syncResidency({active, evict}) {

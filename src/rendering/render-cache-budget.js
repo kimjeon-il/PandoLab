@@ -1,4 +1,5 @@
-import { subscribeAbort, waitForConsumer } from '../runtime/async-request.js';
+import { waitForConsumer } from '../runtime/async-request.js';
+import { createWorkerAdmissionQueue } from '../runtime/worker-admission-queue.js';
 export { touchLruEntry as touchRenderCache, trimLruEntries as trimRenderCache } from '../runtime/lru-cache.js';
 // These are standby-cache ceilings, not limits on the visible world.
 // Unknown device hints keep the original defaults. Do not infer available
@@ -44,6 +45,10 @@ export function renderBufferBytes(buffers, extraBytes = 0) {
   return total;
 }
 
+export function renderFootprintBytes({buffers, extraBytes = 0}) {
+  return renderBufferBytes(buffers, extraBytes);
+}
+
 export function renderPacketBytes(value) {
   return renderBufferBytes(renderPacketBuffers(value?.packet??value));
 }
@@ -54,6 +59,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
   const entries = new Map(), standby = new Map();
   let retained = new Set(), disposed = false, cancelled = 0, residentBytes = 0, pendingCount = 0, warmBytes = 0;
   const warm = new Map();
+  const counters = {hits:0, misses:0, joinedPending:0, evicted:0, failed:0};
   function protectedEntry(key, entry) {return entry.pending||entry.users>0||retained.has(key);}
   function sync(key, entry) {
     standby.delete(key);
@@ -67,7 +73,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     entries.delete(key); standby.delete(key); residency?.remove(entry);
     if (warm.delete(key))warmBytes-=entry.bytes;
     if (entry.pending) {pendingCount--; if (abort)entry.controller.abort();}
-    else residentBytes-=entry.bytes;
+    else {residentBytes-=entry.bytes; if (notify)counters.evicted++;}
     if (notify)onEvict?.(key, entry);
     return true;
   }
@@ -99,6 +105,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     if (disposed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render packet cache disposed','AbortError'));
     const existing = entries.get(key);
     if (existing) {
+      if (existing.pending)counters.joinedPending++; else counters.hits++;
       if (priority>=0&&warm.delete(key))warmBytes-=existing.bytes;
       if (existing.pending&&priority>existing.priority) {existing.priority = priority; for (const notify of existing.priorityListeners)notify();}
       return consume(key, existing, signal);
@@ -106,7 +113,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     const entry = {pending:true, bytes:0, promise:null, controller:new AbortController(), users:0, unscoped:false, lastUsed:performance.now(), buffers:null, priority, priorityListeners:new Set()};
     const readPriority = () => entry.priority;
     readPriority.subscribe = notify => {entry.priorityListeners.add(notify); return () => entry.priorityListeners.delete(notify);};
-    entries.set(key, entry); pendingCount++;
+    entries.set(key, entry); pendingCount++; counters.misses++;
     entry.promise = Promise.resolve().then(() => {
       entry.controller.signal.throwIfAborted(); return load(entry.controller.signal, readPriority);
     }).then(value => {
@@ -117,7 +124,10 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
         residentBytes+=entry.bytes; sync(key, entry); trim();
       }
       return value;
-    }).catch (error => {remove(key, entry, {abort:true, notify:false}); entry.controller.abort(); throw error;});
+    }).catch (error => {
+      if (entries.get(key)===entry&&!entry.controller.signal.aborted&&error?.name!=='AbortError'&&!error?.cancelled)counters.failed++;
+      remove(key, entry, {abort:true, notify:false}); entry.controller.abort(); throw error;
+    });
     return consume(key, entry, signal);
   }
   function retain(keys) {
@@ -143,7 +153,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     return [...entries].filter(([, entry]) => !entry.pending).map(([key, entry]) => ({key:entry, buffers:entry.buffers, extraBytes:0, lastUsed:entry.lastUsed,
       protected:protectedEntry(key, entry), evict:() => remove(key, entry)}));
   }
-  function stats() {return {entries:entries.size, residentBytes, pending:pendingCount, cancelled, warmBytes, warmEntries:warm.size};}
+  function stats() {return {entries:entries.size, residentBytes, pending:pendingCount, cancelled, warmBytes, warmEntries:warm.size, byteBudget, entryLimit, ...counters};}
   function dispose() {disposed = true; for (const [key, entry] of entries)remove(key, entry, {abort:true, notify:false}); retained.clear(); standby.clear();}
   return Object.freeze({read, retain, holdWarm, releaseWarm, memoryEntries, has:key => entries.has(key), stats, dispose});
 }
@@ -176,7 +186,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
     const old = rows.get(key);
     const buffers = source.buffers instanceof Set?source.buffers:new Set(source.buffers??[]);
     const row = {...source, buffers, extraBytes:source.extraBytes??0,
-      localBytes:renderBufferBytes(buffers, source.extraBytes??0)};
+      localBytes:renderFootprintBytes({buffers, extraBytes:source.extraBytes})};
     if (old)detach(key, old);
     rows.set(key, row); extra+=row.extraBytes; groupDelta(row, 1);
     for (const buffer of buffers) {
@@ -264,23 +274,25 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
       peakWorkingBytes, peakTotalBytes, overflowCount, workingByKind:byKind, evicted, byteBudget, entries:rows.size, standby:standby.size, updates, ownerRefreshes};
   }
   function dispose() {owners.clear(); dirtyOwners.clear(); rows.clear(); refs.clear(); standby.clear(); standbyGroups.clear(); totals.clear(); reservations.clear(); listeners.clear(); cpu = extra = workingBytes = 0;}
-  return Object.freeze({register, set, remove, trim, reserve, withTemporary, onChange, stats, dispose});
+  return Object.freeze({register, set, remove, trim, reserve, withTemporary, onChange, stats, dispose,
+    pressure:() => ({totalBytes:cpu+extra+workingBytes, byteBudget})});
 }
 
 // Admit a bounded number of downloads + Worker inputs, not only Worker calls.
 // A required oversize packet runs alone. Queued work never acquires bytes.
 export function createRenderLoadGate({concurrency, byteBudget, residency = null}) {
-  let active = 0, foreground = 0, speculative = 0, bytes = 0, sequence = 0, closed = false, peakBytes = 0, peakActive = 0, bypasses = 0, pressureSkips = 0;
+  let active = 0, foreground = 0, speculative = 0, bytes = 0, closed = false, peakBytes = 0, peakActive = 0, bypasses = 0, pressureSkips = 0;
   let pumpQueued = false, pumping = false;
-  const queue = [], idleListeners = new Set();
+  const idleListeners = new Set();
   const schedule = () => {if (closed||pumpQueued)return; pumpQueued = true; queueMicrotask(() => {pumpQueued = false; pump();});};
+  const pending = createWorkerAdmissionQueue(schedule), queue = pending.rows;
   const off = residency?.onChange(schedule);
   function notifyIdle() {if (!active&&!queue.length)for (const listener of [...idleListeners])listener();}
   function pump() {
     if (closed||pumping)return;
     pumping = true;
     try {
-      queue.sort((a, b) => b.priority-a.priority||a.sequence-b.sequence);
+      pending.sort();
       while (queue.length&&active<concurrency) {
         const head = queue[0];
         if (head.priority<0&&(foreground||speculative))break;
@@ -291,15 +303,15 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
           if (at<0)break; head.bypassed++; bypasses++;
         }
         const row = queue[at];
-        if (row.signal?.aborted) {queue.splice(at, 1); row.detach(); row.reject(row.signal.reason); continue;}
+        if (row.signal?.aborted) {pending.take(at); row.reject(row.signal.reason); continue;}
         const allowOverflow = row.priority>=10&&active===0;
         const release = residency?residency.reserve(row.bytes, {kind:row.kind, optional:!allowOverflow}):() => {};
         if (!release) {
           if (row.priority>=10&&active>0)break;
-          queue.splice(at, 1); row.detach(); pressureSkips++;
+          pending.take(at); pressureSkips++;
           row.reject(Object.assign(new Error('Render preparation memory pressure'), {name:'AbortError', memoryPressure:true})); continue;
         }
-        queue.splice(at, 1); row.detach();
+        pending.take(at);
         const isSpeculative = row.priority<0;
         active++; if (isSpeculative)speculative++; else foreground++;
         bytes+=row.bytes; peakActive = Math.max(peakActive, active); peakBytes = Math.max(peakBytes, bytes);
@@ -312,21 +324,12 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
   }
   function run({bytes:estimate = 0, priority = 0, signal, kind = 'packet'}, task) {
     if (closed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render load gate closed','AbortError'));
-    return new Promise((resolve, reject) => {
-      const row = {bytes:Math.max(1, Number(estimate)||1), get priority() {return typeof priority==='function'?priority():priority;}, signal, task, resolve, reject, sequence:++sequence, bypassed:0, kind};
-      const unsubscribe = priority?.subscribe?.(schedule);
-      row.detach = () => {detachAbort(); unsubscribe?.();};
-      row.abort = () => {const i = queue.indexOf(row); if (i>=0) {queue.splice(i, 1); row.detach(); reject(signal.reason); schedule();}};
-      queue.push(row);
-      const detachAbort = subscribeAbort(signal, row.abort);
-      if (signal?.aborted)row.abort();
-      else if (residency)schedule(); else pump();
-    });
+    return pending.enqueue({bytes:Math.max(1, Number(estimate)||1), priority, signal, kind, bypassed:0}, task, residency?schedule:pump);
   }
   function onIdle(callback) {idleListeners.add(callback); if (!active&&!queue.length)schedule(); return () => idleListeners.delete(callback);}
   function dispose() {
     closed = true; off?.(); idleListeners.clear();
-    for (const row of queue.splice(0)) {row.detach(); row.reject(new DOMException('Render load gate closed','AbortError'));}
+    pending.rejectAll(new DOMException('Render load gate closed','AbortError'));
   }
   return Object.freeze({run, onIdle, dispose, stats:() => ({active, foreground, speculative, queued:queue.length, reservedBytes:bytes, peakBytes, peakActive, bypasses, pressureSkips, byteBudget, concurrency})});
 }

@@ -12,12 +12,14 @@ export function createMapWorkScheduler() {
     cancel(key);
     const job = { task, delay, timer: 0, idleId: 0 };
     const queue = () => {
+      if (jobs.get(key)!==job)return;
       if (interactionActive) {
         job.timer = setTimeout(queue, 180);
         return;
       }
       const run = () => {
-        if (jobs.get(key) !== job || interactionActive) return queue();
+        if (jobs.get(key)!==job)return;
+        if (interactionActive)return queue();
         jobs.delete(key);
         task();
       };

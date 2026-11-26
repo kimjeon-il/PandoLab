@@ -238,6 +238,11 @@ test('render packet cache retains published inputs, shares pending reads and rel
   cache.retain(['published','old','new']);
   await read('new');
   assert.equal(cache.stats().residentBytes,24);
+  await read('new');
+  assert.equal(cache.stats().hits,1);
+  assert.equal(cache.stats().joinedPending,1);
+  assert.equal(cache.stats().misses,5);
+  assert.equal(cache.stats().evicted,2);
   cache.retain(['new']);
   assert.equal(cache.stats().residentBytes,16);
   cache.dispose();
@@ -637,4 +642,48 @@ test('globe paint owner keeps accepted visibility snapshots and isolates hydro-o
  visible=false;owner.markCountrySlot(0);owner.updatePaint(surface,context);
  assert.equal(accepted.has(0),true);assert.equal(owner.visibleSlots().has(0),false);
  assert.equal(owner.stats().countrySlots,2);
+});
+
+
+test('shared worker admission orders live priorities and detaches cancelled queued jobs', async () => {
+  const {createWorkerAdmissionQueue} = await import('../../../src/runtime/worker-admission-queue.js');
+  const pending = createWorkerAdmissionQueue(() => {});
+  const order = [], abort = new AbortController();
+  let priority = -10, detached = 0;
+  const live = () => priority;
+  live.subscribe = () => () => {detached++;};
+  const jobs = [pending.enqueue({priority:10}, () => order.push('first')),
+    pending.enqueue({priority:live}, () => order.push('promoted')),
+    pending.enqueue({priority:100, signal:abort.signal}, () => assert.fail('cancelled work ran'))];
+  const cancelled = assert.rejects(jobs[2], {name:'AbortError'});
+  abort.abort();
+  priority = 20;
+  pending.sort();
+  while (pending.rows.length) {
+    const row = pending.take();
+    row.resolve(row.task());
+  }
+  await Promise.all([jobs[0], jobs[1], cancelled]);
+  assert.deepEqual(order, ['promoted', 'first']);
+  assert.equal(detached, 1);
+});
+
+test('GPU footprint counts shared attributes once and disposal keeps borrowed textures alive', async () => {
+  const {gpuResourceFootprint, disposeGlobeGpuResources} = await import('../../../src/rendering/globe-gpu-resources.js');
+  const {renderFootprintBytes} = await import('../../../src/rendering/render-cache-budget.js');
+  const positions = {array:new Float32Array(3)}, index = {array:new Uint16Array(3)};
+  const disposed = [];
+  const a = {attributes:{position:positions}, index, dispose:() => disposed.push('a')};
+  const b = {attributes:{position:positions}, index:null, dispose:() => disposed.push('b')};
+  const material = {dispose:() => disposed.push('material')};
+  const texture = {image:{data:new Uint8Array(4)}, dispose:() => disposed.push('texture')};
+  const borrowed = {dispose:() => assert.fail('borrowed texture disposed')};
+  material.uniforms = {borrowed:{value:borrowed}};
+  const meshes = [{geometry:a, material}, {geometry:b, material:[material]}];
+  const row = gpuResourceFootprint([a,b], [texture,texture], [positions.array]);
+  assert.equal(row.buffers.size, 3);
+  assert.equal(row.extraBytes, 22);
+  assert.equal(renderFootprintBytes(row), 44);
+  disposeGlobeGpuResources({remove:() => {}}, meshes, {textures:[texture,texture]});
+  assert.deepEqual(disposed, ['a','b','material','texture']);
 });

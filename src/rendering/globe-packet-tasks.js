@@ -1,4 +1,5 @@
 import { subscribeAbort } from '../runtime/async-request.js';
+import { workerPriority } from '../runtime/worker-admission-queue.js';
 import { createStatelessWorkerLane } from '../runtime/stateless-worker-lane.js';
 import { workerAssetUrl } from '../runtime/worker-asset-url.js';
 import { createGlobeWorkScheduler } from './globe-work-scheduler.js';
@@ -29,7 +30,7 @@ export function createGlobePacketTasks({
       const detachAbort = subscribeAbort(signal, abort);
       try {
         signal?.throwIfAborted();
-        const {result} = await owner.request(operation, body, {transfer, priority:typeof priority==='function'?priority():priority});
+        const {result} = await owner.request(operation, body, {transfer, priority:workerPriority(priority)});
         signal?.throwIfAborted(); completed++; return result;
       }finally {detachAbort(); running--; lane.busy = false;}
     });
@@ -47,5 +48,5 @@ export function createGlobePacketTasks({
     return request('globe.combine-stored-strokes', {packets}, transfer, {priority, signal});
   }
   function dispose() {disposed = true; if (owned)work.dispose(); for (const lane of lanes) {lane.worker.dispose('globe-packet-disposed');}}
-  return Object.freeze({decode, combineStoredStrokes, dispose, stats:() => ({...work.stats(), submitted, completed, cancelled, workerLimit:count, workers:lanes.filter(row => row.worker.active).length, running, peakRunning})});
+  return Object.freeze({decode, combineStoredStrokes, dispose, stats:() => ({submitted, completed, cancelled, workerLimit:count, workers:lanes.filter(row => row.worker.active).length, running, peakRunning, ...(owned?{scheduler:work.stats()}:{})})});
 }

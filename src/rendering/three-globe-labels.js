@@ -1,8 +1,10 @@
+import { globeBufferCapacity } from './globe-draw-compaction.js';
+import { createGlobeDataTexture, createGlobeMesh, gpuResourceFootprint, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
 import { touchLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 import { referenceZoomPixelsPerDegree } from '../map/map-display-zoom.js';
 import { globeVector } from './globe-camera.js';
 import { territorialLabelPixelSize } from './label-layout.js';
-import { renderCacheBudget, renderPacketBuffers, renderBufferBytes } from './render-cache-budget.js';
+import { renderCacheBudget, renderFootprintBytes } from './render-cache-budget.js';
 import { createGlobePacketIndex } from './globe-picking.js';
 import { createGlobeRangeCuller } from './globe-spatial-partition.js';
 import { createGlobeDistanceWorkspace } from './globe-label-sdf.js';
@@ -166,9 +168,7 @@ export function mergeLabelTextureRects(rects) {
 
 export function labelInstanceCapacity(current, needed, limit) {
   if (needed>limit)throw Error('Label batch exceeds texture capacity');
-  if (!needed)return 0;
-  if (current>=needed&&needed>current/4)return current;
-  return Math.min(limit, Math.max(16, 2**Math.ceil(Math.log2(needed))));
+  return globeBufferCapacity(current, needed, limit, 16);
 }
 const labelFields = ['key','area','shortSide','place','selected','priority','marker','minZoom','maxZoom','visible'];
 const equalCoordinate = (a, b) => a?.[0]===b?.[0]&&a?.[1]===b?.[1];
@@ -186,8 +186,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   const textColor = new THREE.Color(palette.text), haloColor = new THREE.Color(0xffffff);
   // This source is never uploaded itself. It borrows the existing CPU data
   // for the rectangular copy and releases that reference immediately.
-  const uploadSource = new THREE.DataTexture(null, 1, 1, THREE.RedFormat);
-  const copyRegion = new THREE.Box2(new THREE.Vector2(), new THREE.Vector2()), copyPosition = new THREE.Vector2();
+  const textureCopier = createGlobeTextureCopier(THREE, renderer);
   const candidateGroups = [{source:null, rows:[], index:createGlobeLabelSpatialIndex([])}, {source:null, rows:[], index:createGlobeLabelSpatialIndex([])}];
   const sdfTasks = createSdfTasks({scheduler:workScheduler});
   let placed = [], previous = new Set(), lastCamera = null, cacheDirty = true, lastComplete = true, lastStrict = false, disposed = false;
@@ -220,19 +219,11 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       restoreTexture(state); return;
     }
     const bytesPerTexel = data.byteLength/(width*height);
-    uploadSource.image = texture.image;
-    try {
-      for (const {x, y, width:w, height:h} of rects) {
-        copyRegion.min.set(x, y); copyRegion.max.set(x+w, y+h); copyPosition.set(x, y);
-        renderer.copyTextureToTexture(uploadSource, texture, copyRegion, copyPosition);
-        counters.partialUploads++; counters.partialUploadBytes+=w*h*bytesPerTexel;
-      }
-    }finally {uploadSource.image = null;}
+    textureCopier.copy(texture, rects, pixels => {counters.partialUploads++; counters.partialUploadBytes+=pixels*bytesPerTexel;});
   }
   function addPage(place) {
     const pixels = new Uint8Array(size*size);
-    const atlas = new THREE.DataTexture(pixels, size, size, THREE.RedFormat);
-    atlas.magFilter = atlas.minFilter = THREE.LinearFilter;
+    const atlas = createGlobeDataTexture(THREE, pixels, size, size, {format:THREE.RedFormat, filter:THREE.LinearFilter});
     const page = {pixels, atlas, upload:textureState(atlas), batches:[], place, x:0, y:0, rowHeight:0, count:0, keys:new Set(), freeRects:[], lastUsed:performance.now(), retired:false};
     pages.push(page); cacheDirty = true; return page;
   }
@@ -413,21 +404,21 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     return false;
   }
   function disposeBatch(batch) {
-    scene.remove(batch.mesh); batch.mesh.geometry.dispose(); batch.mesh.material.dispose(); batch.boxes.dispose();
+    disposeGlobeGpuResources(scene, [batch.mesh], {textures:[batch.boxes]});
   }
   function createBatch(page, needed, old) {
     const allocated = labelInstanceCapacity(old?.capacity??0, needed, maxRows);
     if (old&&allocated===old.capacity)return old;
     if (old) {if (allocated<old.capacity)counters.shrunkBatches++; disposeBatch(old);}
-    const values = new Float32Array(allocated*8), boxes = new THREE.DataTexture(values, 2, allocated, THREE.RGBAFormat, THREE.FloatType);
+    const values = new Float32Array(allocated*8), boxes = createGlobeDataTexture(THREE, values, 2, allocated, {format:THREE.RGBAFormat, type:THREE.FloatType});
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(Float32Array.of(0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0), 3));
     geometry.setAttribute('instanceRow', new THREE.InstancedBufferAttribute(Float32Array.from({length:allocated}, (_, i) => i), 1));
     geometry.setIndex([0, 2, 1, 2, 3, 1]);
     const material = new THREE.ShaderMaterial({vertexShader, fragmentShader, depthTest:false, depthWrite:false, transparent:true,
       uniforms:{atlas:{value:page.atlas}, atlasSize:{value:size}, boxes:{value:boxes}, capacity:{value:allocated}, viewport, textColor:{value:textColor}, haloColor:{value:haloColor}}});
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.frustumCulled = false; mesh.renderOrder = 7; geometry.instanceCount = 0; mesh.visible = false; scene.add(mesh);
+    const mesh = createGlobeMesh(THREE, geometry, material, 7);
+    geometry.instanceCount = 0; mesh.visible = false; scene.add(mesh);
     cacheDirty = true; return {values, boxes, upload:textureState(boxes), mesh, capacity:allocated, count:0};
   }
   function updateBatch(batch, rows, first, count) {
@@ -455,11 +446,9 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     }
   }
   function pageFootprint(page) {
-    const buffers = renderPacketBuffers([page.pixels, ...page.batches.flatMap(batch => [batch.values,
-      ...Object.values(batch.mesh.geometry.attributes).map(attribute => attribute.array), batch.mesh.geometry.index.array])]);
-    return {buffers, extraBytes:renderBufferBytes(buffers)};
+    return gpuResourceFootprint(page.batches.map(batch => batch.mesh.geometry), [page.atlas, ...page.batches.map(batch => batch.boxes)]);
   }
-  function pageBytes(page) {const row = pageFootprint(page); return renderBufferBytes(row.buffers)+row.extraBytes;}
+  function pageBytes(page) {return renderFootprintBytes(pageFootprint(page));}
   function disposePage(page) {
     for (const batch of page.batches)disposeBatch(batch);
     page.batches.length = 0; page.atlas.dispose();
@@ -607,7 +596,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function dispose() {
     disposed = true; cancelSdf(); sdfTasks.dispose(); desiredKeys.clear();
     for (const page of pages)disposePage(page);
-    uploadSource.dispose(); pages.length = 0; cache.clear(); metricsCache.clear(); probes = null; maskOnlyKeys.clear();
+    textureCopier.dispose(); pages.length = 0; cache.clear(); metricsCache.clear(); probes = null; maskOnlyKeys.clear();
     for (const group of candidateGroups) {group.source = null; group.rows = []; group.index = createGlobeLabelSpatialIndex([]);}
     placed = []; previous.clear(); activePages.clear(); lastCamera = null; layoutCache = null; hitSnapshot = () => null;
     rasterOwner.reset();
