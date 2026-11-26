@@ -1,3 +1,4 @@
+import { trackPending } from '../runtime/async-request.js';
 import { createStoredAssetLoader } from './stored-asset-loader.js';
 import { createBuiltinProjectSetup } from '../document/project-setup.js';
 import { normalizeTemporalInterval } from '../document/temporal.js';
@@ -60,9 +61,8 @@ export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevisio
     const reading = limitedRead(() => assets.loadAsset({...asset, url:asset.file},
       'builtin-world', asset.id,'국가 형상', buffer => decodeGeometryContent(buffer, asset)))
       .then(({value}) => {geometries.set(key, value); geometryStates.set(key,'ready'); return value;})
-      .catch (error => {geometryStates.set(key,'error'); throw error;}).finally(() => pending.delete(key));
-    pending.set(key, reading);
-    return reading;
+      .catch (error => {geometryStates.set(key,'error'); throw error;});
+    return trackPending(pending, key, reading);
   }
   async function decodeGeometryContent(buffer, asset) {
     const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
@@ -87,9 +87,9 @@ export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevisio
       }).catch (() => {
         // The individual catalog assets remain the recovery path for this group.
         for (const {asset} of missing)geometryStates.delete(asset.file);
-      }).finally(() => {for (const {asset} of missing)pending.delete(asset.file);});
+      });
     for (const {asset} of missing) {
-      pending.set(asset.file, done.then(() => geometries.get(asset.file)));
+      trackPending(pending, asset.file, done.then(() => geometries.get(asset.file)));
       geometryStates.set(asset.file,'loading');
     }
     return done;

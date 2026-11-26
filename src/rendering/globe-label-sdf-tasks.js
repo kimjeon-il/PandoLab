@@ -1,3 +1,4 @@
+import { subscribeAbort } from '../runtime/async-request.js';
 import { createStatelessWorkerLane } from '../runtime/stateless-worker-lane.js';
 import { workerAssetUrl } from '../runtime/worker-asset-url.js';
 
@@ -17,12 +18,12 @@ export function createGlobeLabelSdfTasks({
       cancelled++; active = null;
       worker.retire(owner, 'label-sdf-superseded');
     };
-    signal?.addEventListener('abort', abort, {once:true});
+    const detachAbort = subscribeAbort(signal, abort);
     try {
       const {result} = await owner.request('globe.label-sdf', {rows, fontUrl, probes}, {transfer:rows.filter(row => row.mask).map(row => row.mask.buffer), priority});
       signal?.throwIfAborted(); completed++; return result;
     }finally {
-      signal?.removeEventListener('abort', abort); if (active===job)active = null;
+      detachAbort(); if (active===job)active = null;
     }
   }
   function run(rows, signal, {priority = 10, fontUrl = null, probes = null} = {}) {

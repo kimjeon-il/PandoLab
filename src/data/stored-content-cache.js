@@ -1,3 +1,4 @@
+import { setLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 // Best-effort persistent byte cache maintenance. The cache is an acceleration
 // layer; the canonical source and integrity checks remain authoritative.
 const states = new WeakMap();
@@ -11,8 +12,8 @@ function stateFor(cache) {
 export function touchStoredContent(cache, key) {
   if (!cache)return;
   const state = stateFor(cache), id = keyOf(key);
-  state.touches.delete(id); state.touches.set(id, Date.now());
-  while (state.touches.size>MAX_ENTRIES)state.touches.delete(state.touches.keys().next().value);
+  setLruEntry(state.touches, id, Date.now());
+  trimLruCount(state.touches, MAX_ENTRIES);
 }
 export function maintainStoredContent(cache, {force = false} = {}) {
   if (!cache||typeof cache.keys!=='function')return Promise.resolve();

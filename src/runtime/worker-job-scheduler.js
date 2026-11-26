@@ -1,3 +1,5 @@
+import { subscribeAbort } from './async-request.js';
+
 function defaultNow() {
   return globalThis.performance?.now?.() ?? Date.now();
 }
@@ -205,8 +207,7 @@ export function createLatestWorkerJobScheduler({
         rejectEntry(entry, createWorkerCancellationError('작업을 취소했습니다.', 'aborted'));
         return Object.freeze({ requestId, promise, cancel: abort });
       }
-      signal.addEventListener('abort', abort, { once: true });
-      entry.detachAbort = () => signal.removeEventListener('abort', abort);
+      entry.detachAbort = subscribeAbort(signal, abort);
     }
 
     queue.push(entry);

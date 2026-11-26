@@ -1,25 +1,15 @@
-import { fetchWithRetry, isRetryableHttpStatus, withRetry } from '../runtime/reliability-core.js';
+import { waitForConsumer, acquireSharedRequest } from '../runtime/async-request.js';
+import { fetchWithRetry, isRetryableHttpStatus, withRetry, delayWithSignal } from '../runtime/reliability-core.js';
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
 import { createStoredAssetCache, hasImmutableAssetHash } from './stored-asset-cache.js';
 import { decodeStoredBuffer, validateAssetLength } from './asset-decompression.js';
 
-const immutableFlightsByStorage = new WeakMap();
-function waitForConsumer(promise, signal) {
-  if (!signal) return promise;
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    if (signal.aborted) abort();
-    else signal.addEventListener('abort', abort, {once:true});
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-  });
-}
-
+const assetFlightsByScope = new WeakMap();
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
 export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision', deferCacheWrite = false, reserveDeferredWrite = null, subtle = globalThis.crypto?.subtle}) {
- const flightScope = cacheStorage ?? fetchFn;
- if (cachePolicy === 'immutable' && !immutableFlightsByStorage.has(flightScope))
-   immutableFlightsByStorage.set(flightScope, new Map());
- const storedFlights = immutableFlightsByStorage.get(flightScope);
+ const flightScope = cacheStorage || fetchFn;
+ if (!assetFlightsByScope.has(flightScope))assetFlightsByScope.set(flightScope, new Map());
+ const storedFlights = assetFlightsByScope.get(flightScope);
  fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META, fetchFn});
  const storedCache = createStoredAssetCache({dataRevision, cacheStorage, cachePolicy});
  const {storedKey, findStored, openDataCache, cleanupOldCoreCaches,
@@ -139,17 +129,12 @@ async function readImmutableCache(cache,spec,url,phase,key,label,signal) {
 
 async function loadImmutable(spec,phase,key,label,validate,signal,representation,cachedOnly) {
   const url=resolveAssetUrl(spec),cacheKey=storedKey(spec,url);
-  let flight=storedFlights.get(cacheKey);
-  if (!flight) {
-    const controller=new AbortController(),cache=openDataCache();
-    flight={controller,cache,users:0,network:null,writing:null,transferClaimed:false,
-      cached:cache.then(opened=>readImmutableCache(opened,spec,url,phase,key,label,controller.signal))};
-    storedFlights.set(cacheKey,flight);
-  }
-  const release=()=>{
-    if (flight.users===0 && storedFlights.get(cacheKey)===flight) storedFlights.delete(cacheKey);
-  };
-  flight.users++;
+  const {flight, release} = acquireSharedRequest(storedFlights, JSON.stringify(['immutable',cacheKey]), entry => {
+    entry.cache = openDataCache();
+    entry.network = entry.writing = null;
+    entry.transferClaimed = false;
+    entry.cached = entry.cache.then(opened=>readImmutableCache(opened,spec,url,phase,key,label,entry.controller.signal));
+  });
   try {
     let read=await waitForConsumer(flight.cached,signal);
     signal?.throwIfAborted();
@@ -165,12 +150,13 @@ async function loadImmutable(spec,phase,key,label,validate,signal,representation
         flight.writing=deferCacheWrite&&reserveDeferredWrite&&!release?Promise.resolve({cached:false,cacheWriteMs:0}):
           persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label).finally(()=>release?.());
         // A deferred caller may leave before the write settles.
+        flight.keepAlive = flight.writing;
         flight.writing.catch(()=>{});
         return {read,attempt:current};
       },{
         signal:flight.controller.signal,maxAttempts:3,baseDelay:500,maxDelay:1000,jitter:0,
         shouldRetry:error=>!Number.isFinite(error?.httpStatus)||isRetryableHttpStatus(error.httpStatus),
-        onRetry:current=>report(phase,`${key}-retry`,`${label} 준비를 다시 시도합니다. (${current+1}/3)`,1,1,false,{attempt:current}),
+        onRetry:({attempt:current})=>report(phase,`${key}-retry`,`${label} 준비를 다시 시도합니다. (${current+1}/3)`,1,1,false,{attempt:current}),
       });
       ({read,attempt}=await waitForConsumer(flight.network,signal));
     }
@@ -202,15 +188,24 @@ async function loadImmutable(spec,phase,key,label,validate,signal,representation
   } catch (error) {
     if (!cachedOnly || signal?.aborted || error?.name==='AbortError') throw error;
     return null;
-  } finally {
-    if (--flight.users===0) {
-      if (flight.writing) flight.writing.then(release,release);
-      else {
-        release();
-        flight.controller.abort();
-      }
-    }
-  }
+  } finally {release();}
+}
+
+// Revision entries remain URL- and revision-scoped. Share only verified
+// stored bytes for the same attempt; consumer-specific format validation
+// and repair/retry policy stay outside the shared transfer.
+function acquireRevisionDownload(cache, cacheKey, spec, url, phase, key, label, attempt) {
+  const identity = JSON.stringify(['revision', dataRevision, cacheKey, spec.sha256, Number(spec.compressedBytes||0), attempt]);
+  return acquireSharedRequest(storedFlights, identity, flight => {
+    flight.transferClaimed = false;
+    flight.network = downloadStoredAsset({url,spec,phase,key,label,signal:flight.controller.signal,attempt}).then(({read,responseHeaders}) => {
+      flight.controller.signal.throwIfAborted();
+      flight.writing = persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label);
+      flight.keepAlive = flight.writing;
+      flight.writing.catch(()=>{});
+      return read;
+    });
+  });
 }
 
 async function loadRepresentation(spec, phase, key, label, validate, signal, representation, cachedOnly=false) {
@@ -253,12 +248,23 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
   // Aborts and terminal HTTP errors propagate immediately.
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let lease = null;
     try {
-      const {read,responseHeaders}=await downloadStoredAsset({url,spec,phase,key,label,signal,attempt});
-      signal?.throwIfAborted();
-      // Verified stored bytes can be persisted while independent decoding
-      // proceeds. Settle both operations before retry/delete, even on failure.
-      const writing=persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label);
+      let read, writing;
+      if (cachePolicy==='revision'&&hasImmutableAssetHash(spec.sha256)) {
+        lease = acquireRevisionDownload(cache, cacheKey, spec, url, phase, key, label, attempt);
+        const shared = await waitForConsumer(lease.flight.network, signal);
+        signal?.throwIfAborted();
+        // Each caller owns its bytes even when a validator transfers/mutates them.
+        read = {...shared, storedBuffer:shared.storedBuffer.slice(0)};
+        writing = lease.flight.writing;
+      } else {
+        const downloaded = await downloadStoredAsset({url,spec,phase,key,label,signal,attempt});
+        signal?.throwIfAborted();
+        read = downloaded.read;
+        writing = persistDownload(cache,cacheKey,read,downloaded.responseHeaders,phase,key,label);
+      }
+      // Settle both persistence and independent format validation before repair/retry.
       // Format validation (including independent content digest) can also
       // run before persistent-cache I/O finishes. Await both on failure.
       const decoding=decode(read.storedBuffer).then(async decoded=>{
@@ -277,18 +283,23 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
         milliseconds: read.readMs + cacheWriteMs + decoded.decompressMs,
       };
       signal?.throwIfAborted();
+      if (lease) {
+        if (lease.flight.transferClaimed)result.transferredBytes = 0;
+        else if (result.transferredBytes)lease.flight.transferClaimed = true;
+      }
       report(phase, key, `${label}: 다운로드를 완료했습니다.`, Number(spec.compressedBytes || result.storedBytes), Number(spec.compressedBytes || result.storedBytes), true, { source: 'network', cached, attempt });
       return { ...result, value, cacheHit: false };
     } catch (error) {
+      lease?.release();
       lastError = error;
       if (signal?.aborted || error?.name === 'AbortError') throw error;
       if (Number.isFinite(error?.httpStatus) && !isRetryableHttpStatus(error.httpStatus)) throw error;
       if (cache) await cache.delete(cacheKey).catch(() => false);
       if (attempt < 3) {
         report(phase, `${key}-retry`, `${label} 준비를 다시 시도합니다. (${attempt + 1}/3)`, attempt, 3, false, { attempt });
-        await new Promise(resolve => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+        await delayWithSignal(500 * 2 ** (attempt - 1), signal);
       }
-    }
+    } finally {lease?.release();}
   }
   throw lastError || new Error(`${label}을 준비하지 못했습니다.`);
 }

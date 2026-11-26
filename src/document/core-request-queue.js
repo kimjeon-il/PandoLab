@@ -1,9 +1,10 @@
+import { subscribeAbort } from '../runtime/async-request.js';
 // Single native document owner. A queued request is removable before it
 // starts; once dispatched, its operation owns its acknowledgement.
 export function createCoreRequestQueue(cancelled) {
   let running = false, scheduled = false, closed = false;
   const pending = [];
-  function detach(entry) {entry.signal?.removeEventListener('abort', entry.abort);}
+  function detach(entry) {entry.detachAbort?.();}
   function schedule() {
     if (running||scheduled||closed)return;
     scheduled = true; queueMicrotask(drain);
@@ -28,7 +29,8 @@ export function createCoreRequestQueue(cancelled) {
         if (index<0)return;
         pending.splice(index, 1); detach(entry); reject(cancelled());
       };
-      pending.push(entry); signal?.addEventListener('abort', entry.abort, {once:true}); schedule();
+      pending.push(entry); entry.detachAbort = subscribeAbort(signal, entry.abort);
+      if (signal?.aborted)entry.abort(); else schedule();
     });
   }
   function close() {

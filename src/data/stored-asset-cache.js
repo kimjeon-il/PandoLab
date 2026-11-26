@@ -1,6 +1,32 @@
 import { maintainStoredContent, touchStoredContent } from './stored-content-cache.js';
 
 const HASH = /^[a-f0-9]{64}$/;
+const openCaches = new WeakMap();
+
+function cacheHandles(storage) {
+  let handles = openCaches.get(storage);
+  if (!handles) {handles = new Map(); openCaches.set(storage, handles);}
+  return handles;
+}
+
+function openStoredCache(storage, name) {
+  const handles = cacheHandles(storage);
+  let pending = handles.get(name);
+  if (!pending) {
+    pending = storage.open(name).catch(() => {
+      if (handles.get(name)===pending)handles.delete(name);
+      return null;
+    });
+    handles.set(name, pending);
+  }
+  return pending;
+}
+
+async function deleteStoredCache(storage, name) {
+  const removed = await storage.delete(name);
+  if (removed)cacheHandles(storage).delete(name);
+  return removed;
+}
 
 export const hasImmutableAssetHash = value => HASH.test(value || '');
 
@@ -12,7 +38,6 @@ export function createStoredAssetCache({dataRevision, cacheStorage = globalThis.
   if (cachePolicy !== 'revision' && cachePolicy !== 'immutable')
     throw new Error('Unsupported stored asset cache policy');
   const activeCacheName = cachePolicy === 'immutable' ? immutableWorldCacheName : dataCacheName;
-  let dataCachePromise = null;
   let oldCacheCleanupPromise = null;
 
   function storedKey(spec, url) {
@@ -30,8 +55,7 @@ export function createStoredAssetCache({dataRevision, cacheStorage = globalThis.
 
   async function openDataCache() {
     if (!cacheStorage) return null;
-    if (!dataCachePromise) dataCachePromise = cacheStorage.open(activeCacheName).catch(() => null);
-    return dataCachePromise;
+    return openStoredCache(cacheStorage, activeCacheName);
   }
 
   async function cleanupOldCoreCaches() {
@@ -41,7 +65,7 @@ export function createStoredAssetCache({dataRevision, cacheStorage = globalThis.
         .then(names => Promise.all(names
           .filter(name => (typeof dataRevision === 'string' && name.startsWith(dataCachePrefix) && name !== dataCacheName)
             || name.startsWith(legacyCoreCachePrefix))
-          .map(name => cacheStorage.delete(name))))
+          .map(name => deleteStoredCache(cacheStorage, name))))
         .catch(() => []);
     }
     await oldCacheCleanupPromise;

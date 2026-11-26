@@ -1,3 +1,4 @@
+import { subscribeAbort } from '../runtime/async-request.js';
 // Shared CPU admission for packet restoration and label SDF. Queued priority
 // is live: a speculative read may become a required read without restarting.
 // Device hints are ceilings, not a promise of available CPU or memory.
@@ -23,7 +24,7 @@ export function createGlobeWorkScheduler({maxConcurrent = 2, residency = null, n
       const row = queue[0], priority = priorityOf(row);
       if (priority<0&&active.size)break;
       queue.shift();
-      row.unsubscribe?.(); row.signal?.removeEventListener('abort', row.abort);
+      row.detach();
       if (row.signal?.aborted) {row.reject(row.signal.reason); continue;}
       const started = now(); waitMs = completed?waitMs*.8+(started-row.queuedAt)*.2:started-row.queuedAt;
       active.add(row); peak = Math.max(peak, active.size);
@@ -38,14 +39,17 @@ export function createGlobeWorkScheduler({maxConcurrent = 2, residency = null, n
     if (closed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Globe work scheduler closed','AbortError'));
     return new Promise((resolve, reject) => {
       const row = {id:++sequence, priority, signal, kind, task, resolve, reject, queuedAt:now()};
-      row.abort = () => {const at = queue.indexOf(row); if (at<0)return; queue.splice(at, 1); row.unsubscribe?.(); reject(signal.reason); schedule();};
-      row.unsubscribe = priority?.subscribe?.(schedule);
-      signal?.addEventListener('abort', row.abort, {once:true}); queue.push(row); schedule();
+      row.abort = () => {const at = queue.indexOf(row); if (at<0)return; queue.splice(at, 1); row.detach(); reject(signal.reason); schedule();};
+      const unsubscribe = priority?.subscribe?.(schedule);
+      const detachAbort = subscribeAbort(signal, row.abort);
+      row.detach = () => {unsubscribe?.(); detachAbort();};
+      queue.push(row);
+      if (signal?.aborted)row.abort(); else schedule();
     });
   }
   function dispose() {
     closed = true; off?.();
-    for (const row of queue.splice(0)) {row.unsubscribe?.(); row.signal?.removeEventListener('abort', row.abort); row.reject(new DOMException('Globe work scheduler closed','AbortError'));}
+    for (const row of queue.splice(0)) {row.detach(); row.reject(new DOMException('Globe work scheduler closed','AbortError'));}
   }
   function stats() {return {workerLimit:limit, concurrency:target, queued:queue.length, running:active.size, peakRunning:peak, completed, failed, adjustments, meanServiceMs:serviceMs, meanQueueMs:waitMs,
     byKind:[...active].reduce((out, row) => (out[row.kind] = (out[row.kind]??0)+1, out), {})};}

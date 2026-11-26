@@ -97,3 +97,41 @@ test('immutable reads ignore retired URL-keyed cache entries',async()=>{
  assert.equal(result.value,'globe');assert.equal(result.cacheHit,false);assert.equal(downloads,1);
  assert.ok(storage.values.has(cacheKey));
 });
+
+
+test('concurrent revision reads share verified downloads but own their consumer buffers',async()=>{
+ const storage=storageFixture(),started=Promise.withResolvers(),response=Promise.withResolvers();
+ let downloads=0,hashes=0,opens=0;
+ const open=storage.cacheStorage.open;
+ storage.cacheStorage.open=async name=>{opens++;return open(name);};
+ const deps={cachePolicy:'revision',cacheStorage:storage.cacheStorage,
+  subtle:{digest(...args){hashes++;return webcrypto.subtle.digest(...args);}},
+  fetchFn(){downloads++;started.resolve();return response.promise;}};
+ const first=load(loaderFor(deps)), second=loaderFor(deps).loadStoredAsset(spec,'startup','lines','map lines',bytes=>bytes);
+ await started.promise;await new Promise(setImmediate);response.resolve(new Response('globe'));
+ const [a,b]=await Promise.all([first,second]);
+ assert.equal(a.value,'globe');assert.equal(decode(b.value),'globe');
+ assert.notEqual(a.storedBuffer,b.storedBuffer);
+ assert.equal(downloads,1);assert.equal(hashes,1);assert.equal(storage.calls.writes,1);
+ assert.equal(opens,1);assert.equal(a.transferredBytes+b.transferredBytes,5);
+});
+
+test('revision download consumers cancel independently and the last consumer cancels network work',async()=>{
+ const started=Promise.withResolvers(),stopped=Promise.withResolvers(),response=Promise.withResolvers();
+ let downloads=0,requestSignal;
+ const loader=loaderFor({cachePolicy:'revision',cacheStorage:null,fetchFn(_url,{signal}){
+  downloads++;requestSignal=signal;started.resolve();
+  return new Promise((resolve,reject)=>{
+   signal.addEventListener('abort',()=>{stopped.resolve();reject(signal.reason);},{once:true});
+   response.promise.then(resolve,reject);
+  });
+ }});
+ const a=new AbortController(),b=new AbortController();
+ const first=load(loader,spec,a.signal),second=load(loader,spec,b.signal);
+ const firstRejected=assert.rejects(first,{name:'AbortError'}),secondRejected=assert.rejects(second,{name:'AbortError'});
+ await started.promise;await new Promise(setImmediate);a.abort();await firstRejected;
+ assert.equal(downloads,1);assert.equal(requestSignal.aborted,false);
+ b.abort();await secondRejected;await stopped.promise;
+ response.resolve(new Response('globe'));
+ assert.equal((await load(loader)).value,'globe');assert.equal(downloads,2);
+});

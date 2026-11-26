@@ -1,3 +1,5 @@
+import { subscribeAbort } from './async-request.js';
+
 export const WORKER_RPC_PROTOCOL = 'pandolab-worker-rpc';
 export const WORKER_RPC_PROTOCOL_VERSION = 1;
 
@@ -114,7 +116,7 @@ export function createWorkerRpcClient({
   function cleanupPending(entry) {
     if (!entry) return;
     if (entry.timeoutHandle != null) clearSchedule(entry.timeoutHandle);
-    entry.signal?.removeEventListener?.('abort', entry.abortHandler);
+    entry.detachAbort?.();
     pending.delete(entry.requestId);
   }
 
@@ -360,7 +362,7 @@ export function createWorkerRpcClient({
       progressCompleted: 0,
       timeoutVersion: 0,
       signal,
-      abortHandler: null,
+      detachAbort: null,
     };
     pending.set(resolvedRequestId, entry);
     metrics.submitted += 1;
@@ -388,8 +390,11 @@ export function createWorkerRpcClient({
       entry.renewTimeout();
     }
     if (signal) {
-      entry.abortHandler = () => cancel(entry.requestId, 'aborted');
-      signal.addEventListener('abort', entry.abortHandler, { once: true });
+      entry.detachAbort = subscribeAbort(signal, () => cancel(entry.requestId, 'aborted'));
+      if (signal.aborted) {
+        cancel(entry.requestId, 'aborted');
+        return promise;
+      }
     }
 
     try {

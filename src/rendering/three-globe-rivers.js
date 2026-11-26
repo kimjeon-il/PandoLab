@@ -1,3 +1,4 @@
+import { touchLruEntry } from '../runtime/lru-cache.js';
 /** Retain prepared line buffers for the accepted viewport and recent visits. */
 export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, onError}) {
   const entries = new Map(), failed = new Map();
@@ -46,7 +47,7 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
       if (cached) {
         if (!previous.has(row.id)) {
           cached.resource?.setVisible(true); cached.lastUsed = performance.now();
-          entries.delete(row.id); entries.set(row.id, cached);
+          touchLruEntry(entries, row.id);
         }
         continue;
       }

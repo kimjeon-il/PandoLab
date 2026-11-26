@@ -1,3 +1,4 @@
+import { touchLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 import { referenceZoomPixelsPerDegree } from '../map/map-display-zoom.js';
 import { globeVector } from './globe-camera.js';
 import { territorialLabelPixelSize } from './label-layout.js';
@@ -238,8 +239,8 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function measureLabel(label) {
     const key = label.atlasKey, run = cache.get(key);
     if (run&&!run.page.retired)return run.metrics;
-    let measured = metricsCache.get(key);
-    if (measured) {metricsCache.delete(key); metricsCache.set(key, measured); return measured;}
+    let measured = touchLruEntry(metricsCache, key);
+    if (measured)return measured;
     const place = Boolean(label.place), marker = label.marker??'';
     const font = globeLabelFont(place), lineMetrics = globeLabelLineMetrics(context, label.lines, font);
     const markerWidth = marker?36:0;
@@ -249,7 +250,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     measured = {width, height, font, lineHeight, markerWidth, lineMetrics, textX:place?padding+markerWidth:width/2,
       anchorX:place?padding+markerWidth/3:width/2,anchorY:place?padding+lineHeight/2:height/2};
     metricsCache.set(key, measured); counters.textMeasurements++;
-    while (metricsCache.size>metricsLimit)metricsCache.delete(metricsCache.keys().next().value);
+    trimLruCount(metricsCache, metricsLimit);
     return measured;
   }
   function cachedRun(key) {

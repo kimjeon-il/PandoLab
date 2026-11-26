@@ -1,3 +1,5 @@
+import { subscribeAbort, waitForConsumer } from '../runtime/async-request.js';
+export { touchLruEntry as touchRenderCache, trimLruEntries as trimRenderCache } from '../runtime/lru-cache.js';
 // These are standby-cache ceilings, not limits on the visible world.
 // Unknown device hints keep the original defaults. Do not infer available
 // heap from total device RAM or change the canonical geometry quality.
@@ -46,25 +48,6 @@ export function renderPacketBytes(value) {
   return renderBufferBytes(renderPacketBuffers(value?.packet??value));
 }
 
-// Maps remain owned by their resource owners. Insertion order is LRU order;
-// current/in-flight resources are exempt even when larger than the budget.
-export function trimRenderCache(entries, protectedKeys, byteBudget, bytesOf, discard, {entryLimit = Infinity} = {}) {
-  let bytes = 0;
-  for (const entry of entries.values())bytes+=bytesOf(entry);
-  for (const [key, entry] of entries) {
-    if (bytes<=byteBudget&&entries.size<=entryLimit)break;
-    if (protectedKeys.has(key))continue;
-    bytes-=bytesOf(entry); entries.delete(key); discard?.(key, entry);
-  }
-  return bytes;
-}
-
-export function touchRenderCache(entries, key) {
-  const entry = entries.get(key);
-  if (entry!==undefined) {entries.delete(key); entries.set(key, entry);}
-  return entry;
-}
-
 // Decoded packet LRU with independent consumers of the same in-flight read.
 // Last-consumer cancellation propagates through network and Worker restores.
 export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, residency = null}) {
@@ -106,19 +89,10 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     entry.lastUsed = performance.now();
     if (!signal) {if (entry.pending)entry.unscoped = true; sync(key, entry); return entry.promise;}
     entry.users++; sync(key, entry);
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (callback, value) => {
-        if (settled)return;
-        settled = true; signal.removeEventListener('abort', abort); entry.users--;
-        sync(key, entry); callback(value);
-        if (entry.pending&&!entry.users&&!entry.unscoped)abortUnused(key, entry);
-        else if (!entry.pending&&!entry.users)trim();
-      };
-      const abort = () => finish(reject, signal.reason??new DOMException('Render packet cancelled','AbortError'));
-      signal.addEventListener('abort', abort, {once:true});
-      entry.promise.then(value => finish(resolve, value), error => finish(reject, error));
-      if (signal.aborted)abort();
+    return waitForConsumer(entry.promise, signal).finally(() => {
+      entry.users--; sync(key, entry);
+      if (entry.pending&&!entry.users&&!entry.unscoped)abortUnused(key, entry);
+      else if (!entry.pending&&!entry.users)trim();
     });
   }
   function read(key, load, signal = null, {priority = 0} = {}) {
@@ -341,9 +315,12 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
     return new Promise((resolve, reject) => {
       const row = {bytes:Math.max(1, Number(estimate)||1), get priority() {return typeof priority==='function'?priority():priority;}, signal, task, resolve, reject, sequence:++sequence, bypassed:0, kind};
       const unsubscribe = priority?.subscribe?.(schedule);
-      row.detach = () => {signal?.removeEventListener('abort', row.abort); unsubscribe?.();};
+      row.detach = () => {detachAbort(); unsubscribe?.();};
       row.abort = () => {const i = queue.indexOf(row); if (i>=0) {queue.splice(i, 1); row.detach(); reject(signal.reason); schedule();}};
-      queue.push(row); signal?.addEventListener('abort', row.abort, {once:true}); if (residency)schedule(); else pump();
+      queue.push(row);
+      const detachAbort = subscribeAbort(signal, row.abort);
+      if (signal?.aborted)row.abort();
+      else if (residency)schedule(); else pump();
     });
   }
   function onIdle(callback) {idleListeners.add(callback); if (!active&&!queue.length)schedule(); return () => idleListeners.delete(callback);}

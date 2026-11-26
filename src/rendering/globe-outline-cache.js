@@ -1,3 +1,4 @@
+import { touchLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 import { createGlobeSpatialSelection } from './globe-spatial-partition.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture } from './three-globe-strokes.js';
 import { renderPacketBuffers, renderBufferBytes } from './render-cache-budget.js';
@@ -139,13 +140,13 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
     // point dictionary is generated for a small outline.
     let subset = null;
     if (!direct) {
-      subset = chunk.subsets.get(membership);
-      if (subset) {chunk.subsets.delete(membership); chunk.subsets.set(membership, subset); subsetHits++;}
+      subset = touchLruEntry(chunk.subsets, membership);
+      if (subset) {subsetHits++;}
       else {
         const build = () => buildGlobeOutlinePointSubset(part, [...chunk.roles.values()].flatMap(({row}) => row.ranges).sort((a, b) => a[0]-b[0]));
         subset = residency?.withTemporary(chunk.selectedCount*72+part.count*4,'outline-subset', build)??build();
         subsetBuilds++; chunk.subsets.set(membership, subset);
-        while (chunk.subsets.size>subsetLimit)chunk.subsets.delete(chunk.subsets.keys().next().value);
+        trimLruCount(chunk.subsets, subsetLimit);
         markChunk(chunk);
       }
     }

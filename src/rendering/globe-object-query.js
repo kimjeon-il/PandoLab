@@ -1,3 +1,4 @@
+import { forwardAbort } from '../runtime/async-request.js';
 import { normalizeObjectRef } from '../document/object-ref-identity.js';
 import {
   globeRayIntersectsBounds, globeStrokePickPredicate, createGlobePickBudget,
@@ -15,9 +16,7 @@ export function createGlobeObjectQuery({
     if (!canPickFrame()||!sample)throw new DOMException('Picking frame unavailable','AbortError');
     const requestName = includeHydro||includeLabels?'pick-click':'pick-hover';
     const controller = startRequest(requestName);
-    const abort = () => controller.abort(consumerSignal?.reason);
-    consumerSignal?.addEventListener('abort', abort, {once:true});
-    if (consumerSignal?.aborted)abort();
+    const detachAbort = forwardAbort(consumerSignal, controller);
     const {signal} = controller;
     const isCurrent = () => !signal.aborted&&canPickFrame()&&getAcceptedPick()===sample;
     const assertCurrent = () => {
@@ -76,7 +75,7 @@ export function createGlobeObjectQuery({
       assertCurrent();
       return [...hydroRefs, ...hits.map(slot => refs[slot])];
     } finally {
-      consumerSignal?.removeEventListener('abort', abort);
+      detachAbort();
       finishRequest(requestName, controller);
     }
   }

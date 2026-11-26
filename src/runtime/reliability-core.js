@@ -1,3 +1,4 @@
+import { subscribeAbort, forwardAbort, waitForConsumer } from './async-request.js';
 export const RELIABILITY_ERROR_CATEGORIES = Object.freeze({
   NETWORK: 'NETWORK',
   PARSE: 'PARSE',
@@ -71,14 +72,14 @@ export function retryDelay(attempt, {
   return Math.max(0, Math.round(exponential - spread + random() * spread * 2));
 }
 
-async function delayWithSignal(ms, signal) {
+export async function delayWithSignal(ms, signal) {
   if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
   await new Promise((resolve, reject) => {
     let settled = false;
     const finish = callback => value => {
       if (settled) return;
       settled = true;
-      signal?.removeEventListener('abort', onAbort);
+      detach();
       callback(value);
     };
     const onResolve = finish(resolve);
@@ -88,7 +89,8 @@ async function delayWithSignal(ms, signal) {
       clearTimeout(timer);
       onReject(signal.reason || new DOMException('Aborted', 'AbortError'));
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
+    const detach = subscribeAbort(signal, onAbort);
+    if (signal?.aborted)onAbort();
   });
 }
 
@@ -134,13 +136,13 @@ export async function waitForRequestAvailability(signal = null, environment = gl
     const cleanup = () => {
       for (const type of ['online', 'focus', 'pageshow']) target.removeEventListener(type, check);
       document?.removeEventListener('visibilitychange', check);
-      signal?.removeEventListener('abort', abort);
+      detachAbort();
     };
     const check = () => { if (available()) { cleanup(); resolve(); } };
     const abort = () => { cleanup(); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
     for (const type of ['online', 'focus', 'pageshow']) target.addEventListener(type, check);
     document?.addEventListener('visibilitychange', check);
-    signal?.addEventListener('abort', abort, { once: true });
+    const detachAbort = subscribeAbort(signal, abort);
     if (signal?.aborted) abort(); else check();
   });
 }
@@ -190,21 +192,13 @@ export async function fetchWithRetry(input, init = {}, {
     await waitForRequestAvailability(retrySignal, environment);
     const controller = new AbortController();
     let timedOut = false;
-    const abort = () => controller.abort(retrySignal?.reason);
-    retrySignal?.addEventListener('abort', abort, { once: true });
-    if (retrySignal?.aborted) abort();
+    const detach = forwardAbort(retrySignal, controller);
     const deadline = createForegroundDeadline(() => {
       timedOut = true;
       controller.abort(new DOMException('Request timed out', 'TimeoutError'));
     }, Math.max(1000, Number(timeoutMs || 15000)), environment);
-    let rejectAborted;
-    const aborted = new Promise((_resolve, reject) => {
-      rejectAborted = () => reject(controller.signal.reason || new DOMException('Aborted', 'AbortError'));
-      controller.signal.addEventListener('abort', rejectAborted, { once: true });
-      if (controller.signal.aborted) rejectAborted();
-    });
     try {
-      return await Promise.race([aborted, (async () => {
+      return await waitForConsumer((async () => {
         controller.signal.throwIfAborted();
         const response = await fetchFn(input, { ...init, signal: controller.signal });
         if (!response.ok && retryStatuses(response.status)) {
@@ -217,7 +211,7 @@ export async function fetchWithRetry(input, init = {}, {
         const value = consume ? await consume(response, { touch: deadline.renew, signal: controller.signal }) : response;
         controller.signal.throwIfAborted();
         return value;
-      })()]);
+      })(), controller.signal);
     } catch (error) {
       controller.abort(error);
       if (retrySignal?.aborted) throw retrySignal.reason || new DOMException('Aborted', 'AbortError');
@@ -232,8 +226,7 @@ export async function fetchWithRetry(input, init = {}, {
       throw error;
     } finally {
       deadline.dispose();
-      controller.signal.removeEventListener('abort', rejectAborted);
-      retrySignal?.removeEventListener('abort', abort);
+      detach();
     }
   }, {
     maxAttempts, baseDelay, maxDelay, jitter, signal, onRetry,

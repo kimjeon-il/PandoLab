@@ -1,3 +1,5 @@
+import { touchLruEntry, trimLruEntries } from '../runtime/lru-cache.js';
+import { trackPending } from '../runtime/async-request.js';
 import { createHydroTileWindow, hydroTileSpecsForWindow } from './hydro-tile-window.js';
 import { decodePlaceTile } from './place-codec.js';
 import { comparePlaces, normalizePlace, normalizePlaceQuery, selectedPlaceNames, PLACE_LIMITS } from '../document/place-contract.js';
@@ -86,11 +88,11 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
   const inflightShards = new Map();
   const budget = Math.max(0, Math.min(PLACE_LIMITS.cacheBytes, Number(cacheBytes) || 0));
   let used = 0; const metrics = { queryCount: 0, networkCount: 0, evictions: 0, lastTileCount: 0, lastCandidateCount: 0, peakWorkingRecords: 0 };
-  function get(key) { const entry = cache.get(key); if (!entry) return null; cache.delete(key); cache.set(key, entry); return entry.value; }
+  function get(key) {return touchLruEntry(cache, key)?.value??null;}
   function put(key, value, bytes) {
     if (bytes > budget) return value;
     const existing = cache.get(key); if (existing) { used-=existing.bytes; cache.delete(key); }
-    while (used + bytes > budget && cache.size) { const oldest = cache.keys().next().value; used-=cache.get(oldest).bytes; cache.delete(oldest); metrics.evictions++; }
+    used = trimLruEntries(cache, null, budget-bytes, entry => entry.bytes, () => {metrics.evictions++;}, {residentBytes:used});
     cache.set(key, {value, bytes}); used+=bytes; return value;
   }
   function startWholeShard(row, context, readBytes) {
@@ -101,9 +103,8 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
       if (spec.sha256 && await sha256Hex(full) !== spec.sha256) throw new Error('Invalid place shard hash');
       context.throwIfCancelled();
       return { full: put('shard:' + row.shard, full, full.byteLength) };
-    })().finally(() => inflightShards.delete(row.shard));
-    inflightShards.set(row.shard, task);
-    return task;
+    })();
+    return trackPending(inflightShards, row.shard, task);
   }
   async function awaitWholeShard(row, context, pending) {
     try {
@@ -185,8 +186,7 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
       const decodedBytes=records.reduce((total,record) => total+512+Object.values(record).reduce((sum,value)=>sum+(typeof value === 'string' ? value.length*2 : 0),0)+record.nameNativeExtras.reduce((sum,name)=>sum+name.length*2,0)+JSON.stringify(record.nameTimeline).length*2+JSON.stringify(record.capitalPeriods).length*2,0);
       context.throwIfCancelled(); return put(`tile:${key}`,records,decodedBytes);
     })();
-    inflight.set(key,task);
-    try { return await task; } finally { inflight.delete(key); }
+    return trackPending(inflight, key, task);
   }
   async function loadRows(rows, context, accepts, limit) {
     let records=[]; let truncated=false;

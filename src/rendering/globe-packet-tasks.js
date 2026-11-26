@@ -1,3 +1,4 @@
+import { subscribeAbort } from '../runtime/async-request.js';
 import { createStatelessWorkerLane } from '../runtime/stateless-worker-lane.js';
 import { workerAssetUrl } from '../runtime/worker-asset-url.js';
 import { createGlobeWorkScheduler } from './globe-work-scheduler.js';
@@ -25,12 +26,12 @@ export function createGlobePacketTasks({
       const owner = lane.worker.acquire();
       lane.busy = true; running++; peakRunning = Math.max(peakRunning, running);
       const abort = () => {cancelled++; lane.worker.retire(owner, 'globe-packet-superseded');};
-      signal?.addEventListener('abort', abort, {once:true});
+      const detachAbort = subscribeAbort(signal, abort);
       try {
         signal?.throwIfAborted();
         const {result} = await owner.request(operation, body, {transfer, priority:typeof priority==='function'?priority():priority});
         signal?.throwIfAborted(); completed++; return result;
-      }finally {signal?.removeEventListener('abort', abort); running--; lane.busy = false;}
+      }finally {detachAbort(); running--; lane.busy = false;}
     });
   }
   function decode(kind, bytes, spec, {signal, priority = 0, ...parameters} = {}) {

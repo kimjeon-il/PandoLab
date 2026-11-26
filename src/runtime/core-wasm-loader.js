@@ -1,3 +1,4 @@
+import { subscribeAbort, waitForConsumer } from './async-request.js';
 import { fetchWithRetry } from './reliability-core.js';
 import { createStoredAssetLoader } from '../data/stored-asset-loader.js';
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
@@ -49,7 +50,7 @@ async function requestSharedCore(manifest, signal) {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID(); let timer;
-    const finish = (error, value) => {clearTimeout(timer); worker.removeEventListener('message', listen); signal?.removeEventListener('abort', abort); error?reject(error):resolve(value);};
+    const finish = (error, value) => {clearTimeout(timer); worker.removeEventListener('message', listen); detachAbort(); error?reject(error):resolve(value);};
     const abort = () => finish(signal.reason||Object.assign(Error('Core sharing cancelled'), {name:'AbortError'}));
     const listen = event => {
       const value = event.data;
@@ -58,7 +59,8 @@ async function requestSharedCore(manifest, signal) {
       else finish(null, value.package);
     };
     worker.addEventListener('message', listen);
-    signal?.addEventListener('abort', abort, {once:true});
+    const detachAbort = subscribeAbort(signal, abort);
+    if (signal?.aborted) {abort(); return;}
     timer = setTimeout(() => finish(Object.assign(Error('Shared compiled Core did not arrive'), {code:'PL-CORE-WASM-SHARED'})), 30000);
     try {worker.postMessage({type:'pando-core-module-request', requestId, identity:identity(manifest)});}
     catch (error) {finish(error);}
@@ -136,11 +138,7 @@ export async function loadVerifiedCore({baseUrl, fetchAsset = globalThis.fetch,
         }).catch (rejectInstantiation);
         return {};
       }});
-    const abort = () => rejectInstantiation(signal.reason||Object.assign(Error('Core initialization cancelled'), {name:'AbortError'}));
-    signal?.addEventListener('abort', abort, {once:true});
-    let core;
-    try {if (signal?.aborted)abort(); core = await Promise.race([instancePromise, failure]);}
-    finally {signal?.removeEventListener('abort', abort);}
+    const core = await waitForConsumer(Promise.race([instancePromise, failure]), signal);
     metrics.factoryMs = now()-factoryStart;
     signal?.throwIfAborted();
     if (core.coreAbiVersion!==manifest.abiVersion||core.coreSourceSha256!==manifest.sourceSha256
