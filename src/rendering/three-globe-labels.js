@@ -107,7 +107,8 @@ const fragmentShader=`
     // The quad supplies a stable footprint independent of the glyph gradient.
     float pixelWidth = max(abs(dFdx(texCoord.x)), abs(dFdy(texCoord.y))) * atlasSize / texelsPerCssPixel;
     float fillEdge = 0.5 * pixelWidth;
-    float haloEdge = fillEdge + 0.35;
+    // Leave the outer texel transparent so linear filtering stays inside this atlas entry.
+    float haloEdge = min(fillEdge + 0.35, ${(padding - 0.5).toFixed(1)} / texelsPerCssPixel - 1.0);
     float ink = smoothstep(-fillEdge, fillEdge, distanceCss);
     float halo = smoothstep(-haloEdge, haloEdge, distanceCss + 1.0);
     float coverage = max(ink, halo);
