@@ -1,3 +1,4 @@
+import { createProductModePolicy } from './product-mode-policy.js';
 import { resourceCapabilities } from '../runtime/resource-capabilities.js';
 import { createProjectSourceRuntime } from '../document/project-source-runtime.js';
 import { createTerritorialSceneRuntime } from '../rendering/territorial-scene-runtime.js';
@@ -19,10 +20,9 @@ import { createObjectPicking } from '../map/object-picking.js';
 import { mapProjectResourcePath } from '../data/map-project-manifest.js';
 
 /** One read-only map owner graph for the Web Viewer. */
-export function createMapOwners({productMode, readOnly = true, projection = 'globe', platform = null, buildMeta, isObjectVisible, resolveVisibilityGroup, closeActiveOverlay = null, onViewingChange = null}) {
-  if (productMode!=='viewer')throw new TypeError('Map composition requires viewer product mode.');
-  if (readOnly!==true)throw new TypeError('Map composition requires read-only access.');
-  const capabilities = resourceCapabilities(productMode, platform, {projection});
+export function createMapOwners({productMode = 'viewer', readOnly = true, projection = 'globe', platform = null, buildMeta, isObjectVisible, resolveVisibilityGroup, closeActiveOverlay = null, onViewingChange = null}) {
+  createProductModePolicy(productMode, {readOnly, projection});
+  const capabilities = resourceCapabilities('viewer', platform);
   // One read-port admission, two existing responsibility owners. No combined
   // builtin session, second document model or duplicated mutable cache.
   let projectResourceDependencies = null;
@@ -36,7 +36,7 @@ export function createMapOwners({productMode, readOnly = true, projection = 'glo
   });
   const territorialSceneRuntime = createTerritorialSceneRuntime({getDependencies});
   const workspaceSurfaces = createWorkspaceSurfaces();
-  const projectSession = createProjectSession({productMode, readOnly, projection, capabilities, resolveVisibilityGroup, onViewingChange});
+  const projectSession = createProjectSession({capabilities, resolveVisibilityGroup, onViewingChange});
   const renderQuality = createRenderQuality();
   const pointerTargets = createPointerTargets();
   const cameraNavigation = createCameraNavigation();
@@ -50,7 +50,7 @@ export function createMapOwners({productMode, readOnly = true, projection = 'glo
     placeCatalog:buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'places'):null,
     placeLifetimesCatalog:buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'placeLifetimes'):null});
   const physicalResources = createPhysicalResources({capabilities, buildMeta});
-  const mapHost = createMapHost({productMode, readOnly, projection});
+  const mapHost = createMapHost();
   const objectPicking = createObjectPicking({closeActiveOverlay});
   return Object.freeze({capabilities, projectResourcePorts, projectSourceRuntime, territorialSceneRuntime, workspaceSurfaces, projectSession, renderQuality, pointerTargets, cameraNavigation, countryIndex, spatialIndex, mapProjection, objectPresentation, hydroSettings, objectCatalog, territorialLabels, physicalResources, mapHost, objectPicking});
 }

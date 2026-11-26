@@ -17,8 +17,8 @@ const cloneValue = value => {
  * returned by the host application.
  */
 export function createProjectDomain({
-  productMode,
-  readOnly = productMode === 'viewer',
+  productMode = 'viewer',
+  readOnly = true,
   replaceSnapshot = () => false,
   admitImportedProject = project => project,
   restoreReplacement = null,
@@ -35,7 +35,6 @@ export function createProjectDomain({
   readBuiltinSelectionCatalogs,
   readPresentationCatalog = null,
 } = {}) {
-  if (productMode!=='viewer')throw new TypeError('Project domain requires viewer product mode.');
   createProductModePolicy(productMode, {readOnly});
   let generation = 0;
   let openRequest = 0, opening = false, openQueue = Promise.resolve();

@@ -13,7 +13,6 @@ const readonlyIds = ids => Object.freeze({ get size() { return ids.length; }, ha
  * Mutable bindings stay local; exported accessors retain live identity.
  */
 export function createProjectSession({productMode = 'viewer', readOnly = true, projection = 'globe', capabilities = resourceCapabilities(productMode, null, {projection}), resolveVisibilityGroup, onViewingChange = null} = {}) {
-  if (productMode!=='viewer')throw new TypeError('Project session requires viewer product mode.');
   const productPolicy = createProductModePolicy(productMode, {readOnly, projection});
   const viewingFields = new Set(['layerVisibility','layerPresentation','itemVisibility','physicalSettings','distributionSettings']);
   let viewingPresentation = null, documentProjection = null, physicalSettings;

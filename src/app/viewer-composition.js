@@ -40,8 +40,7 @@ import { createPreferencesDialog } from '../ui/preferences-dialog.js';
 import { createProjectMonthClock } from '../document/project-month-clock.js';
 import { territorialMembershipDelta } from '../document/territorial-entity-store.js';
 
-export async function composeViewer({ productMode, meta }) {
-  if (productMode!=='viewer')throw new Error('실행 설정이 올바르지 않습니다.');
+export async function composeViewer({ meta }) {
   const get = id => document.getElementById(id), status = get('viewerStatus');
   get('viewer').dataset.initialLoading = 'true';
   // Resolve the selected physical catalog once, using its published SHA.
@@ -56,7 +55,7 @@ export async function composeViewer({ productMode, meta }) {
     throw error;
   }
   const runtimeMeta = Object.freeze({...meta, mapProject:projectRuntime.project, ...physical});
-  const runtimeContext = createRuntimeContext({productMode, meta:runtimeMeta, assetBaseUrl, platform:createPlatformPorts({kind:'browser'})});
+  const runtimeContext = createRuntimeContext({meta:runtimeMeta, assetBaseUrl, platform:createPlatformPorts({kind:'browser'})});
   let map, previousView, projectClock, syncStatus, preferencesDialog, presentedMonth = null;
   const inspectParams = new URLSearchParams(window.location.search);
   let inspectorController = null, objectDetailsPanel = null;
@@ -65,7 +64,7 @@ export async function composeViewer({ productMode, meta }) {
     readRenderer:() => map?.renderer,
   });
   const initialPresentation = createViewerInitialPresentation({onPresented:mapSkeleton.onFirstMapPresented});
-  const preferencePresentation = createPreferencePresentation({document, window, productMode, onChange:change => {
+  const preferencePresentation = createPreferencePresentation({document, window, onChange:change => {
     if (!map)return;
     map.refreshAppearance(change);
     if (change.countryNamesChanged)syncStatus({refreshHover:true});
@@ -74,7 +73,7 @@ export async function composeViewer({ productMode, meta }) {
   const tooltipController = createTooltipController({document, window, tooltip:get('uiTooltip'), clamp:(value, min, max) => Math.max(min, Math.min(max, value))});
   tooltipController.bind();
   const viewStorage = createViewerViewStorage({
-    storage:createBrowserProjectStorage({productMode, indexedDB:window.indexedDB, databaseName:'pandolab-viewer', storeName:'views', viewKey:'active-view'}),
+    storage:createBrowserProjectStorage({indexedDB:window.indexedDB, databaseName:'pandolab-viewer', storeName:'views', viewKey:'active-view'}),
     projectId:runtimeContext.meta.mapProject.projectId, dataRevision:runtimeContext.meta.dataRevision,
   });
   const persistViewing = () => {
@@ -83,7 +82,7 @@ export async function composeViewer({ productMode, meta }) {
       .catch (error => report(error,'보기 설정을 저장하지 못했습니다.','PL-WORKSPACE-WRITE-001'));
     syncStatus();
   };
-  const owners = createMapOwners({productMode, readOnly:true, buildMeta:runtimeContext.meta, platform:runtimeContext.platform, onViewingChange:persistViewing, resolveVisibilityGroup:ref => map.objectQuery.layerGroupForObjectRef(ref), isObjectVisible:(group, id) => map.objectQuery.objectRefVisible(map.objectQuery.layerItemObjectRef(group, id)), closeActiveOverlay:() => surfaces.closeMobileSheets()});
+  const owners = createMapOwners({buildMeta:runtimeContext.meta, platform:runtimeContext.platform, onViewingChange:persistViewing, resolveVisibilityGroup:ref => map.objectQuery.layerGroupForObjectRef(ref), isObjectVisible:(group, id) => map.objectQuery.objectRefVisible(map.objectQuery.layerItemObjectRef(group, id)), closeActiveOverlay:() => surfaces.closeMobileSheets()});
   const surfaces = owners.workspaceSurfaces;
   const selectController = createSelectController({document, window}); selectController.enhanceAll();
   const notifications = createNotificationPresentation({document, getElement:get, isMobile:() => surfaces.isMobile(), protectErrorNotices:true});
@@ -92,11 +91,11 @@ export async function composeViewer({ productMode, meta }) {
     report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');
     return null;
   });
-  const documentSession = createDocumentSession({productMode, readOnly:true, initialProject:createInitialDocument({appVersion:meta.appVersion})});
+  const documentSession = createDocumentSession({initialProject:createInitialDocument({appVersion:meta.appVersion})});
   const disposables = [tooltipController, selectController, preferencePresentation, surfaces, notifications, documentSession.commandOwner, initialPresentation];
   function composeMap() {
   let openingPreserved = null;
-  const projectDomain = createProjectDomain({productMode, readOnly:true, commandOwner:documentSession.commandOwner, documentModel:documentSession.documentModel,
+  const projectDomain = createProjectDomain({commandOwner:documentSession.commandOwner, documentModel:documentSession.documentModel,
     admitImportedProject:project => bindProjectDocumentIdentity(project, runtimeContext.meta),
     readBuiltinSelectionCatalogs:() => map?[{domain:'placeBuiltin', refs:map.placeSelectionReferences()}, {domain:'hydroBuiltin', refs:map.hydroSelectionReferences()}]:[], publishCommand:() => map.refreshSelection(),
     onProjectReset:async event => {postPresentation.invalidate(); searchController.cancelSearch(); previousView = map.capturePresentation(); await selectionDomain.resetProject(event.generation); selectionUiController.resetProject(); map.renderingDomain.resetProjectGeneration(event.generation, {presentation:event.presentation, isCurrent:event.isCurrent, onPresented:event.onPresented});},
@@ -477,7 +476,7 @@ export async function composeViewer({ productMode, meta }) {
     readinessUi:notifications});
   navigationBindings.bindNavigationUI();
   disposables.push(navigationBindings);
-  preferencesDialog = createPreferencesDialog({document, window, productMode,
+  preferencesDialog = createPreferencesDialog({document, window,
     returnFocus:() => get(surfaces.isMobile()?'mobileMenuBtn':'preferencesBtn'),
     getPreferences:() => preferencePresentation.current, getMapState:() => map.displayState(), mapSettings:display,
     applyPreferences:(value, options) => preferencePresentation.apply(value, options),
@@ -486,7 +485,7 @@ export async function composeViewer({ productMode, meta }) {
   const onProjectPreferences = () => preferencesDialog.sync();
   window.addEventListener('pandolab:project-changed', onProjectPreferences);
   disposables.push({ dispose: () => window.removeEventListener('pandolab:project-changed', onProjectPreferences) });
-  if (inspectParams.get('debug')==='1')globalThis.__PANDOLAB_VIEWER__ = Object.freeze({initialMapPresented:initialPresentation.hasPresented, productMode, documentState:() => activeSession?.commandOwner.state(),
+  if (inspectParams.get('debug')==='1')globalThis.__PANDOLAB_VIEWER__ = Object.freeze({initialMapPresented:initialPresentation.hasPresented, productMode:'viewer', documentState:() => activeSession?.commandOwner.state(),
     documentSnapshot:() => activeSession?.documentModel.snapshot(), resolvedWorld:() => activeSession?.documentModel.world(), selectionSnapshot:() => activeSession?.selectionDomain.snapshot().selection,
     diagnostics:diagnostics.snapshot, rendererStats:() => map.renderer.getStats(),
     visibleTerritorialCount:() => map.objectQuery.visibleTerritorialCount(),

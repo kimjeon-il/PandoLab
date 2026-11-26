@@ -1,5 +1,5 @@
 export function createBrowserProjectStorage({
-  productMode,
+  productMode = 'viewer',
   indexedDB,
   databaseName,
   storeName,

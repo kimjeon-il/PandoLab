@@ -7,7 +7,7 @@ import { PROJECT_SCHEMA_VERSION, LAND_OBJECT_SCHEMA_VERSION, SOURCE_PROVENANCE_S
 
 export const BASE_DATASET = 'Pando 국가 경계 정본 · LSIB 11.4 기반';
 
-/** Detached startup input shared by both products; C++ is the admission owner. */
+/** Detached Viewer startup input; C++ is the admission owner. */
 export function createInitialDocument({ appVersion, baseDataset = BASE_DATASET, state = {}, physicalSourceInfo = {} } = {}) {
   const empty = createEmptyTerritorialState();
   const defaults = Object.fromEntries(PROJECT_STATE_FIELDS.filter(field => !(field.name in empty) && field.name!=='projectSetup')

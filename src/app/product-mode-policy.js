@@ -21,18 +21,20 @@ export function createProductModePolicy(productMode, {readOnly = true, projectio
   if (productMode !== 'viewer') throw new TypeError('Only viewer product mode is supported.');
   if (readOnly !== true) throw new TypeError('Viewer must remain read-only.');
   if (projection !== 'globe') throw new TypeError('Viewer supports only the globe projection.');
-  return Object.freeze({
-    productMode,
-    readOnly,
-    projection,
+  return viewerPolicy;
+}
+
+export const viewerPolicy = Object.freeze({
+    productMode:'viewer',
+    readOnly:true,
+    projection:'globe',
     assertProjection(requested) {
       if (requested !== undefined && requested !== 'globe')
-        throw Object.assign(new Error(`The ${productMode} supports only the ${projection} projection.`), { code: 'PL-PRODUCT-PROJECTION', productMode, projection: requested });
+        throw Object.assign(new Error('The viewer supports only the globe projection.'), { code: 'PL-PRODUCT-PROJECTION', productMode:'viewer', projection: requested });
     },
     assertOperation(operation) {
       if (!viewerOperations.has(operation))
         throw Object.assign(new Error('This operation is unavailable in the read-only viewer.'),
-          { code: 'PL-PRODUCT-READONLY', productMode, operation });
+          { code: 'PL-PRODUCT-READONLY', productMode:'viewer', operation });
     },
   });
-}

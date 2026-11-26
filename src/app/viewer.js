@@ -45,7 +45,7 @@ function start() {
     importing = false;
     handedOff = true;
     detach();
-    await composeViewer({ productMode: 'viewer', meta });
+    await composeViewer({ meta });
   }).catch (error => {
     if (controller.signal.aborted) return;
     console.error('[PL-VIEWER-START]', error);

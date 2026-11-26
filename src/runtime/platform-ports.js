@@ -36,10 +36,10 @@ export function createPlatformPorts(spec = {}) {
     }),
     world: Object.freeze({ builtinLoader: world.builtinLoader ?? null }),
   });
-  return assertPlatformPorts(platform, { productMode: 'viewer' });
+  return assertPlatformPorts(platform);
 }
 
-export function assertPlatformPorts(platform, { productMode } = {}) {
+export function assertPlatformPorts(platform, { productMode = 'viewer' } = {}) {
   requireRecord(platform, 'Runtime platform ports');
   rejectUnknown(platform, new Set(['schema', 'kind', 'resources', 'world']), 'Runtime platform ports');
   if (platform.schema !== PLATFORM_PORTS_SCHEMA) throw new TypeError('Runtime platform ports use an unsupported schema.');

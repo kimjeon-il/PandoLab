@@ -12,11 +12,11 @@ export function versionedAssetUrl(relative, assetBaseUrl, assetRevision) {
   const url = new URL(relative, assetBaseUrl); url.searchParams.set('v', assetRevision); return url;
 }
 
-export function createRuntimeContext({productMode, meta, assetBaseUrl, platform} = {}) {
+export function createRuntimeContext({productMode = 'viewer', meta, assetBaseUrl, platform} = {}) {
   if (productMode!=='viewer')throw new TypeError('Runtime requires viewer product mode.');
   const receipt = validateBuildMetadata(meta);
   const base = new URL(assetBaseUrl).href;
-  const platformPorts = assertPlatformPorts(platform, {productMode});
+  const platformPorts = assertPlatformPorts(platform);
   return Object.freeze({productMode, meta:receipt, platform:platformPorts, assetBaseUrl:base,
     assetUrl:relative => versionedAssetUrl(relative, base, meta.assetRevision)});
 }

@@ -184,7 +184,7 @@ export function assertCurrentProjectSchema(input, { baseEntities = null, baseDat
     allEntities = restoreEntitiesFromDelta(project, { base: baseEntities, baseDataset, baseDatasetFingerprint });
   }
 
-  restoreTimelineStorage({ schemaVersion: 1, records: project.timelineRecords, geometries: project.geometries },
+  if (project.format !== 'pandolab-autosave-delta') restoreTimelineStorage({ schemaVersion: 1, records: project.timelineRecords, geometries: project.geometries },
     timelineObjectCatalog({...project,territorialEntities:allEntities}));
 
   assertUniqueProjectIds(project.distributionLayers, '분포 레이어');
