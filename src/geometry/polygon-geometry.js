@@ -58,11 +58,9 @@
     return keys.size;
   }
 
-  // The signed spherical integral has a single owner: shared/core.
-  // In Web workers it is exposed by verified WASM, and in Qt's QJSEngine
-  // by a narrow QObject bridge. Keep UI-specific planar utilities below.
+  // The signed spherical integral is owned by the verified shared WASM Core.
   function areaCore() {
-    const owner = root.PandoLabSphericalAreaCore || root.PandoLabSphericalCore;
+    const owner = root.PandoLabSphericalCore;
     if (typeof owner?.sphericalRingSignedArea !== 'function'
       || typeof owner?.sphericalRingSignedAreas !== 'function') {
       throw Object.assign(new Error('공통 C++ 구면 면적 계산기를 불러오지 못했습니다.'),

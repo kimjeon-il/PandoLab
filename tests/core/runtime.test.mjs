@@ -446,7 +446,18 @@ test('read-only Viewer rejects an editor geometry context and requests eager bui
  const resources=resourceCapabilities('viewer',platform);
  assert.equal(resources.eagerBuiltinHydro,true);
  assert.equal(resources.eagerBuiltinPlaces,true);
- assert.throws(()=>assertPlatformPorts(createPlatformPorts({kind:'browser',library:{geometryContext:{}}}),{productMode:'viewer'}),/Viewer platform cannot install a library geometry context/);
+ assert.throws(()=>createPlatformPorts({kind:'browser',library:{geometryContext:{}}}),/unsupported field library/);
+ assert.throws(()=>createPlatformPorts({kind:'native'}),/requires kind browser/);
+ assert.throws(()=>createPlatformPorts({kind:'browser',resources:{startupMesh:'project'}}),/unsupported field startupMesh/);
+ assert.throws(()=>createPlatformPorts({kind:'browser',storage:{namespace:'old'}}),/unsupported field storage/);
+ assert.throws(()=>assertPlatformPorts({...platform,kind:'native'},{productMode:'viewer'}),/requires kind browser/);
+ assert.throws(()=>assertPlatformPorts({...platform,library:{}},{productMode:'viewer'}),/unsupported field library/);
+ assert.throws(()=>assertPlatformPorts({...platform,resources:{...platform.resources,startupMesh:'builtin'}},{productMode:'viewer'}),/unsupported field startupMesh/);
+ const loader={loadProject(){}};
+ const custom=createPlatformPorts({kind:'browser',resources:{builtinHydro:false},world:{builtinLoader:loader}});
+ assert.equal(custom.resources.builtinHydro,false);
+ assert.equal(custom.resources.builtinPlaces,true);
+ assert.equal(custom.world.builtinLoader,loader);
  assert.throws(()=>resourceCapabilities('editor',platform),/Viewer product mode/);
 });
 

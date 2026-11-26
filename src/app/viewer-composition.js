@@ -442,7 +442,7 @@ export async function composeViewer({ productMode, meta }) {
       const active=projectDomain.activeProject();
       if(mode==='startup'||(mode==='follow'&&active?.source!=='builtin')){
         // Returning from a GeoPackage reopens the manifest-backed project.
-        const opened=await open(()=>map.prepareBuiltinProject(month,{isCurrent,transition:false}),{
+        const opened=await open(()=>map.prepareBuiltinProject(month,{isCurrent}),{
           source:'builtin',isCurrent,presentation:'default'});
         return opened&&commit();
       }

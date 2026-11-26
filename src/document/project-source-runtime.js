@@ -137,7 +137,7 @@ export function createProjectSourceRuntime({
     if(!isCurrent())throw staleBuiltin();
     const candidate=await domain.prepareTemporalBuiltin(facts,createBuiltinProjectSetup(month),{
       dataRevision:buildMeta.dataRevision,manifestSha256:territorialSpec().sha256,
-      expectedGeneration:prepared.expectedGeneration,isCurrent,transition:false,transferSource:true});
+      expectedGeneration:prepared.expectedGeneration,isCurrent,transferSource:true});
     if(!candidate||!isCurrent()){
       if(candidate?.kind==='temporal-candidate')await domain.discardTemporalBuiltin(candidate);
       throw staleBuiltin();
