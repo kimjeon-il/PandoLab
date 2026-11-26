@@ -3,7 +3,6 @@
 #include <pandoeditor/losslessjson.h>
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <stdexcept>
 
 namespace pandoeditor {
@@ -26,50 +25,11 @@ std::string contentItemGroup(const ProjectDocument& d,const ObjectRef& ref) {
 }
 namespace {
 const TerritorialUnit* unit(const ProjectDocument& d,const ObjectRef& ref) { if(ref.domain!="territorial")return nullptr;for(const auto& u:d.units)if(u.id==ref.id)return &u;return nullptr; }
-PresentationStyle style(const std::map<std::string,PresentationStyle>& m,const std::string& key) { auto i=m.find(key);return i==m.end()?PresentationStyle{}:i->second; }
 std::vector<ObjectRef> contentRefs(const ProjectDocument& d) {
     std::vector<ObjectRef> refs;
     auto add=[&](const auto& values,const char* domain){for(const auto& v:values)refs.push_back({domain,v.id});};
     add(d.labels,"label");add(d.hydro,"hydro");add(d.genericFeatures,"generic");add(d.distributionLayers,"distributionLayer");add(d.distributionEntries,"distributionEntry");return refs;
 }
-}
-bool effectiveMapVisibility(const ProjectDocument& d,const ObjectRef& ref) {
-    auto u=unit(d,ref);
-    auto g=u?territorialGroup(d,u->id):contentGroup(d,ref);const auto& p=d.presentation.webPresentation;
-    const auto itemGroup=u?g:contentItemGroup(d,ref);
-    if(g.empty()||!groupVisible(p,g)||!itemVisible(p,itemGroup,ref.id))return false;
-    if(ref.domain=="hydro"&&std::find(d.physicalData.hiddenHydroIds.begin(),d.physicalData.hiddenHydroIds.end(),ref.id)!=d.physicalData.hiddenHydroIds.end())for(const auto& h:d.hydro)if(h.id==ref.id&&h.source.kind=="builtin")return false;
-    if(ref.domain=="distributionEntry") for(const auto& e:d.distributionEntries) if(e.id==ref.id && !itemVisible(p,g,e.layerId)) return false;
-    return true;
-}
-ResolvedTerritorialPresentation resolvedTerritorialPresentation(const ProjectDocument& d,const ObjectRef& ref,double terrainAlpha) {
-    const auto& p=d.presentation.webPresentation;std::set<std::string> visiting;
-    std::function<ResolvedTerritorialPresentation(const TerritorialUnit&)> resolve=[&](const TerritorialUnit& u) {
-        const auto gs=style(p.styles,"objects"),os=style(p.objectStyles,territorialPresentationKey(u.id));
-        ResolvedTerritorialPresentation r;r.blendMode=gs.blendMode.value_or("normal");
-        if(!visiting.insert(u.id).second)throw std::invalid_argument("PRESENTATION_CYCLE");
-        const auto& relation=staticParentRelation(d,u.id);
-        if(u.kind==UnitKind::General&&!relation.parentId.empty()) {
-            const auto parent=unit(d,territorialRef(relation.parentId));if(parent)r=resolve(*parent);
-        }
-        visiting.erase(u.id);
-        if(os.blendMode)r.blendMode=*os.blendMode;else if(gs.blendMode==std::optional<std::string>("multiply"))r.blendMode="multiply";
-        r.boundaryVisible=os.boundaryVisible.value_or(gs.boundaryVisible.value_or(true));
-        r.colorVisible=gs.colorVisible.value_or(true)&&os.colorVisible.value_or(true);
-        const std::string name="objectNames";
-        const bool visible=effectiveMapVisibility(d,territorialRef(u.id));
-        r.nameVisible=visible&&groupVisible(p,name);
-        r.effectiveAlpha=terrainAlpha;
-        return r;
-    };
-    auto u=unit(d,ref);if(!u)return {};
-    return resolve(*u);
-}
-double territorialRenderOrder(const ProjectDocument& d,const ObjectRef& ref,double offset) {
-    auto u=unit(d,ref);if(!u)return 0;
-    const auto& order=d.presentation.webPresentation.objectOrder;
-    double rank=0;if(!order.empty()) {auto i=std::find(order.begin(),order.end(),territorialPresentationKey(u->id));rank=double(i-order.begin())/double(order.size()+1);}
-    return (isRootGeneral(d,*u)?-1000:u->kind==UnitKind::General?3000:4000)+offset+rank;
 }
 void normalizePresentation(ProjectDocument& d,const std::string&) {
     auto& p=d.presentation.webPresentation;std::set<std::string> keys;std::map<std::string,std::set<std::string>> ids;
@@ -118,59 +78,6 @@ void validatePresentation(const ProjectDocument& d) {
     }
 }
 
-LabelSettings automaticLabelSettings(const std::string& kind,const LabelSettings& stored) {
-    LabelSettings r=stored;
-    struct Policy{double priority,min,max;const char* group;};
-    static const std::map<std::string,Policy> policies={{"country",{100,0,INFINITY,"country"}},{"capital",{90,0,INFINITY,"place"}},
-        {"city",{70,1.25,INFINITY,"place"}},{"region",{60,1,INFINITY,"place"}},{"town",{40,2.5,INFINITY,"place"}},
-        {"mountain",{40,2,INFINITY,"place"}},{"water",{40,1.5,INFINITY,"place"}},{"custom",{40,1.5,INFINITY,"place"}}};
-    const auto i=policies.find(kind);const auto& p=i==policies.end()?policies.at("custom"):i->second;
-    r.priority=p.priority;r.minZoom=p.min;r.maxZoom=p.max;r.collisionGroup=p.group;r.pinned=r.pinned||r.manualPosition.has_value();return r;
-}
-std::vector<ObjectRef> layoutLabels(const std::vector<LabelLayoutCandidate>& input,double zoom,double padding,
-                                    std::optional<LabelLayoutBounds> bounds) {
-    auto rows=input;rows.erase(std::remove_if(rows.begin(),rows.end(),[&](const auto& c){
-        if(zoom<c.minZoom||zoom>c.maxZoom)return true;
-        return bounds&&!c.selected&&!c.pinned&&
-            (c.x-c.width/2<bounds->left||c.x+c.width/2>bounds->right||
-             c.y-c.height/2<bounds->top||c.y+c.height/2>bounds->bottom);
-    }),rows.end());
-    std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){if(a.selected!=b.selected)return a.selected>b.selected;if(a.pinned!=b.pinned)return a.pinned>b.pinned;if(a.priority!=b.priority)return a.priority>b.priority;return a.key<b.key;});
-    struct Box{double l,t,r,b;std::string group;};std::vector<Box> placed;std::vector<ObjectRef> result;
-    for(const auto& c:rows){Box box{c.x-c.width/2-padding,c.y-c.height/2-padding,c.x+c.width/2+padding,c.y+c.height/2+padding,c.collisionGroup};
-        bool overlap=false;for(const auto& p:placed)if(p.group==box.group&&box.l<p.r&&box.r>p.l&&box.t<p.b&&box.b>p.t){overlap=true;break;}
-        if(overlap&&!c.selected&&!c.pinned)continue;placed.push_back(box);result.push_back(c.ref);
-    }return result;
-}
-std::vector<ObjectRef> visibleDistributionEntries(const ProjectDocument& d) {
-    const auto& settings=d.presentation.webPresentation.distributionSettings;std::vector<std::string> visible;
-    for(const auto& layer:d.distributionLayers){const auto group=contentGroup(d,{"distributionLayer",layer.id});if(groupVisible(d.presentation.webPresentation,group)&&itemVisible(d.presentation.webPresentation,group,layer.id))visible.push_back(layer.id);}
-    std::vector<ObjectRef> result;
-    if(visible.empty())return result;
-    const auto active=std::find(visible.begin(),visible.end(),settings.activeLayerId)!=visible.end()?settings.activeLayerId:visible.front();
-    for(const auto& layer:visible) {
-        if(settings.renderMode==DistributionRenderMode::Single&&layer!=active)continue;
-        for(const auto& entry:d.distributionEntries)if(entry.layerId==layer)result.push_back({"distributionEntry",entry.id});
-    }
-    return result;
-}
-std::optional<DistributionValueRange> distributionValueRange(const ProjectDocument& d,const std::string& layerId) {
-    const auto layer=std::find_if(d.distributionLayers.begin(),d.distributionLayers.end(),[&](const auto& v){return v.id==layerId;});
-    if(layer==d.distributionLayers.end())return {};
-    if(layer->valueScale.manual)return DistributionValueRange{layer->valueScale.min,layer->valueScale.max};
-    std::optional<DistributionValueRange> range;
-    for(const auto& entry:d.distributionEntries)if(entry.layerId==layerId&&std::isfinite(entry.value)) {
-        if(!range)range=DistributionValueRange{entry.value,entry.value};
-        else {range->min=std::min(range->min,entry.value);range->max=std::max(range->max,entry.value);}
-    }
-    return range;
-}
-double distributionValueAlpha(double value,const std::optional<DistributionValueRange>& range) {
-    if(!range)return 0;
-    const auto span=range->max-range->min;
-    const auto ratio=span>0?std::clamp((value-range->min)/span,0.,1.):1.;
-    return 0.12+0.58*ratio;
-}
 WebPresentation rebasePresentation(const ProjectDocument& current,const ProjectDocument& from,const ProjectDocument& to) {
     auto candidate=to;candidate.presentation.webPresentation=current.presentation.webPresentation;
     auto& out=candidate.presentation.webPresentation;

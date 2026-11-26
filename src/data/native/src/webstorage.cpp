@@ -80,18 +80,27 @@ V normalizedFeatures(const V& input) {
         auto row=normalizeWebTerritorialResolvedFeature(value);const auto id=field(row,"id").string;
         require(byId.emplace(id,result.array.size()).second,"PL-SCHEMA-FIELD","Duplicate baseline ID: "+id);result.array.push_back(std::move(row));
     }
-    // The current resolved collection contract only checks parent ownership and
-    // cycles here; geometry algorithms remain outside storage admission.
+    // Reuse the parent-chain kernel exposed to the Web source validator.
+    // Storage retains its own input checks and diagnostic contract.
+    const auto node=[](const V& row) {
+        const auto& p=field(row,"properties");const auto kind=field(p,"entityKind").string;
+        return TerritorialRootNode<std::string>{field(row,"id").string,field(p,"parentId").string,kind=="regional",kind=="general"};
+    };
+    const auto lookup=[&](const std::string& id)->std::optional<TerritorialRootNode<std::string>> {
+        const auto found=byId.find(id);
+        if(found==byId.end())return std::nullopt;
+        return node(result.array[found->second]);
+    };
     for(const auto& row:result.array) {
-        const auto& p=field(row,"properties");const auto id=field(row,"id").string;
-        auto parent=field(p,"parentId").string;
-        require(field(p,"entityKind").string!="regional"||parent.empty(),"PL-SCHEMA-FIELD","Independent region has a parent.");
-        require(!parent.empty()||field(p,"coverageMode").string=="explicit","PL-SCHEMA-FIELD","A root must have explicit coverage.");
-        std::set<std::string> visited{id};
-        while(!parent.empty()) {
-            require(visited.insert(parent).second,"PL-SCHEMA-FIELD","Baseline parent cycle.");const auto found=byId.find(parent);
-            require(found!=byId.end(),"PL-SCHEMA-FIELD","Baseline parent is missing.");const auto& properties=field(result.array[found->second],"properties");
-            require(field(properties,"entityKind").string=="general","PL-SCHEMA-FIELD","Baseline parent must be general.");parent=field(properties,"parentId").string;
+        const auto current=node(row);
+        require(!current.parent.empty()||field(field(row,"properties"),"coverageMode").string=="explicit",
+                "PL-SCHEMA-FIELD","A root must have explicit coverage.");
+        switch(inspectTerritorialRoot(current,lookup).status) {
+        case TerritorialRootStatus::Valid:break;
+        case TerritorialRootStatus::RegionalParent:require(false,"PL-SCHEMA-FIELD","Independent region has a parent.");break;
+        case TerritorialRootStatus::Cycle:require(false,"PL-SCHEMA-FIELD","Baseline parent cycle.");break;
+        case TerritorialRootStatus::MissingParent:require(false,"PL-SCHEMA-FIELD","Baseline parent is missing.");break;
+        case TerritorialRootStatus::WrongParentKind:require(false,"PL-SCHEMA-FIELD","Baseline parent must be general.");break;
         }
     }
     return result;

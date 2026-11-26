@@ -49,7 +49,6 @@ struct DistributionValueScale {
     double min=0,max=1;
     bool operator==(const DistributionValueScale& b) const { return manual==b.manual&&(!manual||(min==b.min&&max==b.max)); }
 };
-struct DistributionValueRange { double min,max; };
 struct WebPresentation {
     std::map<std::string,bool> visibility;
     // An explicitly present empty group is distinct from an absent group in
@@ -71,32 +70,11 @@ struct WebPresentation {
         return visibility==b.visibility && itemVisibility==b.itemVisibility && styles==b.styles && objectStyles==b.objectStyles && objectOrder==b.objectOrder && overlayOrder==b.overlayOrder && overlayOrderPresent==b.overlayOrderPresent && labelSettings==b.labelSettings && distributionSettings==b.distributionSettings;
     }
 };
-struct LabelLayoutCandidate {
-    ObjectRef ref;
-    std::string key, collisionGroup="map";
-    double x=0,y=0,width=1,height=1,priority=0,minZoom=0,maxZoom=std::numeric_limits<double>::infinity();
-    bool selected=false,pinned=false;
-};
-struct LabelLayoutBounds { double left=0,top=0,right=0,bottom=0; };
-LabelSettings automaticLabelSettings(const std::string& kind,const LabelSettings& stored={});
-std::vector<ObjectRef> layoutLabels(const std::vector<LabelLayoutCandidate>&,double zoom,double padding,
-                                    std::optional<LabelLayoutBounds> bounds={});
-std::vector<ObjectRef> visibleDistributionEntries(const ProjectDocument&);
-std::optional<DistributionValueRange> distributionValueRange(const ProjectDocument&,const std::string& layerId);
-double distributionValueAlpha(double value,const std::optional<DistributionValueRange>&);
-struct ResolvedTerritorialPresentation {
-    double effectiveAlpha=1;
-    bool boundaryVisible=true, nameVisible=true, colorVisible=true;
-    std::string blendMode="normal";
-};
 std::string territorialGroup(const ProjectDocument&,const std::string& entityId);
 std::string territorialPresentationKey(const std::string& entityId);
 bool groupVisible(const WebPresentation&,const std::string&);
 bool itemVisible(const WebPresentation&,const std::string&,const std::string&);
 std::string contentItemGroup(const ProjectDocument&,const ObjectRef&);
-bool effectiveMapVisibility(const ProjectDocument&,const ObjectRef&);
-ResolvedTerritorialPresentation resolvedTerritorialPresentation(const ProjectDocument&,const ObjectRef&,double terrainAlpha=1);
-double territorialRenderOrder(const ProjectDocument&,const ObjectRef&,double primitiveOffset=10);
 void normalizePresentation(ProjectDocument&,const std::string& month={});
 void validatePresentation(const ProjectDocument&);
 // Preserve current display edits while applying only a content command's

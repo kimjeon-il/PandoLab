@@ -449,3 +449,11 @@ test('read-only Viewer rejects an editor geometry context and requests eager bui
  assert.throws(()=>assertPlatformPorts(createPlatformPorts({kind:'browser',library:{geometryContext:{}}}),{productMode:'viewer'}),/Viewer platform cannot install a library geometry context/);
  assert.throws(()=>resourceCapabilities('editor',platform),/Viewer product mode/);
 });
+
+test('reference graph diagnostics share the compiled chain kernel for authoring and distribution validation',async()=>{
+ const {graphDiagnostics}=await import('../../src/document/reference-graph-diagnostics.js');
+ const rows=[{id:' a ',parent:'b'},{id:'b',parent:'a'},{id:'c',parent:'missing'}];
+ const result=graphDiagnostics(rows,row=>row.id,row=>row.parent);
+ assert.equal(result[0].cycle,true);assert.equal(result[1].cycle,true);
+ assert.equal(result[2].missing,true);
+});

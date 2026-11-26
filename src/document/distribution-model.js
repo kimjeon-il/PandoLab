@@ -1,4 +1,5 @@
-import { normalizeTemporalInterval, sharedCalculationCore } from "./temporal.js";
+import { normalizeTemporalInterval } from "./temporal.js";
+import {graphDiagnostics} from "./reference-graph-diagnostics.js";
 
 export const DISTRIBUTION_SCHEMA_VERSION = 3;
 
@@ -75,11 +76,7 @@ export function normalizeDistributionLayers(value) {
   // Keep Web input normalization and the existing first-error diagnostics.
   const layerIds = new Set(output.map(layer => layer.id));
   if (!output.some(layer => layer.parentId)) return output;
-  if (typeof sharedCalculationCore.referenceGraphDiagnostics !== 'function') {
-    throw Object.assign(new Error('Canonical C++ reference graph validator is unavailable.'), {code:'PL-CORE-WASM-CAPABILITY'});
-  }
-  const diagnostics = sharedCalculationCore.referenceGraphDiagnostics(
-    output.map(layer => layer.id), output.map(layer => layer.parentId));
+  const diagnostics = graphDiagnostics(output, layer => layer.id, layer => layer.parentId);
   for (const [index, layer] of output.entries()) {
     if (layer.parentId && (!layerIds.has(layer.parentId) || layer.parentId === layer.id)) {
       throw new Error(`${layer.id}의 상위 분포 레이어가 존재하지 않거나 올바르지 않습니다.`);

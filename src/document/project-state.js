@@ -104,7 +104,6 @@ function prepareProjectForValidation(project) {
 export function assertCurrentProjectSchema(input, { baseEntities = null, baseDataset = null, baseDatasetFingerprint = null } = {}) {
   const project = prepareProjectForValidation(input);
   if (!PROJECT_FORMATS.has(text(project.format))) throw schemaError(`지원하지 않는 프로젝트 형식입니다: ${text(project.format) || '(없음)'}`, 'PL-SCHEMA-FORMAT');
-  requireSchemaVersion(project.schemaVersion, '프로젝트');
   requireSchemaVersion(project.landObjectModel?.schemaVersion, '지형지물 모델', LAND_OBJECT_SCHEMA_VERSION);
   requireSchemaVersion(project.territorialModel?.schemaVersion, '영토 모델', TERRITORIAL_MODEL_SCHEMA_VERSION);
   requireSchemaVersion(project.distributionModel?.schemaVersion, '분포 모델', DISTRIBUTION_MODEL_SCHEMA_VERSION);
