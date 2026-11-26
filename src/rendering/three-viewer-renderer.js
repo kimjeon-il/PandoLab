@@ -9,8 +9,9 @@ import {territorialNativeLabelRows} from '../ui/territorial-native-label.js';
 import {createGlobeCamera} from './globe-camera.js';
 import {COUNTRY_LABEL_MIN_ZOOM} from './three-globe-labels.js';
 import {automaticLabelSettings, labelKey} from './label-layout.js';
-import {decodeGlobeMesh,decodeGlobeStrokes,globeMeshResourceKey,globeTerritoryKey} from './globe-mesh.js';
-import {decodeGlobePickGrid,globePickCellBounds,globePickRayCells,globePickStrokeCells,pickCellsIntersectBounds,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
+import {globeMeshResourceKey,globeTerritoryKey} from './globe-mesh.js';
+import {createGlobePacketTasks} from './globe-packet-tasks.js';
+import {globePickCellBounds,globePickRayCells,globePickStrokeCells,pickCellsIntersectBounds,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
 import {createThreeGlobeSurface} from './three-globe-surface.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
@@ -35,11 +36,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }));
  const cacheBudget=renderCacheBudget();
  const historicalCache=createRenderPacketCache({byteBudget:cacheBudget.historicalCpuBytes});
- const pendingOutlines=new Set();
- let prefetchView=null,prefetchPhysical=null,publishedView=null,publishedPhysical=null;
+ const pendingOutlines=new Map(),requestScopes=new Map();
+ let prefetchView=null,prefetchPhysical=null,visiblePhysicalPlan=null,publishedView=null,publishedPhysical=null;
+ let visiblePhysicalFailed=null,fontReady=false,fontPending=null,fontFailed=false,lastLabelsNeeded=false;
+ const failedLineLayers=new Set();
  const invalidate=reason=>deps.domains.renderingDomain.invalidateView(reason);
  const events=new Map(),pointers=new Map(),lifetime=new AbortController();
- const metrics=createRenderingMetrics();
+ const metrics=createRenderingMetrics(),packetTasks=createGlobePacketTasks();
  let host,canvas,surface,assets,camera,viewport,pending,disposed=false,lost=false,loaded=false,ready=false,error;
  let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null,acceptedFeatures=null;
  let territories=baseTerritories,acceptedTerritories=baseTerritories,territoryParts=null,acceptedTerritoryParts=null,activeSlots=new Set(baseTerritories.slots);
@@ -60,6 +63,32 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   isProjectBlocked:()=>Boolean(error),isRecoveryFrameAdmissible:()=>!lost,
   waitForCanonicalFrame:()=>presentation.waitForMapPresentation(generation),onTemporalRetired:()=>{framePreserved=false;}});
 
+ function startRequest(name){
+  const previous=requestScopes.get(name),controller=new AbortController();
+  requestScopes.set(name,controller);previous?.abort();return controller;
+ }
+ const requestCurrent=(name,controller)=>requestScopes.get(name)===controller&&!controller.signal.aborted&&!disposed;
+ function finishRequest(name,controller){if(requestScopes.get(name)===controller)requestScopes.delete(name);}
+ function cancelRequest(name){
+  const controller=requestScopes.get(name);requestScopes.delete(name);controller?.abort();
+ }
+ function clearPreparation(){
+  for(const name of ['country-prefetch','physical-prefetch','territory-apply','physical-view'])cancelRequest(name);
+  prefetchView=null;prefetchPhysical=null;visiblePhysicalPlan=null;visiblePhysicalFailed=null;
+  retainCpuResources();
+ }
+ function cancelOutlines(){
+  for(const controller of pendingOutlines.values())controller.abort();
+  pendingOutlines.clear();
+ }
+ function beginTemporalViewTransition(...args){clearPreparation();return presentation.beginTemporalViewTransition(...args);}
+ function finishTemporalViewTransition(token){
+  const current=presentation.ticket?.token===token;
+  const accepted=presentation.ticket?.presented;
+  const result=presentation.finishTemporalViewTransition(token);
+  if(current&&!accepted)clearPreparation();
+  return result;
+ }
  function notify(status,label){
   const value={status,label,mapReady:ready,retry:false};
   presentMapPreparation(value,{retry:retryMapPreparation});onMapPreparationStatus?.(value,generation);
@@ -70,7 +99,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   presentation.rejectMapPresentationWaiters(cause);presentation.failTemporalPresentation(cause);
   deps.feedback.reportOperationError(cause,'Three.js 지도를 표시하지 못했습니다.','PL-THREE-001');
  }
- function retryMapPreparation(){error=null;return invalidate('map-retry');}
+ function retryMapPreparation(){error=null;visiblePhysicalFailed=null;failedLineLayers.clear();fontFailed=false;return invalidate('map-retry');}
  function subscribeInput(type,callback){
   if(!events.has(type))events.set(type,new Set());
   events.get(type).add(callback);return ()=>events.get(type)?.delete(callback);
@@ -134,12 +163,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   canvas.style.cssText='display:block;width:100%;height:100%;touch-action:none';
   host.appendChild(canvas);installInput();
  }
- const loader=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',resolveUrl:row=>new URL(row.url,document.baseURI).href});
- async function load(row,decode,{phase='startup',label='Three.js 지도 자산',signal=lifetime.signal}={}){
-  const result=await loader.loadAsset(row,phase,row.sha256,label,bytes=>metrics.run('three.decode-packet',()=>decode(bytes)),signal);
+ const loader=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',deferCacheWrite:true,resolveUrl:row=>new URL(row.url,document.baseURI).href});
+ async function load(row,kind,{phase='startup',label='Three.js 지도 자산',signal=lifetime.signal,...parameters}={}){
+  const result=await loader.loadStoredAsset(row,phase,row.sha256,label,bytes=>
+   metrics.track('three.decode-packet',()=>packetTasks.decode(kind,bytes,row,{signal,priority:phase==='startup'?10:0,...parameters})),signal);
   return result.value;
  }
- const loadMesh=async row=>({packet:await load(row,decodeGlobeMesh),gridSpec:row.pickGrid});
+ const loadMesh=async(row,signal)=>({packet:await load(row,'mesh',{signal}),gridSpec:row.pickGrid});
  const meshGrids=new WeakMap(),pickBounds=new WeakMap();
  function packetBounds(packet){
   if(!pickBounds.has(packet)){
@@ -154,28 +184,29 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   // load their exact pick grid when the sampled ray misses their cell bounds.
   if(mesh!==assets.countries&&!pickCellsIntersectBounds(cells,packetBounds(mesh.packet)))return [];
   const grid=await historicalResource(meshGrids,mesh,()=>load(mesh.gridSpec,
-   bytes=>decodeGlobePickGrid(bytes,mesh.packet.indices.length/3),{phase:'background',label:'지도 선택 인덱스'}));
+   'pick',{phase:'background',label:'지도 선택 인덱스',primitiveCount:mesh.packet.indices.length/3}));
   return pickGlobeSlots(mesh.packet,grid,ray,visible,{...options,cells});
  }
- async function loadOutlines(row,owners){
-  return load(row,bytes=>{
-   const packet=decodeGlobeStrokes(bytes);
-   if(!owners.length||owners.some(group=>!group.length||group.some(slot=>!Number.isInteger(slot)||slot<0||slot>=slots.length))||
-     packet.ownerGroups.length!==packet.count||packet.ownerGroups.some(group=>group>=owners.length))throw Error('Invalid globe outline owners');
-   return {packet,owners};
-  },{phase:'background',label:'선택 윤곽선'});
+ async function loadOutlines(row,owners,signal){
+  if(!owners.length||owners.some(group=>!group.length||group.some(slot=>!Number.isInteger(slot)||slot<0||slot>=slots.length)))
+   throw Error('Invalid globe outline owners');
+  const packet=await load(row,'stroke',{phase:'background',label:'선택 윤곽선',signal,ownerCount:owners.length});
+  return {packet,owners};
  }
+ const graticuleNeeded=()=>state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false;
+ const bordersNeeded=()=>state.layerVisibility.objects!==false&&layerStyle(state.layerPresentation,'objects').boundaryVisible!==false;
  async function loadAssets(){
   const [countries,borders,graticule]=await Promise.all([
-   loadMesh(spec.countries),load(spec.borders,decodeGlobeStrokes),
-   load(spec.graticule,decodeGlobeStrokes),
-   physicalAssets.prepare(spec.physical.identity),
+   loadMesh(spec.countries),bordersNeeded()?load(spec.borders,'stroke'):null,
+   graticuleNeeded()?load(spec.graticule,'stroke'):null,
   ]);
   return {countries,borders,graticule};
  }
  const physicalAssets=createGlobePhysicalAssets([spec.physical,...spec.physicalContexts],{
-  loadMesh,loadStroke:row=>load(row,decodeGlobeStrokes),byteBudget:cacheBudget.physicalCpuBytes,
+  loadMesh,loadStroke:(row,signal)=>load(row,'stroke',{signal}),byteBudget:cacheBudget.physicalCpuBytes,
  });
+ const physicalPlan=identity=>physicalAssets.plan(identity,{zoom:view.zoom,
+  lakesVisible:state.layerVisibility.lakes!==false,riversVisible:state.layerVisibility.rivers!==false});
  function initialize(){
   if(pending)return pending;
   pending=(async()=>{
@@ -183,15 +214,14 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const context=canvas.getContext('webgl2',{alpha:false,antialias:true});
    if(!context){unsupported=true;throw Error('Three.js requires WebGL2');}
    const threeUrl=new URL(spec.moduleUrl,document.baseURI);
-   const [THREE,packets,restored]=await Promise.all([import(threeUrl.href),metrics.track('three.prepare-assets',loadAssets),initialCamera,
-    document.fonts.load('800 56px "Pretendard Variable"','대한민국')]);
+   const [THREE,packets,restored]=await Promise.all([import(threeUrl.href),metrics.track('three.prepare-assets',loadAssets),initialCamera]);
    lifetime.signal.throwIfAborted();assets=packets;
    surface=createThreeGlobeSurface(THREE,{canvas,context,palette:deps.preferences.mapPalette(),countryCount:slots.length,hydroCount:spec.hydroCount,cacheBudget,packets:{
     countries:assets.countries.packet,borders:assets.borders,borderGroupCount:spec.borderOwners.length,graticule:assets.graticule,
    }});
    // Each resident detail packet has a CPU copy and one GPU copy of its arrays.
    riverDetail=createGlobeRiverDetail({byteBudget:cacheBudget.hydroBytes/2,
-    load:(row,signal)=>load(row.spec,decodeGlobeStrokes,{phase:'background',label:'Three.js 상세 하천',signal}),
+    load:(row,signal)=>load(row.spec,'stroke',{phase:'background',label:'Three.js 상세 하천',signal}),
     attach:surface.attachRiverDetail,invalidate:()=>invalidate('three-river-detail'),
     onError:cause=>deps.feedback.reportOperationError(cause,'상세 하천을 불러오지 못했습니다.','PL-THREE-RIVER-001'),
    });
@@ -242,17 +272,20 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   return identity;
  }
  async function preparePhysicalContext(month,{isCurrent=()=>true}={}){
-  const assertCurrent=()=>{if(!isCurrent())throw Object.assign(new Error('Physical preparation superseded'),{name:'AbortError',cancelled:true});};
-  assertCurrent();
-  const identity=requirePhysicalSource(month,deps.physicalResources.physicalSourceIdentityAtMonth(month));
-  prefetchPhysical=identity;retainCpuResources();
+  const controller=startRequest('physical-prefetch');
+  const assertCurrent=()=>{if(!requestCurrent('physical-prefetch',controller)||!isCurrent())
+   throw Object.assign(new Error('Physical preparation superseded'),{name:'AbortError',cancelled:true});};
+  let target;
   try{
-   await Promise.all([initialize(),physicalAssets.prepare(identity)]);
+   assertCurrent();await initialize();assertCurrent();
+   target=physicalPlan(requirePhysicalSource(month,deps.physicalResources.physicalSourceIdentityAtMonth(month)));
+   prefetchPhysical=target;retainCpuResources();
+   await physicalAssets.prepare(target,{signal:controller.signal});
    assertCurrent();return true;
   }catch(error){
-   if(prefetchPhysical===identity&&!isCurrent()){prefetchPhysical=null;retainCpuResources();}
+   if(requestCurrent('physical-prefetch',controller)&&prefetchPhysical===target){prefetchPhysical=null;retainCpuResources();}
    throw error;
-  }
+  }finally{controller.abort();finishRequest('physical-prefetch',controller);}
  }
  function requireTerritorialGeometry(month,references){
   const active=[];
@@ -285,33 +318,35 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   if(disposed)return;
   const views=new Set([prefetchView,territories.view,publishedView]);
   historicalCache.retain([...views].flatMap(historicalKeys));
-  physicalAssets.retain([prefetchPhysical,physical?.spec.identity,publishedPhysical?.spec.identity].filter(Boolean));
+  physicalAssets.retain([prefetchPhysical,visiblePhysicalPlan,physical?.plan,publishedPhysical?.plan]);
  }
- async function loadHistoricalAssets(view){
+ async function loadHistoricalAssets(view,signal){
   if(!view)return null;
   const [countries,borders]=await Promise.all([
    Promise.all(view.slots.filter(slot=>slot>=baseSlots.length).map(async slot=>{
     const row=spec.historicalCountries[slot-baseSlots.length].countries;
     const key=globeMeshResourceKey(row);
-    return {slot,key,mesh:await historicalCache.read(countryCacheKey(row),()=>loadMesh(row))};
+    return {slot,key,mesh:await historicalCache.read(countryCacheKey(row),readSignal=>loadMesh(row,readSignal),signal)};
    })),
    Promise.all(view.borders.map(async index=>{
     const row=spec.historicalBorders[index];
-    return {key:row.sha256,packet:await historicalCache.read(borderCacheKey(row),()=>load(row,decodeGlobeStrokes))};
+    return {key:row.sha256,packet:await historicalCache.read(borderCacheKey(row),readSignal=>load(row,'stroke',{signal:readSignal}),signal)};
    })),
   ]);
   return {countries,borders};
  }
  async function prepareDatedTerritories(month,references,{isCurrent=()=>true}={}){
   const prepared=requireTerritorialGeometry(month,references);
+  const controller=startRequest('country-prefetch');
   prefetchView=prepared.view;retainCpuResources();
   try{
-   await loadHistoricalAssets(prepared.view);
    if(!isCurrent())throw Object.assign(Error('Territorial preparation superseded'),{name:'AbortError',cancelled:true});
+   await loadHistoricalAssets(prepared.view,controller.signal);
+   if(!requestCurrent('country-prefetch',controller)||!isCurrent())throw Object.assign(Error('Territorial preparation superseded'),{name:'AbortError',cancelled:true});
   }catch(error){
-   if(prefetchView===prepared.view&&!isCurrent()){prefetchView=null;retainCpuResources();}
+   if(requestCurrent('country-prefetch',controller)&&prefetchView===prepared.view){prefetchView=null;retainCpuResources();}
    throw error;
-  }
+  }finally{controller.abort();finishRequest('country-prefetch',controller);}
  }
  let territorialRequest=0;
  async function setTerritorialFeatures(rows){
@@ -319,14 +354,92 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const month=state.timelineCursor;
   const identity=requirePhysicalSource(month,deps.physicalResources.physicalSourceIdentity);
   const prepared=requireTerritorialGeometry(month,featureRefs(rows));
-  prefetchView=prepared.view;prefetchPhysical=identity;retainCpuResources();
-  const [parts,nextPhysical]=await Promise.all([loadHistoricalAssets(prepared.view),physicalAssets.prepare(identity)]);
-  if(disposed||request!==territorialRequest||requestGeneration!==generation||month!==state.timelineCursor)return false;
-  territories=prepared;territoryParts=parts;physical=nextPhysical;activeSlots=new Set(prepared.slots);
-  activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));
-  features=new Map(rows.map(row=>[String(row.id),row]));paintDirty=fullPaintDirty=true;labelContentDirty=true;return true;
+  const controller=startRequest('territory-apply'),target=physicalPlan(identity);
+  cancelRequest('physical-view');visiblePhysicalPlan=null;visiblePhysicalFailed=null;
+  prefetchView=prepared.view;prefetchPhysical=target;retainCpuResources();
+  try{
+   const [parts,nextPhysical]=await Promise.all([
+    loadHistoricalAssets(prepared.view,controller.signal),physicalAssets.prepare(target,{signal:controller.signal}),
+   ]);
+   if(!requestCurrent('territory-apply',controller)||request!==territorialRequest||requestGeneration!==generation||month!==state.timelineCursor)return false;
+   territories=prepared;territoryParts=parts;physical=nextPhysical;activeSlots=new Set(prepared.slots);
+   activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));
+   features=new Map(rows.map(row=>[String(row.id),row]));paintDirty=fullPaintDirty=true;labelContentDirty=true;return true;
+  }catch(error){
+   if(controller.signal.aborted)return false;
+   throw error;
+  }finally{
+   if(requestScopes.get('territory-apply')===controller){
+    prefetchView=null;prefetchPhysical=null;retainCpuResources();
+   }
+   controller.abort();finishRequest('territory-apply',controller);
+  }
+ }
+ // Zoom/visibility changes only request newly necessary physical tiers.
+ // Keep the already published same-date context during ordinary camera input.
+ function ensureVisiblePhysical(){
+  if(!physical)return false;
+  const target=physicalPlan(physical.spec.identity);
+  if(physical.plan.key===target.key){
+   if(visiblePhysicalPlan){cancelRequest('physical-view');visiblePhysicalPlan=null;retainCpuResources();}
+   visiblePhysicalFailed=null;return true;
+  }
+  if(visiblePhysicalPlan?.key===target.key||visiblePhysicalFailed===target.key)return false;
+  const controller=startRequest('physical-view'),requestedGeneration=generation;
+  visiblePhysicalPlan=target;retainCpuResources();
+  physicalAssets.prepare(target,{signal:controller.signal}).then(next=>{
+   if(!requestCurrent('physical-view',controller)||generation!==requestedGeneration||
+    physical?.spec.identity!==target.spec.identity||physicalPlan(target.spec.identity).key!==target.key)return;
+   physical=next;paintDirty=fullPaintDirty=true;pickingChanged=true;invalidate('three-physical-tier-ready');
+  }).catch(error=>{
+   if(!requestCurrent('physical-view',controller))return;
+   visiblePhysicalFailed=target.key;
+   if(!ready||framePreserved)failMapPreparation(error);
+   else deps.feedback.reportOperationError(error,'확대 수준의 수역을 불러오지 못했습니다.','PL-THREE-HYDRO-TIER-001');
+  }).finally(()=>{
+   if(requestScopes.get('physical-view')===controller){visiblePhysicalPlan=null;retainCpuResources();}
+   finishRequest('physical-view',controller);
+  });
+  return false;
+ }
+ function ensureLineLayer(name,wanted,has,install,row,label){
+  surface.setLayerVisibility(name,wanted);
+  if(!wanted){cancelRequest(name);failedLineLayers.delete(name);return true;}
+  if(has())return true;
+  if(failedLineLayers.has(name)||requestScopes.has(name))return false;
+  const controller=startRequest(name);
+  load(row,'stroke',{phase:'background',label,signal:controller.signal}).then(packet=>{
+   if(!requestCurrent(name,controller))return;
+   install(packet);invalidate('three-'+name+'-ready');
+  }).catch(error=>{
+   if(!requestCurrent(name,controller))return;
+   failedLineLayers.add(name);
+   if(!ready||framePreserved)failMapPreparation(error);
+   else deps.feedback.reportOperationError(error,label+'을 불러오지 못했습니다.','PL-THREE-LINE-LAYER-001');
+  }).finally(()=>finishRequest(name,controller));
+  return false;
+ }
+ function labelsNeeded(){
+  return view.zoom>=COUNTRY_LABEL_MIN_ZOOM&&territorialNamesVisible(state)||view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR;
+ }
+ function ensureLabelFont(){
+  const wanted=labelsNeeded();
+  if(wanted!==lastLabelsNeeded){lastLabelsNeeded=wanted;labelContentDirty=true;}
+  if(!wanted||fontReady)return true;
+  if(fontPending||fontFailed)return false;
+  fontPending=document.fonts.load('800 56px "Pretendard Variable"','대한민국').then(()=>{
+   if(disposed)return;
+   fontReady=true;labelContentDirty=true;invalidate('three-label-font-ready');
+  }).catch(error=>{
+   if(disposed)return;
+   fontFailed=true;
+   if(labelsNeeded()&&(!ready||framePreserved))failMapPreparation(error);
+   else deps.feedback.reportOperationError(error,'지도 글꼴을 불러오지 못했습니다.','PL-THREE-FONT-001');
+  }).finally(()=>{fontPending=null;});
+  return false;
  }
  function updateLabelContent(){
+  if(!labelsNeeded()||!fontReady){surface.labels.setCandidates([]);labelContentDirty=false;return;}
   const namesVisible=territorialNamesVisible(state);
   const countries=territories.slots.flatMap(slot=>{
    const ref=refs[slot],metadata=labelsBySlot[slot];
@@ -354,18 +467,19 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   labelContentDirty=false;
  }
  function requestOutlines(){
+  for(const [slot,controller] of pendingOutlines)if(!outlineSlots.has(slot)){
+   pendingOutlines.delete(slot);controller.abort();
+  }
   for(const slot of outlineSlots){
    if(pendingOutlines.has(slot)||surface.hasOutlines(slot))continue;
-   pendingOutlines.add(slot);
+   const controller=new AbortController();pendingOutlines.set(slot,controller);
    const row=slot===null?spec:slots[slot];
-   loadOutlines(row.outlines,row.outlineOwners).then(data=>{
-    if(disposed||!outlineSlots.has(slot))return;
-    surface.installOutlines(slot,data);
-    paintDirty=true;
-    invalidate('three-outlines-ready');
+   loadOutlines(row.outlines,row.outlineOwners,controller.signal).then(data=>{
+    if(disposed||controller.signal.aborted||pendingOutlines.get(slot)!==controller||!outlineSlots.has(slot))return;
+    surface.installOutlines(slot,data);paintDirty=true;invalidate('three-outlines-ready');
    }).catch(cause=>{
-    if(!disposed)deps.feedback.reportOperationError(cause,'선택 윤곽선을 불러오지 못했습니다.','PL-THREE-OUTLINE-001');
-   }).finally(()=>pendingOutlines.delete(slot));
+    if(!disposed&&!controller.signal.aborted)deps.feedback.reportOperationError(cause,'선택 윤곽선을 불러오지 못했습니다.','PL-THREE-OUTLINE-001');
+   }).finally(()=>{if(pendingOutlines.get(slot)===controller)pendingOutlines.delete(slot);});
   }
  }
  function updatePaint(){
@@ -417,9 +531,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  function renderFrame(frame){
   const base={frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
   if(!features||lost||error||!presentation.countrySourceAdmitted(territories.key))return {...base,deferred:true};
+  const physicalReady=ensureVisiblePhysical(),fontAvailable=ensureLabelFont();
+  const graticuleReady=ensureLineLayer('graticule',graticuleNeeded(),surface.hasGraticule,surface.installGraticule,spec.graticule,'경위선');
+  const bordersReady=ensureLineLayer('borders',bordersNeeded(),surface.hasBaseBorders,surface.installBaseBorders,spec.borders,'기본 국경선');
+  if((!ready||framePreserved)&&(!physicalReady||!graticuleReady||!bordersReady||!fontAvailable))return {...base,deferred:true};
   surface.activateDatedView(territories.view,territoryParts);
   surface.activatePhysicalContext(physical);
-  surface.setLayerVisibility('graticule',state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false);
   pickingChanged||=fullPaintDirty||lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
   if(paintDirty)metrics.run('three.country-paint',updatePaint);
   if(labelContentDirty)metrics.run('three.label-content',updateLabelContent);
@@ -447,7 +564,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   if(publishedView!==territories.view||publishedPhysical!==physical||first){
    publishedView=territories.view;publishedPhysical=physical;
    if(prefetchView===publishedView)prefetchView=null;
-   if(prefetchPhysical===publishedPhysical?.spec.identity)prefetchPhysical=null;
+   if(prefetchPhysical?.key===publishedPhysical?.plan.key)prefetchPhysical=null;
    retainCpuResources();
   }
   surface.trimResidency();
@@ -458,24 +575,21 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  async function pickHydroFeatures(point,active,camera,lakeSlots,waterFeatures){
   const slots=new Set(lakeSlots);
   if(state.layerVisibility.rivers!==false&&camera.view.zoom>=active.spec.riverMinZoom){
-   const chunks=[{row:{spec:active.spec.rivers,minZoom:active.spec.riverMinZoom},packet:active.rivers},
+   const chunks=[...(active.rivers?[{row:{spec:active.spec.rivers,minZoom:active.spec.riverMinZoom},packet:active.rivers}]:[]),
     ...acceptedRiverChunks.filter(({row})=>camera.view.zoom>=row.minZoom)];
    const cells=globePickStrokeCells(camera,point);
-   await Promise.all(chunks.filter(({packet},index)=>index===0||pickCellsIntersectBounds(cells,packetBounds(packet))).map(async({row,packet})=>{
+   await Promise.all(chunks.filter(({packet})=>packet===active.rivers||pickCellsIntersectBounds(cells,packetBounds(packet))).map(async({row,packet})=>{
     if(!riverPickGrids.has(packet))riverPickGrids.set(packet,new Map());
     const gridSpec=row.spec.pickGrid;
     const grid=await historicalResource(riverPickGrids.get(packet),gridSpec.sha256,
-     ()=>load(gridSpec,bytes=>decodeGlobePickGrid(bytes,packet.count)));
+     ()=>load(gridSpec,'pick',{phase:'background',primitiveCount:packet.count}));
     for(const slot of pickGlobeStrokeSlots(packet,grid,camera,point,5,cells))slots.add(slot);
    }));
   }
   if(!slots.size)return waterFeatures;
   if(!hydroMetadata){
-   hydroMetadata=load(spec.hydroMetadata,bytes=>{
-    const rows=JSON.parse(new TextDecoder().decode(bytes));
-    if(!Array.isArray(rows)||rows.length!==spec.hydroCount)throw Error('Invalid Three.js hydro identities');
-    rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));
-    return rows;
+   hydroMetadata=load(spec.hydroMetadata,'hydro',{phase:'background',identityCount:spec.hydroCount}).then(rows=>{
+    rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));return rows;
    });
    hydroMetadata.catch(()=>{hydroMetadata=null;});
   }
@@ -535,12 +649,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   invalidateLabelContent(){labelContentDirty=true;},getPickingRevision:()=>pickingRevision,queryObjectRefs,
   setInitialMapLoading(value){initialLoading=value;},isStyleReady:()=>loaded,renderFrame,commitVisualFrame,
   canPresentVisualFrame:presentation.canPresentVisualFrame,prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
-  beginTemporalViewTransition:presentation.beginTemporalViewTransition,admitTemporalViewTransition:presentation.admitTemporalViewTransition,
-  finishTemporalViewTransition:presentation.finishTemporalViewTransition,waitForMapPresentation:presentation.waitForMapPresentation,
+  beginTemporalViewTransition,admitTemporalViewTransition:presentation.admitTemporalViewTransition,
+  finishTemporalViewTransition,waitForMapPresentation:presentation.waitForMapPresentation,
   waitForTemporalPresentation:presentation.waitForTemporalPresentation,getProjectGeneration:()=>generation,
   preserveTemporalFrame(){framePreserved=true;},isFramePreserved:()=>framePreserved,
   resetProjectRenderState(options){generation=options.generation;features=null;ready=false;error=null;
-    prefetchView=null;prefetchPhysical=null;retainCpuResources();presentation.resetForProject(options);},
+    clearPreparation();cancelOutlines();presentation.resetForProject(options);},
   measureWork:metrics.track,measureSyncWork:metrics.run,failMapPreparation,retryMapPreparation,getRuntimeState,
   getStats:()=>({...getRuntimeState(),mapReadiness:readyState(),displayedRevision:ready?revision:0,sourceRevision:revision,
    generation,certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
@@ -551,7 +665,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
    historicalCache:historicalCache.stats(),physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
-   labelAtlas:surface?.labels.cacheStats()??null,errorMessage:error?.message??null,initialLoading}),
-  dispose(){disposed=true;clearTimeout(moveTimer);lifetime.abort();presentation.dispose();events.clear();pendingOutlines.clear();historicalCache.dispose();physicalAssets.dispose();riverDetail?.dispose();surface?.dispose();canvas?.remove();},
+   labelAtlas:surface?.labels.cacheStats()??null,packetWorker:packetTasks.stats(),errorMessage:error?.message??null,initialLoading}),
+  dispose(){disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historicalCache.dispose();physicalAssets.dispose();riverDetail?.dispose();packetTasks.dispose();surface?.dispose();canvas?.remove();},
  });
 }

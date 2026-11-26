@@ -211,6 +211,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     });
   }
   function setLayerVisibility(name,visible){
+    if(name==='graticule')graticuleVisible=visible;
     for(const mesh of layers.get(name)??[])mesh.visible=visible;
     if(Object.hasOwn(visibleLayers,name)){
       visibleLayers[name]=visible;
@@ -274,8 +275,14 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     return {setVisible:visible=>{resource.visible=visible;},dispose:()=>resource.dispose()};
   }
   const strokeOptions={style:palette.strokes.country,cameraUniforms,viewport,margin,multisampling};
-  addLayer('graticule',spatialStrokes(packets.graticule,{...strokeOptions,order:5.5,
-    multisampling:false,style:{color:'#aaaaaa',width:0.55,opacity:0.34}}));
+  let graticule=null,graticuleVisible=true;
+  function installGraticule(packet){
+    if(graticule)return;
+    graticule=spatialStrokes(packet,{...strokeOptions,order:5.5,
+      multisampling:false,style:{color:'#aaaaaa',width:0.55,opacity:0.34}});
+    addLayer('graticule',graticule);graticule.visible=graticuleVisible;
+  }
+  if(packets.graticule)installGraticule(packets.graticule);
   function meshBytes(resource){return resource.bytes;}
   function releaseMesh(resource){resource.dispose();}
   function useMesh(role,identity,prepare){
@@ -296,7 +303,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       waters:parts.waters.map(({id,spec:row,mesh})=>useMesh('water',`${id}:${row.sha256}`,()=>register(null,mesh.packet,palette.ocean,2))),
       lakes:parts.lakes.map(({spec:row,mesh,minZoom})=>useMesh('lake',`${row.sha256}:${minZoom}`,
         ()=>register(null,mesh.packet,palette.ocean,2,minZoom,'lake'))),
-      rivers:[useMesh('river',`${spec.rivers.sha256}:${spec.riverMinZoom}`,()=>riverMesh(parts.rivers,spec.riverMinZoom))],
+      rivers:parts.rivers?[useMesh('river',`${spec.rivers.sha256}:${spec.riverMinZoom}`,()=>riverMesh(parts.rivers,spec.riverMinZoom))]:[],
     };
     waterMeshes=new Map(parts.waters.map((row,index)=>[row.id,physicalLayers.waters[index]]));
     activePhysical=parts;
@@ -321,9 +328,18 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const borderBytes=new Uint8Array(Math.max(1,packets.borderGroupCount)).fill(255);
   const borderTexture=new THREE.DataTexture(borderBytes,borderBytes.length,1,THREE.RedFormat);
   borderTexture.needsUpdate=true;
-  if(packets.borders.count)addLayer('borders',spatialStrokes(packets.borders,{...strokeOptions,order:5,
-    visibilityUniforms:{groupVisibility:{value:borderTexture},groupCount:{value:borderBytes.length}},
-  }));
+  let baseBordersInstalled=false;
+  function installBaseBorders(packet){
+    if(baseBordersInstalled)return;
+    if(packet.count){
+      const resource=spatialStrokes(packet,{...strokeOptions,order:5,
+        visibilityUniforms:{groupVisibility:{value:borderTexture},groupCount:{value:borderBytes.length}},
+      });
+      addLayer('borders',resource);resource.visible=showBorders;
+    }
+    baseBordersInstalled=true;
+  }
+  if(packets.borders)installBaseBorders(packets.borders);
 
   function createOutlines({packet,owners}){
     const index=indexGlobeOutlineRanges(packet,owners);
@@ -501,6 +517,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     borderTexture.dispose();
     renderer.dispose();
   }
-  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateDatedView,activatePhysicalContext,trimResidency,cacheStats,labels,dispose,
+  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installGraticule,hasGraticule:()=>graticule!==null,installBaseBorders,hasBaseBorders:()=>baseBordersInstalled,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateDatedView,activatePhysicalContext,trimResidency,cacheStats,labels,dispose,
     drawCalls:()=>renderer.info.render.calls,spatialStats:()=>({...spatialStats})});
 }

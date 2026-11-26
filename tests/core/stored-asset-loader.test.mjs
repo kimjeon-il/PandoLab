@@ -68,3 +68,22 @@ test('immutable cache-only reads reject corrupt bytes without fetching and norma
  assert.deepEqual(results.map(row=>row.value),['globe','globe']);
  assert.equal(downloads,1);assert.equal(storage.calls.deletes,2);assert.equal(storage.calls.writes,1);
 });
+
+test('verified immutable data can be consumed before its background cache write completes',async()=>{
+ const writing=Promise.withResolvers(),release=Promise.withResolvers(),completed=Promise.withResolvers();
+ let downloads=0;
+ const cache={
+  async match(){return null;},
+  async put(){writing.resolve();await release.promise;completed.resolve();},
+ };
+ const loader=loaderFor({cacheStorage:{open:async()=>cache},deferCacheWrite:true,
+  fetchFn(){downloads++;return new Response('globe');}});
+ const pending=load(loader);
+ await writing.promise;
+ try{
+  const result=await pending;
+  assert.equal(result.value,'globe');assert.equal(result.cacheWriteMs,null);
+  assert.equal(downloads,1);
+ }finally{release.resolve();}
+ await completed.promise;
+});

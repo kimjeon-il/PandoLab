@@ -1,6 +1,7 @@
 import { fetchWithRetry, isRetryableHttpStatus, withRetry } from "../runtime/reliability-core.js";
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
 import {maintainStoredContent,touchStoredContent} from './stored-content-cache.js';
+import {decodeStoredBuffer,validateAssetLength} from './asset-decompression.js';
 
 const immutableFlightsByStorage = new WeakMap();
 const HASH = /^[a-f0-9]{64}$/;
@@ -16,7 +17,7 @@ function waitForConsumer(promise, signal) {
 }
 
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
-export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',subtle=globalThis.crypto?.subtle}) {
+export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',deferCacheWrite = false,subtle=globalThis.crypto?.subtle}) {
  const flightScope = cacheStorage ?? fetchFn;
  if (cachePolicy === 'immutable' && !immutableFlightsByStorage.has(flightScope))
    immutableFlightsByStorage.set(flightScope, new Map());
@@ -130,33 +131,6 @@ async function consumeStoredResponse(response, spec, phase, key, label, source, 
   };
 }
 
-async function decodeStoredBuffer(storedBuffer, spec, phase, key, label, signal = null) {
-  signal?.throwIfAborted();
-  const startedAt = performance.now();
-  let buffer = storedBuffer;
-  if (spec.encoding === 'gzip') {
-    if (typeof DecompressionStream !== 'function') throw new Error(`이 브라우저는 ${label} 압축 해제를 지원하지 않습니다.`);
-    report(phase, `${key}-decode`, `${label}: 압축을 해제하는 중입니다.`);
-    let decoded = new Blob([storedBuffer]).stream().pipeThrough(new DecompressionStream('gzip'));
-    const limit=spec.maxDecodedBytes??(Number.isSafeInteger(spec.decodedBytes)&&spec.decodedBytes>0?spec.decodedBytes:undefined);
-    if(limit!==undefined||signal){
-      if(limit!==undefined&&(!Number.isSafeInteger(limit)||limit<1))throw Error('Invalid decoded asset limit');
-      let bytes=0;
-      decoded=decoded.pipeThrough(new TransformStream({transform(chunk,controller){
-        bytes+=chunk.byteLength;
-        if(limit!==undefined&&bytes>limit)throw Error(`${label} 압축 해제 크기가 허용된 한도를 초과합니다.`);
-        controller.enqueue(chunk);
-      }}),signal?{signal}:undefined);
-    }
-    buffer = await new Response(decoded).arrayBuffer();
-  }
-  signal?.throwIfAborted();
-  return {
-    buffer,
-    decodedBytes: buffer.byteLength,
-    decompressMs: performance.now() - startedAt,
-  };
-}
 
 function resolveAssetUrl(spec) { return resolveUrl(spec); }
 
@@ -175,15 +149,6 @@ async function validateStoredAsset(storedBuffer, spec, label) {
   if (actualHash !== expectedHash) throw new Error(`${label} 무결성 검증에 실패했습니다.`);
 }
 
-function validateAssetLength(result, spec, label) {
-  const expected = Number(spec.decodedBytes || 0);
-  if (expected <= 0 || result.buffer.byteLength === expected) return;
-  if (spec.encoding === 'identity') {
-    const normalized = new TextDecoder().decode(result.buffer).replaceAll('\r\n', '\n');
-    if (new TextEncoder().encode(normalized).byteLength === expected) return;
-  }
-  throw new Error(`${label} 압축 해제 크기가 올바르지 않습니다.`);
-}
 
 async function downloadStoredAsset({url,spec,phase,key,label,signal,attempt}) {
   let responseHeaders;
@@ -254,6 +219,8 @@ async function loadImmutable(spec,phase,key,label,validate,signal,representation
         const cache=await flight.cache;
         flightSignal.throwIfAborted();
         flight.writing=persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label);
+        // A deferred caller may leave before the write settles.
+        flight.writing.catch(()=>{});
         return {read,attempt:current};
       },{
         signal:flight.controller.signal,maxAttempts:3,baseDelay:500,maxDelay:1000,jitter:0,
@@ -267,21 +234,26 @@ async function loadImmutable(spec,phase,key,label,validate,signal,representation
     const decoding=(async()=>{
       // Raw buffers may be mutated or transferred by a consumer.
       const input=representation==='stored'||spec.encoding!=='gzip'?read.storedBuffer.slice(0):read.storedBuffer;
-      const decoded=representation==='decoded'?await decodeStoredBuffer(input,spec,phase,key,label,signal):
+      const decoded=representation==='decoded'?await decodeStoredBuffer(input,spec,phase,key,label,signal,report):
         {buffer:input,decodedBytes:input.byteLength,decompressMs:0};
       if (representation==='decoded') validateAssetLength(decoded,spec,label);
       return {...decoded,value:await validate(decoded.buffer,label)};
     })();
+    // A verified immutable packet may be published before disk-cache I/O
+    // completes. Other consumers keep the original synchronous persistence
+    // contract; the shared flight remains alive until its write settles.
+    const writing=read.source==='cache'?Promise.resolve({cached:true,cacheWriteMs:0}):flight.writing;
     const [decoded,{cached,cacheWriteMs}]=await waitForConsumer(
-      Promise.all([decoding,read.source==='cache'?{cached:true,cacheWriteMs:0}:flight.writing]),signal);
+      Promise.all([decoding,deferCacheWrite&&read.source!=='cache'
+        ?{cached:null,cacheWriteMs:null}:writing]),signal);
     signal?.throwIfAborted();
     const cacheHit=read.source==='cache';
     const transferredBytes=flight.transferClaimed?0:read.transferredBytes;
     if (transferredBytes) flight.transferClaimed=true;
     report(phase,key,`${label}: ${cacheHit?'저장된 데이터를 확인했습니다.':'다운로드를 완료했습니다.'}`,
-      read.storedBytes,read.storedBytes,true,{source:read.source,cached,attempt});
+      read.storedBytes,read.storedBytes,true,{source:read.source,cached,...(cached===null?{cacheWritePending:true}:{}),attempt});
     return {...read,...decoded,get storedBuffer(){return read.storedBuffer.slice(0);},transferredBytes,
-      cacheWriteMs,milliseconds:read.readMs+cacheWriteMs+decoded.decompressMs,cacheHit};
+      cacheWriteMs,milliseconds:read.readMs+(cacheWriteMs??0)+decoded.decompressMs,cacheHit};
   } catch (error) {
     if (!cachedOnly || signal?.aborted || error?.name==='AbortError') throw error;
     return null;
@@ -300,7 +272,7 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
   signal?.throwIfAborted();
   if (cachePolicy==='immutable' && HASH.test(spec.sha256||''))
     return loadImmutable(spec,phase,key,label,validate,signal,representation,cachedOnly);
-  const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
+  const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal,report):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
   const url = resolveAssetUrl(spec);
   const cache = await openDataCache(),cacheKey=storedKey(spec,url);
   if (cache) {
@@ -386,7 +358,7 @@ const loadCachedAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresent
 const loadCachedStoredAsset=(spec,phase,key,label,validate,signal=null)=>loadRepresentation(spec,phase,key,label,validate,signal,'stored',true);
 async function decodeStoredAsset(storedBuffer,spec,phase,key,label,validate,{persist=false}={}) {
  await validateStoredAsset(storedBuffer,spec,label);
- const result=await decodeStoredBuffer(storedBuffer,spec,phase,key,label);
+ const result=await decodeStoredBuffer(storedBuffer,spec,phase,key,label,null,report);
  validateAssetLength(result,spec,label);
  const value=await validate(result.buffer,label);
  if(persist)await cacheStoredBuffer(await openDataCache(),storedKey(spec,resolveAssetUrl(spec)),storedBuffer);

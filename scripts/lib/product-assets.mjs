@@ -8,6 +8,7 @@ import {validateMapProjectManifest} from "../../src/data/map-project-manifest.js
 // static ESM edges are discovered by the same parser used by the build tooling.
 export const runtimeDependencies = Object.freeze({
   'assets/js/modules/builtin-asset-tasks.js':['assets/js/workers/builtin-asset-worker.js'],
+  'assets/js/modules/globe-packet-tasks.js':['assets/js/workers/globe-packet-worker.js'],
   'assets/js/modules/territorial-labels.js':['assets/js/workers/place-worker.js'],
   'assets/js/modules/country-index.js':['assets/js/workers/label-anchor-worker.js'],
   'assets/js/modules/core-document-client.js': ['assets/js/workers/core-viewer-session-worker.js'],
