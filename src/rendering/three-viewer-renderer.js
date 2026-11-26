@@ -1,4 +1,5 @@
-import {createStoredAssetLoader} from '../data/stored-asset-loader.js';
+import {createGlobeAssetReader} from './globe-asset-reader.js';
+import {createGlobeViewerInput} from '../map/globe-viewer-input.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
@@ -23,8 +24,6 @@ import {createGlobeRiverDetail} from './three-globe-rivers.js';
 import {createRenderPacketCache,renderCacheBudget,createRenderResidencyBudget,createRenderLoadGate} from './render-cache-budget.js';
 import {createGlobePhysicalAssets} from './three-globe-physical.js';
 
-const centerOf=([a,b])=>[(a[0]+b[0])/2,(a[1]+b[1])/2];
-const span=([a,b])=>Math.max(1,Math.hypot(a[0]-b[0],a[1]-b[1]));
 const copyCamera=(view,backup)=>({...backup,...view,center:view?.center??(view?.globeRotation&&view.globeRotation.slice(0,2).map(v=>-v))??backup.center});
 
 export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPreparation,onMapPreparationStatus,readSafeInsets,onWorldFitChange}){
@@ -62,12 +61,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  let fontReady=false,fontPending=null,fontFailed=false,lastLabelsNeeded=false;
  const failedLineLayers=new Set();
  const invalidate=reason=>deps.domains.renderingDomain.invalidateView(reason);
- const events=new Map(),pointers=new Map(),lifetime=new AbortController();
+ const lifetime=new AbortController();
  const metrics=createRenderingMetrics(),packetTasks=createGlobePacketTasks({scheduler:workScheduler});
  let host,canvas,surface,camera,viewport,pending,disposed=false,lost=false,loaded=false,ready=false,error;
  let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null;
  let territories=baseTerritories,acceptedTerritories=baseTerritories,activeSlots=new Set(baseTerritories.slots);
- let selection=null,style=null,paintDirty=true,fullPaintDirty=true,moving=false,moveTimer,velocity,pointerTravel=0,lastPointerMove=0;
+ let selection=null,style=null,paintDirty=true,fullPaintDirty=true;
  let activeSlotByKey=new Map(baseTerritories.slots.map(slot=>[refs[slot].key,slot]));
  let countryRoles=new Map(),pickingRevision=0,pickingChanged=false;
  let outlineTargets=new Map(),outlinePlanDirty=true,lastOutlineCamera=null,outlinePaintDirty=true;
@@ -135,88 +134,31 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   deps.feedback.reportOperationError(cause,'Three.js 지도를 표시하지 못했습니다.','PL-THREE-001');
  }
  function retryMapPreparation(){error=null;baseFailures.clear();physicalFailures.clear();failedLineLayers.clear();fontFailed=false;outlineFailed.clear();outlinePlanDirty=true;riverCamera=null;return invalidate('map-retry');}
- function subscribeInput(type,callback){
-  if(!events.has(type))events.set(type,new Set());
-  events.get(type).add(callback);return ()=>events.get(type)?.delete(callback);
- }
- function emit(type,event={}){for(const callback of events.get(type)??[])callback(event);}
- function finishMovement(){
-  clearTimeout(moveTimer);if(!moving)return;
-  moving=false;velocity=null;emit('moveend');onWorldFitChange();
-  deps.domains.renderingDomain.endInteraction('three-move-end');
- }
- function beginMovement(){
-  clearTimeout(moveTimer);if(moving)return;
-  cancelNeighborPrefetch();moving=true;emit('movestart');deps.domains.renderingDomain.beginInteraction('three-move');
- }
- function screenPoint(event){const rect=canvas.getBoundingClientRect();return [event.clientX-rect.left,event.clientY-rect.top];}
  function setCamera(next){cancelNeighborPrefetch();camera=next;view=next.view;invalidate('three-camera');}
- function installInput(){
-  const listen=(type,fn,options)=>canvas.addEventListener(type,fn,{signal:lifetime.signal,...options});
-  listen('pointerdown',event=>{
-   if(!camera||event.button!==0)return;
-   if(!pointers.size)pointerTravel=0;
-   velocity=null;pointers.set(event.pointerId,screenPoint(event));canvas.setPointerCapture(event.pointerId);
-  });
-  listen('pointermove',event=>{
-   const point=screenPoint(event),previous=pointers.get(event.pointerId);
-   if(!previous){emit('mousemove',{point,originalEvent:event});return;}
-   if(pointers.size>2)return;
-   const now=performance.now(),dt=Math.max(8,now-lastPointerMove);lastPointerMove=now;
-   pointerTravel+=Math.hypot(point[0]-previous[0],point[1]-previous[1]);
-   pointers.set(event.pointerId,point);
-   if(pointerTravel<3&&pointers.size===1)return;
-   beginMovement();
-   if(pointers.size===1){
-    velocity=[(point[0]-previous[0])/dt,(point[1]-previous[1])/dt];
-    setCamera(camera.drag(previous,point));
-   }else{
-    const other=[...pointers].find(([id])=>id!==event.pointerId)[1],from=centerOf([previous,other]),to=centerOf([point,other]);
-    velocity=null;setCamera(camera.drag(from,to).zoomAt(to,Math.log2(span([point,other])/span([previous,other]))));
-   }
-  });
-  const end=event=>{
-   if(!pointers.delete(event.pointerId)||pointers.size)return;
-   if(event.type==='pointerup'&&pointerTravel<3&&!moving)emit('click',{point:screenPoint(event),originalEvent:event});
-   if(event.type!=='pointerup'||matchMedia('(prefers-reduced-motion: reduce)').matches||performance.now()-lastPointerMove>75||!velocity)finishMovement();
-   else invalidate('three-inertia');
-  };
-  for(const type of ['pointerup','pointercancel','lostpointercapture'])listen(type,end);
-  listen('pointerleave',()=>emit('mouseout'));
-  listen('wheel',event=>{
-   if(!camera)return;event.preventDefault();beginMovement();velocity=null;
-   const units=event.deltaMode===1?16:event.deltaMode===2?viewport.height:1;
-   setCamera(camera.zoomAt(screenPoint(event),Math.max(-1,Math.min(1,-event.deltaY*units/400))));
-   moveTimer=setTimeout(finishMovement,140);
-  },{passive:false});
-  listen('webglcontextlost',event=>{event.preventDefault();lost=true;ready=false;notify('loading','그래픽 연결 복구 중');});
-  listen('webglcontextrestored',()=>{lost=false;contextRevision++;surface?.restoreCountryPaint();pickingChanged=true;presentation.rebaseContext();invalidate('three-context-restored');});
- }
+ const input=createGlobeViewerInput({
+  getCamera:()=>camera,getViewport:()=>viewport,setCamera,invalidate,
+  beforeMovement:cancelNeighborPrefetch,
+  onMovementStart:()=>deps.domains.renderingDomain.beginInteraction('three-move'),
+  onMovementEnd:()=>{
+   onWorldFitChange();
+   deps.domains.renderingDomain.endInteraction('three-move-end');
+  },
+  signal:lifetime.signal,
+ });
 
  function attach(element){
   host=element;canvas=document.createElement('canvas');
   canvas.style.cssText='display:block;width:100%;height:100%;touch-action:none';
-  host.appendChild(canvas);installInput();
+  host.appendChild(canvas);input.attach(canvas);
+  const listen=(type,fn)=>canvas.addEventListener(type,fn,{signal:lifetime.signal});
+  listen('webglcontextlost',event=>{event.preventDefault();lost=true;ready=false;notify('loading','그래픽 연결 복구 중');});
+  listen('webglcontextrestored',()=>{lost=false;contextRevision++;surface?.restoreCountryPaint();pickingChanged=true;presentation.rebaseContext();invalidate('three-context-restored');});
  }
- let persistenceBytes=0,persistencePeakBytes=0,persistenceSkipped=0;
- function reserveDeferredWrite(bytes){
-  // Cache writes may retain the verified source and a Response copy.
-  const size=bytes*2;
-  if(persistenceBytes+size>cacheBudget.persistenceBytes){persistenceSkipped++;return null;}
-  const release=residency.reserve(size,{kind:'disk-cache-write',optional:true,trimFirst:false});
-  if(!release){persistenceSkipped++;return null;}
-  persistenceBytes+=size;persistencePeakBytes=Math.max(persistencePeakBytes,persistenceBytes);
-  let ended=false;return ()=>{if(ended)return;ended=true;persistenceBytes-=size;release();};
- }
- const loader=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',deferCacheWrite:true,reserveDeferredWrite,resolveUrl:row=>new URL(row.url,document.baseURI).href});
- async function load(row,kind,{phase='startup',label='Three.js 지도 자산',signal=lifetime.signal,priority=phase==='startup'?10:0,...parameters}={}){
-  const estimate=estimateGlobeWorkingBytes(row,kind);
-  return loadGate.run({bytes:estimate,priority,signal,kind:'load-'+kind},async()=>{
-   const result=await loader.loadStoredAsset(row,phase,row.sha256,label,bytes=>
-    metrics.track('three.decode-packet',()=>packetTasks.decode(kind,bytes,row,{signal,priority,...parameters})),signal);
-   return result.value;
-  });
- }
+ const assetReader=createGlobeAssetReader({
+  dataRevision:meta.dataRevision,cacheBudget,residency,loadGate,packetTasks,metrics,lifetime,
+  resolveUrl:row=>new URL(row.url,document.baseURI).href,
+ });
+ const {load,loadTerritorialStroke}=assetReader;
  const loadMesh=async(row,signal,priority=20)=>({packet:await load(row,'mesh',{signal,priority})});
  const asChunks=(chunks,legacy)=>chunks??(legacy?[{spec:legacy}]:[]);
  function territorialDescriptors(catalog=null){
@@ -228,18 +170,6 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    ...catalog.historicalCountries.flatMap((country,i)=>asChunks(country.countryChunks,country.countries).map((row,j)=>({...row,role:'country',historySlot:baseSlots.length+i,key:'history-country:'+i+':'+j+':'+row.spec.sha256}))),
    ...catalog.historicalBorders.flatMap((border,i)=>asChunks(border.chunks,border.sha256?border:null).map((row,j)=>({...row,role:'border',kind:'stroke',historyBorder:i,key:'history-border:'+i+':'+j+':'+row.spec.sha256}))),
   ];
- }
- async function loadTerritorialStroke(row,signal,priority,descriptor){
-  if(!descriptor.sources)return load(row,'stroke',{signal,priority});
-  return loadGate.run({bytes:estimateGlobeWorkingBytes(descriptor.spec,'stroke'),priority,signal,kind:'border-batch'},async()=>{
-   const inputs=[];
-   for(const item of descriptor.sources){
-    signal.throwIfAborted();
-    const result=await loader.loadStoredAsset(item.spec,'startup',item.spec.sha256,'역사 국경선',bytes=>bytes,signal);
-    inputs.push({bytes:result.value,spec:item.spec});
-   }
-   return metrics.track('three.combine-borders',()=>packetTasks.combineStoredStrokes(inputs,{signal,priority}));
-  });
  }
  const territorialAssets=createGlobeChunkAssets(territorialDescriptors(),{loadMesh,loadStroke:loadTerritorialStroke,residency,byteBudget:cacheBudget.historicalCpuBytes});
  const borderPlansByView=new WeakMap();
@@ -418,7 +348,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  function syncCameraFromState(next=state.view){
   if(!viewport)return;
   setCamera(createGlobeCamera(copyCamera(next,view),viewport));
-  if(loaded&&!moving)deps.domains.renderingDomain.invalidateViewport('three-camera-jump');
+  if(loaded&&!input.isMoving())deps.domains.renderingDomain.invalidateViewport('three-camera-jump');
  }
  function worldFit(){
   const {width,height,left=0,right=0,top=0,bottom=0}=viewport,focal=height*1.5;
@@ -490,13 +420,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  // Warm only verified neighboring geometry/physical states after a
  // committed stable frame. No speculative result changes the active scene.
  function scheduleNeighborPrefetch(month){
-  if(disposed||lost||moving||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical)return;
+  if(disposed||lost||input.isMoving()||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical)return;
   const interval=historyLoaded?historyIndex.intervalKey(month):'catalog';
   const key=interval+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
   if(neighborKey===key||neighborTimer!==null||neighborIdleOff||requestScopes.has('neighbor-prefetch'))return;
   neighborKey=key;
   const epoch=generation;
-  const valid=()=>!disposed&&!lost&&!moving&&!framePreserved&&!presentation.temporalPending()&&generation===epoch&&ready&&
+  const valid=()=>!disposed&&!lost&&!input.isMoving()&&!framePreserved&&!presentation.temporalPending()&&generation===epoch&&ready&&
    (!historyLoaded||historyIndex.intervalKey(state.timelineCursor)===interval||interval==='catalog');
   const begin=()=>{
    neighborTimer=null;
@@ -918,12 +848,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   drawCount++;
   drawnFrame={frame,camera,viewport,territories,basePrepared,physical,visibleSlots:visiblePaintSlots,riverChunks:riverDetail.activeEntries(),
    labelHit:surface.labels.hitSnapshot(),lakesVisible:state.layerVisibility.lakes!==false,riversVisible:showRivers,generation};
-  if(moving&&!pointers.size&&velocity){
-   const now=performance.now(),dt=Math.min(32,now-lastPointerMove);lastPointerMove=now;
-   const point=camera.frame.center;velocity=velocity.map(value=>value*Math.exp(-dt/135));
-   if(Math.hypot(...velocity)<0.02)finishMovement();
-   else setCamera(camera.drag(point,[point[0]+velocity[0]*dt,point[1]+velocity[1]*dt]));
-  }
+  input.advanceInertia();
   return {...base,succeeded:true,presentationReady:true};
  }
  function publishPickSnapshot(draw){
@@ -970,7 +895,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   publishedMonth=month;
   if(monthChanged)invalidate('three-adjacent-viewport-chunks');
   scheduleNeighborPrefetch(month);
-  revision++;emit('render');return true;
+  revision++;input.emit('render');return true;
  }
  async function hydroFeaturesForSlots(slots,waterFeatures,signal){
   if(!slots.size)return waterFeatures;
@@ -1047,12 +972,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  const projection=Object.freeze({projectCoordinate:coord=>displayCamera()?.projectCoordinate(coord)??null,
   projectVisibleCoordinate:(coord,options)=>displayCamera()?.projectVisibleCoordinate(coord,options)??null,
   screenToGeo:point=>canPickFrame()?acceptedPick.camera.screenToGeo(point):null,geographicBounds:()=>camera?.geographicBounds()??null});
- const getRuntimeState=()=>({renderer:unsupported?'failed':'three',mapReady:ready,webglContextLost:lost,projectRenderBlocked:Boolean(error),moving,
+ const getRuntimeState=()=>({renderer:unsupported?'failed':'three',mapReady:ready,webglContextLost:lost,projectRenderBlocked:Boolean(error),moving:input.isMoving(),
   temporalPresentationPending:presentation.temporalPending(),temporalSourceAdmitted:presentation.ticket?.sourceAdmitted!==false});
- return Object.freeze({kind:'three',projection,get loaded(){return loaded;},inputElement:()=>canvas,subscribeInput,isMoving:()=>moving,attach,initialize,
+ return Object.freeze({kind:'three',projection,get loaded(){return loaded;},inputElement:()=>canvas,subscribeInput:input.subscribeInput,isMoving:input.isMoving,attach,initialize,
   cameraSnapshot:()=>camera?.view??null,getRenderPixelRatio:()=>window.devicePixelRatio||1,verifyLayout,syncCameraFromState,fitWorld,fitMapBounds,fitGeometry,
   isAtWorldView:()=>Boolean(viewport&&Math.abs(view.zoom-worldFit().zoom)<0.01&&Math.abs(view.center[0]-15)<0.1&&Math.abs(view.center[1]-12)<0.1),
-  panBy(dx,dy){if(!camera)return false;beginMovement();const point=camera.frame.center;setCamera(camera.drag(point,[point[0]+dx,point[1]+dy]));finishMovement();return true;},
+  panBy:input.panBy,
   setTerritorialFeatures,preparePhysicalContext,prepareDatedTerritories,
   setSelection(value){
    const prior=(selection?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
@@ -1093,8 +1018,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
    territorialChunkCache:territorialAssets.stats(),historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes},historicalMetadata:historyIndex.stats(),temporalPresentation:temporalStats,paintWork:{...paintStats},physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
-   labelAtlas:surface?.labels.cacheStats()??null,hydroTextureUploads:surface?.hydroUploadStats()??null,packetWorker:packetTasks.stats(),workScheduler:workScheduler.stats(),residency:residency.stats(),persistence:{bytes:persistenceBytes,peakBytes:persistencePeakBytes,skipped:persistenceSkipped},loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
-  dispose(){cancelNeighborPrefetch();disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historyCatalogCache.dispose();territorialAssets.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();packetTasks.dispose();surface?.dispose();workScheduler.dispose();residency.dispose();canvas?.remove();
+   labelAtlas:surface?.labels.cacheStats()??null,hydroTextureUploads:surface?.hydroUploadStats()??null,packetWorker:packetTasks.stats(),workScheduler:workScheduler.stats(),residency:residency.stats(),persistence:assetReader.stats(),loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
+  dispose(){cancelNeighborPrefetch();disposed=true;input.dispose();lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();historyCatalogCache.dispose();territorialAssets.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();packetTasks.dispose();surface?.dispose();workScheduler.dispose();residency.dispose();canvas?.remove();
    acceptedPick=drawnFrame=features=basePrepared=publishedBase=basePreparing=physical=acceptedPhysical=publishedPhysical=hydroMetadata=null;
    acceptedRiverChunks=[];hydroSlots.clear();basePaint.clear();temporalInputs.reset();countryLabels.clear();countryLabelList=[];placeLabelList=[];outlineBySlot.clear();clearViewPlans();surface=riverDetail=null;},
  });
