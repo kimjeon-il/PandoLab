@@ -1,4 +1,5 @@
 import { presentViewerLoadStatus } from './viewer-load-status.js';
+import { viewerPolicy } from './viewer-policy.js';
 import { createRuntimeContext } from '../runtime/runtime-context.js';
 import { createMapProjectRuntime } from '../data/map-project-runtime.js';
 import { connectMapOwner } from './map-owner-ports.js';
@@ -200,7 +201,7 @@ export async function composeViewer({ meta }) {
   // The evidence UI remains an on-demand dynamic module, never a Viewer boot
   // dependency or a second document/selection owner.
   inspectorController = createViewerInspectorController({
-    document, window, readOnly:true,
+    document, window, readOnly:viewerPolicy.readOnly,
     inspectRequested:inspectParams.get('inspect')==='1',
     debugEnabled:inspectParams.get('debug')==='1',
     closeMobileSheets:() => surfaces.closeMobileSheets(),
@@ -488,7 +489,7 @@ export async function composeViewer({ meta }) {
     documentSnapshot:() => activeSession?.documentModel.snapshot(), resolvedWorld:() => activeSession?.documentModel.world(), selectionSnapshot:() => activeSession?.selectionDomain.snapshot().selection,
     diagnostics:diagnostics.snapshot, rendererStats:() => map.renderer.getStats(),
     visibleTerritorialCount:() => map.objectQuery.visibleTerritorialCount(),
-    mapProjection:() => map.viewState.projection, readOnly:true,
+    mapProjection:() => map.viewState.projection, readOnly:viewerPolicy.readOnly,
     builtinMonth:() => ({
       month:activeSession.commandOwner.state().timelineCursor,
       automatic:projectClock.isAutomatic()&&projectDomain.activeProject()?.source==='builtin'})});

@@ -17,6 +17,7 @@ const viewerOperations = new Set([
 
 export const viewerPolicy = Object.freeze({
     projection:'globe',
+    readOnly:true,
     assertProjection(requested) {
       if (requested !== undefined && requested !== 'globe')
         throw Object.assign(new Error('The viewer supports only the globe projection.'), { code: 'PL-PRODUCT-PROJECTION', projection: requested });

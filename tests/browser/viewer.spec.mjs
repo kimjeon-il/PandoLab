@@ -771,6 +771,7 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
   const before=await page.evaluate(()=>({project:window.__PANDOLAB_VIEWER__.documentSnapshot(),state:window.__PANDOLAB_VIEWER__.documentState()}));
   expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.readOnly)).toBe(true);
   const inspector=page.locator('#reviewPanel'),dateBar=page.locator('.timeline-controls');
+  await expect(inspector).toBeVisible();
   for (const [layout, width, height] of [['wide', 1440, 800], ['compact', 834, 620]]) {
     await page.setViewportSize({width, height});
     await expect(page.locator('#viewer')).toHaveAttribute('data-layout', layout);

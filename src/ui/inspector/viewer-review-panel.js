@@ -4,6 +4,7 @@ import {
 } from "../../document/review-inspection.js";
 import { readReviewEvidenceFiles } from '../../data/review-evidence-files.js';
 import { collectViewerInspection } from './viewer-inspector-state.js';
+import { viewerPolicy } from '../../app/viewer-policy.js';
 import { createStoredAssetLoader } from '../../data/stored-asset-loader.js';
 import { territorialSourceLayout, validateTerritorialSourceGeometry } from '../../data/territorial-source-format.js';
 
@@ -173,7 +174,7 @@ function renderGeometryPair(document, geometries) {
 /** Overlay-only UI owner; does not own the map, Core document, or Git write access. */
 export function createViewerReviewPanel({document, window, map, documentSession, isBuiltinMap, meta = {}, onError = () => {},
   readDiagnostics = () => [], readPerformance = () => null, readMonth = () =>''} = {}) {
-  if (!document||!window||!map||!documentSession||documentSession.readOnly!==true||typeof isBuiltinMap!=='function')
+  if (!document||!window||!map||typeof documentSession?.documentModel?.snapshot!=='function'||typeof isBuiltinMap!=='function')
     throw new TypeError('Review presentation requires the current read-only map and document session.');
   const get = id => document.getElementById(id);
   const panel = get('reviewPanel'), button = get('reviewPanelBtn'), mobileButton = get('mobileReviewBtn');
@@ -204,7 +205,7 @@ export function createViewerReviewPanel({document, window, map, documentSession,
     return collectViewerInspection({
       rendererStats:map.renderer.getStats(),
       documentSnapshot:documentSession.documentModel.snapshot(),
-      month:readMonth(), meta, readOnly:documentSession.readOnly,
+      month:readMonth(), meta, readOnly:viewerPolicy.readOnly,
       territorialCount:map.objectQuery.visibleTerritorialCount(),
       evidenceLoaded:!!current, performanceReport:readPerformance(),
       diagnosticEvents:readDiagnostics()
