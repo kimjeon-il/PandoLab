@@ -3,13 +3,13 @@ import {createGlobeViewerInput} from '../map/globe-viewer-input.js';
 import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
-import {INTERACTION_ROLE_PRIORITY, layerStyle, territorialNamesVisible} from '../ui/layer-presentation.js';
-import {globeInteractionStyles,globeRoleStyleKey,globeInteractionRoles,sameGlobeRoleInputs,createGlobePresentationInputReader,globeChangedHiddenIds,emptyRoleStyles} from './globe-style-state.js';
+import {layerStyle, territorialNamesVisible} from '../ui/layer-presentation.js';
+import {createGlobePresentationInputReader,globeChangedHiddenIds} from './globe-style-state.js';
+import {createGlobePaintState} from './globe-paint-state.js';
+import {createGlobeLabelContent} from './globe-label-content.js';
 import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
-import {territorialNativeLabelRows} from '../ui/territorial-native-label.js';
 import {createGlobeCamera} from './globe-camera.js';
 import {COUNTRY_LABEL_MIN_ZOOM} from './three-globe-labels.js';
-import {automaticLabelSettings, labelKey} from './label-layout.js';
 import {globeTerritoryKey} from './globe-mesh.js';
 import {createGlobeChunkAssets,createGlobeChunkCatalog,globeViewChunkCuller,globeChunkSetContains,globeChunkPlanKey,createGlobePlanFailures} from './globe-view-mesh-assets.js';
 import {createGlobeHistoryIndex,globeHistoryMonthKey} from './globe-history-index.js';
@@ -49,9 +49,9 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  const workScheduler=createGlobeWorkScheduler({maxConcurrent:globePacketWorkerCount(),residency});
  const hydroMetadataCache=createRenderPacketCache({byteBudget:16*1024*1024,entryLimit:1});
  let refreshRiverLedger=()=>{},refreshHydroLedger=()=>{};
- let acceptedPick=null,drawnFrame=null,countryPaintInputsDirty=true,basePaint=new Map(),visiblePaintSlots=new Set(),residencyDirty=true;
- const temporalInputs=createGlobeTemporalPresentation(),dirtyPaintSlots=new Set(),dirtyCountryLabels=new Set(),countryLabels=new Map();
- let allCountryLabelsDirty=true,countryLabelList=[],temporalStats={};
+ let acceptedPick=null,drawnFrame=null,residencyDirty=true;
+ const temporalInputs=createGlobeTemporalPresentation();
+ let temporalStats={};
  const pendingOutlines=new Map(),requestScopes=new Map();
  let prefetchTerritoryPlan=null,prefetchPhysical=null,visiblePhysicalPlan=null,publishedPhysical=null;
  let basePrepared=null,basePreparing=null,publishedBase=null,baseJobRequired=false,physicalJobRequired=false;
@@ -66,21 +66,31 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  let host,canvas,surface,camera,viewport,pending,disposed=false,lost=false,loaded=false,ready=false,error;
  let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null;
  let territories=baseTerritories,acceptedTerritories=baseTerritories,activeSlots=new Set(baseTerritories.slots);
- let selection=null,style=null,paintDirty=true,fullPaintDirty=true;
  let activeSlotByKey=new Map(baseTerritories.slots.map(slot=>[refs[slot].key,slot]));
- let countryRoles=new Map(),pickingRevision=0,pickingChanged=false;
+ let pickingRevision=0,pickingChanged=false;
  let outlineTargets=new Map(),outlinePlanDirty=true,lastOutlineCamera=null,outlinePaintDirty=true;
- let labelContentDirty=true,placeLabelContentDirty=true,placeLabelList=[];
- let roleStyles=emptyRoleStyles,interactionRefs=globeInteractionRoles(null),countryRolesDirty=true,countryEmphasisDirty=true,hydroRolesDirty=true,hydroStyleDirty=true,layerPaintDirty=true,paletteDirty=true;
- let hydroRoles=new Map(),waterRoles=new Map(),presentationInputs=null,renderPalette=null,qualityKey=null;
+ let presentationInputs=null,qualityKey=null;
  const readPresentationInputs=createGlobePresentationInputReader();
- const paintStats={countrySlots:0,countryRoleUpdates:0,hydroRoleUpdates:0,outlinePlans:0,outlineDownloads:0,paletteUpdates:0,placeCandidateUpdates:0};
+ const outlineStats={outlinePlans:0,outlineDownloads:0};
  const outlineBySlot=new Map(),outlineFailed=new Set();
  let framePreserved=false,initialLoading=true,drawCount=0,unsupported=false;
  let riverDetail,riverCamera=null,riverVisible=null,riverContext=null;
  let physical=null,acceptedPhysical=null;
  let acceptedRiverChunks=[],hydroMetadata=null;
  const hydroSlots=new Map();
+ const paint=createGlobePaintState({
+  state,refs,hydroSlots,readPalette:()=>deps.preferences.mapPalette(),
+  territorialColor:row=>deps.colorModel.territorialEntityColor(row),
+  objectRefVisible:ref=>deps.objectRefVisible(ref),highlightCandidates:()=>deps.highlightCandidates(),
+  onPickingChanged:()=>{pickingChanged=true;},
+  onOutlineRolesChanged:()=>{outlinePlanDirty=outlinePaintDirty=true;},
+ });
+ const labelContent=createGlobeLabelContent({
+  state,refs,labelsBySlot,territorialName:(row,options)=>deps.objectPresentation.territorialEntityName(row,options),
+  readPreferences:()=>deps.preferences.userPreferences,objectRefVisible:ref=>deps.objectRefVisible(ref),
+  isLayerItemVisible:(group,id)=>deps.layerPresentation.isLayerItemVisible(group,id),
+  placeLabelCandidates:options=>deps.countryLabelModel.placeLabelCandidates(options),
+ });
  let view={center:[15,12],zoom:2,bearing:0,pitch:0,roll:0};
  const readyState=()=>({mapReady:ready,status:error?'error':ready?'ready':'loading'});
  const presentation=createMapPresentationSession({getGeneration:()=>generation,getContextRevision:()=>contextRevision,
@@ -237,9 +247,9 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   if(!cull){cull=globeViewChunkCuller(camera,viewport,padding);cullCache.set(padding,cull);}return cull;
  };
  const strokePadding=()=>{
-  const palette=renderPalette??deps.preferences.mapPalette();
+  const palette=paint.currentPalette();
   let width=Math.max(1,Number(palette.strokes.country.width)||1,(Number(palette.strokes.river.width)||1)*3);
-  for(const row of roleStyles)width=Math.max(width,row?.width??0);
+  for(const row of paint.roleStyles())width=Math.max(width,row?.width??0);
   return Math.max(5,Math.ceil(width+2*(0.5/(viewport?.dpr||1))+2));
  };
  function physicalPlan(identity,padding=0){
@@ -316,8 +326,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const threeUrl=new URL(spec.moduleUrl,document.baseURI);
    const [THREE,restored]=await Promise.all([import(threeUrl.href),initialCamera]);
    lifetime.signal.throwIfAborted();
-   renderPalette=deps.preferences.mapPalette();
-   surface=createThreeGlobeSurface(THREE,{canvas,context,palette:renderPalette,countryCount,baseCountryCount:baseSlots.length,hydroCount:spec.hydroCount,cacheBudget,residency,workScheduler,
+   const palette=paint.initializePalette();
+   surface=createThreeGlobeSurface(THREE,{canvas,context,palette,countryCount,baseCountryCount:baseSlots.length,hydroCount:spec.hydroCount,cacheBudget,residency,workScheduler,
     onLabelReady:()=>invalidate('three-label-sdf-ready'),onLabelError:cause=>deps.feedback.reportOperationError(cause,'지도 지명 SDF Worker를 사용할 수 없어 로컬 계산으로 전환했습니다.','PL-THREE-SDF-001'),packets:{
     borderGroupCount:spec.borderOwners.length,
    }});
@@ -526,14 +536,14 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const delta=temporalInputs.advance(sourceRows,month);
    const previousSlots=activeSlots,geometryChanged=prepared.key!==territories.key||!features;
    if(geometryChanged){
-    countryRolesDirty=outlinePlanDirty=true;paintDirty=true;
+    paint.markCountryRoles();outlinePlanDirty=true;
     territories=prepared;activeSlots=new Set(prepared.slots);
     activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));pickingChanged=true;
-    for(const slot of previousSlots)if(!activeSlots.has(slot)){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
-    for(const slot of activeSlots)if(!previousSlots.has(slot)){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
+    for(const slot of previousSlots)if(!activeSlots.has(slot)){paint.markCountrySlot(slot);labelContent.markCountrySlot(slot);}
+    for(const slot of activeSlots)if(!previousSlots.has(slot)){paint.markCountrySlot(slot);labelContent.markCountrySlot(slot);}
    }
    if(basePrepared!==nextBase){basePrepared=nextBase;pickingChanged=true;}
-   if(physical!==nextPhysical){physical=nextPhysical;pickingChanged=true;paintDirty=hydroRolesDirty=hydroStyleDirty=true;}
+   if(physical!==nextPhysical){physical=nextPhysical;paint.markHydroInputs();}
    if(!features||geometryChanged)features=new Map(rows.map(row=>[String(row.id),row]));
    else for(const id of delta.changedIds){
     const row=temporalInputs.get(id);
@@ -541,13 +551,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    }
    for(const id of delta.dirtyIds){
     const key=normalizeObjectRef({domain:'territorial',type:'entity',id}).key,slot=activeSlotByKey.get(key);
-    if(slot!==undefined){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
+    if(slot!==undefined){paint.markCountrySlot(slot);labelContent.markCountrySlot(slot);}
    }
-   if(delta.first){countryPaintInputsDirty=true;allCountryLabelsDirty=true;}
-   if(delta.dirtyIds.size||dirtyPaintSlots.size)countryRolesDirty=true;
-   hydroRolesDirty=true;paintDirty=true;
-   temporalStats={examinedRows:delta.examined,receipt:delta.receipt,changedRows:delta.changedIds.size,dirtyPaintSlots:dirtyPaintSlots.size,dirtyCountryLabels:dirtyCountryLabels.size};
-   paintDirty||=dirtyPaintSlots.size>0||countryPaintInputsDirty;labelContentDirty=placeLabelContentDirty=true;return true;
+   if(delta.first){paint.markCountryBase();labelContent.invalidate({places:false});}
+   if(delta.dirtyIds.size||paint.pendingCountrySlots())paint.markCountryRoles();
+   paint.markHydroRoles();
+   temporalStats={examinedRows:delta.examined,receipt:delta.receipt,changedRows:delta.changedIds.size,dirtyPaintSlots:paint.pendingCountrySlots(),dirtyCountryLabels:labelContent.pendingCountrySlots()};
+   labelContent.invalidate({countries:false});return true;
   }catch(error){
    if(controller.signal.aborted)return false;
    throw error;
@@ -605,7 +615,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   visiblePhysicalPlan=target;physicalJobRequired=!covered;retainCpuResources();
   physicalAssets.prepare(target,{signal:controller.signal,priority:covered?5:20}).then(next=>{
    if(!requestCurrent('physical-view',controller)||generation!==requestedGeneration||physical?.spec.identity!==target.spec.identity)return;
-   physical=next;physicalFailures.clear();paintDirty=hydroStyleDirty=true;pickingChanged=true;invalidate('three-physical-chunks-ready');
+   physical=next;physicalFailures.clear();paint.markHydroStyle();pickingChanged=true;invalidate('three-physical-chunks-ready');
   }).catch(error=>{
    if(!requestCurrent('physical-view',controller))return;
    const now=physicalPlan(target.spec.identity),sameRequired=now.key===target.key;
@@ -641,12 +651,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }
  function ensureLabelFont(){
   const wanted=labelsNeeded();
-  if(wanted!==lastLabelsNeeded){lastLabelsNeeded=wanted;labelContentDirty=placeLabelContentDirty=true;}
+  if(wanted!==lastLabelsNeeded){lastLabelsNeeded=wanted;labelContent.invalidate({countries:false});}
   if(!wanted||fontReady)return true;
   if(fontPending||fontFailed)return false;
   fontPending=Promise.all([document.fonts.load('800 56px "Pretendard Variable"','대한민국'),document.fonts.load('600 56px "Pretendard Variable"','대한민국')]).then(()=>{
    if(disposed)return;
-   fontReady=true;labelContentDirty=placeLabelContentDirty=true;invalidate('three-label-font-ready');
+   fontReady=true;labelContent.invalidate({countries:false});invalidate('three-label-font-ready');
   }).catch(error=>{
    if(disposed)return;
    fontFailed=true;
@@ -655,48 +665,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   }).finally(()=>{fontPending=null;});
   return false;
  }
- function updateLabelContent(){
-  if(!labelsNeeded()||!fontReady){surface.labels.setCandidateGroups([],[]);labelContentDirty=false;return;}
-  const namesVisible=territorialNamesVisible(state)&&view.zoom>=COUNTRY_LABEL_MIN_ZOOM;
-  if(namesVisible){
-   const changed=allCountryLabelsDirty?new Set([...countryLabels.keys(),...activeSlots]):dirtyCountryLabels;
-   for(const slot of changed){
-    if(!activeSlots.has(slot)){countryLabels.delete(slot);continue;}
-    const ref=refs[slot],metadata=labelsBySlot[slot];
-    if(!metadata){countryLabels.delete(slot);continue;}
-    const row=features.get(ref.id),primaryName=deps.objectPresentation.territorialEntityName(row,{fallback:''});
-    const settings=automaticLabelSettings('country',state.labelSettings[labelKey('territorial',ref.id)]||{});
-    const lines=territorialNativeLabelRows(row,state.timelineCursor,{
-     enabled:deps.preferences.userPreferences.labels.place.showNativeNames===true,primaryName,
-    }).map(label=>label.text);
-    if(lines.length)countryLabels.set(slot,{ref,key:ref.key,area:metadata.area,shortSide:metadata.shortSide,
-     coordinate:settings.pinned&&settings.manualPosition?settings.manualPosition:metadata.coordinate,
-     minZoom:settings.minZoom,maxZoom:settings.maxZoom,lines,visible:deps.objectRefVisible(ref)
-       &&deps.layerPresentation.isLayerItemVisible('objectLabels',ref.id)});
-    else countryLabels.delete(slot);
-   }
-   if(changed.size||allCountryLabelsDirty)countryLabelList=[...countryLabels.values()];
-   allCountryLabelsDirty=false;dirtyCountryLabels.clear();
-  }
-  if(placeLabelContentDirty){
-   const placeCandidates=view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false?
-    deps.countryLabelModel.placeLabelCandidates({zoom:view.zoom,geographicBounds:camera.geographicBounds()}).rows:[];
-   placeLabelList=placeCandidates.filter(row=>row.viewportVisible||row.selected).flatMap(row=>{
-   const ref=normalizeObjectRef({domain:'label',type:row.source.kind,id:row.source.id});
-   if(!ref||!deps.objectRefVisible(ref))return [];
-   return [{ref,key:ref.key,place:true,coordinate:row.coordinate,selected:row.selected,priority:row.priority,
-    marker:['capital','city','town'].includes(row.source.kind)?row.source.kind:'',
-    minZoom:row.minZoom,maxZoom:row.maxZoom,lines:row.rows.map(label=>label.text)}];
-   });
-   placeLabelContentDirty=false;paintStats.placeCandidateUpdates++;
-  }
-  surface.labels.setCandidateGroups(namesVisible?countryLabelList:[],view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false?placeLabelList:[]);labelContentDirty=false;
- }
  function requestOutlines(){
   if(!ready||!camera||!surface)return;
   if(lastOutlineCamera!==camera||outlinePlanDirty){
    const cull=viewCull(strokePadding()+32),targets=new Map();
-   for(const [slot,code] of countryRoles){
+   const roleStyles=paint.roleStyles();
+   for(const [slot,code] of paint.countryRoles()){
     if(!(roleStyles[code]?.width>0&&roleStyles[code]?.alpha>0))continue;
     for(const descriptor of outlineBySlot.get(slot)??[]){
      if(descriptor.bounds&&!cull(descriptor.bounds))continue;
@@ -713,11 +687,11 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
     for(const key of outlineFailed)if(!targets.has(key))outlineFailed.delete(key);
     outlineTargets=targets;outlinePaintDirty=true;
    }
-   lastOutlineCamera=camera;outlinePlanDirty=false;paintStats.outlinePlans++;
+   lastOutlineCamera=camera;outlinePlanDirty=false;outlineStats.outlinePlans++;
    for(const [key,controller] of pendingOutlines)if(!outlineTargets.has(key)){pendingOutlines.delete(key);controller.abort();}
    for(const [key,{descriptor}] of outlineTargets){
     if(pendingOutlines.has(key)||surface.hasOutlines(key)||outlineFailed.has(key))continue;
-    const controller=new AbortController();pendingOutlines.set(key,controller);paintStats.outlineDownloads++;
+    const controller=new AbortController();pendingOutlines.set(key,controller);outlineStats.outlineDownloads++;
     loadOutlines(descriptor,controller.signal).then(data=>{
      if(disposed||controller.signal.aborted||pendingOutlines.get(key)!==controller||!outlineTargets.has(key))return;
      surface.installOutlines(key,data,descriptor);outlinePaintDirty=true;invalidate('three-outlines-ready');
@@ -729,114 +703,49 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    }
   }
   if(outlinePaintDirty){
-   surface.setOutlinePaint(new Map([...outlineTargets].map(([key,row])=>[key,row.roles])),roleStyles,style?.selection.color);
+   surface.setOutlinePaint(new Map([...outlineTargets].map(([key,row])=>[key,row.roles])),paint.roleStyles(),paint.outlineColor());
    outlinePaintDirty=false;
   }
  }
- function markCountryInputs(){countryPaintInputsDirty=countryRolesDirty=paintDirty=true;}
- function markHydroInputs(){hydroRolesDirty=hydroStyleDirty=paintDirty=true;pickingChanged=true;}
  function syncPresentationInputs(force=false){
   const next=readPresentationInputs(state,deps.preferences.userPreferences,{force}),old=presentationInputs;
   presentationInputs=next;
   if(!old||old.objects!==next.objects||old.colors!==next.colors||old.objectStyles!==next.objectStyles){
-   markCountryInputs();allCountryLabelsDirty=labelContentDirty=true;
+   paint.markCountryInputs();labelContent.invalidate({places:false});
   }else if(old.objectItems!==next.objectItems){
    for(const id of globeChangedHiddenIds(old.objectItems,next.objectItems)){
     const slot=activeSlotByKey.get(normalizeObjectRef({domain:'territorial',type:'entity',id})?.key);
-    if(slot!==undefined){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
+    if(slot!==undefined){paint.markCountrySlot(slot);labelContent.markCountrySlot(slot);}
    }
-   countryRolesDirty=paintDirty=labelContentDirty=true;
+   paint.markCountryRoles();labelContent.invalidate({countries:false,places:false});
   }
-  if(!old||old.lakes!==next.lakes||old.rivers!==next.rivers||old.hydroItems!==next.hydroItems||old.hydroLayers!==next.hydroLayers||old.builtinHydro!==next.builtinHydro)markHydroInputs();
+  if(!old||old.lakes!==next.lakes||old.rivers!==next.rivers||old.hydroItems!==next.hydroItems||old.hydroLayers!==next.hydroLayers||old.builtinHydro!==next.builtinHydro)paint.markHydroInputs();
   if(!old||old.borders!==next.borders||old.lakes!==next.lakes||old.rivers!==next.rivers||old.objects!==next.objects){
-   layerPaintDirty=paletteDirty=paintDirty=true;
+   paint.markLayers();paint.markPalette();
   }
   if(!old||old.names!==next.names||old.nameItems!==next.nameItems||old.countryLabelSettings!==next.countryLabelSettings||old.nativeNames!==next.nativeNames)
-   allCountryLabelsDirty=labelContentDirty=true;
+   labelContent.invalidate({places:false});
   const placesChanged=!old||old.places!==next.places||old.placeItems!==next.placeItems||old.builtinPlaces!==next.builtinPlaces||old.nativeNames!==next.nativeNames||old.placeLabelSettings!==next.placeLabelSettings;
-  if(placesChanged)placeLabelContentDirty=labelContentDirty=true;
+  if(placesChanged)labelContent.invalidate({countries:false});
   return placesChanged;
- }
- function refreshPalette(){
-  if(paletteDirty){
-   const next=deps.preferences.mapPalette();
-   if(!renderPalette||renderPalette.defaultLand!==next.defaultLand){fullPaintDirty=true;markCountryInputs();}
-   if(!renderPalette||renderPalette.ocean!==next.ocean)hydroStyleDirty=true;
-   renderPalette=next;surface?.setPalette(next);paletteDirty=false;paintStats.paletteUpdates++;
-  }
- }
- function updatePaint(){
-  refreshPalette();
-  const changed=new Set();
-  if(fullPaintDirty||countryPaintInputsDirty||dirtyPaintSlots.size){
-   const colors=layerStyle(state.layerPresentation,'objects').colorVisible!==false;
-   const pendingSlots=fullPaintDirty||countryPaintInputsDirty?new Set([...basePaint.keys(),...activeSlots]):dirtyPaintSlots;
-   let nextVisible=null;
-   for(const slot of pendingSlots){
-    paintStats.countrySlots++;
-    const previous=basePaint.get(slot);
-    if(!activeSlots.has(slot)){
-     if(previous){basePaint.delete(slot);changed.add(slot);}
-     if(visiblePaintSlots.has(slot)){nextVisible??=new Set(visiblePaintSlots);nextVisible.delete(slot);}
-     continue;
-    }
-    const ref=refs[slot],color=colors?deps.colorModel.territorialEntityColor(features.get(ref.id)):null,visible=Boolean(deps.objectRefVisible(ref));
-    if(fullPaintDirty||!previous||previous.color!==color||previous.visible!==visible){basePaint.set(slot,{color,visible});changed.add(slot);}
-    if(visible!==visiblePaintSlots.has(slot)){
-     nextVisible??=new Set(visiblePaintSlots);if(visible)nextVisible.add(slot);else nextVisible.delete(slot);
-    }
-   }
-   if(nextVisible){visiblePaintSlots=nextVisible;countryRolesDirty=true;pickingChanged=true;}
-   countryPaintInputsDirty=false;dirtyPaintSlots.clear();
-  }
-  if(countryRolesDirty){
-   const nextRoles=new Map();
-   if(style)for(const [key,{code}] of interactionRefs.territorial){
-    const slot=activeSlotByKey.get(key);if(slot!==undefined&&visiblePaintSlots.has(slot))nextRoles.set(slot,code);
-   }
-   for(const slot of new Set([...countryRoles.keys(),...nextRoles.keys()]))if(countryRoles.get(slot)!==nextRoles.get(slot))changed.add(slot);
-   const roleChanged=nextRoles.size!==countryRoles.size||[...nextRoles].some(([slot,code])=>countryRoles.get(slot)!==code);
-   if(roleChanged)outlinePlanDirty=outlinePaintDirty=true;
-   countryRoles=nextRoles;countryRolesDirty=false;paintStats.countryRoleUpdates++;
-  }
-  if(countryEmphasisDirty)for(const slot of countryRoles.keys())changed.add(slot);
-  if(changed.size)surface.setCountryPaint([...changed].map(slot=>{
-   const base=basePaint.get(slot)??{color:null,visible:false},appearance=roleStyles[countryRoles.get(slot)];
-   return [slot,{...base,highlight:appearance?{color:appearance.color,alpha:appearance.fillAlpha}:null}];
-  }),{full:changed.size>Math.max(64,activeSlots.size/2)});
-  if(hydroRolesDirty){
-   hydroRoles=new Map();waterRoles=new Map();
-   if(style)for(const {ref,code} of interactionRefs.hydro.values()){
-    if(!deps.objectRefVisible(ref))continue;
-    const slot=hydroSlots.get(ref.id);if(slot!==undefined)hydroRoles.set(slot,code);
-    waterRoles.set(ref.id,code);
-   }
-   hydroRolesDirty=false;hydroStyleDirty=true;paintStats.hydroRoleUpdates++;
-  }
-  if(hydroStyleDirty){surface.setHydroPaint(hydroRoles,waterRoles,roleStyles,style?.selection.color);hydroStyleDirty=false;}
-  if(layerPaintDirty){
-   for(const layer of ['lakes','rivers'])surface.setLayerVisibility(layer,state.layerVisibility[layer]!==false);
-   surface.setLayerVisibility('borders',bordersNeeded());layerPaintDirty=false;
-  }
-  paintDirty=fullPaintDirty=countryEmphasisDirty=false;
  }
  function renderFrame(frame){
   const base={frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
   if(!features||lost||error||frame.projectGeneration!==generation||requestScopes.has('territory-apply')||!presentation.countrySourceAdmitted(territories.key))return {...base,deferred:true};
-  syncPresentationInputs();refreshPalette();
+  syncPresentationInputs();paint.refreshPalette(surface);
   const baseReady=ensureVisibleBase(),physicalReady=ensureVisiblePhysical(),fontAvailable=ensureLabelFont();
   const graticuleReady=ensureLineLayer('graticule',graticuleNeeded(),surface.hasGraticule,surface.installGraticule,spec.graticule,'경위선');
   if(!baseReady||!physicalReady)return {...base,deferred:true};
   const strict=!ready||framePreserved||presentation.temporalPending();
   if(strict&&(!graticuleReady||!fontAvailable))return {...base,deferred:true};
-  if(labelContentDirty)metrics.run('three.label-content',updateLabelContent);
+  if(labelContent.needsUpdate())metrics.run('three.label-content',()=>labelContent.update({surface,camera,view,features,activeSlots,fontReady,needed:labelsNeeded()}));
   if(!surface.prepareLabels(camera,viewport.width,viewport.height,strict)&&strict)return {...base,deferred:true};
   presentation.markTemporalFrame(frame);
   if(!presentation.canPresentVisualFrame(frame))return {...base,deferred:true};
   surface.activateTerritorialChunks(territories.view,basePrepared.parts);
   surface.activatePhysicalContext(physical);
   pickingChanged||=lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
-  if(paintDirty)metrics.run('three.paint',updatePaint);
+  if(paint.needsUpdate())metrics.run('three.paint',()=>paint.updatePaint(surface,{activeSlots,activeSlotByKey,features,bordersNeeded}));
   requestOutlines();
   const showRivers=state.layerVisibility.rivers!==false;
   if(riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical){
@@ -846,7 +755,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const submitted=metrics.run('three.submit-frame',()=>surface.draw(camera,viewport.width,viewport.height));
   if(!submitted)return {...base,deferred:true};
   drawCount++;
-  drawnFrame={frame,camera,viewport,territories,basePrepared,physical,visibleSlots:visiblePaintSlots,riverChunks:riverDetail.activeEntries(),
+  drawnFrame={frame,camera,viewport,territories,basePrepared,physical,visibleSlots:paint.visibleSlots(),riverChunks:riverDetail.activeEntries(),
    labelHit:surface.labels.hitSnapshot(),lakesVisible:state.layerVisibility.lakes!==false,riversVisible:showRivers,generation};
   input.advanceInertia();
   return {...base,succeeded:true,presentationReady:true};
@@ -902,7 +811,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const items=hydroMetadata??await hydroMetadataCache.read('hydro-metadata',async readSignal=>{
    const rows=await load(spec.hydroMetadata,'hydro',{phase:'background',priority:30,identityCount:spec.hydroCount,signal:readSignal});
    readSignal.throwIfAborted();
-   hydroMetadata=rows;rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));refreshHydroLedger();paintDirty=hydroRolesDirty=residencyDirty=true;invalidate('three-hydro-identities');
+   hydroMetadata=rows;rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));refreshHydroLedger();paint.markHydroRoles();residencyDirty=true;invalidate('three-hydro-identities');
    return rows;
   },signal);
   signal?.throwIfAborted();
@@ -961,11 +870,11 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    assertCurrent();return [...hydroRefs,...hits.map(slot=>refs[slot])];
   }finally{consumerSignal?.removeEventListener('abort',abort);finishRequest(includeHydro||includeLabels?'pick-click':'pick-hover',controller);}
  }
- function invalidateCountryColors(){markCountryInputs();syncPresentationInputs(true);invalidate('three-country-colors');}
- function invalidatePalette(){paletteDirty=paintDirty=true;invalidate('three-palette');}
- function invalidatePhysicalStyle(){paletteDirty=hydroStyleDirty=paintDirty=true;invalidate('three-physical-style');}
- function invalidateHydroVisibility(){markHydroInputs();syncPresentationInputs(true);layerPaintDirty=true;invalidate('three-hydro-visibility');}
- function invalidatePresentationStyle(){const placesChanged=syncPresentationInputs(true);paletteDirty=paintDirty=true;invalidate('three-presentation-style');return placesChanged;}
+ function invalidateCountryColors(){paint.markCountryInputs();syncPresentationInputs(true);invalidate('three-country-colors');}
+ function invalidatePalette(){paint.markPalette();invalidate('three-palette');}
+ function invalidatePhysicalStyle(){paint.markPhysicalStyle();invalidate('three-physical-style');}
+ function invalidateHydroVisibility(){paint.markHydroInputs();syncPresentationInputs(true);paint.markLayers();invalidate('three-hydro-visibility');}
+ function invalidatePresentationStyle(){const placesChanged=syncPresentationInputs(true);paint.markPalette();invalidate('three-presentation-style');return placesChanged;}
  function setRenderQuality(value){const key=JSON.stringify([value?.tier,value?.phase,value?.revision]);if(key===qualityKey)return;qualityKey=key;invalidate('three-quality');}
  const canPickFrame=()=>!!acceptedPick&&ready&&!disposed&&!lost&&!framePreserved&&acceptedPick.generation===generation&&acceptedPick.viewport===viewport;
  const displayCamera=()=>acceptedPick?.generation===generation?acceptedPick.camera:camera;
@@ -979,26 +888,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   isAtWorldView:()=>Boolean(viewport&&Math.abs(view.zoom-worldFit().zoom)<0.01&&Math.abs(view.center[0]-15)<0.1&&Math.abs(view.center[1]-12)<0.1),
   panBy:input.panBy,
   setTerritorialFeatures,preparePhysicalContext,prepareDatedTerritories,
-  setSelection(value){
-   const prior=(selection?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
-   const next=(value?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
-   if(prior.length!==next.length||prior.some((key,i)=>key!==next[i]))labelContentDirty=placeLabelContentDirty=true;
-   const roles=globeInteractionRoles(value,deps.highlightCandidates());
-   if(!sameGlobeRoleInputs(interactionRefs.territorial,roles.territorial))countryRolesDirty=paintDirty=true;
-   if(!sameGlobeRoleInputs(interactionRefs.hydro,roles.hydro))hydroRolesDirty=paintDirty=true;
-   interactionRefs=roles;selection=value;
-  },setInteractionStyle(value){
-   const next=globeInteractionStyles(value);
-   if(globeRoleStyleKey(roleStyles,'fill')!==globeRoleStyleKey(next,'fill'))countryEmphasisDirty=paintDirty=true;
-   if(globeRoleStyleKey(roleStyles,'outline')!==globeRoleStyleKey(next,'outline'))outlinePlanDirty=outlinePaintDirty=true;
-   if(globeRoleStyleKey(roleStyles,'hydro')!==globeRoleStyleKey(next,'hydro'))hydroStyleDirty=paintDirty=true;
-   if(Boolean(style)!==Boolean(value))countryRolesDirty=hydroRolesDirty=paintDirty=true;
-   style=value;roleStyles=next;invalidate('three-interaction-style');
-  },
+  setSelection(value){labelContent.setSelection(value);paint.setSelection(value);},
+  setInteractionStyle(value){paint.setInteractionStyle(value);invalidate('three-interaction-style');},
   invalidateCountryColors,invalidateCountryPalette:invalidatePalette,invalidatePhysicalStyle,invalidateHydroVisibility,invalidatePresentationStyle,setRenderQuality,
   labelZoomVisibility:()=>({country:Boolean(camera&&camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM),
    places:Boolean(camera&&camera.view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR)}),
-  invalidateLabelContent({countries=true,places=true}={}){labelContentDirty=true;if(countries)allCountryLabelsDirty=true;if(places)placeLabelContentDirty=true;},getPickingRevision:()=>pickingRevision,canPickFrame,queryObjectRefs,
+  invalidateLabelContent:labelContent.invalidate,getPickingRevision:()=>pickingRevision,canPickFrame,queryObjectRefs,
   setInitialMapLoading(value){initialLoading=value;},isStyleReady:()=>loaded,renderFrame,commitVisualFrame,
   canPresentVisualFrame:presentation.canPresentVisualFrame,prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
   beginTemporalViewTransition,admitTemporalViewTransition:presentation.admitTemporalViewTransition,
@@ -1006,7 +901,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   waitForTemporalPresentation:presentation.waitForTemporalPresentation,getProjectGeneration:()=>generation,
   preserveTemporalFrame(){cancelNeighborPrefetch();framePreserved=true;},isFramePreserved:()=>framePreserved,
   resetProjectRenderState(options){generation=options.generation;features=null;ready=false;error=null;
-    drawnFrame=null;surface?.labels.cancelPending();clearPreparation();neighborKey=null;publishedMonth=null;monthDirection=0;cancelOutlines();territorialAssets.releaseWarm();physicalAssets.releaseWarm();temporalInputs.reset();countryLabels.clear();countryLabelList=[];dirtyPaintSlots.clear();dirtyCountryLabels.clear();allCountryLabelsDirty=countryPaintInputsDirty=true;labelContentDirty=placeLabelContentDirty=paintDirty=countryRolesDirty=hydroRolesDirty=hydroStyleDirty=layerPaintDirty=true;presentationInputs=null;placeLabelList=[];clearViewPlans();presentation.resetForProject(options);},
+    drawnFrame=null;surface?.labels.cancelPending();clearPreparation();neighborKey=null;publishedMonth=null;monthDirection=0;cancelOutlines();territorialAssets.releaseWarm();physicalAssets.releaseWarm();temporalInputs.reset();paint.resetProject();labelContent.resetProject();presentationInputs=null;clearViewPlans();presentation.resetForProject(options);},
   measureWork:metrics.track,measureSyncWork:metrics.run,failMapPreparation,retryMapPreparation,getRuntimeState,
   getStats:()=>({...getRuntimeState(),mapReadiness:readyState(),displayedRevision:ready?revision:0,sourceRevision:revision,
    generation,certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
@@ -1017,10 +912,10 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    countryLabelCount:surface?.labels.visibleCount(false)??0,
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
-   territorialChunkCache:territorialAssets.stats(),historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes},historicalMetadata:historyIndex.stats(),temporalPresentation:temporalStats,paintWork:{...paintStats},physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
+   territorialChunkCache:territorialAssets.stats(),historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes},historicalMetadata:historyIndex.stats(),temporalPresentation:temporalStats,paintWork:{...paint.stats(),...outlineStats,...labelContent.stats()},physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
    labelAtlas:surface?.labels.cacheStats()??null,hydroTextureUploads:surface?.hydroUploadStats()??null,packetWorker:packetTasks.stats(),workScheduler:workScheduler.stats(),residency:residency.stats(),persistence:assetReader.stats(),loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
   dispose(){cancelNeighborPrefetch();disposed=true;input.dispose();lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();historyCatalogCache.dispose();territorialAssets.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();packetTasks.dispose();surface?.dispose();workScheduler.dispose();residency.dispose();canvas?.remove();
    acceptedPick=drawnFrame=features=basePrepared=publishedBase=basePreparing=physical=acceptedPhysical=publishedPhysical=hydroMetadata=null;
-   acceptedRiverChunks=[];hydroSlots.clear();basePaint.clear();temporalInputs.reset();countryLabels.clear();countryLabelList=[];placeLabelList=[];outlineBySlot.clear();clearViewPlans();surface=riverDetail=null;},
+   acceptedRiverChunks=[];hydroSlots.clear();paint.dispose();temporalInputs.reset();labelContent.dispose();outlineBySlot.clear();clearViewPlans();surface=riverDetail=null;},
  });
 }

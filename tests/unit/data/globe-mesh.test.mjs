@@ -610,3 +610,24 @@ test('physical catalog selects lake and base/detail river chunks through Cartesi
  assert.deepEqual(assets.detailPlan('world',{zoom:5,strokeCull:cull}).map(row=>row.id),['d1']);
  assets.dispose();
 });
+
+test('globe paint owner keeps accepted visibility snapshots and isolates hydro-only updates',async()=>{
+ const {createGlobePaintState}=await import('../../../src/rendering/globe-paint-state.js');
+ const state={layerPresentation:{},layerVisibility:{}},refs=[{id:'a',key:'territorial:a'}];
+ const features=new Map([['a',{color:'#123456'}]]),activeSlots=new Set([0]),activeSlotByKey=new Map([['territorial:a',0]]);
+ let visible=true;
+ const calls=[];
+ const palette={defaultLand:'#aaa',ocean:'#bbb'};
+ const owner=createGlobePaintState({state,refs,hydroSlots:new Map(),readPalette:()=>palette,
+  territorialColor:row=>row.color,objectRefVisible:()=>visible,highlightCandidates:()=>[],
+  onPickingChanged:()=>{},onOutlineRolesChanged:()=>{}});
+ const surface={setPalette(){},setCountryPaint:()=>calls.push('country'),setHydroPaint:()=>calls.push('hydro'),setLayerVisibility(){}};
+ const context={activeSlots,activeSlotByKey,features,bordersNeeded:()=>true};
+ owner.initializePalette();owner.updatePaint(surface,context);
+ const accepted=owner.visibleSlots();
+ calls.length=0;owner.markHydroStyle();owner.updatePaint(surface,context);
+ assert.deepEqual(calls,['hydro']);assert.equal(owner.stats().countrySlots,1);
+ visible=false;owner.markCountrySlot(0);owner.updatePaint(surface,context);
+ assert.equal(accepted.has(0),true);assert.equal(owner.visibleSlots().has(0),false);
+ assert.equal(owner.stats().countrySlots,2);
+});
