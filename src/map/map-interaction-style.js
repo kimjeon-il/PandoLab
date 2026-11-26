@@ -1,4 +1,4 @@
-import { INTERACTION_ROLE_PRIORITY, SELECTION_PAINT_ORDER } from "../ui/layer-presentation.js";
+import { INTERACTION_ROLE_PRIORITY, SELECTION_PAINT_ORDER } from '../ui/layer-presentation.js';
 const THEMES = new Set(['light', 'dark']);
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 

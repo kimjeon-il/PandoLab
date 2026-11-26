@@ -1,5 +1,5 @@
-import { layerStyle, resolveLayerDisplayColor } from "../ui/layer-presentation.js";
-import { resolveTerritorialColor } from "../ui/color-adapter.js";
+import { layerStyle, resolveLayerDisplayColor } from '../ui/layer-presentation.js';
+import { resolveTerritorialColor } from '../ui/color-adapter.js';
 
 // One material contract for all objects. Independent regions never claim land
 // ownership or inherit the general hierarchy's paint.
@@ -44,8 +44,8 @@ export function createTerritorialFillResolver({ state, entityRepository, mapSubs
       ownerId: independent ? '' : inherited?.ownerId || id, parentId: String(properties.parentId || '') });
     visiting.delete(id);
     cache.set(id, result);
-    if(Object.isFrozen(entity)&&Object.isFrozen(entity.properties)&&Object.isFrozen(original))
-      previousResults?.set(entity,{presentation:original,inherited,resolveStoredColors,mapSubstrate,neutralColor,result});
+    if (Object.isFrozen(entity)&&Object.isFrozen(entity.properties)&&Object.isFrozen(original))
+      previousResults?.set(entity, {presentation:original, inherited, resolveStoredColors, mapSubstrate, neutralColor, result});
     return result;
   }
   return resolve;

@@ -1,5 +1,5 @@
-import { COUNTRY_DEFAULT_COLORS } from "./country-default-colors.js";
-export const DEFAULT_GENERIC_FEATURE_COLOR='#8c68d8';
+import { COUNTRY_DEFAULT_COLORS } from './country-default-colors.js';
+export const DEFAULT_GENERIC_FEATURE_COLOR = '#8c68d8';
 
 export const COLOR_DOMAINS = Object.freeze({
   TERRITORIAL: 'territorial',

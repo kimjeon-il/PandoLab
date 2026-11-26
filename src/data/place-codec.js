@@ -1,4 +1,4 @@
-import { normalizePlace, PLACE_KINDS, PLACE_LIMITS, PLACE_TILE_FORMAT } from "../document/place-contract.js";
+import { normalizePlace, PLACE_KINDS, PLACE_LIMITS, PLACE_TILE_FORMAT } from '../document/place-contract.js';
 const { headerBytes: HEADER, recordBytes: STRIDE, magic: MAGIC, version: VERSION,
   stringFields: STRING_FIELDS, stringOffsetBase: STRING_OFFSET_BASE,
   stringOffsetStride: STRING_OFFSET_STRIDE, maxStringBytes: MAX_STRING_BYTES } = PLACE_TILE_FORMAT;

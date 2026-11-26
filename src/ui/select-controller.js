@@ -1,5 +1,5 @@
-import { createSemanticIcon } from "./icon-utils.js";
-import { isPlaceholderOption, selectableOptions } from "./select-option-policy.js";
+import { createSemanticIcon } from './icon-utils.js';
+import { isPlaceholderOption, selectableOptions } from './select-option-policy.js';
 
 const DEFAULT_SEARCH_THRESHOLD = 12;
 const DEFAULT_RENDER_LIMIT = 240;
@@ -515,8 +515,8 @@ export function createSelectController({
             const removed = node.matches('select') ? [node] : [];
             node.querySelectorAll?.('select').forEach(select => removed.push(select));
             for (const select of removed) {
-              const component=components.get(select);
-              if(component && (!component.shell.isConnected || !component.shell.contains(select)))
+              const component = components.get(select);
+              if (component && (!component.shell.isConnected || !component.shell.contains(select)))
                 releaseComponent(select);
             }
           }

@@ -1,9 +1,9 @@
-import { createHydroTileWindow, hydroTileSpecsForWindow } from "./hydro-tile-window.js";
-import { decodePlaceTile } from "./place-codec.js";
-import { comparePlaces, normalizePlace, normalizePlaceQuery, selectedPlaceNames, PLACE_LIMITS } from "../document/place-contract.js";
-import { resolvePlaceLabelRows, placeLabelRowsAtMonth } from "../ui/place-name-display.js";
-import { coordinateInGeographicBounds } from "../rendering/label-layout.js";
-import {isWithinDisplayZoom,placeDisplayMinZoom} from "../map/map-display-zoom.js";
+import { createHydroTileWindow, hydroTileSpecsForWindow } from './hydro-tile-window.js';
+import { decodePlaceTile } from './place-codec.js';
+import { comparePlaces, normalizePlace, normalizePlaceQuery, selectedPlaceNames, PLACE_LIMITS } from '../document/place-contract.js';
+import { resolvePlaceLabelRows, placeLabelRowsAtMonth } from '../ui/place-name-display.js';
+import { coordinateInGeographicBounds } from '../rendering/label-layout.js';
+import { isWithinDisplayZoom, placeDisplayMinZoom } from '../map/map-display-zoom.js';
 const noCancellation = Object.freeze({ throwIfCancelled() {} });
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
@@ -14,11 +14,11 @@ async function sha256Hex(bytes) {
 
 // Cull within the conservative tile window before spending the candidate budget.
 function viewportPredicate(view) {
-  const bounds=view.bounds;
-  if(!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite)||bounds[1]>bounds[3])throw new TypeError('Place viewport requires actual camera geographic bounds');
+  const bounds = view.bounds;
+  if (!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite)||bounds[1]>bounds[3])throw new TypeError('Place viewport requires actual camera geographic bounds');
   return record => {
-    if(!coordinateInGeographicBounds(record.coordinates,bounds))return false;
-    const rows=view.presentation ? placeLabelRowsAtMonth(record,view.presentation.month, { ko: true, en: true, native: true })
+    if (!coordinateInGeographicBounds(record.coordinates, bounds))return false;
+    const rows = view.presentation ? placeLabelRowsAtMonth(record, view.presentation.month, { ko: true, en: true, native: true })
       : resolvePlaceLabelRows(record, { ko: true, en: true, native: true }, view.mapDate || null);
     // Bound loading by the native camera; exact perspective, horizon and label
     // collisions are resolved once by the main layout with its actual projector.
@@ -31,8 +31,8 @@ export async function readPlaceResponse(response, limit) {
   if (!response.body?.getReader) { const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.length > limit) throw new RangeError('Place response byte budget exceeded'); return bytes; }
   const reader = response.body.getReader(), chunks = []; let length = 0;
   try {
-    for (;;) { const { value, done } = await reader.read(); if (done) break; length += value.length; if (length > limit) throw new RangeError('Place response byte budget exceeded'); chunks.push(value); }
-  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+    for (; ;) { const { value, done } = await reader.read(); if (done) break; length += value.length; if (length > limit) throw new RangeError('Place response byte budget exceeded'); chunks.push(value); }
+  } catch (error) { await reader.cancel().catch (() => {}); throw error; }
   finally { reader.releaseLock(); }
   const result = new Uint8Array(length); let offset = 0;
   for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
@@ -53,7 +53,7 @@ export function validatePlaceManifest(raw) {
     if (!shard || !Number.isInteger(row.offset) || row.offset < 0 || !Number.isInteger(row.length) || row.length < 32 || row.offset + row.length > shard.bytes) throw new RangeError('Invalid place tile range');
     if (!SHA256_PATTERN.test(String(row.sha256 || ''))) throw new TypeError('Invalid place tile hash');
   };
-  for (const [key,row] of Object.entries(raw.tiles)) {
+  for (const [key, row] of Object.entries(raw.tiles)) {
     const match = /^(\d+)\/(\d+)-(\d+)$/u.exec(key), stage = match && raw.stages.find(s => s.id === Number(match[1]));
     if (!stage || Number(match[2]) >= stage.columns || Number(match[3]) >= stage.rows) throw new TypeError('Invalid place tile key');
     checkTile(row);
@@ -86,12 +86,12 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
   const inflightShards = new Map();
   const budget = Math.max(0, Math.min(PLACE_LIMITS.cacheBytes, Number(cacheBytes) || 0));
   let used = 0; const metrics = { queryCount: 0, networkCount: 0, evictions: 0, lastTileCount: 0, lastCandidateCount: 0, peakWorkingRecords: 0 };
-  function get(key) { const entry=cache.get(key); if (!entry) return null; cache.delete(key); cache.set(key,entry); return entry.value; }
-  function put(key,value,bytes) {
+  function get(key) { const entry = cache.get(key); if (!entry) return null; cache.delete(key); cache.set(key, entry); return entry.value; }
+  function put(key, value, bytes) {
     if (bytes > budget) return value;
-    const existing=cache.get(key); if (existing) { used-=existing.bytes; cache.delete(key); }
-    while (used + bytes > budget && cache.size) { const oldest=cache.keys().next().value; used-=cache.get(oldest).bytes; cache.delete(oldest); metrics.evictions++; }
-    cache.set(key,{value,bytes}); used+=bytes; return value;
+    const existing = cache.get(key); if (existing) { used-=existing.bytes; cache.delete(key); }
+    while (used + bytes > budget && cache.size) { const oldest = cache.keys().next().value; used-=cache.get(oldest).bytes; cache.delete(oldest); metrics.evictions++; }
+    cache.set(key, {value, bytes}); used+=bytes; return value;
   }
   function startWholeShard(row, context, readBytes) {
     const spec = manifest.shards[row.shard];
@@ -218,11 +218,11 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
   async function search(value, context=noCancellation, presentation=null) {
     const query=normalizePlaceQuery(value); if ([...query].length < 2) return { records: [], truncated: false };
     const prefix=[...query].slice(0,2).join(''), pages=(manifest.search[prefix] || []).filter(row => row.last >= query && row.first <= `${query}\uffff`);
-    const selected=pages.slice(0,PLACE_LIMITS.queryTiles);
-    const names=record=>presentation ? placeLabelRowsAtMonth(record,presentation.month,presentation.languages).map(row=>row.text.replace(/^\(현\)/,'')) : selectedPlaceNames(record);
-    const {records,truncated}=await loadRows(selected,context,record=>names(record).some(name => normalizePlaceQuery(name).startsWith(query)),PLACE_LIMITS.searchResults);
-    const displayNames=Object.fromEntries(records.map(record=>[record.id,
-      placeLabelRowsAtMonth(record,presentation?.month,presentation?.languages)[0]?.text || record.name]));
+    const selected = pages.slice(0, PLACE_LIMITS.queryTiles);
+    const names = record => presentation ? placeLabelRowsAtMonth(record, presentation.month, presentation.languages).map(row => row.text.replace(/^\(현\)/,'')) : selectedPlaceNames(record);
+    const {records, truncated} = await loadRows(selected, context, record => names(record).some(name => normalizePlaceQuery(name).startsWith(query)), PLACE_LIMITS.searchResults);
+    const displayNames = Object.fromEntries(records.map(record => [record.id,
+      placeLabelRowsAtMonth(record, presentation?.month, presentation?.languages)[0]?.text || record.name]));
     return { records, displayNames, truncated: pages.length > selected.length || truncated };
   }
   return Object.freeze({ queryViewport, search, stats: () => ({ ...metrics, cacheBytes: used, cacheBudget: budget, cachedTiles: [...cache.keys()].filter(key => key.startsWith('tile:')).length, inflight: inflight.size }) });

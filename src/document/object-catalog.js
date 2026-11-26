@@ -1,6 +1,6 @@
-import { effectiveTerritorialFlagUrl } from "../ui/country-flags.js";
-import {builtinSubunitSourceId} from "./territorial-display-identity.js";
-import {projectResourceOverlay} from "./project-resource-overlay.js";
+import { effectiveTerritorialFlagUrl } from '../ui/country-flags.js';
+import { builtinSubunitSourceId } from './territorial-display-identity.js';
+import { projectResourceOverlay } from './project-resource-overlay.js';
 
 /** ObjectCatalog: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
@@ -31,21 +31,21 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
 
 
   function isObjectCatalogItemVisible(group, id) {
-    if(typeof isObjectVisible!=='function')throw new TypeError('Search requires the common object visibility query.');
-    return isObjectVisible(group,id);
+    if (typeof isObjectVisible!=='function')throw new TypeError('Search requires the common object visibility query.');
+    return isObjectVisible(group, id);
   }
 
   function listObjectCatalogItems(group) {
     if (group === 'objects' || group === 'objectLabels') {
-      return projectResourceOverlay('territorial',dependencies.territorialModel.entityRepository.list()).records.map(feature=>{
-        const id=String(feature.id),root=dependencies.territorialModel.entityRepository.root(id);
-        return {id,name:dependencies.objectPresentation.territorialEntityName(feature),
+      return projectResourceOverlay('territorial', dependencies.territorialModel.entityRepository.list()).records.map(feature => {
+        const id = String(feature.id), root = dependencies.territorialModel.entityRepository.root(id);
+        return {id, name:dependencies.objectPresentation.territorialEntityName(feature),
           color:dependencies.colorModel.territorialEntityColor(feature),
-          flagUrl:effectiveTerritorialFlagUrl(feature,{assetRevision:dependencies.layerPresentation.ASSET_REVISION}),
+          flagUrl:effectiveTerritorialFlagUrl(feature, {assetRevision:dependencies.layerPresentation.ASSET_REVISION}),
           searchText:[dependencies.objectPresentation.territorialEntitySearchText(feature),
             root?.id !== feature.id && root?.properties.entityKind === 'general' ? dependencies.objectPresentation.territorialEntitySearchText(root) : ''].join(' '),
           meta:group==='objectLabels'&&dependencies.labelPresentation.pendingCountryLabelAnchors.has(id)?'계산 중':'',
-          folderName:'객체',countryId:String(root?.id||''),parentId:String(feature.properties.parentId||''),
+          folderName:'객체', countryId:String(root?.id||''), parentId:String(feature.properties.parentId||''),
           selected:dependencies.projectState.state.selected?.domain==='territorial'&&dependencies.projectState.state.selected.id===id};
       });
     }
@@ -71,7 +71,7 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
           isBuiltin: true,
           selected: false,
         }));
-      const userItems = projectResourceOverlay('hydro',dependencies.projectState.state.hydroEdits).project.map(feature => ({
+      const userItems = projectResourceOverlay('hydro', dependencies.projectState.state.hydroEdits).project.map(feature => ({
         id: String(feature.id),
         name: (0, dependencies.hydroPresentation.hydroDisplayName)(feature.properties?.name, (0, dependencies.hydroPresentation.hydroFallbackName)(feature.properties?.category)),
         color: feature.properties?.editorColor || dependencies.hydroPresentation.HYDRO_CATEGORY_STYLES[feature.properties?.category || 'river'].color,
@@ -94,7 +94,7 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
         selected: dependencies.projectState.state.selected?.domain === 'generic' && dependencies.projectState.state.selected.id === String(feature.id),
       }));
     }
-    return projectResourceOverlay('label',dependencies.projectState.state.labels).project.map(label => ({
+    return projectResourceOverlay('label', dependencies.projectState.state.labels).project.map(label => ({
       id: String(label.id),
       name: label.name || '이름 없는 도시',
       icon: 'place',
@@ -104,19 +104,19 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
   }
 
   function listObjectSearchItems(group) {
-    return listObjectCatalogItems(group).filter(item=>isObjectCatalogItemVisible(group,item.id));
+    return listObjectCatalogItems(group).filter(item => isObjectCatalogItemVisible(group, item.id));
   }
 
   function presentationCatalog() {
-    const hydroLayers=Object.fromEntries(Object.entries(dependencies.hydroPresentation.HYDRO_LAYER_META)
-      .map(([id,meta]) => [id,(0,dependencies.hydroPresentation.hydroCategoryKey)(meta.category)]));
-    const builtinSubunitSources=Object.fromEntries(
-      dependencies.territorialModel.entityRepository.list().flatMap(feature=>{
-        const sourceId=builtinSubunitSourceId(feature);
-        return sourceId?[[String(feature.id),sourceId]]:[];
+    const hydroLayers = Object.fromEntries(Object.entries(dependencies.hydroPresentation.HYDRO_LAYER_META)
+      .map(([id, meta]) => [id, (0, dependencies.hydroPresentation.hydroCategoryKey)(meta.category)]));
+    const builtinSubunitSources = Object.fromEntries(
+      dependencies.territorialModel.entityRepository.list().flatMap(feature => {
+        const sourceId = builtinSubunitSourceId(feature);
+        return sourceId?[[String(feature.id), sourceId]]:[];
       }));
-    return { hydroLayers,builtinSubunitSources,
-      countryLabelIds:[...(0,dependencies.countries.builtinTerritorialScene)().labelById.keys()] };
+    return { hydroLayers, builtinSubunitSources,
+      countryLabelIds:[...(0, dependencies.countries.builtinTerritorialScene)().labelById.keys()] };
   }
 
   async function pruneLayerItemVisibility({ catalogAlreadyAdmitted = false } = {}) {
@@ -126,7 +126,7 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
       throw new TypeError('Layer visibility pruning requires the canonical C++ selection owner.');
     if (!catalogAlreadyAdmitted) await dependencies.domains.projectDomain.admitPresentationCatalog(presentationCatalog());
     dependencies.projectSession.pruneViewingItems(presentationCatalog());
-    await dependencies.domains.selectionDomain.prune(null,{ reason:'prune-invalid-selection' });
+    await dependencies.domains.selectionDomain.prune(null, { reason:'prune-invalid-selection' });
   }
 
   return Object.freeze({
@@ -135,7 +135,7 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
     get isCountryVisibleById() { return isCountryVisibleById; },
     get isLayerItemVisible() { return isLayerItemVisible; },
     get isObjectCatalogItemVisible() { return isObjectCatalogItemVisible; },
-    get listObjectSearchItems(){return listObjectSearchItems;},
+    get listObjectSearchItems() {return listObjectSearchItems;},
     get listObjectCatalogItems() { return listObjectCatalogItems; },
     get invalidateObjectPresentation() { return invalidateObjectPresentation; },
     get pruneLayerItemVisibility() { return pruneLayerItemVisibility; },

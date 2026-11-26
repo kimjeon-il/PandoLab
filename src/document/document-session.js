@@ -1,5 +1,5 @@
-import { createCoreDocumentClient } from "./core-document-client.js";
-import { createCoreDocumentReadModel } from "./core-document-read-model.js";
+import { createCoreDocumentClient } from './core-document-client.js';
+import { createCoreDocumentReadModel } from './core-document-read-model.js';
 
 /** One C++ owner and its accepted immutable projection for the read-only Viewer. */
 export function createDocumentSession({ productMode, readOnly = true, initialProject, onTransition = () => {}, createWorker } = {}) {

@@ -1,4 +1,4 @@
-import { sharedCalculationCore } from "../document/temporal.js";
+import { sharedCalculationCore } from '../document/temporal.js';
 
 const STROKE_EPSILON = 1e-7;
 // Same C++ threshold used by native polygon tessellation and Web display.

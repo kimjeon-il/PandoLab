@@ -1,4 +1,4 @@
-import { sharedCalculationCore } from "../document/temporal.js";
+import { sharedCalculationCore } from '../document/temporal.js';
 
 // Boundary adapter: no independent JS graph walk. The shared C++ kernel preserves the
 // owner's input order, junction stops and dash-chain continuity for Web/WASM.

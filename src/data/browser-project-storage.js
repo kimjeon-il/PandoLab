@@ -6,10 +6,10 @@ export function createBrowserProjectStorage({
   viewKey,
   databaseVersion = 2,
 }) {
-  if(productMode!=='viewer')throw new TypeError('Project storage requires viewer product mode.');
+  if (productMode!=='viewer')throw new TypeError('Project storage requires viewer product mode.');
   let databasePromise = null;
   const documentKey = id => {
-    if(typeof id!=='string'||!id.trim())throw new TypeError('Workspace documentId is required.');
+    if (typeof id!=='string'||!id.trim())throw new TypeError('Workspace documentId is required.');
     return `${viewKey}:${id}`;
   };
 
@@ -25,7 +25,7 @@ export function createBrowserProjectStorage({
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('IndexedDB 열기 실패'));
       request.onblocked = () => reject(new Error('다른 창에서 자동저장 DB를 사용 중입니다.'));
-    }).catch(error => { databasePromise = null; throw error; });
+    }).catch (error => { databasePromise = null; throw error; });
     return databasePromise;
   }
 
@@ -52,7 +52,7 @@ export function createBrowserProjectStorage({
 
   return Object.freeze({
     readCamera: async projectId => readRecord(`${documentKey(projectId)}:camera`, '지도 위치 읽기 실패'),
-    writeCamera: (projectId,camera) => writeRecord(`${documentKey(projectId)}:camera`, camera, '지도 위치 저장 실패'),
+    writeCamera: (projectId, camera) => writeRecord(`${documentKey(projectId)}:camera`, camera, '지도 위치 저장 실패'),
     readView: async documentId => {
       const record = await readRecord(documentKey(documentId), '보기 위치 읽기 실패');
       // A damaged or stale key must not install another project's viewing state.
@@ -63,18 +63,18 @@ export function createBrowserProjectStorage({
 }
 
 /** Current Viewer view records and validated globe-camera restoration. */
-export function createViewerViewStorage({storage,projectId,dataRevision,now=()=>new Date().toISOString()}){
-  const documentId=`map-project:${projectId}:${dataRevision}`;
-  function writeView(viewingPresentation,camera){
-    const record={documentId,viewingPresentation,savedAt:now()};
-    return Promise.all([storage.writeView(record),...(camera?.projection?[storage.writeCamera(projectId,camera)]:[])]);
+export function createViewerViewStorage({storage, projectId, dataRevision, now = () => new Date().toISOString()}) {
+  const documentId = `map-project:${projectId}:${dataRevision}`;
+  function writeView(viewingPresentation, camera) {
+    const record = {documentId, viewingPresentation, savedAt:now()};
+    return Promise.all([storage.writeView(record), ...(camera?.projection?[storage.writeCamera(projectId, camera)]:[])]);
   }
-  async function readCamera(){
-    const camera=await storage.readCamera(projectId);
-    if(camera?.projection!=='globe'||!Array.isArray(camera.center)||camera.center.length!==2||
+  async function readCamera() {
+    const camera = await storage.readCamera(projectId);
+    if (camera?.projection!=='globe'||!Array.isArray(camera.center)||camera.center.length!==2||
       !camera.center.every(Number.isFinite)||!Number.isFinite(camera.zoom))return null;
-    return {globeRotation:[-camera.center[0],-Math.max(-90,Math.min(90,camera.center[1])),0],
-      zoom:camera.zoom,bearing:camera.bearing,pitch:camera.pitch,roll:camera.roll};
+    return {globeRotation:[-camera.center[0], -Math.max(-90, Math.min(90, camera.center[1])), 0],
+      zoom:camera.zoom, bearing:camera.bearing, pitch:camera.pitch, roll:camera.roll};
   }
-  return Object.freeze({writeView,readCamera,readView:()=>storage.readView(documentId)});
+  return Object.freeze({writeView, readCamera, readView:() => storage.readView(documentId)});
 }

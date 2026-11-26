@@ -1,5 +1,5 @@
-import { createPreparedBoundaryStore, attachBoundarySegmentReferences, topologyNodeKey, mergeSharedBoundaryContributions } from "../geometry/boundary-topology.js";
-import { computeCountrySharedContacts } from "../geometry/country-contact-core.js";
+import { createPreparedBoundaryStore, attachBoundarySegmentReferences, topologyNodeKey, mergeSharedBoundaryContributions } from '../geometry/boundary-topology.js';
+import { computeCountrySharedContacts } from '../geometry/country-contact-core.js';
 
 const sharedSegmentKey = segment => [topologyNodeKey(segment.start), topologyNodeKey(segment.end)].sort().join('|');
 const contactKey = ids => JSON.stringify([...ids].sort());
@@ -9,8 +9,8 @@ export function createCountrySharedBoundaryState() {
   const preparedStore = createPreparedBoundaryStore();
   const contacts = new Map(), contactsByOwner = new Map(), edges = new Map();
   let contactComputationCount = 0, lastAffectedOwners = new Set();
-  const touchedEdges=new Set();
-  const changedEdges=()=>[...touchedEdges].map(key=>[key,edges.get(key)?.value??null]);
+  const touchedEdges = new Set();
+  const changedEdges = () => [...touchedEdges].map(key => [key, edges.get(key)?.value??null]);
   // Each key normally has one country-pair contributor. Keep that path
   // Map-free; promote/demote only when coincident multi-owner borders require it.
   function updateEdge(key) {
@@ -83,8 +83,8 @@ export function createCountrySharedBoundaryState() {
     const trace = typeof profile === 'function' ? profile : null;
     let started = trace ? performance.now() : 0;
     const obsolete = new Set([...changed].flatMap(id => [...(contactsByOwner.get(id) || [])]));
-    const affected=new Set(changed);
-    for(const key of obsolete)for(const id of contacts.get(key)?.ids||[])affected.add(id);
+    const affected = new Set(changed);
+    for (const key of obsolete)for (const id of contacts.get(key)?.ids||[])affected.add(id);
     for (const key of obsolete) removeContact(key);
     if (trace) trace('contact-remove', performance.now() - started, {changedIds: changed.size, removedPairs: obsolete.size});
     started = trace ? performance.now() : 0;
@@ -97,7 +97,7 @@ export function createCountrySharedBoundaryState() {
         const ids = [left.id, right.id].sort(), key = contactKey(ids);
         if (visited.has(key)) continue;
         visited.add(key);
-        affected.add(left.id);affected.add(right.id);
+        affected.add(left.id); affected.add(right.id);
         pairs.push([left, right]);
         owners.push(ids);
       }
@@ -110,7 +110,7 @@ export function createCountrySharedBoundaryState() {
       contactComputationCount++;
       addContact(owners[index], segments);
     });
-    lastAffectedOwners=affected;
+    lastAffectedOwners = affected;
     if (trace) trace('contact-merge', performance.now() - started,
       {candidatePairs: pairs.length, computedSegments: computed.reduce((sum, rows) => sum + rows.length, 0)});
 
@@ -153,7 +153,7 @@ export function createCountrySharedBoundaryState() {
     reconcile(changed, profile, verifyContactParity);
     return changed;
   }
-  return { preparedStore, replace, patch,changedEdges,affectedOwners:()=>new Set(lastAffectedOwners),
+  return { preparedStore, replace, patch, changedEdges, affectedOwners:() => new Set(lastAffectedOwners),
     segments: () => [...edges.values()].map(record => record.value),
     features: () => preparedStore.values().map(prepared => prepared.feature),
     stats: () => ({ ...preparedStore.stats(), contactComputationCount, contactCount: contacts.size }) };

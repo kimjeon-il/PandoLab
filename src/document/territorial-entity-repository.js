@@ -1,5 +1,5 @@
 
-import {worldViewChange} from './world-view-change.js';
+import { worldViewChange } from './world-view-change.js';
 const text = value => String(value ?? '').trim();
 
 /** Owns hierarchy indexes over common Store read projections. */
@@ -13,34 +13,34 @@ export function createTerritorialEntityRepository({
     const values = getEntities();
     if (!Array.isArray(values)) throw new TypeError('영역 엔티티 공급자는 배열을 반환해야 합니다.');
     if (cached?.values === values) return cached;
-    const changes=cached&&worldViewChange(cached.values,values);
-    if(changes){
+    const changes = cached&&worldViewChange(cached.values, values);
+    if (changes) {
       // The receipt guarantees identity/order stability. Update only affected
       // indexes; this private map is never exposed to snapshot consumers.
-      for(const i of changes){
-        const before=cached.values[i],after=values[i],id=text(after.id);
-        const oldParent=text(before.properties?.parentId),newParent=text(after.properties?.parentId);
-        cached.byId.set(id,after);
-        if(oldParent){
-          const siblings=cached.childrenByParent.get(oldParent),position=siblings?.indexOf(before)??-1;
-          if(position>=0){if(oldParent===newParent)siblings[position]=after;else siblings.splice(position,1);}
-          if(!siblings?.length)cached.childrenByParent.delete(oldParent);
+      for (const i of changes) {
+        const before = cached.values[i], after = values[i], id = text(after.id);
+        const oldParent = text(before.properties?.parentId), newParent = text(after.properties?.parentId);
+        cached.byId.set(id, after);
+        if (oldParent) {
+          const siblings = cached.childrenByParent.get(oldParent), position = siblings?.indexOf(before)??-1;
+          if (position>=0) {if (oldParent===newParent)siblings[position] = after; else siblings.splice(position, 1);}
+          if (!siblings?.length)cached.childrenByParent.delete(oldParent);
         }
-        if(newParent&&newParent!==oldParent){
-          const siblings=cached.childrenByParent.get(newParent)||[];
+        if (newParent&&newParent!==oldParent) {
+          const siblings = cached.childrenByParent.get(newParent)||[];
           // Preserve the catalog order for administrative queries.
-          siblings.push(after);siblings.sort((a,b)=>cached.offsets.get(text(a.id))-cached.offsets.get(text(b.id)));
-          cached.childrenByParent.set(newParent,siblings);
+          siblings.push(after); siblings.sort((a, b) => cached.offsets.get(text(a.id))-cached.offsets.get(text(b.id)));
+          cached.childrenByParent.set(newParent, siblings);
         }
       }
-      cached.values=values;cached.lists.clear();return cached;
+      cached.values = values; cached.lists.clear(); return cached;
     }
-    const byId = new Map(), childrenByParent = new Map(),offsets=new Map();
+    const byId = new Map(), childrenByParent = new Map(), offsets = new Map();
     for (const entity of values) {
       const id = text(entity?.id);
       if (!id) throw new Error('영역 엔티티 ID가 비어 있습니다.');
       if (byId.has(id)) throw new Error(`영역 엔티티 ID가 중복되었습니다: ${id}`);
-      offsets.set(id,byId.size);byId.set(id, entity);
+      offsets.set(id, byId.size); byId.set(id, entity);
       const parentId = text(entity.properties?.parentId);
       if (parentId) {
         const children = childrenByParent.get(parentId) || [];

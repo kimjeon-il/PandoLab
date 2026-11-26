@@ -1,12 +1,12 @@
 /** Canonical Generic Feature v2 schema/normalization only.
  * No app editor state, document mutation commands, native IPC or storage owner.
  */
-import {DEFAULT_GENERIC_FEATURE_COLOR} from "../ui/color-adapter.js";
+import { DEFAULT_GENERIC_FEATURE_COLOR } from '../ui/color-adapter.js';
 import {
   SOURCE_KINDS,
   normalizeSourceProvenance,
 } from "./source-provenance.js";
-import { GENERIC_FEATURE_SCHEMA_VERSION } from "../runtime/version-contract.js";
+import { GENERIC_FEATURE_SCHEMA_VERSION } from '../runtime/version-contract.js';
 
 export { GENERIC_FEATURE_SCHEMA_VERSION };
 export const GENERIC_FEATURE_CANONICAL_PROPERTY_KEYS = Object.freeze([
@@ -63,4 +63,3 @@ export function normalizeGenericFeatureCollection(genericFeatures, { cloneFeatur
   }
   return output;
 }
-

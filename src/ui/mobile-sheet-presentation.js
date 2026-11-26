@@ -1,16 +1,16 @@
 import { isMobileWorkspaceLayout } from './workspace-layout.js';
 
 /** Shared mobile sheet sizing and pointer/keyboard gestures; the host owns which surface is open. */
-export function createMobileSheetPresentation({document,window,getElement,getLayout,panelIds:MOBILE_SHEET_IDS,onSync,onClose,onResumeLayout,onLayoutChange}) {
+export function createMobileSheetPresentation({document, window, getElement, getLayout, panelIds:MOBILE_SHEET_IDS, onSync, onClose, onResumeLayout, onLayoutChange}) {
   const SHEET_SNAP_RATIOS = Object.freeze([0, 0.52, 0.88]);
   const SHEET_SNAP_LABELS = Object.freeze(['접힌 상태', '중간 높이', '확장']);
   const MOBILE_SHEET_DEFAULT_SNAP = 0;
-  const sheetSnapIndex=new Map(Object.values(MOBILE_SHEET_IDS).map(id=>[id,MOBILE_SHEET_DEFAULT_SNAP]));
-  const mobileSheetSettlement=new Map();
-  let activeSheetDrag=null;
-  const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
-  const isMobile=()=>isMobileWorkspaceLayout(getLayout());
-  const mobileViewportHeight=()=>window.visualViewport?.height||window.innerHeight;
+  const sheetSnapIndex = new Map(Object.values(MOBILE_SHEET_IDS).map(id => [id, MOBILE_SHEET_DEFAULT_SNAP]));
+  const mobileSheetSettlement = new Map();
+  let activeSheetDrag = null;
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const isMobile = () => isMobileWorkspaceLayout(getLayout());
+  const mobileViewportHeight = () => window.visualViewport?.height||window.innerHeight;
   function mobileSheetSnapHeight(index, panel) {
     const safeIndex = clamp(Number(index) || 0, 0, SHEET_SNAP_RATIOS.length - 1);
     const availableHeight = Number.parseFloat(getComputedStyle(panel).maxHeight) || mobileViewportHeight();
@@ -264,8 +264,8 @@ export function createMobileSheetPresentation({document,window,getElement,getLay
       if (getLayout() !== 'wide') onLayoutChange();
     });
   }
-  return Object.freeze({mobileSheetPanel,setMobileSheetHeight,resetMobileSheetSession,clearMobileSheetDragPresentation,bindMobileSheetSurface,
-    get activeDrag(){return activeSheetDrag;},get settling(){return mobileSheetSettlement.size>0;},snapIndex:sheetSnapIndex,
-    dispose(){for(const panel of mobileSheetSettlement.keys())clearMobileSheetDragPresentation(panel);},
+  return Object.freeze({mobileSheetPanel, setMobileSheetHeight, resetMobileSheetSession, clearMobileSheetDragPresentation, bindMobileSheetSurface,
+    get activeDrag() {return activeSheetDrag;}, get settling() {return mobileSheetSettlement.size>0;}, snapIndex:sheetSnapIndex,
+    dispose() {for (const panel of mobileSheetSettlement.keys())clearMobileSheetDragPresentation(panel);},
   });
 }

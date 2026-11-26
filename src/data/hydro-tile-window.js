@@ -58,7 +58,7 @@ function longitudeIndices(columns, centerLongitude, halfLongitude) {
 // rows that cannot intersect the latitude window.
 function latitudeRange(rows, centerLatitude, halfLatitude) {
   const tileLatitude = 180 / rows;
-  const center = Math.max(-90,Math.min(90,centerLatitude));
+  const center = Math.max(-90, Math.min(90, centerLatitude));
   const limit = halfLatitude + tileLatitude / 2 + 1e-9;
   const candidateStart = Math.max(0, Math.ceil((90 - center - limit) / tileLatitude - 0.5) - 1);
   const candidateEnd = Math.min(rows - 1, Math.floor((90 - center + limit) / tileLatitude - 0.5) + 1);
@@ -75,12 +75,12 @@ function latitudeRange(rows, centerLatitude, halfLatitude) {
 }
 
 function stageWindow(stage, bounds) {
-  const [west,south,east,north]=bounds;
-  const span=east-west>=360?360:((east-west)%360+360)%360||360;
-  const centerLongitude=normalizeLongitude(west+span/2);
-  const centerLatitude=(south+north)/2;
-  const halfLongitude=span/2;
-  const halfLatitude=(north-south)/2;
+  const [west, south, east, north] = bounds;
+  const span = east-west>=360?360:((east-west)%360+360)%360||360;
+  const centerLongitude = normalizeLongitude(west+span/2);
+  const centerLatitude = (south+north)/2;
+  const halfLongitude = span/2;
+  const halfLatitude = (north-south)/2;
   const xIndices = longitudeIndices(stage.columns, centerLongitude, halfLongitude);
   const [yStart, yEnd] = latitudeRange(stage.rows, centerLatitude, halfLatitude);
   return Object.freeze({
@@ -102,12 +102,12 @@ export function createHydroTileWindow({
   bounds,
   viewportBucketSize = DEFAULT_VIEWPORT_BUCKET,
 } = {}) {
-  if(projection!=='globe')throw new TypeError('Hydro tile selection requires a globe projection.');
-  if(!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite)||bounds[1]>bounds[3])throw new TypeError('Viewport geographic bounds must be finite and ordered');
+  if (projection!=='globe')throw new TypeError('Hydro tile selection requires a globe projection.');
+  if (!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite)||bounds[1]>bounds[3])throw new TypeError('Viewport geographic bounds must be finite and ordered');
   const normalizedWidth = Math.max(1, finiteNumber(width, 1));
   const normalizedHeight = Math.max(1, finiteNumber(height, 1));
   const stages = activeHydroStages(manifest, threshold);
-  const windows = stages.map(stage => stageWindow(stage,bounds));
+  const windows = stages.map(stage => stageWindow(stage, bounds));
   const viewportSizeClass = hydroViewportSizeClass(normalizedWidth, normalizedHeight, viewportBucketSize);
   const thresholdBand = stages.map(stage => `${stage.id}@${stage.minZoom}`).join(',') || 'none';
   const windowKey = windows.map(window => (

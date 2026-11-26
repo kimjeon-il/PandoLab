@@ -1,10 +1,10 @@
-import {PLACE_LIMITS} from '../document/place-limits.js';
-import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
+import { PLACE_LIMITS } from '../document/place-limits.js';
+import { referenceZoomPixelsPerDegree } from '../map/map-display-zoom.js';
 
 export const LABEL_PRIORITIES = Object.freeze({ country: 100, capital: 90, majorCity: 70, administrative: 60, place: 40 });
 
-const territorialSizeStops = [{zoom:4,size:28},{zoom:6,size:38},{zoom:9,size:50}];
-const fraction = (value,start,end) => Math.max(0,Math.min(1,(value-start)/(end-start)));
+const territorialSizeStops = [{zoom:4, size:28}, {zoom:6, size:38}, {zoom:9, size:50}];
+const fraction = (value, start, end) => Math.max(0, Math.min(1, (value-start)/(end-start)));
 
 function territorialSizeAtZoom(shortSide, zoom) {
   const index = zoom <= 6 ? 0 : 1;
@@ -64,21 +64,21 @@ export function bufferedPlaceBounds(bounds, currentBounds) {
 /** Conservative camera-bound check shared by the place Worker and Viewer.
  * The globe renderer owns exact occlusion and label collision decisions.
  */
-export function coordinateInGeographicBounds(coordinate,bounds){
-  const lon=Number(coordinate?.[0]),lat=Number(coordinate?.[1]);
-  if(!Number.isFinite(lon)||!Number.isFinite(lat)||Math.abs(lat)>90)return false;
-  if(!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite))return true;
-  const [west,south,east,north]=bounds;
-  if(lat<south||lat>north)return false;
-  const span=east-west>=360?360:((east-west)%360+360)%360||360;
+export function coordinateInGeographicBounds(coordinate, bounds) {
+  const lon = Number(coordinate?.[0]), lat = Number(coordinate?.[1]);
+  if (!Number.isFinite(lon)||!Number.isFinite(lat)||Math.abs(lat)>90)return false;
+  if (!Array.isArray(bounds)||bounds.length!==4||!bounds.every(Number.isFinite))return true;
+  const [west, south, east, north] = bounds;
+  if (lat<south||lat>north)return false;
+  const span = east-west>=360?360:((east-west)%360+360)%360||360;
   return ((lon-west)%360+360)%360<=span;
 }
 
-export function selectPlaceLabelCandidates(candidates,limit){
-  const ranked=[...candidates].sort((a,b)=>Number(!!b.selected)-Number(!!a.selected)||b.priority-a.priority||a.key.localeCompare(b.key));
-  const active=candidate=>candidate.selected||candidate.viewportVisible;
-  return [...ranked.filter(active).slice(0,limit),
-    ...ranked.filter(candidate=>!active(candidate)).slice(0,Math.min(limit,PLACE_LIMITS.retainedRecords))];
+export function selectPlaceLabelCandidates(candidates, limit) {
+  const ranked = [...candidates].sort((a, b) => Number(!!b.selected)-Number(!!a.selected)||b.priority-a.priority||a.key.localeCompare(b.key));
+  const active = candidate => candidate.selected||candidate.viewportVisible;
+  return [...ranked.filter(active).slice(0, limit),
+    ...ranked.filter(candidate => !active(candidate)).slice(0, Math.min(limit, PLACE_LIMITS.retainedRecords))];
 }
 
 const AUTOMATIC_LABEL_POLICIES = Object.freeze({

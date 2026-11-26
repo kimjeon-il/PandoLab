@@ -1,8 +1,8 @@
-import { presentViewerLoadStatus } from "./viewer-load-status.js";
-import { loadVerifiedCore } from "../runtime/core-wasm-loader.js";
-import { isRecoverableLoadError } from "../runtime/reliability-core.js";
+import { presentViewerLoadStatus } from './viewer-load-status.js';
+import { loadVerifiedCore } from '../runtime/core-wasm-loader.js';
+import { isRecoverableLoadError } from '../runtime/reliability-core.js';
 
-import {installRuntimePerformanceMetrics} from '../runtime/runtime-performance-metrics.js';
+import { installRuntimePerformanceMetrics } from '../runtime/runtime-performance-metrics.js';
 installRuntimePerformanceMetrics();
 
 // Preflight owns no map/document. Only after a verified engine exists may the
@@ -46,7 +46,7 @@ function start() {
     handedOff = true;
     detach();
     await composeViewer({ productMode: 'viewer', meta });
-  }).catch(error => {
+  }).catch (error => {
     if (controller.signal.aborted) return;
     console.error('[PL-VIEWER-START]', error);
     const importTransportError = importing && error?.name === 'TypeError'

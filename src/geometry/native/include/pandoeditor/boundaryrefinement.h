@@ -3,7 +3,7 @@
 #include <vector>
 
 namespace pandoeditor {
-inline constexpr double kDefaultBoundaryEdgeDegrees=0.499;
+inline constexpr double kDefaultBoundaryEdgeDegrees = 0.499;
 // The same angular criterion governs C++ native fill-edge subdivision and
 // WASM display-boundary refinement. It is not an editable geometry operation.
 double boundaryMinimumDot(double requestedDegrees);
@@ -12,5 +12,5 @@ double boundaryMinimumDot(double requestedDegrees);
 // to the shared microdegree mesh grid using JS Math.round tie semantics.
 std::vector<BoundaryEdge> refineDisplayBoundarySegments(
     const std::vector<BoundaryEdge>& source,
-    double maxEdgeDegrees=kDefaultBoundaryEdgeDegrees);
+    double maxEdgeDegrees = kDefaultBoundaryEdgeDegrees);
 }

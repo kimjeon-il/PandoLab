@@ -1,55 +1,55 @@
-import {geometryRevision} from "../geometry/geometry-versions.js";
-import {immutableCountryRows} from './country-content-identity.js';
-import {worldViewChange,rememberWorldViewChange} from '../document/world-view-change.js';
-import {territorialSceneDisplayId} from "../document/territorial-display-identity.js";
-import {territorialRootId} from "../document/territorial-units.js";
+import { geometryRevision } from '../geometry/geometry-versions.js';
+import { immutableCountryRows } from './country-content-identity.js';
+import { worldViewChange, rememberWorldViewChange } from '../document/world-view-change.js';
+import { territorialSceneDisplayId } from '../document/territorial-display-identity.js';
+import { territorialRootId } from '../document/territorial-units.js';
 
-export function createTerritorialSceneRuntime({getDependencies}={}){
-  if(typeof getDependencies!=='function')
+export function createTerritorialSceneRuntime({getDependencies} = {}) {
+  if (typeof getDependencies!=='function')
     throw new TypeError('Territorial scene requires an admitted project read-port accessor');
   let builtinRenderCache;
-  const rootOffsets=new WeakMap();
-  const isRoot=entity=>entity.properties.entityKind==='general'&&!entity.properties.parentId;
-  function rootFeatures(entities,immutable){
-    const prior=builtinRenderCache,previous=prior?.collection.features;
-    const changes=immutable&&previous&&worldViewChange(prior.entities,entities);
-    if(changes&&changes.every(i=>isRoot(prior.entities[i])===isRoot(entities[i]))){
-      const offsets=rootOffsets.get(previous);
-      if(offsets){
-        const patches=[];
-        for(const i of changes)if(isRoot(entities[i]))patches.push([offsets.get(String(entities[i].id)),entities[i]]);
-        if(!patches.length)return previous;
-        if(patches.every(([i])=>Number.isInteger(i))){
-          const rows=previous.slice();
-          for(const [i,row]of patches)rows[i]=row;
-          Object.freeze(rows);rootOffsets.set(rows,offsets);
-          rememberWorldViewChange(previous,rows,patches.map(([i])=>i));return rows;
+  const rootOffsets = new WeakMap();
+  const isRoot = entity => entity.properties.entityKind==='general'&&!entity.properties.parentId;
+  function rootFeatures(entities, immutable) {
+    const prior = builtinRenderCache, previous = prior?.collection.features;
+    const changes = immutable&&previous&&worldViewChange(prior.entities, entities);
+    if (changes&&changes.every(i => isRoot(prior.entities[i])===isRoot(entities[i]))) {
+      const offsets = rootOffsets.get(previous);
+      if (offsets) {
+        const patches = [];
+        for (const i of changes)if (isRoot(entities[i]))patches.push([offsets.get(String(entities[i].id)), entities[i]]);
+        if (!patches.length)return previous;
+        if (patches.every(([i]) => Number.isInteger(i))) {
+          const rows = previous.slice();
+          for (const [i, row]of patches)rows[i] = row;
+          Object.freeze(rows); rootOffsets.set(rows, offsets);
+          rememberWorldViewChange(previous, rows, patches.map(([i]) => i)); return rows;
         }
       }
     }
-    const rows=entities.filter(isRoot);
-    if(!immutable)return rows;
-    if(previous?.length===rows.length&&rows.every((row,i)=>row===previous[i]))return previous;
-    Object.freeze(rows);rootOffsets.set(rows,new Map(rows.map((row,i)=>[String(row.id),i])));
+    const rows = entities.filter(isRoot);
+    if (!immutable)return rows;
+    if (previous?.length===rows.length&&rows.every((row, i) => row===previous[i]))return previous;
+    Object.freeze(rows); rootOffsets.set(rows, new Map(rows.map((row, i) => [String(row.id), i])));
     return rows;
   }
   let builtinPaletteKey;
   let builtinPaletteVisibility;
 
   function builtinTerritorialScene() {
-    const dependencies=getDependencies();
+    const dependencies = getDependencies();
     const entities = dependencies.territorialObjectModel.territorialScope.displayEntities();
     // Admitted canonical collections already carry immutable identity. The
     // legacy revision scan is needed only for mutable source collections.
-    const immutable=immutableCountryRows(entities);
-    if(immutable&&builtinRenderCache?.entities===entities
+    const immutable = immutableCountryRows(entities);
+    if (immutable&&builtinRenderCache?.entities===entities
       &&builtinRenderCache.presentation===dependencies.projectState.state.layerPresentation)return builtinRenderCache;
     const nativeGeometryRevision = immutable?0:entities.reduce((revision, entity) => revision + geometryRevision(
       entity.properties.entityKind === 'general' && entity.properties.parentId
         ? dependencies.territorialModel.entityRepository.get(entity.id).geometry : entity.geometry), 0);
     if (builtinRenderCache?.entities === entities && builtinRenderCache.nativeGeometryRevision === nativeGeometryRevision
       && builtinRenderCache.presentation === dependencies.projectState.state.layerPresentation) return builtinRenderCache;
-    const features=rootFeatures(entities,immutable);
+    const features = rootFeatures(entities, immutable);
     const boundaryFeatures = [...features];
     const byId = new Map(features.map(feature => [String(feature.id), feature]));
     const countryIds = new Set(byId.keys());
@@ -70,7 +70,7 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
   }
 
   function syncBuiltinPalette() {
-    const dependencies=getDependencies();
+    const dependencies = getDependencies();
     const cache = builtinTerritorialScene();
     const visibility = JSON.stringify([dependencies.projectState.state.layerVisibility.objects, dependencies.projectState.state.itemVisibility.objects]);
     if (builtinPaletteKey === cache && builtinPaletteVisibility === visibility) return;

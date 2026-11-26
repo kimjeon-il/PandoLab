@@ -1,5 +1,5 @@
-import { normalizeTemporalInterval } from "./temporal.js";
-import {graphDiagnostics} from "./reference-graph-diagnostics.js";
+import { normalizeTemporalInterval } from './temporal.js';
+import { graphDiagnostics } from './reference-graph-diagnostics.js';
 
 export const DISTRIBUTION_SCHEMA_VERSION = 3;
 

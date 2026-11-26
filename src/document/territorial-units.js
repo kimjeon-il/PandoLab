@@ -1,5 +1,5 @@
-import "../geometry/polygon-geometry.js";
-import {normalizeAffiliationMetadata} from "./territorial-affiliation.js";
+import '../geometry/polygon-geometry.js';
+import { normalizeAffiliationMetadata } from './territorial-affiliation.js';
 import {
   normalizeTemporalInterval,
 } from "./temporal.js";

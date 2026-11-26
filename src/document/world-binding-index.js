@@ -1,4 +1,4 @@
-import {compareTemporalKeys, temporalFollowingDay} from './temporal.js';
+import { compareTemporalKeys, temporalFollowingDay } from './temporal.js';
 
 // Exact Core calendar keys. Inclusive start, exclusive end.
 // Overlapping or absent bindings retain the original first-match rule.

@@ -1,7 +1,7 @@
-import { normalizeTerritorialEntities, normalizeTerritorialIdentities } from "./territorial-units.js";
-import { normalizeTemporalInterval, sharedCalculationCore } from "./temporal.js";
-import { validateSourceProvenance } from "./source-provenance.js";
-import {graphDiagnostics} from "./reference-graph-diagnostics.js";
+import { normalizeTerritorialEntities, normalizeTerritorialIdentities } from './territorial-units.js';
+import { normalizeTemporalInterval, sharedCalculationCore } from './temporal.js';
+import { validateSourceProvenance } from './source-provenance.js';
+import { graphDiagnostics } from './reference-graph-diagnostics.js';
 
 const text = value => String(value ?? '').trim();
 const POLYGON_TYPES = new Set(['Polygon', 'MultiPolygon']);

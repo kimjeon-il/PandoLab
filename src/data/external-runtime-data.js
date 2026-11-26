@@ -36,7 +36,7 @@ export function createExternalRuntimeDataFetch({ meta, fetchFn = globalThis.fetc
     // The generated project manifest is part of the viewer bootstrap, not the archive.
     if (!entry && /^assets\/data\/projects\/[a-z0-9-]+\/manifest\.json$/.test(logical)) return fetchFn(input, init);
     // Code-generated display receipts ship with this Viewer, not the archive.
-    if(!entry&&/^assets\/data\/globe-preview\/(?:[a-z-]+\/)*sha256-[a-f0-9]{64}\.bin\.gz$/.test(logical))return fetchFn(input,init);
+    if (!entry&&/^assets\/data\/globe-preview\/(?:[a-z-]+\/)*sha256-[a-f0-9]{64}\.bin\.gz$/.test(logical))return fetchFn(input,init);
     if (!entry) throw new Error('Missing pinned external runtime data: ' + logical);
     const rawUrl = `https://raw.githubusercontent.com/kimjeon-il/PandoLab-Data/${external.revision}/${entry.stored}`;
     const headers = new Headers(init.headers || request?.headers);

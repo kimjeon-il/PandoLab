@@ -1,5 +1,5 @@
-import {temporalContains,temporalMonthEnd} from "../document/temporal.js";
-import {distributionValueRange} from "../document/distribution-model.js";
+import { temporalContains, temporalMonthEnd } from '../document/temporal.js';
+import { distributionValueRange } from '../document/distribution-model.js';
 
 /** Current distribution objects for the Viewer spatial query. */
 export function createDistributionRenderRows(distribution) {
@@ -9,9 +9,9 @@ export function createDistributionRenderRows(distribution) {
     const state = d.getState?.() || {};
     const settings = state.distributionSettings || {};
     const renderMode = settings.renderMode;
-    const month=state.timelineCursor;
-    const at=month?temporalMonthEnd(month):null;
-    const exists=value=>at===null||temporalContains(value,at);
+    const month = state.timelineCursor;
+    const at = month?temporalMonthEnd(month):null;
+    const exists = value => at===null||temporalContains(value, at);
     const modes = d.DISTRIBUTION_RENDER_MODES || {};
     const selectedLayerId = renderMode === modes.SINGLE ? String(settings.activeLayerId || '') : '';
     const visibilityRevision = d.getDistributionVisibilityRevision?.() ?? 0;
@@ -32,7 +32,7 @@ export function createDistributionRenderRows(distribution) {
     const displayedLayers = renderMode === modes.SINGLE
       ? visibleLayers.filter(layer => layer.id === activeId) : visibleLayers;
     const entriesByLayer = new Map(visibleLayers.map(layer => [layer.id, []]));
-    for (const entry of state.distributionEntries || []) if(exists(entry))entriesByLayer.get(entry.layerId)?.push(entry);
+    for (const entry of state.distributionEntries || []) if (exists(entry))entriesByLayer.get(entry.layerId)?.push(entry);
     const ranges = new Map(visibleLayers.map(layer => [layer.id, distributionValueRange(layer, entriesByLayer.get(layer.id))]));
     const rows = displayedLayers.flatMap(layer => (entriesByLayer.get(layer.id) || []).map(entry => {
       const geometry = entry.mode === (d.DISTRIBUTION_MODES || {}).TERRITORIAL

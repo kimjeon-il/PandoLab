@@ -12,7 +12,7 @@ struct ProjectDocument;
 struct Point { double x, y; };
 struct ObjectRef {
     std::string domain, id;
-    bool operator<(const ObjectRef& b) const { return std::tie(domain,id)<std::tie(b.domain,b.id); }
+    bool operator<(const ObjectRef& b) const { return std::tie(domain, id)<std::tie(b.domain, b.id); }
     bool operator==(const ObjectRef& b) const { return domain==b.domain && id==b.id; }
     bool operator!=(const ObjectRef& b) const { return !(*this==b); }
 };
@@ -29,55 +29,55 @@ struct PresentationStyle {
 struct LabelSettings {
     std::optional<double> priority, minZoom, maxZoom;
     std::optional<Point> manualPosition;
-    bool pinned=false;
-    std::string collisionGroup="map";
-    std::string annotations="{}";
+    bool pinned = false;
+    std::string collisionGroup = "map";
+    std::string annotations = "{}";
     std::optional<std::set<std::string>> webFields;
-    bool webMinZoomNull=false;
+    bool webMinZoomNull = false;
     bool operator==(const LabelSettings& b) const;
 };
 std::set<std::string> labelSettingsWebFields(const LabelSettings&);
 enum class DistributionRenderMode { Overlap, Single };
 struct DistributionSettings {
-    DistributionRenderMode renderMode=DistributionRenderMode::Overlap;
+    DistributionRenderMode renderMode = DistributionRenderMode::Overlap;
     std::string activeLayerId;
-    bool boundaryVisible=true;
+    bool boundaryVisible = true;
     bool operator==(const DistributionSettings& b) const { return renderMode==b.renderMode&&activeLayerId==b.activeLayerId&&boundaryVisible==b.boundaryVisible; }
 };
 struct DistributionValueScale {
-    bool manual=false;
-    double min=0,max=1;
+    bool manual = false;
+    double min = 0, max = 1;
     bool operator==(const DistributionValueScale& b) const { return manual==b.manual&&(!manual||(min==b.min&&max==b.max)); }
 };
 struct WebPresentation {
-    std::map<std::string,bool> visibility;
+    std::map<std::string, bool> visibility;
     // An explicitly present empty group is distinct from an absent group in
     // web/native exchange. Erase-only edits must not manufacture group keys.
-    std::map<std::string,std::map<std::string,bool>> itemVisibility;
-    std::size_t eraseItemVisibility(const std::string& group,const std::string& id) {
-        const auto found=itemVisibility.find(group);
+    std::map<std::string, std::map<std::string, bool>> itemVisibility;
+    std::size_t eraseItemVisibility(const std::string& group, const std::string& id) {
+        const auto found = itemVisibility.find(group);
         return found==itemVisibility.end()?0:found->second.erase(id);
     }
-    std::map<std::string,PresentationStyle> styles, objectStyles;
+    std::map<std::string, PresentationStyle> styles, objectStyles;
     // Rank hints may outlive their owners in web saves; native edits still
     // deliberately prune missing-owner hints during normalization.
     std::vector<std::string> objectOrder;
     std::vector<std::string> overlayOrder;
-    bool overlayOrderPresent=true;
-    std::map<ObjectRef,LabelSettings> labelSettings;
+    bool overlayOrderPresent = true;
+    std::map<ObjectRef, LabelSettings> labelSettings;
     DistributionSettings distributionSettings;
     bool operator==(const WebPresentation& b) const {
         return visibility==b.visibility && itemVisibility==b.itemVisibility && styles==b.styles && objectStyles==b.objectStyles && objectOrder==b.objectOrder && overlayOrder==b.overlayOrder && overlayOrderPresent==b.overlayOrderPresent && labelSettings==b.labelSettings && distributionSettings==b.distributionSettings;
     }
 };
-std::string territorialGroup(const ProjectDocument&,const std::string& entityId);
+std::string territorialGroup(const ProjectDocument&, const std::string& entityId);
 std::string territorialPresentationKey(const std::string& entityId);
-bool groupVisible(const WebPresentation&,const std::string&);
-bool itemVisible(const WebPresentation&,const std::string&,const std::string&);
-std::string contentItemGroup(const ProjectDocument&,const ObjectRef&);
-void normalizePresentation(ProjectDocument&,const std::string& month={});
+bool groupVisible(const WebPresentation&, const std::string&);
+bool itemVisible(const WebPresentation&, const std::string&, const std::string&);
+std::string contentItemGroup(const ProjectDocument&, const ObjectRef&);
+void normalizePresentation(ProjectDocument&, const std::string& month = {});
 void validatePresentation(const ProjectDocument&);
 // Preserve current display edits while applying only a content command's
 // object-lifetime changes (including reverse changes during Undo).
-WebPresentation rebasePresentation(const ProjectDocument& current,const ProjectDocument& from,const ProjectDocument& to);
+WebPresentation rebasePresentation(const ProjectDocument& current, const ProjectDocument& from, const ProjectDocument& to);
 }

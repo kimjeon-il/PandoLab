@@ -7,7 +7,7 @@ namespace pandoeditor {
 // already reflects spherical polygon winding. Display seams are not inputs.
 struct BoundaryInteriorRef {
     BoundaryEdge source;
-    double interiorSide=0;
+    double interiorSide = 0;
 };
 // Shared country edges are internal only when owner interiors oppose one another.
 bool boundaryOpposingInteriors(const BoundaryEdge& displayed,

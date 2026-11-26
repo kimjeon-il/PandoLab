@@ -1,17 +1,17 @@
-import { createMobileSheetPresentation } from "./mobile-sheet-presentation.js";
-import { createWorkspaceLayoutDetector, isMobileWorkspaceLayout, readWorkspaceViewport, WORKSPACE_COARSE_POINTER } from "./workspace-layout.js";
-import { createMenuPositionScheduler } from "./menu-presentation.js";
-import { createSearchToolbarPresentation } from "./search-toolbar-presentation.js";
+import { createMobileSheetPresentation } from './mobile-sheet-presentation.js';
+import { createWorkspaceLayoutDetector, isMobileWorkspaceLayout, readWorkspaceViewport, WORKSPACE_COARSE_POINTER } from './workspace-layout.js';
+import { createMenuPositionScheduler } from './menu-presentation.js';
+import { createSearchToolbarPresentation } from './search-toolbar-presentation.js';
 
 /** WorkspaceSurfaces: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
  */
 export function createWorkspaceSurfaces() {
-  const registeredSurfaces=['search','details'];
+  const registeredSurfaces = ['search','details'];
   const MOBILE_SHEET_HISTORY_KEY = '__pandolabMobileSheet';
-  const listeners=[];
-  const listen=(target,type,listener)=>{target.addEventListener(type,listener);listeners.push(()=>target.removeEventListener(type,listener));};
+  const listeners = [];
+  const listen = (target, type, listener) => {target.addEventListener(type, listener); listeners.push(() => target.removeEventListener(type, listener));};
   let dependencies, mobileSheets;
   let detectLayoutMode;
   let layoutMode;
@@ -61,7 +61,7 @@ export function createWorkspaceSurfaces() {
     if (!app) return;
     app.style.setProperty('--workspace-visible-height', Math.round(mobileViewportHeight()) + 'px');
     app.style.setProperty('--workspace-visible-top', Math.round(window.visualViewport?.offsetTop || 0) + 'px');
-    const bottom=Math.max(0,window.innerHeight-mobileViewportHeight()-(window.visualViewport?.offsetTop||0));
+    const bottom = Math.max(0, window.innerHeight-mobileViewportHeight()-(window.visualViewport?.offsetTop||0));
     app.style.setProperty('--workspace-bottom-offset', Math.round(bottom) + 'px');
   }
 
@@ -130,8 +130,8 @@ export function createWorkspaceSurfaces() {
   }
 
   function focusSurfaceTrigger(surface) {
-    const ids = { search: isMobile() ? 'map' : 'objectSearchBtn',details: 'map' };
-    const panelId = { search: 'objectSearchSurface',details:'objectDetailSurface' }[surface];
+    const ids = { search: isMobile() ? 'map' : 'objectSearchBtn', details: 'map' };
+    const panelId = { search: 'objectSearchSurface', details:'objectDetailSurface' }[surface];
     const rememberedTrigger = !isMobile()&&lastOverlayTrigger?.isConnected
       && lastOverlayTrigger.getClientRects().length > 0
       && lastOverlayTrigger.getAttribute('aria-controls') === panelId
@@ -163,16 +163,16 @@ export function createWorkspaceSurfaces() {
       if (surfaceController.activeMobileSheet && surfaceController.activeMobileSheet !== exceptKind) closeActiveMobileSheet({ restoreFocus });
       return;
     }
-    for(const surface of registeredSurfaces) if (surface !== except) surfaceController.close(surface);
+    for (const surface of registeredSurfaces) if (surface !== except) surfaceController.close(surface);
     syncOverlayState();
     if (restoreFocus && lastOverlayTrigger?.isConnected) lastOverlayTrigger.focus({ preventScroll: true });
     if (restoreFocus) lastOverlayTrigger = null;
   }
 
   function openSurface(surface, { trigger = null } = {}) {
-    if(!registeredSurfaces.includes(surface))return false;
+    if (!registeredSurfaces.includes(surface))return false;
     if (dependencies.projectState.state.projectReplacing) return false;
-    if(surfaceController.isOpen(surface))return true;
+    if (surfaceController.isOpen(surface))return true;
     const activeTrigger = trigger instanceof HTMLElement ? trigger : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!surfaceController.open(surface)) return false;
     if (activeTrigger) lastOverlayTrigger = activeTrigger;
@@ -197,7 +197,7 @@ export function createWorkspaceSurfaces() {
   }
 
   function closeSurface(surface, { restoreFocus = false, syncHistory = true } = {}) {
-    if(!registeredSurfaces.includes(surface))return false;
+    if (!registeredSurfaces.includes(surface))return false;
     const mobileKind = isMobile() ? surface : null;
     const mobilePanel = mobileKind ? mobileSheets.mobileSheetPanel(mobileKind) : null;
     if (!surfaceController.close(surface)) return;
@@ -250,10 +250,10 @@ export function createWorkspaceSurfaces() {
 
 
     (MOBILE_SHEET_IDS = Object.freeze({details:'objectDetailSurface'}));
-    mobileSheets=createMobileSheetPresentation({document,window,getElement:dependencies.platform.$,getLayout:()=>layoutMode,panelIds:MOBILE_SHEET_IDS,
-      onSync:syncOverlayState,onClose:closeActiveMobileSheet,
-      onResumeLayout:()=>{if(pendingLayoutChange){pendingLayoutChange=false;applyLayoutMode();}},
-      onLayoutChange:()=>dependencies.mapHostView.queueMapResize('panel-layout'),
+    mobileSheets = createMobileSheetPresentation({document, window, getElement:dependencies.platform.$, getLayout:() => layoutMode, panelIds:MOBILE_SHEET_IDS,
+      onSync:syncOverlayState, onClose:closeActiveMobileSheet,
+      onResumeLayout:() => {if (pendingLayoutChange) {pendingLayoutChange = false; applyLayoutMode();}},
+      onLayoutChange:() => dependencies.mapHostView.queueMapResize('panel-layout'),
     });
 
 
@@ -285,35 +285,35 @@ export function createWorkspaceSurfaces() {
       searchComposing = false;
       if (pendingLayoutChange) applyLayoutMode();
     });
-    const searchInput=dependencies.platform.$('objectSearchInput');
-    const openDockedSearch=()=>{
-      if(isMobile()&&!surfaceController.isOpen('details'))openSurface('search',{trigger:searchInput});
+    const searchInput = dependencies.platform.$('objectSearchInput');
+    const openDockedSearch = () => {
+      if (isMobile()&&!surfaceController.isOpen('details'))openSurface('search', {trigger:searchInput});
     };
-    listen(searchInput,'focus',openDockedSearch);
-    listen(searchInput,'click',openDockedSearch);
-    listen(window,'resize',()=>{if(!applyLayoutMode())refreshMapSheetMetrics();menuPositionScheduler.schedule();});
-    listen(window,'orientationchange',()=>{refreshMapSheetMetrics();dependencies.mapHostView.queueMapResize('orientation-change');});
-    listen(window,'popstate',event=>{
-      if(ignoreNextMobileSheetPopstate){ignoreNextMobileSheetPopstate=false;return;}
-      if(isMobile()&&surfaceController.activeMobileSheet){
-        const select=document.querySelector('.ui-select-popover:not([hidden])');
-        if(select)dependencies.uiControlServices.selectController.closeAll({restoreFocus:true});
-        else {closeActiveMobileSheet({restoreFocus:true,syncHistory:false});return;}
-        trackMobileSheetHistory(surfaceController.activeMobileSheet);return;
+    listen(searchInput,'focus', openDockedSearch);
+    listen(searchInput,'click', openDockedSearch);
+    listen(window,'resize', () => {if (!applyLayoutMode())refreshMapSheetMetrics(); menuPositionScheduler.schedule();});
+    listen(window,'orientationchange', () => {refreshMapSheetMetrics(); dependencies.mapHostView.queueMapResize('orientation-change');});
+    listen(window,'popstate', event => {
+      if (ignoreNextMobileSheetPopstate) {ignoreNextMobileSheetPopstate = false; return;}
+      if (isMobile()&&surfaceController.activeMobileSheet) {
+        const select = document.querySelector('.ui-select-popover:not([hidden])');
+        if (select)dependencies.uiControlServices.selectController.closeAll({restoreFocus:true});
+        else {closeActiveMobileSheet({restoreFocus:true, syncHistory:false}); return;}
+        trackMobileSheetHistory(surfaceController.activeMobileSheet); return;
       }
-      if(event.state?.[MOBILE_SHEET_HISTORY_KEY]){const next={...event.state};delete next[MOBILE_SHEET_HISTORY_KEY];window.history.replaceState(next,'',window.location.href);}
+      if (event.state?.[MOBILE_SHEET_HISTORY_KEY]) {const next = {...event.state}; delete next[MOBILE_SHEET_HISTORY_KEY]; window.history.replaceState(next,'', window.location.href);}
     });
-    if(window.visualViewport)listen(window.visualViewport,'resize', () => {
+    if (window.visualViewport)listen(window.visualViewport,'resize', () => {
       refreshMapSheetMetrics();
       menuPositionScheduler.schedule();
     });
-    if(window.visualViewport)listen(window.visualViewport,'scroll', () => { refreshMapSheetMetrics(); menuPositionScheduler.schedule(); });
+    if (window.visualViewport)listen(window.visualViewport,'scroll', () => { refreshMapSheetMetrics(); menuPositionScheduler.schedule(); });
   }
 
   return Object.freeze({
     connect,
     initializeWorkspaceSurfaces,
-    dispose(){listeners.forEach(remove=>remove());if(mobileSheets)mobileSheets.dispose();if(menuPositionScheduler)menuPositionScheduler.cancel();if(searchToolbarPresentation)searchToolbarPresentation.dispose();cancelAnimationFrame(searchFocusFrame);},
+    dispose() {listeners.forEach(remove => remove()); if (mobileSheets)mobileSheets.dispose(); if (menuPositionScheduler)menuPositionScheduler.cancel(); if (searchToolbarPresentation)searchToolbarPresentation.dispose(); cancelAnimationFrame(searchFocusFrame);},
     get MOBILE_SHEET_IDS() { return MOBILE_SHEET_IDS; },
     get applyLayoutMode() { return applyLayoutMode; },
     get bindMobileSheetSurface() { return mobileSheets.bindMobileSheetSurface; },

@@ -1,5 +1,5 @@
-import { normalizeObjectRef } from "./object-ref-identity.js";
-import { isBuiltinPlaceId } from "./place-contract.js";
+import { normalizeObjectRef } from './object-ref-identity.js';
+import { isBuiltinPlaceId } from './place-contract.js';
 
 const invalid = () => { throw Object.assign(new Error('Object reference is not in the supported command identity domain.'), { code: 'PL-CORE-REF' }); };
 const nativeDomain = Object.freeze({ territorial: 'territorial', generic: 'generic', distribution: 'distributionLayer', label: 'label', hydro: 'hydro' });

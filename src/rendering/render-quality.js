@@ -40,7 +40,7 @@ export function createRenderQuality() {
     syncResolvedInteractionStyle({ redraw: rerender });
     dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true, emphasis: true }, reason);
     if (rerender) {
-      const domain=dependencies.domains.renderingDomain;
+      const domain = dependencies.domains.renderingDomain;
       domain.invalidateOverlayStyle(reason);
     }
   }

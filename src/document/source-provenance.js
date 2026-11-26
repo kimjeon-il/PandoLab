@@ -1,4 +1,4 @@
-import { SOURCE_PROVENANCE_SCHEMA_VERSION } from "../runtime/version-contract.js";
+import { SOURCE_PROVENANCE_SCHEMA_VERSION } from '../runtime/version-contract.js';
 
 export { SOURCE_PROVENANCE_SCHEMA_VERSION };
 

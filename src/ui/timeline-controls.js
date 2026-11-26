@@ -1,12 +1,12 @@
-import { parseTemporal, shiftTemporalMonth,compareTemporal } from "../document/temporal.js";
-import { deviceCurrentMonth } from "../document/calendar-month.js";
+import { parseTemporal, shiftTemporalMonth, compareTemporal } from '../document/temporal.js';
+import { deviceCurrentMonth } from '../document/calendar-month.js';
 
 export function shiftTimelineMonth(value, delta) {
   return shiftTemporalMonth(value, delta);
 }
 
 /** Owns transient date input; the session cursor and Core own committed time. */
-export function installTimelineControls({ document, window, getMonth, getRange=()=>null, isPending=()=>false, setMonth, now = () => new Date() }) {
+export function installTimelineControls({ document, window, getMonth, getRange = () => null, isPending = () => false, setMonth, now = () => new Date() }) {
   const get = id => document.getElementById(id);
   const root = get('timelineControls'), popover = get('timelinePopover'), form = get('timelineDateForm');
   const year = get('timelineYearInput'), month = get('timelineMonthInput'), go = get('timelineGoBtn');
@@ -20,7 +20,7 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
   let editing = false, composing = false, submitting = false, disposed = false;
   let viewUnit = 'year';
   let changeRequest = 0, editSession = 0, changing = false;
-  const locked=()=>changing||isPending();
+  const locked = () => changing||isPending();
   const yearValue = value => `${value < 0 ? '-' : value > 9999 ? '+' : ''}${String(Math.abs(value)).padStart(4, '0')}`;
   const annualMonth = value => {
     const point = parseTemporal(value, { nullable: false });
@@ -143,11 +143,11 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
         if (editing && session === editSession) exitEdit(true);
         sync();
       }
-    } finally { submitting = false; if(!disposed)sync(); }
+    } finally { submitting = false; if (!disposed)sync(); }
   };
   const submit = event => {
     event.preventDefault();
-    acceptEdit().catch(reason => showError(String(reason?.message || reason)));
+    acceptEdit().catch (reason => showError(String(reason?.message || reason)));
   };
   const onKeydown = event => {
     if (event.key === 'Escape' && editing && !locked()) {
@@ -166,17 +166,17 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
   const onInput = () => showError('');
   const onCompositionStart = () => { composing = true; };
   const onCompositionEnd = () => { composing = false; };
-  const onButtonClick = () => { if(locked()||disposed)return;if (editing) exitEdit(false); else beginEdit(); };
+  const onButtonClick = () => { if (locked()||disposed)return; if (editing) exitEdit(false); else beginEdit(); };
   const onUnitChange = () => { syncUnitInput(); showError(''); };
   const stepHandlers = steps.map(([node, delta]) => {
     const handler = () => {
-      if(locked()||submitting||disposed||node.disabled)return;
+      if (locked()||submitting||disposed||node.disabled)return;
       exitEdit(false);
       try {
         if (!getMonth()) return;
         const shifted = shiftTimelineMonth(getMonth(), delta);
         change(viewUnit === 'year' ? annualMonth(shifted) : shifted, viewUnit)
-          .catch(reason => showError(String(reason?.message || reason)));
+          .catch (reason => showError(String(reason?.message || reason)));
       } catch (reason) { beginEdit(); showError(String(reason.message)); }
     };
     node.addEventListener('click', handler); return [node, handler];
@@ -185,7 +185,7 @@ export function installTimelineControls({ document, window, getMonth, getRange=(
     [form, 'keydown', onFormKeydown], [form, 'beforeinput', onBeforeInput], [root, 'focusout', onFocusOut],
     [form, 'input', onInput], [form, 'change', onInput], [unit, 'change', onUnitChange], [form, 'compositionstart', onCompositionStart],
     [form, 'compositionend', onCompositionEnd], [document, 'pointerdown', onOutside],
-    [window, 'pandolab:project-changed', sync], [window,'pandolab:timeline-pending',sync]];
+    [window, 'pandolab:project-changed', sync], [window,'pandolab:timeline-pending', sync]];
   for (const [node, event, handler] of bindings) node.addEventListener(event, handler);
   popover.hidden = true; button.setAttribute('aria-expanded', 'false'); sync();
   return () => {

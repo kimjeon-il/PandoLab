@@ -1,5 +1,5 @@
-import { isMobileWorkspaceLayout } from "./workspace-layout.js";
-import { createSemanticIcon } from "./icon-utils.js";
+import { isMobileWorkspaceLayout } from './workspace-layout.js';
+import { createSemanticIcon } from './icon-utils.js';
 
 /** NavigationBindings: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
@@ -54,12 +54,12 @@ export function createNavigationBindings() {
       const {left, right, top, bottom} = picker.getBoundingClientRect();
       if (event.clientX < left || event.clientX > right || event.clientY < top || event.clientY > bottom) picker.close();
     });
-    let mobileMenuOpen=false;
+    let mobileMenuOpen = false;
     const mobileMenu = () => (0, dependencies.platform.$)('mobileGlobalMenu');
     const closeMobileMenu = ({ restoreFocus = false } = {}) => {
       const menu = mobileMenu();
       if (!menu || !mobileMenuOpen) return;
-      mobileMenuOpen=false;menu.hidden = true;
+      mobileMenuOpen = false; menu.hidden = true;
       (0, dependencies.platform.$)('mobileMenuBtn')?.setAttribute('aria-expanded', 'false');
       if (restoreFocus) (0, dependencies.platform.$)('mobileMenuBtn')?.focus({ preventScroll: true });
     };
@@ -67,15 +67,15 @@ export function createNavigationBindings() {
       const menu = mobileMenu();
       if (!menu) return;
       (0, dependencies.workspaceUi.closeSurface)('create');
-      mobileMenuOpen=true;menu.hidden = false;
+      mobileMenuOpen = true; menu.hidden = false;
       (0, dependencies.platform.$)('mobileMenuBtn')?.setAttribute('aria-expanded', 'true');
       requestAnimationFrame(() => { if (!disposed && mobileMenuOpen) menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true }); });
     };
     let searchToolbarPointer = false;
-    listen(document, 'keydown',event=>{
-      if(event.key!=='Escape'||event.defaultPrevented||picker.open||document.querySelector('.ui-modal:not(.hidden),[aria-modal="true"]:not(.hidden):not([hidden])'))return;
-      if(mobileMenuOpen){closeMobileMenu({restoreFocus:true});event.preventDefault();event.stopImmediatePropagation();return;}
-      for(const surface of ['search','details'])if(dependencies.workspaceUi.surfaceController.isOpen(surface)){dependencies.workspaceUi.closeSurface(surface,{restoreFocus:true});event.preventDefault();event.stopImmediatePropagation();return;}
+    listen(document, 'keydown', event => {
+      if (event.key!=='Escape'||event.defaultPrevented||picker.open||document.querySelector('.ui-modal:not(.hidden),[aria-modal="true"]:not(.hidden):not([hidden])'))return;
+      if (mobileMenuOpen) {closeMobileMenu({restoreFocus:true}); event.preventDefault(); event.stopImmediatePropagation(); return;}
+      for (const surface of ['search','details'])if (dependencies.workspaceUi.surfaceController.isOpen(surface)) {dependencies.workspaceUi.closeSurface(surface, {restoreFocus:true}); event.preventDefault(); event.stopImmediatePropagation(); return;}
     });
     listen(document, 'pointerdown', event => {
       searchToolbarPointer = !!event.target.closest('#resetViewBtn');
@@ -139,7 +139,7 @@ export function createNavigationBindings() {
     });
     listen((0, dependencies.platform.$)('objectVisibilityBtn'), 'click', async () => {
       try { await dependencies.objectOperations.batchSetVisibility(); }
-      catch(error) { dependencies.feedback.reportOperationError(error,'객체 표시를 변경하지 못했습니다.','PL-VIEW-COMMAND-001',4200); }
+      catch (error) { dependencies.feedback.reportOperationError(error,'객체 표시를 변경하지 못했습니다.','PL-VIEW-COMMAND-001', 4200); }
     });
     listen((0, dependencies.platform.$)('objectDeleteBtn'), 'click', () => dependencies.objectOperations.deleteSelectedFromObjectMenu());
     Object.values(dependencies.workspaceUi.MOBILE_SHEET_IDS).forEach(id => (0, dependencies.workspaceUi.bindMobileSheetSurface)((0, dependencies.platform.$)(id)));

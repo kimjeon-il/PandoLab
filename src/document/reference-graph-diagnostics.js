@@ -1,6 +1,6 @@
-import {sharedCalculationCore} from './temporal.js';
+import { sharedCalculationCore } from './temporal.js';
 
-const text=value=>String(value??'').trim();
+const text = value => String(value??'').trim();
 
 /** The compiled Core owns chain traversal and ID diagnostics. */
 export function graphDiagnostics(rows, idOf, parentOf = () => '') {

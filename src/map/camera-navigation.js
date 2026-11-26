@@ -11,23 +11,23 @@ export function createCameraNavigation() {
   }
 
   function panMapViewBy(dx, dy) {
-    return dependencies.rendering.mapRenderer.panBy(dx,dy);
+    return dependencies.rendering.mapRenderer.panBy(dx, dy);
   }
 
   function fitMapToFeature(feature) {
-    const safe=dependencies.mapView.projectionLayoutMetrics().safe;
-    if(feature?.geometry||feature?.type==='FeatureCollection')dependencies.rendering.mapRenderer.fitGeometry(feature,safe);
-    else if(feature?.__awBounds?.length===4&&feature.__awBounds.every(Number.isFinite)){
-      const [west,south,east,north]=feature.__awBounds;
-      dependencies.rendering.mapRenderer.fitMapBounds([[west,south],[east,north]],safe);
+    const safe = dependencies.mapView.projectionLayoutMetrics().safe;
+    if (feature?.geometry||feature?.type==='FeatureCollection')dependencies.rendering.mapRenderer.fitGeometry(feature, safe);
+    else if (feature?.__awBounds?.length===4&&feature.__awBounds.every(Number.isFinite)) {
+      const [west, south, east, north] = feature.__awBounds;
+      dependencies.rendering.mapRenderer.fitMapBounds([[west, south], [east, north]], safe);
     }else return;
     dependencies.domains.renderingDomain.invalidateView('focus-object');
   }
 
   function focusCoordinate(coord, zoom = null) {
     if (!(0, dependencies.countries.validLabelAnchor)(coord)) return;
-    const state=dependencies.projectState.state,view=state.view;
-    state.view={...view,globeRotation:[-Number(coord[0]),-Number(coord[1]),0],zoom:zoom??view.zoom};
+    const state = dependencies.projectState.state, view = state.view;
+    state.view = {...view, globeRotation:[-Number(coord[0]), -Number(coord[1]), 0], zoom:zoom??view.zoom};
     (0, dependencies.mapView.syncMapHostFromState)();
     dependencies.domains.renderingDomain?.invalidateView?.('focus-coordinate');
   }

@@ -1,14 +1,14 @@
-import { resourceCapabilities } from "../runtime/resource-capabilities.js";
+import { resourceCapabilities } from '../runtime/resource-capabilities.js';
 
 /** MapProjection: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
  */
-export function createMapProjection({capabilities=resourceCapabilities('viewer')}={}) {
+export function createMapProjection({capabilities = resourceCapabilities('viewer')} = {}) {
   let dependencies;
   let mapLayoutMetricsSnapshot;
   let mapLayoutMetricsRefreshCount;
-  let renderer=null;
+  let renderer = null;
   function connect(ports) {
     if (dependencies) throw new Error('map-projection already connected');
     dependencies = ports;
@@ -114,7 +114,7 @@ export function createMapProjection({capabilities=resourceCapabilities('viewer')
 
   return Object.freeze({
     connect,
-    installRenderer(value){renderer=value;},
+    installRenderer(value) {renderer = value;},
     initializeMapLayoutMetricsSnapshot,
     activeProjection,
     currentMapSafeInsets,

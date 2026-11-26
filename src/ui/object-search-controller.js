@@ -1,7 +1,7 @@
-import { normalizeObjectRef } from "../document/object-ref-identity.js";
-import { normalizePlaceQuery, PLACE_LIMITS } from "../document/place-contract.js";
-import { createObjectSearchModel, visibleObjectSearchRows } from "../document/object-search-model.js";
-import { resourceKey, resourceUpdate } from "../runtime/resource-dependency-policy.js";
+import { normalizeObjectRef } from '../document/object-ref-identity.js';
+import { normalizePlaceQuery, PLACE_LIMITS } from '../document/place-contract.js';
+import { createObjectSearchModel, visibleObjectSearchRows } from '../document/object-search-model.js';
+import { resourceKey, resourceUpdate } from '../runtime/resource-dependency-policy.js';
 
 /**
  * Object search is deliberately flat. The project still owns object grouping and
@@ -40,17 +40,17 @@ export function createObjectSearchController({
   let builtinRows = [];
   let builtinTruncated = false;
   let rowRevision = 0, projectTransition = 0, projectSuspended = false, focusIntentRevision = 0;
-  let projectScope=String(model.snapshot()?.projectScope??'');
-  const readProjectScope=()=>String(model.snapshot()?.projectScope??'');
+  let projectScope = String(model.snapshot()?.projectScope??'');
+  const readProjectScope = () => String(model.snapshot()?.projectScope??'');
   const currentRow = target => !disposed && !projectSuspended
     && target?.dataset?.searchRowRevision === String(rowRevision)
     && target?.dataset?.searchProjectScope === readProjectScope();
-  function syncProjectScope(){
-    const next=readProjectScope();
-    if(next===projectScope)return false;
-    projectScope=next;searchGeneration++;rowRevision++;
-    cachedCatalog=null;cachedRevision=undefined;renderedDependencies=null;
-    renderedSearchRefs=[];builtinQuery=null;builtinRows=[];builtinTruncated=false;
+  function syncProjectScope() {
+    const next = readProjectScope();
+    if (next===projectScope)return false;
+    projectScope = next; searchGeneration++; rowRevision++;
+    cachedCatalog = null; cachedRevision = undefined; renderedDependencies = null;
+    renderedSearchRefs = []; builtinQuery = null; builtinRows = []; builtinTruncated = false;
     cancelBuiltinSearch();
     return true;
   }
@@ -141,7 +141,7 @@ export function createObjectSearchController({
   }
 
   function commitRows(query, rows) {
-    const next = { source: resourceKey(['object-search',projectScope]), content: resourceKey(rows.map(item =>
+    const next = { source: resourceKey(['object-search', projectScope]), content: resourceKey(rows.map(item =>
       [item.key, item.id, item.layerGroup, item.name || '', item.typeLabel || '', item.flagUrl || ''])),
       preparation: 'search-rows-v1', context: null, presentation: resourceKey([query, builtinTruncated]) };
     if (!resourceUpdate(renderedDependencies, next).present) { syncSelection(); return false; }
@@ -164,12 +164,12 @@ export function createObjectSearchController({
 
   function requestBuiltinRows(query) {
     const normalized = normalizePlaceQuery(query);
-    const next = { source: resourceKey(['builtin-search',projectScope]),
+    const next = { source: resourceKey(['builtin-search', projectScope]),
       content: resourceKey([normalized, model.snapshot().builtinContext ?? null]),
       preparation: 'search-v1', context: null, presentation: 'results' };
     if (model.snapshot().searchActive === false || !resourceUpdate(builtinQuery, next).prepare) return;
     builtinQuery = next;
-    const generation = ++searchGeneration,requestScope=projectScope;
+    const generation = ++searchGeneration, requestScope = projectScope;
     cancelBuiltinSearch();
     builtinRows = [];
     builtinTruncated = false;
@@ -183,7 +183,7 @@ export function createObjectSearchController({
         return { ...record, key: ref.key, ref, layerGroup: 'labels', kind: 'object', meta: '내장 도시' };
       });
       commitRows(query, combinedRows(query));
-    }).catch(error => {
+    }).catch (error => {
       if (disposed || generation !== searchGeneration || requestScope !== readProjectScope()) return;
       builtinQuery = null;
       if (error.cancelled || error.name === 'AbortError') return;
@@ -219,7 +219,7 @@ export function createObjectSearchController({
     commands.beginHydration?.();
   }
 
-  async function completeHydration({isCurrent=()=>true}={}) {
+  async function completeHydration({isCurrent = () => true} = {}) {
     if (disposed||!isCurrent()||hydrated) return false;
     elements.section?.classList.remove('is-hydrating');
     elements.section?.setAttribute('aria-busy', 'false');
@@ -240,7 +240,7 @@ export function createObjectSearchController({
     if (!group || !id) return false;
     const additive = event.ctrlKey || event.metaKey;
     const range = event.shiftKey;
-    const queryRevision = searchGeneration, rowTicket = rowRevision,sourceScope=projectScope;
+    const queryRevision = searchGeneration, rowTicket = rowRevision, sourceScope = projectScope;
     const selected = await commands.selectItem({
       group, id, additive, range,
       orderedRefs: range ? renderedSearchRefs : [],
@@ -256,7 +256,7 @@ export function createObjectSearchController({
     const group = target.dataset.objectSearchFocus;
     const id = target.dataset.itemId;
     if (!group || !id) return false;
-    const intent=++focusIntentRevision,sourceScope=projectScope;
+    const intent = ++focusIntentRevision, sourceScope = projectScope;
     const selected = await commands.selectItem({ group, id, additive: false, range: false, orderedRefs: [] });
     // Selection opens details and retires the search rows. That expected UI
     // transition must not cancel the camera command belonging to this intent.
@@ -301,11 +301,11 @@ export function createObjectSearchController({
       const focus = event.target.closest('[data-object-search-focus]');
       if (focus) {
         event.preventDefault();
-        void focusResult(focus).catch(onSearchError);
+        void focusResult(focus).catch (onSearchError);
         return;
       }
       const row = event.target.closest('[data-object-search-select]');
-      if (row) void selectResult(row, event).catch(onSearchError);
+      if (row) void selectResult(row, event).catch (onSearchError);
     });
   }
 
@@ -379,10 +379,10 @@ export function createObjectSearchController({
     cancelSearch, beginProjectTransition, endProjectTransition, dispose });
 }
 
-const searchNameCollator=new Intl.Collator('ko',{numeric:true,sensitivity:'base'});
-const compareSearchItems=(left,right)=>searchNameCollator.compare(left.name,right.name)||searchNameCollator.compare(left.id,right.id);
-export function syncSearchClearButton(input,button) {
-  button?.classList.toggle('hidden',!String(input?.value||'').length);
+const searchNameCollator = new Intl.Collator('ko', {numeric:true, sensitivity:'base'});
+const compareSearchItems = (left, right) => searchNameCollator.compare(left.name, right.name)||searchNameCollator.compare(left.id, right.id);
+export function syncSearchClearButton(input, button) {
+  button?.classList.toggle('hidden', !String(input?.value||'').length);
 }
 
 export function createAppObjectSearchController(runtime = {}) {
@@ -391,7 +391,7 @@ export function createAppObjectSearchController(runtime = {}) {
     objectSearchGroupKeys, listObjectSearchItems, layerItemObjectRef, selectionDomain,
     selectObjectSearchItem, closeSearchAfterSingleSelection, focusObjectRef, createIcon,
   } = runtime;
-  const handleHoverError=error=>{if(!error.cancelled&&error.name!=='AbortError')runtime.onSearchError(error);};
+  const handleHoverError = error => {if (!error.cancelled&&error.name!=='AbortError')runtime.onSearchError(error);};
   return createObjectSearchController({
     window,
     document,
@@ -405,14 +405,14 @@ export function createAppObjectSearchController(runtime = {}) {
     createEmptyState: runtime.createEmptyState,
     createIcon,
     builtinSearch: runtime.builtinSearch ? async query => {
-      if(runtime.libraryAvailable?.()===false
+      if (runtime.libraryAvailable?.()===false
         ||state.resourceCapabilities?.builtinPlaces===false||state.layerVisibility?.labels===false)
-        return {records:[],truncated:false};
-      const result=await runtime.builtinSearch(query);
-      return {...result,records:result.records.map(record=>{
-        const name=result.displayNames?.[record.id];
-        if(typeof name!=='string'||!name)throw new TypeError('Place search requires its accepted period display name.');
-        return {...record,name};
+        return {records:[], truncated:false};
+      const result = await runtime.builtinSearch(query);
+      return {...result, records:result.records.map(record => {
+        const name = result.displayNames?.[record.id];
+        if (typeof name!=='string'||!name)throw new TypeError('Place search requires its accepted period display name.');
+        return {...record, name};
       })};
     } : null,
     cancelBuiltinSearch: runtime.cancelBuiltinSearch,
@@ -421,21 +421,21 @@ export function createAppObjectSearchController(runtime = {}) {
     onSearchError: runtime.onSearchError,
     model: {
       snapshot: () => ({ projectScope:runtime.getProjectScope?.()??null,
-        builtinContext:JSON.stringify([runtime.getProjectScope?.()??null,state.timelineCursor,state.layerVisibility?.labels,state.itemVisibility?.labels]),
+        builtinContext:JSON.stringify([runtime.getProjectScope?.()??null, state.timelineCursor, state.layerVisibility?.labels, state.itemVisibility?.labels]),
         search: state.objectSearch, searchActive: runtime.isSearchOpen(),
         searchSurfaceOpen: runtime.isSearchSurfaceOpen() }),
       items: listObjectSearchItems,
-      catalogRevision: () => resourceKey([runtime.getProjectScope?.()??null,state.objectPresentationRevision]),
+      catalogRevision: () => resourceKey([runtime.getProjectScope?.()??null, state.objectPresentationRevision]),
       itemRef: layerItemObjectRef,
       selectionSnapshot: () => selectionDomain.snapshot(),
       compare: compareSearchItems,
     },
     commands: {
-      clearSearchHover: () => selectionDomain.setHover(null, { source: 'list' }).catch(handleHoverError),
+      clearSearchHover: () => selectionDomain.setHover(null, { source: 'list' }).catch (handleHoverError),
       hoverItem: (group, id, entered) => {
         if (state.mapMoving) return;
         const ref = layerItemObjectRef(group, id);
-        return selectionDomain.setHover(entered ? ref : null, { source: 'list', expectedKey: entered ? '' : ref?.key }).catch(handleHoverError);
+        return selectionDomain.setHover(entered ? ref : null, { source: 'list', expectedKey: entered ? '' : ref?.key }).catch (handleHoverError);
       },
       syncCanonicalControls: runtime.syncCanonicalControls,
       syncSearchClear: () => syncSearchClearButton($('objectSearchInput'), $('objectSearchClearBtn')),

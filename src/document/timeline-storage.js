@@ -1,12 +1,12 @@
-import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from "../geometry/geometry-version-store.js";
-import { normalizeTimelineRecords } from "./timeline-records.js";
+import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from '../geometry/geometry-version-store.js';
+import { normalizeTimelineRecords } from './timeline-records.js';
 
 export const TIMELINE_STORAGE_SCHEMA_VERSION = 1;
 const fail = (code, detail) => { throw Object.assign(new Error(`${code}: ${detail}`), { code }); };
 function context(geometries, entities) {
   if (!Array.isArray(entities) || !geometries || typeof geometries.get !== 'function'
     || typeof geometries.snapshot !== 'function') fail('TIMELINE_CONTEXT', 'An entity catalog and geometry store are required.');
-  return { entities, geometryExists(ref,objectRef) {
+  return { entities, geometryExists(ref, objectRef) {
     const geometry = geometries.get(ref);
     return (objectRef.domain==='territorial'?['Polygon','MultiPolygon']:['Polygon','MultiPolygon','LineString','MultiLineString']).includes(geometry?.type);
   } };

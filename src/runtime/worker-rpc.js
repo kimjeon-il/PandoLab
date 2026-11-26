@@ -41,7 +41,7 @@ function createWorkerRpcError({
   error.projectRevision = finiteRevision(projectRevision);
   error.retryable = retryable === true;
   if (outcomeUnknown) error.outcomeUnknown = true;
-  if(Array.isArray(missingGeometryRefs))error.missingGeometryRefs=missingGeometryRefs;
+  if (Array.isArray(missingGeometryRefs))error.missingGeometryRefs = missingGeometryRefs;
   if (error.category === WORKER_RPC_ERROR_CATEGORIES.CANCELLED || error.category === WORKER_RPC_ERROR_CATEGORIES.STALE_RESULT) {
     error.name = 'AbortError';
     error.cancelled = true;

@@ -11,34 +11,34 @@ namespace pandoeditor::detail {
 struct DocumentState {
     ProjectDocument document;
     DocumentIndex index;
-    const bool staticTimeline=true;
-    std::map<ObjectRef,ObjectPropertyView> properties;
+    const bool staticTimeline = true;
+    std::map<ObjectRef, ObjectPropertyView> properties;
     std::vector<CountryView> countries;
     std::map<std::string, std::size_t> countryIndex;
     std::set<ObjectRef> inactiveIds;
 
     DocumentState() = default; // unloaded Project only
-    explicit DocumentState(ProjectDocument candidate,std::set<ObjectRef> inactive={})
+    explicit DocumentState(ProjectDocument candidate, std::set<ObjectRef> inactive = {})
         : document(std::move(candidate)), index(validateDocument(document)), staticTimeline(isStaticTimeline(document)), inactiveIds(std::move(inactive))
     { initializeViews(); }
     struct VerifiedResources {};
     // Only Project's verified geometry-resource admission/eviction may use
     // this path. Identities, bindings, declarations and content are unchanged.
-    DocumentState(ProjectDocument candidate,const DocumentState& previous,VerifiedResources)
-        :document(std::move(candidate)),index(previous.index),staticTimeline(previous.staticTimeline),inactiveIds(previous.inactiveIds)
+    DocumentState(ProjectDocument candidate, const DocumentState& previous, VerifiedResources)
+        :document(std::move(candidate)), index(previous.index), staticTimeline(previous.staticTimeline), inactiveIds(previous.inactiveIds)
     { initializeViews(); }
     void initializeViews() {
-        if(!staticTimeline)return;
-        properties=objectPropertyViews(document);
-        auto allCountries=countryViews(document,inactiveIds);
+        if (!staticTimeline)return;
+        properties = objectPropertyViews(document);
+        auto allCountries = countryViews(document, inactiveIds);
         countries.reserve(allCountries.size());
-        for(const auto& view:allCountries)if(!inactiveIds.count(territorialRef(view.id)))countries.push_back(view);
+        for (const auto& view:allCountries)if (!inactiveIds.count(territorialRef(view.id)))countries.push_back(view);
         for (std::size_t i = 0; i < countries.size(); ++i)
             countryIndex.emplace(countries[i].id, i);
     }
     DocumentState(const DocumentState&) = delete;
-    DocumentState& operator=(const DocumentState&) = delete;
+    DocumentState& operator = (const DocumentState&) = delete;
     DocumentState(DocumentState&&) = delete;
-    DocumentState& operator=(DocumentState&&) = delete;
+    DocumentState& operator = (DocumentState&&) = delete;
 };
 } // namespace pandoeditor::detail

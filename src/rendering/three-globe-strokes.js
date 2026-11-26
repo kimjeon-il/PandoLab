@@ -130,41 +130,41 @@ const fragmentShader = `
 `;
 
 /** Keep the exact six-word CPU layout; only texture-row padding is added. */
-export function createGlobeStrokePointTexture(THREE,points,maxTextureSize){
-  const texels=Math.max(1,Math.ceil(points.length/4));
-  const shift=Math.min(Math.floor(Math.log2(maxTextureSize)),Math.ceil(Math.log2(Math.max(1,Math.sqrt(texels)))));
-  const width=2**shift,height=Math.ceil(texels/width);
-  if(height>maxTextureSize)throw Error('Globe stroke point texture capacity exceeded');
-  const data=points.length===width*height*4?points:new Float32Array(width*height*4);
-  if(data!==points)data.set(points);
-  const texture=new THREE.DataTexture(data,width,height,THREE.RGBAFormat,THREE.FloatType);
-  texture.minFilter=texture.magFilter=THREE.NearestFilter;
-  texture.generateMipmaps=false;texture.needsUpdate=true;
-  return {texture,bytes:data.byteLength,uniforms:{pointCoordinates:{value:texture},pointTextureWidth:{value:width},pointTextureMask:{value:width-1},pointTextureShift:{value:shift}}};
+export function createGlobeStrokePointTexture(THREE, points, maxTextureSize) {
+  const texels = Math.max(1, Math.ceil(points.length/4));
+  const shift = Math.min(Math.floor(Math.log2(maxTextureSize)), Math.ceil(Math.log2(Math.max(1, Math.sqrt(texels)))));
+  const width = 2**shift, height = Math.ceil(texels/width);
+  if (height>maxTextureSize)throw Error('Globe stroke point texture capacity exceeded');
+  const data = points.length===width*height*4?points:new Float32Array(width*height*4);
+  if (data!==points)data.set(points);
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.FloatType);
+  texture.minFilter = texture.magFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false; texture.needsUpdate = true;
+  return {texture, bytes:data.byteLength, uniforms:{pointCoordinates:{value:texture}, pointTextureWidth:{value:width}, pointTextureMask:{value:width-1}, pointTextureShift:{value:shift}}};
 }
 
 export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, viewport, margin, multisampling, order, minZoom = -2, outlineUniforms, hydroUniforms, pointUniforms, sharedMaterial }) {
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(Float32Array.of(0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0), 3));
   geometry.setIndex([0, 1, 2, 2, 1, 3]);
-  const direct=Boolean(packet.start);
-  if(direct){
-    for(const name of ['start','startLow','end','endLow'])geometry.setAttribute(name,new THREE.InstancedBufferAttribute(packet[name],3));
-  }else{
-    const endpoints=new THREE.InstancedBufferAttribute(packet.endpointIndices,2);
-    endpoints.gpuType=THREE.IntType;
-    geometry.setAttribute('endpointIndices',endpoints);
+  const direct = Boolean(packet.start);
+  if (direct) {
+    for (const name of ['start','startLow','end','endLow'])geometry.setAttribute(name, new THREE.InstancedBufferAttribute(packet[name], 3));
+  }else {
+    const endpoints = new THREE.InstancedBufferAttribute(packet.endpointIndices, 2);
+    endpoints.gpuType = THREE.IntType;
+    geometry.setAttribute('endpointIndices', endpoints);
   }
   if (packet.widths.length) geometry.setAttribute('sourceWidth', new THREE.InstancedBufferAttribute(packet.widths, 1));
   if (outlineUniforms||hydroUniforms) geometry.setAttribute('ownerGroup', new THREE.InstancedBufferAttribute(packet.ownerGroups, 1));
   geometry.instanceCount = packet.count;
   const material = sharedMaterial??new THREE.ShaderMaterial({ vertexShader, fragmentShader,
     depthTest: false, depthWrite: false, alphaToCoverage: multisampling, transparent: !multisampling,
-    defines: { ...(direct?{DIRECT_ENDPOINTS:1}:{}),...(packet.widths.length?{WIDTH_PROFILE:1}:{}),...(outlineUniforms?{OUTLINE_OWNERS:1}:{}),
+    defines: { ...(direct?{DIRECT_ENDPOINTS:1}:{}), ...(packet.widths.length?{WIDTH_PROFILE:1}:{}), ...(outlineUniforms?{OUTLINE_OWNERS:1}:{}),
       ...(hydroUniforms?{RIVER_PALETTE:1}:{}) },
     uniforms: { ...cameraUniforms, viewport, margin, minZoom: { value: minZoom },
       radius: { value: style.width / 2 }, strokeColor: { value: new THREE.Color(style.color) },
-      strokeOpacity:{value:style.opacity??1},...pointUniforms,...outlineUniforms,...hydroUniforms } });
+      strokeOpacity:{value:style.opacity??1}, ...pointUniforms, ...outlineUniforms, ...hydroUniforms } });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.renderOrder = order;

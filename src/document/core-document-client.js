@@ -1,7 +1,7 @@
-import { createWorkerRpcClient } from "../runtime/worker-rpc.js";
-import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
-import {workerAssetUrl} from "../runtime/worker-asset-url.js";
-import { createProductModePolicy } from "../app/product-mode-policy.js";
+import { createWorkerRpcClient } from '../runtime/worker-rpc.js';
+import { createVerifiedCoreWorker } from '../runtime/core-wasm-loader.js';
+import { workerAssetUrl } from '../runtime/worker-asset-url.js';
+import { createProductModePolicy } from '../app/product-mode-policy.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const stateResponses = new Set(['core.document-state']);
@@ -13,16 +13,16 @@ export function createCoreDocumentClient({
   createWorker = () => createVerifiedCoreWorker(workerAssetUrl(new URL('../workers/core-viewer-session-worker.js', import.meta.url)), { type: 'module' }),
   onTransition = () => {},
 } = {}) {
-  const policy = createProductModePolicy(productMode,{readOnly});
+  const policy = createProductModePolicy(productMode, {readOnly});
   let currentState = null;
   let disposed = false;
   let queue = Promise.resolve();
-  let geometryLoader=null;
-  let documentGeneration=0;
-  const staleGeometryReceipt=Symbol('stale geometry preparation');
-  const geometryReceipts=new WeakMap();
-  const verifiedResourceAdmissions=new WeakMap();
-  const replacesDocument=new Set(['core.document-load','core.document-load-baseline','core.document-initialize',
+  let geometryLoader = null;
+  let documentGeneration = 0;
+  const staleGeometryReceipt = Symbol('stale geometry preparation');
+  const geometryReceipts = new WeakMap();
+  const verifiedResourceAdmissions = new WeakMap();
+  const replacesDocument = new Set(['core.document-load','core.document-load-baseline','core.document-initialize',
     'core.storage-baseline-load','core.document-temporal-candidate-adopt','core.document-replacement-rollback']);
   const subscribers = new Set();
   const detachedOps = new Set([
@@ -31,11 +31,11 @@ export function createCoreDocumentClient({
     'core.document-temporal-candidate-inspect','core.document-temporal-candidate-discard',
   ]);
   const speculativeOps = new Map([
-    ['core.document-temporal-source-prepare',{id:'sourceId',release:'core.document-temporal-source-release'}],
-    ['core.document-temporal-candidate-prepare',{id:'candidateId',release:'core.document-temporal-candidate-discard'}],
+    ['core.document-temporal-source-prepare', {id:'sourceId', release:'core.document-temporal-source-release'}],
+    ['core.document-temporal-candidate-prepare', {id:'candidateId', release:'core.document-temporal-candidate-discard'}],
   ]);
-  const cancelled = (code,message) => Object.assign(new Error(message),
-    { code,name:'AbortError',cancelled:true });
+  const cancelled = (code, message) => Object.assign(new Error(message),
+    { code, name:'AbortError', cancelled:true });
   // After a lost reply the document state is unknown. Only load or initialize
   // can open a new session, since all other operations require currentState.
   const rpc = createWorkerRpcClient({ createWorker, isCurrent: () => true,
@@ -47,14 +47,14 @@ export function createCoreDocumentClient({
         { code: 'PL-CORE-CANCELLED', name: 'AbortError', cancelled: true });
       if (options.isCurrent && !options.isCurrent()) fail('PL-CORE-STALE', 'The request belongs to another project generation.');
       if (requiresDocument && !currentState) fail('PL-CORE-NOT-LOADED', 'The complete C++ document has not been loaded.');
-      const speculative=speculativeOps.get(operation);
+      const speculative = speculativeOps.get(operation);
       if ((atomic || speculative) && options.signal?.aborted)
         throw cancelled('PL-CORE-CANCELLED','Document operation was cancelled before dispatch.');
-      if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration))
+      if (geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration))
         return staleGeometryReceipt;
       const request = injectEpoch ? { ...payload,
         expectedEpoch: Object.hasOwn(payload, 'expectedEpoch') ? payload.expectedEpoch : currentState?.epoch ?? 0 } : payload;
-      const transfer=operation==='core.document-temporal-source-prepare'&&options.transferSource
+      const transfer = operation==='core.document-temporal-source-prepare'&&options.transferSource
         ?[request.source.sourceBytes.buffer]:[];
       // A synchronous C++ confirm cannot be interrupted. Once dispatched, its
       // acknowledgement must update the read model even if the caller aborts.
@@ -69,10 +69,10 @@ export function createCoreDocumentClient({
         // Must not queue this release through ordered(): we already hold that
         // transport queue. Release in the same Worker session, after the
         // original native operation has returned, before reporting stale work.
-        const sourceId=result?.[speculative.id];
+        const sourceId = result?.[speculative.id];
         if (Number.isSafeInteger(sourceId) && sourceId>0) {
           await rpc.request(speculative.release,
-            { [speculative.id]:sourceId,expectedEpoch:request.expectedEpoch },
+            { [speculative.id]:sourceId, expectedEpoch:request.expectedEpoch },
             { timeoutMs:0 });
         }
         throw cancelled(options.signal?.aborted?'PL-CORE-CANCELLED':'PL-CORE-STALE',
@@ -82,11 +82,11 @@ export function createCoreDocumentClient({
       // transition. The accepted adopt response alone publishes Core state.
       if (detachedOps.has(operation))
         return result;
-      if(replacesDocument.has(operation))documentGeneration++;
+      if (replacesDocument.has(operation))documentGeneration++;
       const next = stateResponses.has(operation) ? result : result?.state;
       if (next) {
         if (!Number.isSafeInteger(next.epoch) || next.epoch < 0) fail('PL-CORE-RESPONSE', 'A current document operation epoch is required.');
-        currentState = Object.freeze({ ...next,...(Array.isArray(next.dirtyTerritorialIds)
+        currentState = Object.freeze({ ...next, ...(Array.isArray(next.dirtyTerritorialIds)
           ? { dirtyTerritorialIds: Object.freeze([...next.dirtyTerritorialIds]) }: {}) });
       }
       try {
@@ -103,34 +103,34 @@ export function createCoreDocumentClient({
       }
       return result;
     });
-    queue = result.catch(() => {});
+    queue = result.catch (() => {});
     return result;
   }
-  async function ensureGeometryResources(month,options={}){
-    const generation=documentGeneration;
-    const query=await ordered('core.document-geometry-requirements',{month},options);
-    if(!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
-    const isCurrent=()=>!disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
+  async function ensureGeometryResources(month, options = {}) {
+    const generation = documentGeneration;
+    const query = await ordered('core.document-geometry-requirements', {month}, options);
+    if (!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
+    const isCurrent = () => !disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
       &&options.isCurrent?.()!==false&&!options.signal?.aborted;
-    if(query.resources.length){
-      if(typeof geometryLoader!=='function')fail('GEOMETRY_UNLOADED','Required immutable geometry loader is unavailable.');
-      const resources=await geometryLoader(query.resources,{...options,isCurrent});
-      if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
-      const admission={resources,month,expectedEpoch:query.sourceEpoch};
-      verifiedResourceAdmissions.set(admission,{resources,descriptors:query.resources});
-      await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
+    if (query.resources.length) {
+      if (typeof geometryLoader!=='function')fail('GEOMETRY_UNLOADED','Required immutable geometry loader is unavailable.');
+      const resources = await geometryLoader(query.resources, {...options, isCurrent});
+      if (!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
+      const admission = {resources, month, expectedEpoch:query.sourceEpoch};
+      verifiedResourceAdmissions.set(admission, {resources, descriptors:query.resources});
+      await ordered('core.document-geometry-admit', admission, {...options, isCurrent}, true, true);
     }
-    if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
-    const receipt=Object.freeze({});
-    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation});
+    if (!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
+    const receipt = Object.freeze({});
+    geometryReceipts.set(receipt, {month, epoch:query.sourceEpoch, generation});
     return receipt;
   }
-  async function prepareTimelineGeometry(month,options={}){
-    for(;;){
-      const epoch=currentState?.epoch,generation=documentGeneration;
-      try{return await ensureGeometryResources(month,options);}
-      catch(error){
-        if((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
+  async function prepareTimelineGeometry(month, options = {}) {
+    for (; ;) {
+      const epoch = currentState?.epoch, generation = documentGeneration;
+      try {return await ensureGeometryResources(month, options);}
+      catch (error) {
+        if ((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
           ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation)||!currentState)throw error;
       }
     }
@@ -144,62 +144,62 @@ export function createCoreDocumentClient({
       return () => subscribers.delete(listener);
     },
     load: (storageJson, options) => ordered('core.document-load', { storageJson }, options, false, true),
-    baselineCoverage:(baselineId,month,options)=>ordered('core.document-baseline-coverage',{baselineId,month},options),
-    loadBaseline: (baselineId,setup,options) => ordered('core.document-load-baseline',{ baselineId,setup },options,true,true),
-    initialize: (payload,options) => ordered('core.document-initialize',payload,options,false,true,true),
-    captureReplacement: options => ordered('core.document-replacement-capture',{},options,true,true),
-    rollbackReplacement: (replacementId,options) => ordered('core.document-replacement-rollback',{ replacementId },options,true,true),
-    releaseReplacement: (replacementId,options) => ordered('core.document-replacement-release',{ replacementId },options,true,true),
-    setGeometryLoader(loader){
-      if(typeof loader!=='function')throw new TypeError('An immutable geometry resource loader is required.');
-      geometryLoader=loader;return ()=>{if(geometryLoader===loader)geometryLoader=null;};
+    baselineCoverage:(baselineId, month, options) => ordered('core.document-baseline-coverage', {baselineId, month}, options),
+    loadBaseline: (baselineId, setup, options) => ordered('core.document-load-baseline', { baselineId, setup }, options, true, true),
+    initialize: (payload, options) => ordered('core.document-initialize', payload, options, false, true, true),
+    captureReplacement: options => ordered('core.document-replacement-capture', {}, options, true, true),
+    rollbackReplacement: (replacementId, options) => ordered('core.document-replacement-rollback', { replacementId }, options, true, true),
+    releaseReplacement: (replacementId, options) => ordered('core.document-replacement-release', { replacementId }, options, true, true),
+    setGeometryLoader(loader) {
+      if (typeof loader!=='function')throw new TypeError('An immutable geometry resource loader is required.');
+      geometryLoader = loader; return () => {if (geometryLoader===loader)geometryLoader = null;};
     },
-    geometryRequirements:(month='',options)=>ordered('core.document-geometry-requirements',{month},options),
-    admitGeometryResources:(resources,options)=>{
-      const admission={resources,month:''};
-      verifiedResourceAdmissions.set(admission,{resources,descriptors:[]});
-      return ordered('core.document-geometry-admit',admission,options,true,true);
+    geometryRequirements:(month = '', options) => ordered('core.document-geometry-requirements', {month}, options),
+    admitGeometryResources:(resources, options) => {
+      const admission = {resources, month:''};
+      verifiedResourceAdmissions.set(admission, {resources, descriptors:[]});
+      return ordered('core.document-geometry-admit', admission, options, true, true);
     },
     prepareTimelineGeometry,
-    storageBaselineLoad: (baseline,options) => ordered('core.storage-baseline-load',{ baseline },options,true,true),
-    temporalSourcePrepare:(source,{dataRevision,manifestSha256,...options}={})=>
-      ordered('core.document-temporal-source-prepare',{source,dataRevision,manifestSha256},options),
-    temporalSourceStats:options=>ordered('core.document-temporal-source-stats',{},options),
-    temporalSourceRelease:(sourceId,options)=>ordered('core.document-temporal-source-release',{sourceId},options,true,true),
-    temporalCandidatePrepare:({sourceId,targetMonth,sourceFingerprint,setup=null,documentId=''},options)=>
+    storageBaselineLoad: (baseline, options) => ordered('core.storage-baseline-load', { baseline }, options, true, true),
+    temporalSourcePrepare:(source, {dataRevision, manifestSha256, ...options} = {}) =>
+      ordered('core.document-temporal-source-prepare', {source, dataRevision, manifestSha256}, options),
+    temporalSourceStats:options => ordered('core.document-temporal-source-stats', {}, options),
+    temporalSourceRelease:(sourceId, options) => ordered('core.document-temporal-source-release', {sourceId}, options, true, true),
+    temporalCandidatePrepare:({sourceId, targetMonth, sourceFingerprint, setup = null, documentId = ''}, options) =>
       ordered('core.document-temporal-candidate-prepare',
-        {sourceId,targetMonth,sourceFingerprint,setup,documentId},options),
-    temporalCandidateInspect:(candidateId,options)=>ordered('core.document-temporal-candidate-inspect',{candidateId},options),
-    temporalCandidateDiscard:(candidateId,options)=>ordered('core.document-temporal-candidate-discard',{candidateId},options,true,true),
-    temporalCandidateAdopt:({candidateId,sourceId,targetMonth,sourceFingerprint,worldSha256,replacementId,expectedEpoch},options)=>
+        {sourceId, targetMonth, sourceFingerprint, setup, documentId}, options),
+    temporalCandidateInspect:(candidateId, options) => ordered('core.document-temporal-candidate-inspect', {candidateId}, options),
+    temporalCandidateDiscard:(candidateId, options) => ordered('core.document-temporal-candidate-discard', {candidateId}, options, true, true),
+    temporalCandidateAdopt:({candidateId, sourceId, targetMonth, sourceFingerprint, worldSha256, replacementId, expectedEpoch}, options) =>
       ordered('core.document-temporal-candidate-adopt',
-        {candidateId,sourceId,targetMonth,sourceFingerprint,worldSha256,replacementId,expectedEpoch},options,true,true),
-    setTimelineCursor: async(month, options={}) => {
+        {candidateId, sourceId, targetMonth, sourceFingerprint, worldSha256, replacementId, expectedEpoch}, options, true, true),
+    setTimelineCursor: async(month, options = {}) => {
       try {
-        let receipt=geometryReceipts.get(options.geometryPreparation);
-        for(;;){
-          if(receipt?.month!==month)receipt=geometryReceipts.get(await prepareTimelineGeometry(month,options));
-          const accepted=await ordered('core.document-timeline-cursor',{month},options,true,true,true,receipt);
-          if(accepted!==staleGeometryReceipt)return accepted;
-          receipt=null;
+        let receipt = geometryReceipts.get(options.geometryPreparation);
+        for (; ;) {
+          if (receipt?.month!==month)receipt = geometryReceipts.get(await prepareTimelineGeometry(month, options));
+          const accepted = await ordered('core.document-timeline-cursor', {month}, options, true, true, true, receipt);
+          if (accepted!==staleGeometryReceipt)return accepted;
+          receipt = null;
         }
-      } catch(error) {
+      } catch (error) {
         // Geometry admission queries happen before cursor dispatch. Preserve
         // the cursor API's rejection contract for invalid calendar precision.
-        if(error?.code==='PL-TEMPORAL-001')
+        if (error?.code==='PL-TEMPORAL-001')
           throw Object.assign(new Error('INVALID_TIMELINE_CURSOR: '+error.message),
-            {code:'INVALID_TIMELINE_CURSOR',cause:error});
+            {code:'INVALID_TIMELINE_CURSOR', cause:error});
         throw error;
       }
     },
     resolveWorld: (month, options) => ordered('core.document-resolve-world', { month }, options),
     projectState: options => ordered('core.document-state', {}, options),
-    selectionCatalogLoad: (domain,refs,expectedEpoch,options) => ordered('core.document-selection-catalog',
-      { domain,refs,...(expectedEpoch===undefined ? {}:{ expectedEpoch }) },options,true,true),
-    presentationCatalogLoad: (catalog,options) => ordered('core.document-presentation-catalog',{ catalog },options,true,true),
+    selectionCatalogLoad: (domain, refs, expectedEpoch, options) => ordered('core.document-selection-catalog',
+      { domain, refs, ...(expectedEpoch===undefined ? {}:{ expectedEpoch }) }, options, true, true),
+    presentationCatalogLoad: (catalog, options) => ordered('core.document-presentation-catalog', { catalog }, options, true, true),
     selectionApply: (payload, options) => ordered('core.document-selection-apply', payload, options, true, true),
     selectionSnapshot: options => ordered('core.document-selection-snapshot', {}, options),
     state: () => currentState,
-    dispose: () => { if(disposed)return;disposed=true;geometryLoader=null;currentState = null; subscribers.clear(); rpc.stop(); },
+    dispose: () => { if (disposed)return; disposed = true; geometryLoader = null; currentState = null; subscribers.clear(); rpc.stop(); },
   });
 }

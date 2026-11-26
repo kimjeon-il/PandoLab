@@ -1,5 +1,5 @@
-import { coordinateBounds } from "./coordinate-bounds.js";
-import { sharedCalculationCore } from "../document/temporal.js";
+import { coordinateBounds } from './coordinate-bounds.js';
+import { sharedCalculationCore } from '../document/temporal.js';
 
 const featureId = (feature, fallback = '') => String(feature?.id || fallback);
 

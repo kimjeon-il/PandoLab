@@ -30,7 +30,7 @@ export function projectedLineDistance(geometry, screenPoint, project) {
   return minimum;
 }
 
-export function geometryHitsScreenPoint(geometry, coord, screenPoint, tolerance = 8, {project,contains}) {
+export function geometryHitsScreenPoint(geometry, coord, screenPoint, tolerance = 8, {project, contains}) {
   if (!geometry) return false;
   if (geometry.type === 'Point') {
     const projected = project(geometry.coordinates);
@@ -45,4 +45,3 @@ export function geometryHitsScreenPoint(geometry, coord, screenPoint, tolerance 
   }
   return projectedLineDistance(geometry, screenPoint, project) <= tolerance;
 }
-
