@@ -127,13 +127,14 @@ function readWidthProfile(bytes, geometry) {
   });
 }
 
-export function decodeHydroPack(bytes, packId, { featureMetadata, stages }) {
+export function decodeHydroPack(bytes, packId, { featureMetadata, stages, onEncodedFeature }) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== 0x46485741 || view.getUint16(4, true) !== 4) throw new Error('수계 feature pack 버전이 올바르지 않습니다.');
   const count = view.getUint32(8, true);
   const features = [];
   let offset = 12;
   for (let index = 0; index < count; index += 1) {
+    const start = offset;
     const fid = view.getUint32(offset, true);
     const logicalFid = view.getUint32(offset + 4, true);
     const kind = view.getUint8(offset + 8);
@@ -149,6 +150,7 @@ export function decodeHydroPack(bytes, packId, { featureMetadata, stages }) {
     offset += 44;
     const geometry = readGeometry(bytes.subarray(offset, offset + geometryLength), geometryKind); offset += geometryLength;
     const widthProfile = kind === 1 ? readWidthProfile(bytes.subarray(offset, offset + widthLength), geometry) : []; offset += widthLength;
+    if (onEncodedFeature) onEncodedFeature(fid, logicalFid, bytes.subarray(start, offset));
     const metadata = featureMetadata.get(fid);
     if (!metadata || Number(metadata.logicalFid) !== logicalFid) throw new Error(`수계 feature ${fid} 메타데이터가 없습니다.`);
     const feature = {

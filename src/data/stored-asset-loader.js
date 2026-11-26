@@ -1,11 +1,9 @@
 import { fetchWithRetry, isRetryableHttpStatus, withRetry } from '../runtime/reliability-core.js';
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
-import { maintainStoredContent, touchStoredContent } from './stored-content-cache.js';
+import { createStoredAssetCache, hasImmutableAssetHash } from './stored-asset-cache.js';
 import { decodeStoredBuffer, validateAssetLength } from './asset-decompression.js';
 
 const immutableFlightsByStorage = new WeakMap();
-const HASH = /^[a-f0-9]{64}$/;
-
 function waitForConsumer(promise, signal) {
   if (!signal) return promise;
   return new Promise((resolve, reject) => {
@@ -23,68 +21,9 @@ export function createStoredAssetLoader({dataRevision, resolveUrl, report = () =
    immutableFlightsByStorage.set(flightScope, new Map());
  const storedFlights = immutableFlightsByStorage.get(flightScope);
  fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META, fetchFn});
- const DATA_CACHE_PREFIX = 'pandolab-data-';
- const DATA_CACHE_NAME = DATA_CACHE_PREFIX + dataRevision;
- const IMMUTABLE_WORLD_CACHE_NAME = 'pandolab-world-content-v1';
- if (cachePolicy !== 'revision' && cachePolicy !== 'immutable') throw new Error('Unsupported stored asset cache policy');
- const ACTIVE_CACHE_NAME = cachePolicy === 'immutable' ? IMMUTABLE_WORLD_CACHE_NAME : DATA_CACHE_NAME;
- const LEGACY_CORE_CACHE_PREFIX = 'pandolab-core-';
- let dataCachePromise = null;
- let oldCacheCleanupPromise = null;
- function storedKey(spec, url) {
-   if (cachePolicy!=='immutable'||!HASH.test(spec.sha256||''))return url;
-   try {return new URL('/.pandolab-cache/content/'+spec.sha256, url).href;}
-   catch{return url;}
- }
- async function findStored(cache, spec, url) {
-   if (!cache)return null;
-   const key = storedKey(spec, url);
-   const response = await cache.match(key).catch (() => null);
-   return response?{key, response}:null;
- }
- async function hasStoredAsset(spec) {
-   const match = await findStored(await openDataCache(), spec, resolveAssetUrl(spec));
-   if (!match)return false;
-   // A cache hit here is only a planning hint. Actual reads always verify.
-   try {match.response.body?.cancel().catch (() => {});}catch{}
-   return true;
- }
-async function openDataCache() {
-  if (!cacheStorage) return null;
-  if (!dataCachePromise) dataCachePromise = cacheStorage.open(ACTIVE_CACHE_NAME).catch (() => null);
-  return dataCachePromise;
-}
-
-async function cleanupOldCoreCaches() {
-  if (!cacheStorage) return;
-  if (!oldCacheCleanupPromise) {
-    oldCacheCleanupPromise = cacheStorage.keys()
-      .then(names => Promise.all(names
-      .filter(name => (typeof dataRevision==='string' && name.startsWith(DATA_CACHE_PREFIX) && name !== DATA_CACHE_NAME)
-        || name.startsWith(LEGACY_CORE_CACHE_PREFIX))
-        .map(name => cacheStorage.delete(name))))
-      .catch (() => []);
-  }
-  await oldCacheCleanupPromise;
-}
-
-async function cacheStoredBuffer(cache, url, storedBuffer, headers = null) {
-  if (!cache)return false;
-  const immutable = cachePolicy==='immutable';
-  const write = async() => {
-    const metadata = new Headers(headers||undefined);
-    if (immutable) {metadata.set('x-pandolab-stored-bytes', String(storedBuffer.byteLength)); metadata.set('x-pandolab-stored-at', String(Date.now()));}
-    await cache.put(url, new Response(storedBuffer, {headers:metadata}));
-    if (immutable) {touchStoredContent(cache, url); await maintainStoredContent(cache);}
-    return true;
-  };
-  try {return await write();}
-  catch (_) {
-    await cleanupOldCoreCaches();
-    if (immutable)await maintainStoredContent(cache, {force:true});
-    try {return await write();}catch{return false;}
-  }
-}
+ const storedCache = createStoredAssetCache({dataRevision, cacheStorage, cachePolicy});
+ const {storedKey, findStored, openDataCache, cleanupOldCoreCaches,
+   cacheStoredBuffer, touch:touchStoredContent} = storedCache;
 
 function countedStream(stream, onChunk, signal = null) {
   if (!stream || typeof TransformStream !== 'function') return stream;
@@ -130,6 +69,13 @@ async function consumeStoredResponse(response, spec, phase, key, label, source, 
 
 
 function resolveAssetUrl(spec) { return resolveUrl(spec); }
+
+async function hasStoredAsset(spec) {
+  const match = await findStored(await openDataCache(), spec, resolveAssetUrl(spec));
+  if (!match) return false;
+  try {match.response.body?.cancel().catch(() => {});} catch {}
+  return true;
+}
 
 function validateStoredSize(storedBuffer, spec, label) {
   const expectedBytes = Number(spec.compressedBytes || 0);
@@ -269,7 +215,7 @@ async function loadImmutable(spec,phase,key,label,validate,signal,representation
 
 async function loadRepresentation(spec, phase, key, label, validate, signal, representation, cachedOnly=false) {
   signal?.throwIfAborted();
-  if (cachePolicy==='immutable' && HASH.test(spec.sha256||''))
+  if (cachePolicy==='immutable' && hasImmutableAssetHash(spec.sha256))
     return loadImmutable(spec,phase,key,label,validate,signal,representation,cachedOnly);
   const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal,report):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
   const url = resolveAssetUrl(spec);

@@ -72,3 +72,111 @@ export function createGlobePlanFailures() {
     fail:(key, required) => {if (!required) {optional.clear(); optional.set(key, true);}},
     clear:() => optional.clear()};
 }
+
+
+/** Owns base/history territorial descriptors, border batching, and outline lookup. */
+export function createGlobeTerritorialAssets(spec, {
+  baseSlots, cacheBudget, residency, loadMesh, loadStroke, load, slotCount = () => baseSlots.length,
+}) {
+  const outlineBySlot = new Map();
+  function descriptorsFor(catalog = null) {
+    if (!catalog) return [
+      ...spec.countryChunks.map((row, i) => ({...row, role:'country', key:'base-country:'+i+':'+row.spec.sha256})),
+      ...spec.borderChunks.map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),
+    ];
+    return [
+      ...catalog.historicalCountries.flatMap((country, i) => country.countryChunks.map((row, j) => ({
+        ...row, role:'country', historySlot:baseSlots.length+i, key:'history-country:'+i+':'+j+':'+row.spec.sha256,
+      }))),
+      ...catalog.historicalBorders.flatMap((border, i) => border.chunks.map((row, j) => ({
+        ...row, role:'border', kind:'stroke', historyBorder:i, key:'history-border:'+i+':'+j+':'+row.spec.sha256,
+      }))),
+    ];
+  }
+  const assets = createGlobeChunkAssets(descriptorsFor(), {
+    loadMesh, loadStroke, residency, byteBudget:cacheBudget.historicalCpuBytes,
+  });
+  const borderPlansByView = new WeakMap();
+  function combineHistoryBorders(rows) {
+    const groups = new Map(), result = [];
+    for (const row of rows) {
+      if (row.role!=='border'||row.baseBorder) {result.push(row); continue;}
+      const cell = row.cell;
+      let group = groups.get(cell);
+      if (!group) {group = []; groups.set(cell, group);}
+      group.push(row);
+    }
+    for (const group of groups.values()) {
+      let sources = [], decodedBytes = 0;
+      const flush = () => {
+        if (sources.length===1)result.push(sources[0]);
+        else if (sources.length) {
+          const key = 'border-batch:'+sources.map(row => row.key).join(',');
+          const compressedBytes = sources.reduce((sum, row) => sum+(Number(row.spec.compressedBytes)||0), 0);
+          const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+          for (const row of sources)for (let axis = 0; axis<3; axis++) {
+            bounds[axis] = Math.min(bounds[axis], row.bounds[axis]);
+            bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
+          }
+          result.push({role:'border', kind:'stroke', key, sources, bounds,
+            spec:{sha256:key, decodedBytes, compressedBytes, estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
+        }
+        sources = [];
+        decodedBytes = 0;
+      };
+      for (const row of group) {
+        const bytes = Number(row.spec.decodedBytes)||0;
+        if (sources.length&&(sources.length>=32||decodedBytes+bytes>cacheBudget.borderBatchBytes))flush();
+        sources.push(row);
+        decodedBytes += bytes;
+      }
+      flush();
+    }
+    return result;
+  }
+  function addOutlineDescriptors(row, slot) {
+    for (let order = 0; order<row.outlineChunks.length; order++) {
+      const chunk = row.outlineChunks[order];
+      const descriptor = {...chunk, key:'outline:'+(slot??'base')+':'+order+':'+chunk.spec.sha256, slot, order, count:row.outlineChunks.length};
+      for (const owner of chunk.ownerSlots) {
+        let rows = outlineBySlot.get(owner);
+        if (!rows) {rows = []; outlineBySlot.set(owner, rows);}
+        rows.push(descriptor);
+      }
+    }
+  }
+  function addHistoryCatalog(catalog) {
+    assets.addDescriptors(descriptorsFor(catalog));
+    catalog.historicalCountries.forEach((row, index) => addOutlineDescriptors(row, baseSlots.length+index));
+  }
+  function planHistoryBorders(view, cull) {
+    if (!view) return [];
+    let index = borderPlansByView.get(view);
+    if (!index) {
+      const groups = new Set(view.borders);
+      const allRows = assets.plan(() => true,
+        row => row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder));
+      index = createGlobeChunkCatalog(combineHistoryBorders(allRows));
+      borderPlansByView.set(view, index);
+    }
+    return index.select(cull);
+  }
+  async function loadOutlines(row, signal) {
+    const owners = row.owners;
+    if (!owners?.length||owners.some(group => !group.length
+      ||group.some(slot => !Number.isInteger(slot)||slot<0||slot>=slotCount())))
+      throw Error('Invalid globe outline owners');
+    const packet = await load(row.spec, 'stroke', {
+      phase:'background', priority:6, label:'선택 윤곽선', signal,
+      ownerCount:owners.length, outlineOwners:owners,
+    });
+    return {packet, owners, preparedIndex:packet.outlineIndex};
+  }
+  addOutlineDescriptors(spec, null);
+  function dispose() {
+    outlineBySlot.clear();
+    assets.dispose();
+  }
+  return Object.freeze({...assets, addHistoryCatalog,
+    outlineDescriptors:slot => outlineBySlot.get(slot)??[], planHistoryBorders, loadOutlines, dispose});
+}

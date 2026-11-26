@@ -2,6 +2,7 @@
 // Read-only validation of the current Web hydro package and shared format.
 import {libraryMaterializedRoot} from "../data/library-context.mjs";
 import {decodeHydroIndex,decodeHydroMetadata} from '../../src/data/hydro-pack.js';
+import {mapProjectManifestSourcePath,mapProjectResourcePath,validateMapProjectManifest} from '../../src/data/map-project-manifest.js';
 import {createHash} from 'node:crypto';
 import {readFileSync,readdirSync,lstatSync,realpathSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {dirname,join,resolve,relative,isAbsolute,sep} from 'node:path';
@@ -9,7 +10,6 @@ import {fileURLToPath} from 'node:url';
 import {gunzipSync} from 'node:zlib';
 
 const DATA='assets/data/hydro';
-export const CURRENT_MANIFEST=DATA+'/v0.13.4/manifest.json';
 // These releases were explicitly retired from the deployed runtime. This list
 // is a retirement policy, not a declaration of the current release or shard count.
 const RETIRED=['v0.13.0','v0.13.1'];
@@ -88,7 +88,8 @@ export function verifyPackedIndex(manifest,packed){
 
 export async function auditLayout(root,{allowRetired=false}={}) {
   root=resolve(root);
-  const webPath=CURRENT_MANIFEST;
+  const project=validateMapProjectManifest(JSON.parse(readFileSync(inside(root,mapProjectManifestSourcePath('default-world')),'utf8')));
+  const webPath=mapProjectResourcePath(project,'rivers');
   const manifestPath=inside(root,webPath),dir=dirname(manifestPath);
   const manifestBuffer=readFileSync(manifestPath),manifest=JSON.parse(manifestBuffer);
   const roles=manifestRoles(manifest),packed=readFileSync(inside(dir,manifest.container.url));

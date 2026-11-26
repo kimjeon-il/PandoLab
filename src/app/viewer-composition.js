@@ -15,7 +15,6 @@ import { createSelectionUiController } from '../ui/selection-ui-controller.js';
 import { createObjectDetailsPanel } from '../ui/object-details-panel.js';
 import { affiliationTypeAt } from '../document/territorial-affiliation.js';
 import { createTooltipController } from '../ui/tooltip-controller.js';
-import { installTimelineControls } from '../ui/timeline-controls.js';
 import { createAppObjectSearchController } from '../ui/object-search-controller.js';
 import { createSemanticIcon } from '../ui/icon-utils.js';
 import { createEmptyState } from '../ui/empty-state.js';
@@ -30,14 +29,13 @@ import { createViewerMap } from './viewer-map.js';
 import { createViewerInitialPresentation } from './viewer-initial-presentation.js';
 import { createViewerInitialMapSkeleton } from './viewer-initial-map-skeleton.js';
 import { createViewerPostPresentation } from './viewer-post-presentation.js';
+import { createViewerTimelineComposition } from './viewer-timeline-composition.js';
 import { createViewerInspectorController } from '../ui/inspector/viewer-inspector-controller.js';
 import { createMapSettings } from '../ui/app-map-settings.js';
 import { layerStyle } from '../ui/layer-presentation.js';
 import { DISTRIBUTION_RENDER_MODES } from '../document/distribution-model.js';
 import { createSurfaceController } from '../ui/surface-controller.js';
 import { createPreferencesDialog } from '../ui/preferences-dialog.js';
-import { createProjectMonthClock } from '../document/project-month-clock.js';
-import { territorialMembershipDelta } from '../document/territorial-entity-store.js';
 
 export async function composeViewer({ meta }) {
   const get = id => document.getElementById(id), status = get('viewerStatus');
@@ -186,7 +184,7 @@ export async function composeViewer({ meta }) {
   disposables.push(objectDetailsPanel);
   const resetView = get('resetViewBtn');
   const syncResetView = () => resetView.classList.toggle('is-world-view', map.renderer.isAtWorldView());
-  map = createViewerMap({owners, runtimeContext, projectDomain, documentSession:activeSession, isMobile:() => surfaces.isMobile(), diagnostics, getInteractionStyle:() => preferencePresentation.interactionStyle, onStatus:notifications.setActionStatus, getPreferences:() => preferencePresentation.current, onPlacesSettled:action => {if (action==='cancel')searchController.cancelSearch(); else searchController.render();}, onError:report,
+  map = createViewerMap({owners, runtimeContext, projectDomain, documentSession:activeSession, diagnostics, getInteractionStyle:() => preferencePresentation.interactionStyle, onStatus:notifications.setActionStatus, getPreferences:() => preferencePresentation.current, onPlacesSettled:action => {if (action==='cancel')searchController.cancelSearch(); else searchController.render();}, onError:report,
     initialCamera:readSavedCamera(), onWorldFitChange:syncResetView,
     onMapPreparationStatus:(presentation, generation) => {initialPresentation.observe(presentation, generation); mapSkeleton.reconsider();}});
   map.renderer.setInitialMapLoading(true);
@@ -260,45 +258,6 @@ export async function composeViewer({ meta }) {
     },
   });
   disposables.push(postPresentation);
-  // Both imported files and the builtin map use the same C++ time cursor.
-  const applyDocumentMonth = async(month, {isCurrent = () => true, waitForFrame = false, admitPresentation = null, geometryPreparation} = {}) => {
-    projectDomain.requireTimelineMonth(month);
-    const before = map.features(), generation = projectDomain.getGeneration();
-    const previousMonth = activeSession.commandOwner.state().timelineCursor;
-    await map.renderer.measureWork('core.timeline-cursor', () => activeSession.commandOwner.setTimelineCursor(month, {isCurrent, geometryPreparation}));
-    if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    if (before!==map.features()&&territorialMembershipDelta(before, map.features()).changed)
-      await map.objectCatalog.pruneLayerItemVisibility();
-    if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    // Country sources can tile while place data loads. Keep temporal admission
-    // closed until both owners finish preparing the accepted Core month.
-    await Promise.all([
-      map.update({previousMonth}),
-      waitForFrame&&map.viewState.layerVisibility.labels!==false
-        ?owners.territorialLabels.preparePlaces():null,
-    ]);
-    if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    if (admitPresentation?.()===false)return false;
-    if (waitForFrame)await map.renderer.waitForMapPresentation(generation);
-    if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    search(); syncStatus();
-    return true;
-  };
-  const disposeTimeline = installTimelineControls({
-    document, window,
-    getMonth:() => {
-      const accepted = presentedMonth;
-      return accepted&&(projectDomain.isOpening()||accepted.scope===projectDomain.activeProjectScope())
-        ?accepted.month:activeSession?.commandOwner.state().timelineCursor||null;
-    },
-    getRange:() => projectDomain.timelineNavigation().range,
-    isPending:() => projectClock?.isPending()===true,
-    setMonth:async month => {
-      if (projectDomain.isOpening())throw new Error('지도를 여는 중입니다.');
-      return projectClock.selectMonth(month);
-    },
-  });
-  disposables.push({dispose:disposeTimeline});
   const open = async (reader, options) => {
     postPresentation.invalidate();
     const searchTicket = searchController.beginProjectTransition?.();
@@ -364,96 +323,17 @@ export async function composeViewer({ meta }) {
       }
     }
   };
-  const changeProjectCursor = async(month, {isCurrent, commit}) => {
-    projectDomain.requireTimelineMonth(month);
-    const scope = projectDomain.activeProjectScope();
-    const previous = presentedMonth?.scope===scope?presentedMonth.month:activeSession.commandOwner.state().timelineCursor;
-    const current = () => isCurrent()
-      &&scope===projectDomain.activeProjectScope()&&!projectDomain.isOpening();
-    const previouslyReady = presentedMonth?.scope===scope||status.dataset.ready==='true';
-    let committed = false;
-    const temporalTicket = map.renderer.beginTemporalViewTransition(current, () => {committed = commit();});
-    status.dataset.loadingKind = 'temporal'; status.dataset.ready = 'false';
-    presentViewerLoadStatus(status,'다음 시점 준비 중…');
-    try {
-      // Physical resources are scoped to this document; one C++ cursor owns
-      // the date for both builtin and GeoPackage projects.
-      let preparing = true;
-      let geometryPreparation;
-      const preparationCurrent = () => preparing&&current();
-      try {
-        geometryPreparation = await map.prepareTimelineView(month, {
-          isCurrent:preparationCurrent, activeProject:projectDomain.activeProject()});
-      }finally {preparing = false;}
-      if (!current())return false;
-      // Keep the current map interactive while immutable physical data loads.
-      // The existing frame guard is still needed once the cursor can change.
-      map.renderer.preserveTemporalFrame();
-      if (!await applyDocumentMonth(month, {isCurrent:current, waitForFrame:true, geometryPreparation,
-        admitPresentation:() => map.renderer.admitTemporalViewTransition(temporalTicket)}))return false;
-      if (!current()||!committed)return false;
-      status.dataset.ready = 'true'; presentViewerLoadStatus(status,'지도 준비 완료.');
-      postPresentation.schedule(current);
-      return true;
-    }catch (error) {
-      if (current()) {
-        if (previous&&(activeSession.commandOwner.state().timelineCursor!==previous||map.renderer.isFramePreserved())) {
-          const restoreTicket = map.renderer.beginTemporalViewTransition(current);
-          try {
-            map.renderer.preserveTemporalFrame();
-            map.renderer.retryMapPreparation();
-            await map.preparePhysicalContext(previous, {
-              isCurrent:current, activeProject:projectDomain.activeProject()});
-            if (!current())return false;
-            // Do not report the prior map as restored merely because its C++
-            // cursor was reset. Wait for that generation's real replacement
-            // picture before releasing the date control's loading state.
-            const restored = await applyDocumentMonth(previous, {isCurrent:current, waitForFrame:true,
-              admitPresentation:() => map.renderer.admitTemporalViewTransition(restoreTicket)});
-            if (!restored)throw new Error('Previous dated map was not restored.');
-          }catch (restoreError) {error.restoreError = restoreError;}
-          finally {map.renderer.finishTemporalViewTransition(restoreTicket);}
-        }
-        status.dataset.ready = String(previouslyReady&&!error.restoreError);
-      }
-      throw error;
-    }finally {
-      map.renderer.finishTemporalViewTransition(temporalTicket);
-    }
-  };
-  projectClock = createProjectMonthClock({
-    coalesceRequests:true, window, document,
-    onPendingChange:() => window.dispatchEvent(new CustomEvent('pandolab:timeline-pending')),
-    initialAutomatic:preferencePresentation.current.timeline.defaultWorldFollowCurrentMonth,
-    canFollow:() => !projectDomain.isOpening()
-      &&(!projectDomain.activeProject()||projectDomain.activeProject().source==='builtin'),
-    onFollowChange:(automatic, {mode}) => {
-      // A file project's manual date does not alter default-world preferences.
-      if (mode==='follow'||projectDomain.activeProject()?.source==='builtin') {
-        const current = preferencePresentation.current;
-        preferencePresentation.apply({...current,
-          timeline:{...current.timeline, defaultWorldFollowCurrentMonth:automatic}},
-          {rerender:false, reason:'default-world-follow'});
-      }
-    },
-    applyMonth:async(month, {isCurrent, commit, mode}) => {
-      const active = projectDomain.activeProject();
-      if (mode==='startup'||(mode==='follow'&&active?.source!=='builtin')) {
-        // Returning from a GeoPackage reopens the manifest-backed project.
-        const opened = await open(() => map.prepareBuiltinProject(month, {isCurrent}), {
-          source:'builtin', isCurrent, presentation:'default'});
-        return opened&&commit();
-      }
-      if (!active)return false;
-      return changeProjectCursor(month, {isCurrent, commit});
-    },
-    onCommitted:() => {
-      presentedMonth = {scope:projectDomain.activeProjectScope(),
-        month:activeSession.commandOwner.state().timelineCursor};
-      syncStatus(); window.dispatchEvent(new CustomEvent('pandolab:project-changed'));
-    },
-    onError:report,
+  const timeline = createViewerTimelineComposition({
+    document, window, map, projectDomain, activeSession, owners, status, preferencePresentation,
+    postPresentation, search, syncStatus, report,
+    getPresentedMonth:() => presentedMonth,
+    setPresentedMonth:value => {presentedMonth = value;},
+    openBuiltinProject:(month, isCurrent) => open(() => map.prepareBuiltinProject(month, {isCurrent}), {
+      source:'builtin', isCurrent, presentation:'default',
+    }),
   });
+  projectClock = timeline.clock;
+  disposables.push({dispose:timeline.disposeControls});
   disposables.push(projectClock);
   const display = createMapSettings({capabilities:owners.capabilities, viewPresentation:map});
   display.connect({

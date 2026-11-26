@@ -30,6 +30,7 @@ function validateExpectedBranch(expectedBranch) {
 }
 
 function archiveFile(path,bytes,direct,put){
+  direct ||= /^assets\/data\/hydro\/v\d+\.\d+\.\d+\/(?:manifest\.json|hydro\.bin)$/.test(path);
   const sha256=contentHash(bytes);
   const sourceGeometry=path.startsWith('assets/data/territorial-entities/source/geometries/');
   const packed=direct?bytes:(sourceGeometry?packLibraryGzip(bytes):gzipSync(bytes,{level:9}));
@@ -47,6 +48,80 @@ function archiveFile(path,bytes,direct,put){
 
 function directRuntimeDirectories(index){
   return new Set(Object.entries(index.files).filter(([path,entry])=>path.startsWith('assets/data/')&&path===entry.stored).map(([path])=>dirname(path)));
+}
+
+export async function storeGrwlHydroEdition({root=defaultRoot,manifestBytes,binary,original}){
+  const {GRWL_SOURCE}=await import('../gis/grwl-hydro.mjs');
+  const {GRWL_HYDRO_VERSION}=await import('../gis/build-grwl-hydro.mjs');
+  const {manifestRoles,verifyPackedIndex}=await import('../checks/check-current-hydro-layout.mjs');
+  const manifest=JSON.parse(manifestBytes);
+  if(manifest.version!==GRWL_HYDRO_VERSION||manifest.sources?.grwl?.sha256!==GRWL_SOURCE.sha256||
+    contentHash(original)!==GRWL_SOURCE.sha256||binary.length!==manifest.container?.bytes||
+    contentHash(binary)!==manifest.container.sha256)throw Error('Verified GRWL source and Hydro container required');
+  for(const role of manifestRoles(manifest)){
+    if(contentHash(binary.subarray(role.offset,role.offset+role.bytes))!==role.sha256)
+      throw Error('GRWL Hydro section does not match its manifest');
+  }
+  verifyPackedIndex(manifest,binary);
+  const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  const prefix='assets/data/hydro',release=prefix+'/v'+GRWL_HYDRO_VERSION;
+  return storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:'GRWL Hydro',
+    advanceWorkBranch:true,prepare:readBaseline=>{
+      const previous=JSON.parse(readBaseline(prefix+'/v0.13.4/manifest.json'));
+      if(previous.container.sha256!==manifest.sources.naturalEarthLakes.packageSha256||
+        previous.container.sha256!==manifest.sources.inheritedNames.packageSha256)
+        throw Error('GRWL candidate does not match the pinned lake and name baseline');
+      return new Map([
+        [release+'/manifest.json',manifestBytes],
+        [release+'/hydro.bin',binary],
+        [prefix+'/sources/grwl/'+GRWL_SOURCE.file,original],
+      ]);
+    }});
+}
+
+export async function storeGrwlHydronymEdition({root=defaultRoot,bindings}){
+  const {applyGrwlHydronyms,GRWL_HYDRO_VERSION}=await import('../gis/build-grwl-hydro.mjs');
+  const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  return storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:'GRWL river names',
+    advanceWorkBranch:true,prepare:read=>{
+      const previous='assets/data/hydro/v'+GRWL_HYDRO_VERSION;
+      const {manifest,binary}=applyGrwlHydronyms({
+        manifest:JSON.parse(read(previous+'/manifest.json')),binary:read(previous+'/hydro.bin'),bindings,
+      });
+      const release='assets/data/hydro/v'+manifest.version;
+      return new Map([
+        [release+'/manifest.json',Buffer.from(JSON.stringify(manifest,null,2)+'\n')],
+        [release+'/hydro.bin',binary],
+      ]);
+    }});
+}
+
+export async function storeGrwlMainstemEdition({root=defaultRoot,baselineRevision,manifest,binary}){
+  const {GRWL_HYDRONYM_VERSION,GRWL_MAINSTEM_VERSION}=await import('../gis/build-grwl-hydro.mjs');
+  const {manifestRoles,verifyPackedIndex}=await import('../checks/check-current-hydro-layout.mjs');
+  validateExpectedLibraryRevision(baselineRevision);
+  const receipt=manifest.sources?.reviewedGrwlMainstems;
+  if(manifest.version!==GRWL_MAINSTEM_VERSION||receipt?.packageVersion!==GRWL_HYDRONYM_VERSION||
+    binary.length!==manifest.container.bytes||contentHash(binary)!==manifest.container.sha256)
+    throw Error('Invalid reviewed GRWL mainstem edition');
+  for(const role of manifestRoles(manifest)){
+    if(contentHash(binary.subarray(role.offset,role.offset+role.bytes))!==role.sha256)
+      throw Error('Reviewed GRWL section differs');
+  }
+  verifyPackedIndex(manifest,binary);
+  const sourceRevision=git(root,['rev-parse','HEAD']);
+  return storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:'reviewed GRWL mainstem names',
+    advanceWorkBranch:true,prepare:read=>{
+      const base=JSON.parse(read('assets/data/hydro/v'+GRWL_HYDRONYM_VERSION+'/manifest.json'));
+      if(base.container.sha256!==receipt.packageSha256||base.sources.grwl.sha256!==manifest.sources.grwl.sha256||
+        !isDeepStrictEqual(base.sources.reviewedGrwlHydronyms,manifest.sources.reviewedGrwlHydronyms))
+        throw Error('Reviewed GRWL names or source baseline differs');
+      const path='assets/data/hydro/v'+manifest.version;
+      return new Map([
+        [path+'/manifest.json',Buffer.from(JSON.stringify(manifest,null,2)+'\n')],
+        [path+'/hydro.bin',binary],
+      ]);
+    }});
 }
 
 export async function storeBuiltinAffiliations({root=defaultRoot,updates}){

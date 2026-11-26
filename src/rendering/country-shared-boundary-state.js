@@ -1,4 +1,6 @@
-import { createPreparedBoundaryStore, attachBoundarySegmentReferences, topologyNodeKey, mergeSharedBoundaryContributions } from '../geometry/boundary-topology.js';
+import { createPreparedBoundaryStore, attachBoundarySegmentReferences } from '../geometry/boundary-source-store.js';
+import { topologyNodeKey } from '../geometry/boundary-topology-core.js';
+import { mergeSharedBoundaryContributions } from '../geometry/boundary-topology.js';
 import { computeCountrySharedContacts } from '../geometry/country-contact-core.js';
 
 const sharedSegmentKey = segment => [topologyNodeKey(segment.start), topologyNodeKey(segment.end)].sort().join('|');

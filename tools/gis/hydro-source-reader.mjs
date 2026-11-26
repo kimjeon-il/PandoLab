@@ -46,7 +46,9 @@ async function readDbf(reader,selected,detail,onRecord,{onDeleted,trackIds=true}
   for(let at=0;at<descriptors.length-1;at+=32){const end=descriptors.indexOf(0,at),name=descriptors.toString('ascii',at,end<0||end>at+11?at+11:end);
     const width=descriptors[at+16],type=String.fromCharCode(descriptors[at+11]);if(!width||offset+width>recordLength||fields.has(name))throw Error('Invalid Hydro DBF field');
     fields.set(name,{offset,width,type});offset+=width;}
-  if(offset!==recordLength||!fields.has('HYRIV_ID')||!fields.has('NEXT_DOWN'))throw Error('Missing Hydro DBF topology fields');
+  const grwl=detail==='grwl';
+  const required=grwl?['OBJECTID','width_med_','width_mean','lakeFlag']:['HYRIV_ID','NEXT_DOWN'];
+  if(offset!==recordLength||required.some(name=>!fields.has(name)))throw Error('Missing Hydro DBF source fields');
   if(detail==='generation'&&['MAIN_RIV','ORD_STRA','DIS_AV_CMS','UPLAND_SKM','ENDORHEIC'].some(name=>!fields.has(name)))
     throw Error('Missing Hydro DBF generation fields');
   const number=(record,name)=>{const field=fields.get(name);if(!['N','F'].includes(field.type))throw Error('Invalid Hydro DBF topology type');
@@ -54,13 +56,17 @@ async function readDbf(reader,selected,detail,onRecord,{onDeleted,trackIds=true}
     const value=Number(text);if(!Number.isSafeInteger(value))throw Error('Hydro source ID exceeds safe range');return value;};
   const numeric=(record,name,integer=false)=>{const field=fields.get(name);if(!['N','F'].includes(field.type))throw Error('Invalid Hydro DBF generation field type');
     const text=record.toString('ascii',field.offset,field.offset+field.width).trim();
-    if(!text)return 0;if(!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text))throw Error('Invalid Hydro DBF generation field value');
+    if(!text)return 0;
+    const format=field.type==='F'?/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i:/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+    if(!format.test(text))throw Error('Invalid Hydro DBF generation field value');
     const value=Number(text);if(!Number.isFinite(value)||(integer&&!Number.isSafeInteger(value)))throw Error('Invalid Hydro DBF generation field value');return value;};
   const byRecord=new Map(),seen=new Set();
   for(let oid=0;oid<count;oid++){const record=await reader.take(recordLength);if(record[0]===42){if(onDeleted)await onDeleted(oid);continue;}if(record[0]!==32)throw Error('Invalid Hydro DBF record');
-    const id=number(record,'HYRIV_ID');if(selected&&!selected.has(id))continue;
+    const id=number(record,grwl?'OBJECTID':'HYRIV_ID');if(selected&&!selected.has(id))continue;
     if(id<=0||(trackIds&&seen.has(id)))throw Error('Invalid or duplicate Hydro source ID');
-    if(trackIds)seen.add(id);const row={id,next:number(record,'NEXT_DOWN')};
+    if(trackIds)seen.add(id);
+    const row=grwl?{id,widthM:numeric(record,'width_med_')||numeric(record,'width_mean'),
+      waterClass:numeric(record,'lakeFlag')}:{id,next:number(record,'NEXT_DOWN')};
     if(detail==='generation')Object.assign(row,{mainRiver:numeric(record,'MAIN_RIV',true),order:numeric(record,'ORD_STRA',true),
       flow:numeric(record,'DIS_AV_CMS'),upstreamArea:numeric(record,'UPLAND_SKM'),endorheic:Boolean(numeric(record,'ENDORHEIC',true))});
     if(onRecord)await onRecord({...row,recordIndex:oid});else byRecord.set(oid,row);}
@@ -83,7 +89,7 @@ async function readShp(reader,member,records,region,detail){
     for(let i=0;i<parts;i++){const start=starts.readInt32LE(i*4);if((i===0&&start!==0)||start<=previous||start>=points)throw Error('Invalid Hydro polyline parts');previous=start;}
     const point=bytes=>{const value=[bytes.readDoubleLE(0),bytes.readDoubleLE(8)];
       if(value.some(v=>!Number.isFinite(v))||Math.abs(value[0])>180||Math.abs(value[1])>90)throw Error('Invalid Hydro source coordinate');return value;};
-    if(detail==='generation'){
+    if(detail==='generation'||detail==='grwl'){
       const coords=await reader.take(points*16),lines=[];for(let i=0;i<parts;i++){
         const start=starts.readInt32LE(i*4),end=i+1<parts?starts.readInt32LE((i+1)*4):points,line=[];
         for(let j=start;j<end;j++)line.push(point(coords.subarray(j*16,j*16+16)));lines.push(line);}
@@ -96,6 +102,32 @@ async function readShp(reader,member,records,region,detail){
   }
   if(oid!==records.count)throw Error('Hydro shapefile and DBF record counts differ');
   await reader.finish();return rows;
+}
+export async function readGrwlRiverArchive(archive,{sha256,signal}={}){
+  if(!/^[a-f0-9]{64}$/.test(sha256??''))throw Error('Pinned GRWL archive hash required');
+  const before=await stat(archive);
+  if(!before.isFile())throw Error('GRWL source must be a file');
+  const hash=createHash('sha256');
+  for await(const chunk of createReadStream(archive,{signal}))hash.update(chunk);
+  if(hash.digest('hex')!==sha256)throw Error('GRWL archive hash mismatch');
+  const archiveMembers=await zipMembers(archive);
+  const readMember=ext=>{
+    const matches=archiveMembers.filter(row=>posix.basename(row.name)==='GRWL_summaryStats.'+ext);
+    if(matches.length!==1)throw Error('Expected one GRWL archive member: '+ext);
+    return matches[0];
+  };
+  const dbf=readMember('dbf'),shp=readMember('shp'),prj=readMember('prj');
+  const projection=[];
+  for await(const chunk of zipMemberChunks(archive,prj))projection.push(chunk);
+  if(!/^GEOGCS\["GCS_WGS_1984",/.test(Buffer.concat(projection).toString('ascii')))
+    throw Error('Unexpected GRWL coordinate reference system');
+  const records=await readDbf(new ByteReader(zipMemberChunks(archive,dbf),signal),null,'grwl');
+  const rows=await readShp(new ByteReader(zipMemberChunks(archive,shp),signal),shp,records,'global','grwl');
+  const after=await stat(archive);
+  if(['dev','ino','size','mtimeMs','ctimeMs'].some(key=>before[key]!==after[key]))
+    throw Error('GRWL archive changed while being read');
+  if(Object.keys(rows).length!==records.seen.size)throw Error('GRWL source records differ from shape records');
+  return [...records.byRecord.values()].map(({id,widthM,waterClass})=>({objectId:id,widthM,waterClass,parts:rows[id].parts}));
 }
 async function resolveSourceMembers(archive,specification){
   const region=specification?.datasetCode;

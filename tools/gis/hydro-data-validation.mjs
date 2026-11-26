@@ -1,4 +1,5 @@
-// Scoped checks are the default; a complete catalogue requires an explicit CLI flag.
+// Source-specific reproduction checks for the archived HydroRIVERS edition.
+// The active Viewer package is checked by check-current-hydro-layout.mjs.
 import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -6,8 +7,7 @@ import {parseArgs} from 'node:util';
 import {loadCompleteHydroFeatures,loadSelectedHydroFeatures} from './hydro-selected-data.mjs';
 import {hydroGeometryCoordinates,verifyHydroCoreDelivery,verifyHydroKoreaCoverage,verifyHydroManifestPolicy,verifyHydroRiverGroups,verifyHydroSelectedLakes} from './hydro-pack-decoder.mjs';
 import {lineParts,verifyHydroBorderFragments} from './hydro-point-screen-native.mjs';
-import {HYDRO_DATA_VERSION} from "../../src/data/physical-layer-service.js";
-
+const HYDRORIVERS_ARCHIVE_VERSION='0.13.4';
 const korea=[124,33,131,43];
 function inKorea(row){const b=row?.metadata?.bounds;if(!Array.isArray(b)||b.length!==4||b.some(value=>!Number.isFinite(value)))
   throw Error('Invalid Hydro feature bounds');return !(b[2]/1e6<korea[0]||b[0]/1e6>korea[2]||b[3]/1e6<korea[1]||b[1]/1e6>korea[3]);}
@@ -52,7 +52,7 @@ export async function verifyHydroCompleteCatalog({dataset,originalLakes,countrie
 }
 export async function verifySelectedKoreaHydro({directory,countries}={},options={}){
   const selected=await loadSelectedHydroFeatures({directory,bounds:korea,signal:options.signal});
-  if(selected.version!==HYDRO_DATA_VERSION)throw Error('Hydro dataset version differs from the active viewer');
+  if(selected.version!==HYDRORIVERS_ARCHIVE_VERSION)throw Error('Expected the archived HydroRIVERS v0.13.4 package');
   const koreaResult=verifyHydroKoreaCoverage(selected.features),rivers=verifyHydroRiverGroups(selected.features.filter(row=>row.metadata.category==='river'));
   const local=selected.features.filter(inKorea),border=await verifyBorders(local,countries,options,['CHN/PRK','PRK/RUS']);
   return {selectedFeatures:selected.features.length,logicalSystems:selected.logicalFids.length,shards:selected.shards,korea:koreaResult,rivers,borders:border.results};
@@ -71,7 +71,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
     if(values.korea)result=await verifySelectedKoreaHydro({directory:values.directory,countries:source.features},options);
     else{const dataset=await loadCompleteHydroFeatures({directory:values.directory,acknowledgeWholeCatalog:true,signal:controller.signal});
       result=await verifyHydroCompleteCatalog({dataset,originalLakes:await readFile(values.lakes,{signal:controller.signal}),
-        countries:source.features,version:HYDRO_DATA_VERSION},options);}
+        countries:source.features,version:HYDRORIVERS_ARCHIVE_VERSION},options);}
     console.log(JSON.stringify(result));
   }catch(error){console.error('hydro-data-validation: '+error.message);process.exitCode=1;}
   finally{process.removeListener('SIGINT',abort);process.removeListener('SIGTERM',abort);}

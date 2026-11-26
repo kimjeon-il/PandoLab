@@ -468,6 +468,7 @@ test('Three globe switches historical territories and water in the same dated fr
 });
 
 test('Three globe selects rendered rivers and dated water with Core identities',async({page})=>{
+ await page.setViewportSize({width:1280,height:800});
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,selection:{color:'#ff00fd',fillStrength:1}})));
  await page.goto('./?debug=1');
  await ready(page,'Three globe hydro selection startup');
@@ -480,17 +481,20 @@ test('Three globe selects rendered rivers and dated water with Core identities',
   await page.mouse.click(box.x+point[0],box.y+point[1]);
  };
  const selection=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref=>ref.id));
- const seine=[2.072917,48.989583];
- await go(seine,6);
+ // A vertex from the reviewed GRWL eastern mouth, with the retained river ID.
+ const nakdong=[128.96075,35.1557],nakdongId='hydro-system:40505530';
+ expect(await page.evaluate(()=>window.PANDOLAB_BUILD_META.projectCatalogs.rivers.version)).toBe('0.14.2');
+ // Keep the Busan place label clear of the river hit target.
+ await go(nakdong,12);
  await expect.poll(()=>page.evaluate(()=>{
   const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
   return visibleChunks>0&&visibleChunks===requestedChunks;
  })).toBe(true);
- await click(seine);
- const chooser=page.locator('#objectChooserList [role="option"]').filter({hasText:'센강'});
- await expect.poll(async()=>await chooser.isVisible()||(await selection()).includes('hydro-system:20386022')).toBe(true);
+ await click(nakdong);
+ const chooser=page.locator('#objectChooserList [role="option"]').filter({hasText:'낙동강'});
+ await expect.poll(async()=>await chooser.isVisible()||(await selection()).includes(nakdongId)).toBe(true);
  if(await chooser.isVisible())await chooser.click();
- await expect.poll(selection).toContain('hydro-system:20386022');
+ await expect.poll(selection).toContain(nakdongId);
  const canvas=page.locator('#map canvas');
  await expect.poll(async()=>page.evaluate(async encoded=>{
   const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
@@ -499,6 +503,30 @@ test('Three globe selects rendered rivers and dated water with Core identities',
   for(let i=0;i<rgba.length;i+=4)if(rgba[i]>250&&rgba[i+1]<5&&rgba[i+2]>247)return true;
   return false;
  },(await canvas.screenshot()).toString('base64'))).toBe(true);
+ const thames=[-0.84703,51.54459],thamesId='hydro-grwl:V01.02:17337';
+ await go(thames,12);
+ await expect.poll(()=>page.evaluate(()=>{
+  const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
+  return visibleChunks>0&&visibleChunks===requestedChunks;
+ })).toBe(true);
+ await click(thames);
+ const thamesOption=page.locator('#objectChooserList [role="option"]').filter({hasText:'템스강'});
+ await expect.poll(async()=>await thamesOption.isVisible()||(await selection()).includes(thamesId)).toBe(true);
+ if(await thamesOption.isVisible())await thamesOption.click();
+ await expect.poll(selection).toContain(thamesId);
+ await expect(page.locator('#viewerSelectionStatus')).toHaveText('템스강');
+ const chao=[100.55509,14.04603],chaoId='hydro-system:41339527';
+ await go(chao,12);
+ await expect.poll(()=>page.evaluate(()=>{
+  const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
+  return visibleChunks>0&&visibleChunks===requestedChunks;
+ })).toBe(true);
+ await click(chao);
+ const chaoOption=page.locator('#objectChooserList [role="option"]').filter({hasText:'짜오프라야강'});
+ await expect.poll(async()=>await chaoOption.isVisible()||(await selection()).includes(chaoId)).toBe(true);
+ if(await chaoOption.isVisible())await chaoOption.click();
+ await expect.poll(selection).toContain(chaoId);
+ await expect(page.locator('#viewerSelectionStatus')).toHaveText('짜오프라야강');
  const caspian=[51,42];
  await go(caspian,2.75);
  await month(page,'1923-11');

@@ -4,12 +4,12 @@ export const HYDRO_CATEGORY_STYLES = Object.freeze({
         });
 
 export const HYDRO_LAYER_META = Object.freeze({
-            rivers_hydro: Object.freeze({ label: '강', shortLabel: '강', sourceLabel: 'HydroRIVERS', category: 'river', color: '#3b82c4' }),
+            rivers_hydro: Object.freeze({ label: '강', shortLabel: '강', sourceLabel: 'GRWL', category: 'river', color: '#3b82c4' }),
             lakes_natural_earth: Object.freeze({ label: '호수', shortLabel: '호수', sourceLabel: 'Natural Earth', category: 'lake', color: '#5aa9d6' }),
         });
 
 
-export const PHYSICAL_DATASET = 'HydroRIVERS 1.0 · Natural Earth 5.0.0 호수';
+export const PHYSICAL_DATASET = 'GRWL V01.02 · Allen & Pavelsky (2018) · CC BY 4.0 · Natural Earth 5.0.0 호수';
 
 /** The canonical land/hydro resources share a stable data root. */
 export function createPhysicalSourceConfiguration({assetBaseUrl, mapProject} = {}) {

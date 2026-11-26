@@ -11,12 +11,13 @@ import { PLACE_DISPLAY_ZOOM_FLOOR } from '../map/map-display-zoom.js';
 import { createGlobeCamera } from './globe-camera.js';
 import { COUNTRY_LABEL_MIN_ZOOM } from './three-globe-labels.js';
 import { globeTerritoryKey } from './globe-mesh.js';
-import { createGlobeChunkAssets, createGlobeChunkCatalog, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures } from './globe-view-mesh-assets.js';
+import { createGlobeTerritorialAssets, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures } from './globe-view-mesh-assets.js';
 import { createGlobeHistoryIndex, globeHistoryMonthKey } from './globe-history-index.js';
 import { createGlobeTemporalPresentation } from './globe-temporal-presentation.js';
 import { createGlobePacketTasks, globePacketWorkerCount } from './globe-packet-tasks.js';
 import { createGlobeWorkScheduler, estimateGlobeWorkingBytes } from './globe-work-scheduler.js';
-import { globeRayIntersectsBounds, globeStrokePickPredicate, createGlobePacketIndex, createGlobePickBudget, pickGlobeSlotsCooperative, pickGlobeStrokeSlotsCooperative } from './globe-picking.js';
+import { createGlobePacketIndex } from './globe-picking.js';
+import { createGlobeObjectQuery } from './globe-object-query.js';
 import { createMapPresentationSession } from './map-presentation-session.js';
 import { createThreeGlobeSurface } from './three-globe-surface.js';
 import { createRenderingMetrics } from './rendering-metrics.js';
@@ -73,7 +74,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   let presentationInputs = null, qualityKey = null;
   const readPresentationInputs = createGlobePresentationInputReader();
   const outlineStats = {outlinePlans:0, outlineDownloads:0};
-  const outlineBySlot = new Map(), outlineFailed = new Set();
+  const outlineFailed = new Set();
   let framePreserved = false, initialLoading = true, drawCount = 0, unsupported = false;
   let riverDetail, riverCamera = null, riverVisible = null, riverContext = null;
   let physical = null, acceptedPhysical = null;
@@ -171,66 +172,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   });
   const {load, loadTerritorialStroke} = assetReader;
   const loadMesh = async(row, signal, priority = 20) => ({packet:await load(row,'mesh', {signal, priority})});
-  function territorialDescriptors(catalog = null) {
-    if (!catalog)return [
-      ...spec.countryChunks.map((row, i) => ({...row, role:'country', key:'base-country:'+i+':'+row.spec.sha256})),
-      ...spec.borderChunks.map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),
-    ];
-    return [
-      ...catalog.historicalCountries.flatMap((country, i) => country.countryChunks.map((row, j) => ({...row, role:'country', historySlot:baseSlots.length+i, key:'history-country:'+i+':'+j+':'+row.spec.sha256}))),
-      ...catalog.historicalBorders.flatMap((border, i) => border.chunks.map((row, j) => ({...row, role:'border', kind:'stroke', historyBorder:i, key:'history-border:'+i+':'+j+':'+row.spec.sha256}))),
-    ];
-  }
-  const territorialAssets = createGlobeChunkAssets(territorialDescriptors(), {loadMesh, loadStroke:loadTerritorialStroke, residency, byteBudget:cacheBudget.historicalCpuBytes});
-  const borderPlansByView = new WeakMap();
-  function combineHistoryBorders(rows) {
-    const groups = new Map(), result = [];
-    for (const row of rows) {
-      if (row.role!=='border'||row.baseBorder) {result.push(row); continue;}
-      const cell = row.cell;
-      let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}group.push(row);
-    }
-    for (const group of groups.values()) {
-      let sources = [], decodedBytes = 0;
-      const flush = () => {
-        if (sources.length===1)result.push(sources[0]);
-        else if (sources.length) {
-          const key = 'border-batch:'+sources.map(row => row.key).join(',');
-          const compressedBytes = sources.reduce((sum, row) => sum+(Number(row.spec.compressedBytes)||0), 0);
-          const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-          for (const row of sources)for (let axis = 0; axis<3; axis++) {
-            bounds[axis] = Math.min(bounds[axis], row.bounds[axis]); bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
-          }
-          result.push({role:'border', kind:'stroke', key, sources, bounds, spec:{sha256:key, decodedBytes, compressedBytes, estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
-        }
-        sources = []; decodedBytes = 0;
-      };
-      for (const row of group) {
-        const bytes = Number(row.spec.decodedBytes)||0;
-        if (sources.length&&(sources.length>=32||decodedBytes+bytes>cacheBudget.borderBatchBytes))flush();
-        sources.push(row); decodedBytes+=bytes;
-      }
-      flush();
-    }
-    return result;
-  }
-  function addOutlineDescriptors(row, slot) {
-    const chunks = row.outlineChunks;
-    for (let order = 0; order<chunks.length; order++) {
-      const chunk = chunks[order], descriptor = {...chunk, key:'outline:'+(slot??'base')+':'+order+':'+chunk.spec.sha256, slot, order, count:chunks.length};
-      for (const owner of chunk.ownerSlots) {
-        let rows = outlineBySlot.get(owner); if (!rows) {rows = []; outlineBySlot.set(owner, rows);}rows.push(descriptor);
-      }
-    }
-  }
-  addOutlineDescriptors(spec, null);
-  async function loadOutlines(row, signal) {
-    const owners = row.owners;
-    if (!owners?.length||owners.some(group => !group.length||group.some(slot => !Number.isInteger(slot)||slot<0||slot>=slots.length)))
-      throw Error('Invalid globe outline owners');
-    const packet = await load(row.spec,'stroke', {phase:'background', priority:6, label:'선택 윤곽선', signal, ownerCount:owners.length, outlineOwners:owners});
-    return {packet, owners, preparedIndex:packet.outlineIndex};
-  }
+  const territorialAssets = createGlobeTerritorialAssets(spec, {
+    baseSlots, cacheBudget, residency, loadMesh, loadStroke:loadTerritorialStroke, load, slotCount:() => slots.length,
+  });
   const graticuleNeeded = () => state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false;
   const bordersNeeded = () => state.layerVisibility.objects!==false&&layerStyle(state.layerPresentation,'objects').boundaryVisible!==false;
   const physicalAssets = createGlobePhysicalAssets([spec.physical], {
@@ -273,15 +217,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       if (!bordersNeeded())return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
     });
-    if (bordersNeeded()&&prepared.view) {
-      let index = borderPlansByView.get(prepared.view);
-      if (!index) {
-        const groups = new Set(prepared.view.borders);
-        const all = territorialAssets.plan(() => true, row => row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder));
-        index = createGlobeChunkCatalog(combineHistoryBorders(all)); borderPlansByView.set(prepared.view, index);
-      }
-      rows.push(...index.select(viewCull(padding+extra)));
-    }
+    if (bordersNeeded()&&prepared.view)
+      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra)));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
   function installHistoryCatalog(catalog) {
@@ -291,16 +228,15 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       throw Error('Three.js history slot count mismatch');
     const index = createGlobeHistoryIndex(catalog.history, baseSlots.length, {timeline:catalog.historyTimeline,
       physicalIdentities:[spec.physical, ...catalog.physicalContexts].map(row => row.identity)});
-    const descriptors = territorialDescriptors(catalog);
     const keys = new Set(slotByKey.keys()), identities = catalog.historicalCountries.map(row => {
       const key = globeTerritoryKey(row.id, row.geometry), ref = normalizeObjectRef({domain:'territorial', type:'entity', id:row.id});
       if (keys.has(key)||!ref)throw Error('Invalid or duplicate historical territory identity');
       keys.add(key); return {row, key, ref};
     });
-    territorialAssets.addDescriptors(descriptors); physicalAssets.addDescriptors(catalog.physicalContexts);
+    territorialAssets.addHistoryCatalog(catalog); physicalAssets.addDescriptors(catalog.physicalContexts);
     for (const {row, key, ref} of identities) {
       const slot = slots.length; slots.push(row); slotByKey.set(key, slot);
-      labelsBySlot.push(row.label); refs.push(ref); addOutlineDescriptors(row, slot);
+      labelsBySlot.push(row.label); refs.push(ref);
     }
     clearViewPlans();
     historyIndex = index; historyLoaded = true;
@@ -671,7 +607,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       const roleStyles = paint.roleStyles();
       for (const [slot, code] of paint.countryRoles()) {
         if (!(roleStyles[code]?.width>0&&roleStyles[code]?.alpha>0))continue;
-        for (const descriptor of outlineBySlot.get(slot)??[]) {
+        for (const descriptor of territorialAssets.outlineDescriptors(slot)) {
           if (descriptor.bounds&&!cull(descriptor.bounds))continue;
           let target = targets.get(descriptor.key);
           if (!target) {target = {descriptor, roles:new Map()}; targets.set(descriptor.key, target);}
@@ -691,7 +627,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       for (const [key, {descriptor}] of outlineTargets) {
         if (pendingOutlines.has(key)||surface.hasOutlines(key)||outlineFailed.has(key))continue;
         const controller = new AbortController(); pendingOutlines.set(key, controller); outlineStats.outlineDownloads++;
-        loadOutlines(descriptor, controller.signal).then(data => {
+        territorialAssets.loadOutlines(descriptor, controller.signal).then(data => {
           if (disposed||controller.signal.aborted||pendingOutlines.get(key)!==controller||!outlineTargets.has(key))return;
           surface.installOutlines(key, data, descriptor); outlinePaintDirty = true; invalidate('three-outlines-ready');
         }).catch (cause => {
@@ -816,59 +752,6 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     signal?.throwIfAborted();
     return [...waterFeatures, ...[...slots].map(slot => items[slot]).filter(Boolean)];
   }
-  async function queryObjectRefs(point, {includeHydro = true, includeLabels = true, signal:consumerSignal} = {}) {
-    if (includeHydro||includeLabels)cancelNeighborPrefetch();
-    const sample = acceptedPick;
-    if (!canPickFrame()||!sample)throw new DOMException('Picking frame unavailable','AbortError');
-    const controller = startRequest(includeHydro||includeLabels?'pick-click':'pick-hover');
-    const abort = () => controller.abort(consumerSignal?.reason);
-    consumerSignal?.addEventListener('abort', abort, {once:true}); if (consumerSignal?.aborted)abort();
-    const {signal} = controller;
-    const isCurrent = () => !signal.aborted&&canPickFrame()&&acceptedPick===sample;
-    const assertCurrent = () => {signal.throwIfAborted(); if (!isCurrent())throw new DOMException('Picking frame superseded','AbortError');};
-    try {
-      assertCurrent();
-      const label = includeLabels?sample.labelHit(point):null;
-      if (label)return [label];
-      const sampledCamera = sample.camera, ray = sampledCamera.worldRay(point);
-      if (!ray)return [];
-      const budget = createGlobePickBudget({signal, isCurrent});
-      const intersect = bounds => globeRayIntersectsBounds(ray, bounds), waterFeatures = [], lakeSlots = new Set();
-      for (const row of await sample.waterIndex.queryCooperative(intersect, budget)) {
-        const packet = row.mesh.packet;
-        if ((await pickGlobeSlotsCooperative(packet, packet.spatial, ray, undefined, {firstHit:true, budget})).length) {
-          if (!includeHydro)return [];
-          waterFeatures.push(row.feature);
-        }
-      }
-      if (sample.lakesVisible)for (const row of await sample.lakeIndex.queryCooperative(intersect, budget)) {
-        if (sampledCamera.view.zoom<row.minZoom)continue;
-        const packet = row.mesh.packet, hits = await pickGlobeSlotsCooperative(packet, packet.spatial, ray, undefined, {firstHit:!includeHydro, budget});
-        if (hits.length&&!includeHydro)return [];
-        for (const slot of hits)lakeSlots.add(slot);
-      }
-      let hydroRefs = [];
-      if (includeHydro) {
-        const slots = new Set(lakeSlots);
-        if (sample.riversVisible&&sampledCamera.view.zoom>=sample.physical.spec.riverMinZoom) {
-          const predicate = globeStrokePickPredicate(sampledCamera, point, 5);
-          for (const row of await sample.riverIndex.queryCooperative(predicate, budget)) {
-            if (sampledCamera.view.zoom<row.minZoom)continue;
-            for (const slot of await pickGlobeStrokeSlotsCooperative(row.packet, row.index, sampledCamera, point, 5, {predicate, budget}))slots.add(slot);
-          }
-        }
-        const candidates = await hydroFeaturesForSlots(slots, waterFeatures, signal); assertCurrent();
-        const visible = [...new Map(candidates.filter(feature => deps.physicalServices.isHydroFeatureVisible(feature)).map(feature => [feature.id, feature])).values()];
-        const missing = visible.filter(feature => {const existing = deps.hydroModel.hydroFeatureById(feature.id); return !existing||existing.__awBounds!==feature.__awBounds;});
-        if (missing.length)await deps.physicalResources.admitHydroFeatures(missing, {isCurrent});
-        assertCurrent(); hydroRefs = visible.map(feature => normalizeObjectRef({domain:'hydro', type:feature.properties.category, id:feature.id}));
-      }
-      if (waterFeatures.length||lakeSlots.size)return hydroRefs;
-      const hits = [];
-      for (const {packet} of await sample.countryIndex.queryCooperative(intersect, budget))hits.push(...await pickGlobeSlotsCooperative(packet, packet.spatial, ray, slot => sample.visibleSlots.has(slot), {budget}));
-      assertCurrent(); return [...hydroRefs, ...hits.map(slot => refs[slot])];
-    }finally {consumerSignal?.removeEventListener('abort', abort); finishRequest(includeHydro||includeLabels?'pick-click':'pick-hover', controller);}
-  }
   function invalidateCountryColors() {paint.markCountryInputs(); syncPresentationInputs(true); invalidate('three-country-colors');}
   function invalidatePalette() {paint.markPalette(); invalidate('three-palette');}
   function invalidatePhysicalStyle() {paint.markPhysicalStyle(); invalidate('three-physical-style');}
@@ -876,6 +759,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function invalidatePresentationStyle() {const placesChanged = syncPresentationInputs(true); paint.markPalette(); invalidate('three-presentation-style'); return placesChanged;}
   function setRenderQuality(value) {const key = JSON.stringify([value?.tier, value?.phase, value?.revision]); if (key===qualityKey)return; qualityKey = key; invalidate('three-quality');}
   const canPickFrame = () => !!acceptedPick&&ready&&!disposed&&!lost&&!framePreserved&&acceptedPick.generation===generation&&acceptedPick.viewport===viewport;
+  const objectQuery = createGlobeObjectQuery({
+    getAcceptedPick:() => acceptedPick, canPickFrame, cancelNeighborPrefetch, startRequest, finishRequest, refs,
+    hydroFeaturesForSlots,
+    isHydroFeatureVisible:feature => deps.physicalServices.isHydroFeatureVisible(feature),
+    hydroFeatureById:id => deps.hydroModel.hydroFeatureById(id),
+    admitHydroFeatures:(rows, options) => deps.physicalResources.admitHydroFeatures(rows, options),
+  });
   const displayCamera = () => acceptedPick?.generation===generation?acceptedPick.camera:camera;
   const projection = Object.freeze({projectCoordinate:coord => displayCamera()?.projectCoordinate(coord)??null,
     projectVisibleCoordinate:(coord, options) => displayCamera()?.projectVisibleCoordinate(coord, options)??null,
@@ -892,7 +782,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     invalidateCountryColors, invalidateCountryPalette:invalidatePalette, invalidatePhysicalStyle, invalidateHydroVisibility, invalidatePresentationStyle, setRenderQuality,
     labelZoomVisibility:() => ({country:Boolean(camera&&camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM),
       places:Boolean(camera&&camera.view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR)}),
-    invalidateLabelContent:labelContent.invalidate, getPickingRevision:() => pickingRevision, canPickFrame, queryObjectRefs,
+    invalidateLabelContent:labelContent.invalidate, getPickingRevision:() => pickingRevision, canPickFrame, queryObjectRefs:objectQuery.queryObjectRefs,
     setInitialMapLoading(value) {initialLoading = value;}, isStyleReady:() => loaded, renderFrame, commitVisualFrame,
     canPresentVisualFrame:presentation.canPresentVisualFrame, prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
     beginTemporalViewTransition, admitTemporalViewTransition:presentation.admitTemporalViewTransition,
@@ -915,6 +805,6 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), errorMessage:error?.message??null, initialLoading}),
     dispose() {cancelNeighborPrefetch(); disposed = true; input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
       acceptedPick = drawnFrame = features = basePrepared = publishedBase = basePreparing = physical = acceptedPhysical = publishedPhysical = hydroMetadata = null;
-      acceptedRiverChunks = []; hydroSlots.clear(); paint.dispose(); temporalInputs.reset(); labelContent.dispose(); outlineBySlot.clear(); clearViewPlans(); surface = riverDetail = null;},
+      acceptedRiverChunks = []; hydroSlots.clear(); paint.dispose(); temporalInputs.reset(); labelContent.dispose(); clearViewPlans(); surface = riverDetail = null;},
   });
 }

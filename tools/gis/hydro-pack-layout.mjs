@@ -63,11 +63,11 @@ export function buildHydroMetadata(features,prepared){
       sourceId:meta.sourceId??'',source:meta.source??'',layerId:meta.layerId,category:meta.category,
       bounds:encoded.bounds.map(value=>halfEven(value*1000000)),stage:meta.stage,flags:meta.flags,
       fragmentIndex:meta.fragmentIndex,fragmentCount:meta.fragmentCount,width:meta.width};
-    for(const name of ['systemId','mainstemNameKo','role','aliases','tributaryNames','osmRelationIds','terminal'])
+    for(const name of ['systemId','mainstemNameKo','role','aliases','tributaryNames','osmRelationIds','independentSourceUrls','terminal'])
       if(present(meta[name]))row[name]=structuredClone(meta[name]);
     return row;
   }).sort((a,b)=>a.fid-b.fid);
-  const detailNames=new Set(['sourceId','source','aliases','tributaryNames','osmRelationIds']);
+  const detailNames=new Set(['sourceId','source','aliases','tributaryNames','osmRelationIds','independentSourceUrls']);
   const core=rows.map(row=>Object.fromEntries(Object.entries(row).filter(([name])=>!detailNames.has(name))));
   const detail=rows.map(row=>({fid:row.fid,...Object.fromEntries(Object.entries(row).filter(([name])=>detailNames.has(name)))}));
   return {core:{version:5,features:core},detail:{version:5,features:detail}};

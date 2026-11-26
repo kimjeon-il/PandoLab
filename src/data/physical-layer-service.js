@@ -1,5 +1,4 @@
-export const HYDRO_DATA_VERSION = '0.13.4';
-export const HYDRO_DATASET = 'HydroRIVERS 1.0 · Natural Earth 5.0.0 1:10m lakes';
+export const HYDRO_DATA_VERSION = '0.14.2';
 
 async function fetchManifest({ fetchWithRetry, url, operation, onRetry, signal }) {
   return fetchWithRetry(url, {signal}, {

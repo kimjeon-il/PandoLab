@@ -26,7 +26,8 @@
         "tests/unit/data/place-viewport.test.mjs",
         "tests/unit/data/hydro-source-display.test.mjs",
         "tests/unit/data/seam-source-admission.test.mjs",
-        "tests/unit/ui/timeline-controls.test.mjs"
+        "tests/unit/ui/timeline-controls.test.mjs",
+        "tests/unit/data/grwl-hydro.test.mjs"
       ]
     },
     {
