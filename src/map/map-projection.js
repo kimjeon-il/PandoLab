@@ -1,10 +1,8 @@
-import { resourceCapabilities } from '../runtime/resource-capabilities.js';
-
 /** MapProjection: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
  */
-export function createMapProjection({capabilities = resourceCapabilities('viewer')} = {}) {
+export function createMapProjection() {
   let dependencies;
   let mapLayoutMetricsSnapshot;
   let mapLayoutMetricsRefreshCount;

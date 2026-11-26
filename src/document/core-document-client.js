@@ -1,19 +1,16 @@
 import { createWorkerRpcClient } from '../runtime/worker-rpc.js';
 import { createVerifiedCoreWorker } from '../runtime/core-wasm-loader.js';
 import { workerAssetUrl } from '../runtime/worker-asset-url.js';
-import { createProductModePolicy } from '../app/product-mode-policy.js';
+import { viewerPolicy } from '../app/viewer-policy.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const stateResponses = new Set(['core.document-state']);
 
 /** Ordered transport only. Document validation and history stay in C++ Project. */
 export function createCoreDocumentClient({
-  productMode = 'viewer',
-  readOnly = productMode === 'viewer',
   createWorker = () => createVerifiedCoreWorker(workerAssetUrl(new URL('../workers/core-viewer-session-worker.js', import.meta.url)), { type: 'module' }),
   onTransition = () => {},
 } = {}) {
-  const policy = createProductModePolicy(productMode, {readOnly});
   let currentState = null;
   let disposed = false;
   let queue = Promise.resolve();
@@ -42,7 +39,7 @@ export function createCoreDocumentClient({
     onCrash: () => { currentState = null; } });
   function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument, geometryReceipt = null) {
     const result = queue.then(async () => {
-      policy.assertOperation(operation);
+      viewerPolicy.assertOperation(operation);
       if (disposed) throw Object.assign(new Error('The C++ document owner was disposed.'),
         { code: 'PL-CORE-CANCELLED', name: 'AbortError', cancelled: true });
       if (options.isCurrent && !options.isCurrent()) fail('PL-CORE-STALE', 'The request belongs to another project generation.');
@@ -136,8 +133,6 @@ export function createCoreDocumentClient({
     }
   }
   return Object.freeze({
-    productMode: policy.productMode,
-    readOnly: policy.readOnly,
     subscribeTransitions(listener) {
       if (typeof listener !== 'function') throw new TypeError('A Core acknowledgement subscriber is required.');
       subscribers.add(listener);

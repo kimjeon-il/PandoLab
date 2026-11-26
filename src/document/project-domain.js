@@ -1,5 +1,4 @@
 import { requireProjectMonth } from './project-setup.js';
-import { createProductModePolicy } from '../app/product-mode-policy.js';
 import { resourceKey } from '../runtime/resource-dependency-policy.js';
 
 const cloneValue = value => {
@@ -17,8 +16,6 @@ const cloneValue = value => {
  * returned by the host application.
  */
 export function createProjectDomain({
-  productMode = 'viewer',
-  readOnly = true,
   replaceSnapshot = () => false,
   admitImportedProject = project => project,
   restoreReplacement = null,
@@ -35,7 +32,6 @@ export function createProjectDomain({
   readBuiltinSelectionCatalogs,
   readPresentationCatalog = null,
 } = {}) {
-  createProductModePolicy(productMode, {readOnly});
   let generation = 0;
   let openRequest = 0, opening = false, openQueue = Promise.resolve();
   let disposed = false;

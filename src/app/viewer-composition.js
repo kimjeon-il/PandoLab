@@ -1,7 +1,7 @@
 import { presentViewerLoadStatus } from './viewer-load-status.js';
+import { viewerPolicy } from './viewer-policy.js';
 import { createRuntimeContext } from '../runtime/runtime-context.js';
 import { createMapProjectRuntime } from '../data/map-project-runtime.js';
-import { createPlatformPorts } from '../runtime/platform-ports.js';
 import { connectMapOwner } from './map-owner-ports.js';
 import { createBrowserProjectStorage, createViewerViewStorage } from '../data/browser-project-storage.js';
 import { createNotificationPresentation } from '../ui/notification-presentation.js';
@@ -55,7 +55,7 @@ export async function composeViewer({ meta }) {
     throw error;
   }
   const runtimeMeta = Object.freeze({...meta, mapProject:projectRuntime.project, ...physical});
-  const runtimeContext = createRuntimeContext({meta:runtimeMeta, assetBaseUrl, platform:createPlatformPorts({kind:'browser'})});
+  const runtimeContext = createRuntimeContext({meta:runtimeMeta, assetBaseUrl});
   let map, previousView, projectClock, syncStatus, preferencesDialog, presentedMonth = null;
   const inspectParams = new URLSearchParams(window.location.search);
   let inspectorController = null, objectDetailsPanel = null;
@@ -82,7 +82,7 @@ export async function composeViewer({ meta }) {
       .catch (error => report(error,'보기 설정을 저장하지 못했습니다.','PL-WORKSPACE-WRITE-001'));
     syncStatus();
   };
-  const owners = createMapOwners({buildMeta:runtimeContext.meta, platform:runtimeContext.platform, onViewingChange:persistViewing, resolveVisibilityGroup:ref => map.objectQuery.layerGroupForObjectRef(ref), isObjectVisible:(group, id) => map.objectQuery.objectRefVisible(map.objectQuery.layerItemObjectRef(group, id)), closeActiveOverlay:() => surfaces.closeMobileSheets()});
+  const owners = createMapOwners({buildMeta:runtimeContext.meta, onViewingChange:persistViewing, resolveVisibilityGroup:ref => map.objectQuery.layerGroupForObjectRef(ref), isObjectVisible:(group, id) => map.objectQuery.objectRefVisible(map.objectQuery.layerItemObjectRef(group, id)), closeActiveOverlay:() => surfaces.closeMobileSheets()});
   const surfaces = owners.workspaceSurfaces;
   const selectController = createSelectController({document, window}); selectController.enhanceAll();
   const notifications = createNotificationPresentation({document, getElement:get, isMobile:() => surfaces.isMobile(), protectErrorNotices:true});
@@ -201,7 +201,7 @@ export async function composeViewer({ meta }) {
   // The evidence UI remains an on-demand dynamic module, never a Viewer boot
   // dependency or a second document/selection owner.
   inspectorController = createViewerInspectorController({
-    document, window, readOnly:documentSession.readOnly,
+    document, window, readOnly:viewerPolicy.readOnly,
     inspectRequested:inspectParams.get('inspect')==='1',
     debugEnabled:inspectParams.get('debug')==='1',
     closeMobileSheets:() => surfaces.closeMobileSheets(),
@@ -485,11 +485,11 @@ export async function composeViewer({ meta }) {
   const onProjectPreferences = () => preferencesDialog.sync();
   window.addEventListener('pandolab:project-changed', onProjectPreferences);
   disposables.push({ dispose: () => window.removeEventListener('pandolab:project-changed', onProjectPreferences) });
-  if (inspectParams.get('debug')==='1')globalThis.__PANDOLAB_VIEWER__ = Object.freeze({initialMapPresented:initialPresentation.hasPresented, productMode:'viewer', documentState:() => activeSession?.commandOwner.state(),
+  if (inspectParams.get('debug')==='1')globalThis.__PANDOLAB_VIEWER__ = Object.freeze({initialMapPresented:initialPresentation.hasPresented, documentState:() => activeSession?.commandOwner.state(),
     documentSnapshot:() => activeSession?.documentModel.snapshot(), resolvedWorld:() => activeSession?.documentModel.world(), selectionSnapshot:() => activeSession?.selectionDomain.snapshot().selection,
     diagnostics:diagnostics.snapshot, rendererStats:() => map.renderer.getStats(),
     visibleTerritorialCount:() => map.objectQuery.visibleTerritorialCount(),
-    mapProjection:() => map.viewState.projection, readOnly:documentSession.readOnly,
+    mapProjection:() => map.viewState.projection, readOnly:viewerPolicy.readOnly,
     builtinMonth:() => ({
       month:activeSession.commandOwner.state().timelineCursor,
       automatic:projectClock.isAutomatic()&&projectDomain.activeProject()?.source==='builtin'})});

@@ -207,7 +207,7 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
     if (!reuse) {
         preparedTimeline_ = std::make_shared<const PreparedTimelineWorld>(d.timelineRecords,
             TimelineValidationContext{timelineEntityCatalog(d),
-                [&](const ObjectRef&, const GeometryRef& ref) {return d.geometries.contains(ref);}});
+                [&](const ObjectRef&, const GeometryRef& ref) {return d.geometries.type(ref);}});
         preparedTimelineSource_ = state_;
         resolvedTimeline_ = {};
     }

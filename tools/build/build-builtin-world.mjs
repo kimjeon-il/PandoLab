@@ -245,11 +245,11 @@ export function extendBuiltinParentWindows({generation,read,windows}) {
  if(!isDeepStrictEqual(index.geometryAssets,before.geometryAssets))throw Error('Parent extension changed geometry assets');
  const scoped=Object.fromEntries(Object.entries(next).map(([name,rows])=>[name,Array.isArray(rows)?
   rows.filter(row=>validationIds.has(row.objectRef.id)):rows]));
- const geometryKeys=new Set(index.geometryAssets.map(({id,version})=>JSON.stringify([id,version])));
+ const geometryTypes=new Map(index.geometryAssets.map(({id,version,type})=>[JSON.stringify([id,version]),type]));
  normalizeTimelineRecords(scoped,{
   entities:index.readIndex.identities.filter(row=>validationIds.has(row.id))
    .map(row=>({objectRef:{domain:'territorial',id:row.id},entityKind:row.properties.entityKind})),
-  geometryExists:ref=>geometryKeys.has(JSON.stringify([ref.id,ref.version])),
+  geometryType:ref=>geometryTypes.get(JSON.stringify([ref.id,ref.version])) ?? '',
  });
  return new Map([[policyPath,Buffer.from(JSON.stringify(policy,null,2)+'\n')],
   ...[...files].map(([file,bytes])=>[root+'/'+file,bytes])]);

@@ -1,4 +1,4 @@
-import {createProductModePolicy} from '../../src/app/product-mode-policy.js';
+import {viewerPolicy} from '../../src/app/viewer-policy.js';
 
 
 
@@ -25,12 +25,11 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 
-test('Viewer admits only read-only globe presentation',()=>{
-  const policy=createProductModePolicy('viewer');
-  assert.equal(policy.projection,'globe');
-  assert.equal(policy.readOnly,true);
-  assert.throws(()=>createProductModePolicy('viewer',{projection:'flat'}));
-  assert.throws(()=>createProductModePolicy('editor'));
+test('Viewer policy is a fixed read-only globe contract',()=>{
+  assert.equal(viewerPolicy.projection,'globe');
+  assert.throws(()=>viewerPolicy.assertProjection('flat'));
+  assert.throws(()=>viewerPolicy.assertOperation('core.document-edit'));
+  assert.doesNotThrow(()=>viewerPolicy.assertOperation('core.document-load'));
 });
 
 test('frame admission rejects mismatched and deferred render certificates',()=>{
@@ -188,6 +187,25 @@ test('Core time selection resolves the active lifetime, geometry, name and paren
     assert.equal(b('1920-03').validTo,'1920-03');
     assert.equal(b('1920-04'),undefined);
   } finally {session.delete();}
+});
+
+test('Core timeline geometry catalog rejects incompatible and missing territory geometry', async()=>{
+  const engine=await core();
+  const project=readFixture();
+  const entities=project.territorialEntities.map(row=>({
+    objectRef:{domain:'territorial',id:row.id}, entityKind:row.properties.entityKind,
+  }));
+  const geometryTypes=new Map(project.geometries.map(({id,version,geojson})=>[JSON.stringify([id,version]),geojson.type]));
+  const context={entities,geometryType:ref=>geometryTypes.get(JSON.stringify([ref.id,ref.version])) ?? ''};
+  const world=engine.timelineResolveWorld(project.timelineRecords,context,'1914-07');
+  assert.equal(world.entities.find(row=>row.objectRef.id==='A').geometryRef.version,2);
+
+  const boundRef=project.timelineRecords.geometryBindings[0].geometryRef;
+  const boundKey=JSON.stringify([boundRef.id,boundRef.version]);
+  geometryTypes.set(boundKey,'LineString');
+  assert.throws(()=>engine.timelineNormalizeRecords(project.timelineRecords,context),{code:'TIMELINE_GEOMETRY_TYPE'});
+  geometryTypes.delete(boundKey);
+  assert.throws(()=>engine.timelineNormalizeRecords(project.timelineRecords,context),{code:'TIMELINE_GEOMETRY'});
 });
 
 test('Core replacement rollback restores the document and timeline cursor', async()=>{
@@ -439,27 +457,13 @@ test('distribution hierarchy normalization shares the compiled Core reference gr
  assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','missing')]),/b의 상위 분포 레이어가 존재하지 않거나/);
 });
 
-test('read-only Viewer rejects an editor geometry context and requests eager built-in resources',async()=>{
- const {createPlatformPorts,assertPlatformPorts}=await import('../../src/runtime/platform-ports.js');
- const {resourceCapabilities}=await import('../../src/runtime/resource-capabilities.js');
- const platform=createPlatformPorts({kind:'browser'});
- assert.equal(assertPlatformPorts(platform,{productMode:'viewer'}),platform);
- const resources=resourceCapabilities('viewer',platform);
- assert.equal(resources.eagerBuiltinHydro,true);
- assert.equal(resources.eagerBuiltinPlaces,true);
- assert.throws(()=>createPlatformPorts({kind:'browser',library:{geometryContext:{}}}),/unsupported field library/);
- assert.throws(()=>createPlatformPorts({kind:'native'}),/requires kind browser/);
- assert.throws(()=>createPlatformPorts({kind:'browser',resources:{startupMesh:'project'}}),/unsupported field startupMesh/);
- assert.throws(()=>createPlatformPorts({kind:'browser',storage:{namespace:'old'}}),/unsupported field storage/);
- assert.throws(()=>assertPlatformPorts({...platform,kind:'native'},{productMode:'viewer'}),/requires kind browser/);
- assert.throws(()=>assertPlatformPorts({...platform,library:{}},{productMode:'viewer'}),/unsupported field library/);
- assert.throws(()=>assertPlatformPorts({...platform,resources:{...platform.resources,startupMesh:'builtin'}},{productMode:'viewer'}),/unsupported field startupMesh/);
- const loader={loadProject(){}};
- const custom=createPlatformPorts({kind:'browser',resources:{builtinHydro:false},world:{builtinLoader:loader}});
- assert.equal(custom.resources.builtinHydro,false);
- assert.equal(custom.resources.builtinPlaces,true);
- assert.equal(custom.world.builtinLoader,loader);
- assert.throws(()=>resourceCapabilities('editor',platform),/Viewer product mode/);
+test('Viewer resource capabilities are fixed and cannot be overridden by platform modes',async()=>{
+ const {VIEWER_RESOURCE_CAPABILITIES}=await import('../../src/runtime/resource-capabilities.js');
+ assert.equal(VIEWER_RESOURCE_CAPABILITIES.eagerBuiltinHydro,true);
+ assert.equal(VIEWER_RESOURCE_CAPABILITIES.eagerBuiltinPlaces,true);
+ assert.equal(VIEWER_RESOURCE_CAPABILITIES.builtinHydro,true);
+ assert.equal(VIEWER_RESOURCE_CAPABILITIES.builtinPlaces,true);
+ assert.equal(Object.isFrozen(VIEWER_RESOURCE_CAPABILITIES),true);
 });
 
 test('reference graph diagnostics share the compiled chain kernel for authoring and distribution validation',async()=>{

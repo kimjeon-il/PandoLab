@@ -5,8 +5,7 @@ import { resolveMapInteractionStyle } from '../map/map-interaction-style.js';
 const FONT_STACKS = Object.freeze({default:'var(--ui-font-family)', gothic:'"Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif', serif:'"Noto Serif KR", "Nanum Myeongjo", "AppleMyungjo", serif'});
 
 /** Owns Viewer preference state and its DOM projection. */
-export function createPreferencePresentation({document, window, productMode = 'viewer', onChange = () => {}}) {
-  if (productMode !== 'viewer') throw new TypeError('Preference presentation requires viewer product mode.');
+export function createPreferencePresentation({document, window, onChange = () => {}}) {
   let current = loadUserPreferences(), accent, interactionStyle;
   const systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
   let systemTheme = systemThemeQuery.matches?'dark':'light';

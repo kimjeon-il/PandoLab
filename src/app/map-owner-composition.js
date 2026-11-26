@@ -1,5 +1,4 @@
-import { createProductModePolicy } from './product-mode-policy.js';
-import { resourceCapabilities } from '../runtime/resource-capabilities.js';
+import { VIEWER_RESOURCE_CAPABILITIES } from '../runtime/resource-capabilities.js';
 import { createProjectSourceRuntime } from '../document/project-source-runtime.js';
 import { createTerritorialSceneRuntime } from '../rendering/territorial-scene-runtime.js';
 import { createWorkspaceSurfaces } from '../ui/workspace-surfaces.js';
@@ -20,9 +19,8 @@ import { createObjectPicking } from '../map/object-picking.js';
 import { mapProjectResourcePath } from '../data/map-project-manifest.js';
 
 /** One read-only map owner graph for the Web Viewer. */
-export function createMapOwners({productMode = 'viewer', readOnly = true, projection = 'globe', platform = null, buildMeta, isObjectVisible, resolveVisibilityGroup, closeActiveOverlay = null, onViewingChange = null}) {
-  createProductModePolicy(productMode, {readOnly, projection});
-  const capabilities = resourceCapabilities('viewer', platform);
+export function createMapOwners({buildMeta, isObjectVisible, resolveVisibilityGroup, closeActiveOverlay = null, onViewingChange = null}) {
+  const capabilities = VIEWER_RESOURCE_CAPABILITIES;
   // One read-port admission, two existing responsibility owners. No combined
   // builtin session, second document model or duplicated mutable cache.
   let projectResourceDependencies = null;
@@ -32,17 +30,17 @@ export function createMapOwners({productMode = 'viewer', readOnly = true, projec
   }});
   const getDependencies = () => projectResourceDependencies;
   const projectSourceRuntime = createProjectSourceRuntime({
-    builtinWorldLoader:platform?.world?.builtinLoader, buildMeta, getDependencies,
+    buildMeta, getDependencies,
   });
   const territorialSceneRuntime = createTerritorialSceneRuntime({getDependencies});
   const workspaceSurfaces = createWorkspaceSurfaces();
-  const projectSession = createProjectSession({capabilities, resolveVisibilityGroup, onViewingChange});
+  const projectSession = createProjectSession({resolveVisibilityGroup, onViewingChange});
   const renderQuality = createRenderQuality();
   const pointerTargets = createPointerTargets();
   const cameraNavigation = createCameraNavigation();
   const countryIndex = createCountryIndex();
   const spatialIndex = createSpatialIndex();
-  const mapProjection = createMapProjection({capabilities});
+  const mapProjection = createMapProjection();
   const objectPresentation = createObjectPresentation();
   const hydroSettings = createHydroSettings();
   const objectCatalog = createObjectCatalog({isObjectVisible});

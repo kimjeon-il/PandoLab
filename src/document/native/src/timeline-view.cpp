@@ -136,7 +136,7 @@ TimelineDocumentView timelineDocumentView(const ProjectDocument& source, const s
     if (resolved&&resolved->month!=parseTemporal(month).canonical)
         throw TimelineError("STALE_REVISION","Resolved timeline month differs from requested projection");
     auto world = resolved?*resolved:resolveWorld(source.timelineRecords,
-        {timelineEntityCatalog(source), [&](const ObjectRef&, const GeometryRef& ref) {return source.geometries.contains(ref);}}, month);
+        {timelineEntityCatalog(source), [&](const ObjectRef&, const GeometryRef& ref) {return source.geometries.type(ref);}}, month);
     auto projection = projectResolvedTimeline(source, world);
     return {std::move(projection.document), std::move(world), std::move(projection.inactiveIds)};
 }

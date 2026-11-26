@@ -215,7 +215,7 @@ struct WebStorageBaseline::Data {
         document.geometries = std::move(archive); source = std::make_shared<const ProjectDocument>(std::move(document));
         std::map<std::string, GeometryRef> visible;
         if (!sourceMonth.empty()) {
-            const auto world = resolveWorld(source->timelineRecords, {timelineEntityCatalog(*source), [&](const ObjectRef&, const GeometryRef& ref) {return source->geometries.contains(ref);}}, sourceMonth);
+            const auto world = resolveWorld(source->timelineRecords, {timelineEntityCatalog(*source), [&](const ObjectRef&, const GeometryRef& ref) {return source->geometries.type(ref);}}, sourceMonth);
             std::vector<GeometryRef> required; for (const auto& row:world.entities())required.push_back(row.geometryRef); source->geometries.requireReady(required);
             for (const auto& row:world.entities())if (row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id, row.geometryRef);
         } else if (isStaticTimeline(*source))for (const auto& row:source->timelineRecords.geometryBindings)if (row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id, row.geometryRef);

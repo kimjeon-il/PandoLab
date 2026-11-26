@@ -1,12 +1,10 @@
 export function createBrowserProjectStorage({
-  productMode = 'viewer',
   indexedDB,
   databaseName,
   storeName,
   viewKey,
   databaseVersion = 2,
 }) {
-  if (productMode!=='viewer')throw new TypeError('Project storage requires viewer product mode.');
   let databasePromise = null;
   const documentKey = id => {
     if (typeof id!=='string'||!id.trim())throw new TypeError('Workspace documentId is required.');

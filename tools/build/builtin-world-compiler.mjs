@@ -389,7 +389,7 @@ export function compileBuiltinWorldCatalog({ entities, view, currentWorld = null
     records.propertyBindings.push(...compileBuiltinWorldNameBindings(nameSource,id,formalNames.get(nameSource.entityId)));
     records.propertyBindings.push(...compileBuiltinWorldFlagBindings(nameSource,id));
   }
-  const normalized = normalizeTimelineRecords(records, { entities: identities.map(row => ({ objectRef: {domain:"territorial",id:row.id}, entityKind: row.properties.entityKind })), geometryExists: ref => archive.get(ref) !== null });
+  const normalized = normalizeTimelineRecords(records, { entities: identities.map(row => ({ objectRef: {domain:"territorial",id:row.id}, entityKind: row.properties.entityKind })), geometryType: ref => archive.get(ref)?.type ?? '' });
   const availability=new Map([...rowsByEntity].map(([id,rows])=>[id,rows.availability]));
   const snapshot={documentId:'6dcead54-3bc5-4ca2-a4f5-455305bba911',physicalSourceInfo:{},territorialEntities:[],fullAutosave:true,projectFields:{
     timelineRecords:{schemaVersion:3,lifetimes:[],geometryBindings:[],parentRelations:[],propertyBindings:[]},geometries:[],sourceInfo:null,

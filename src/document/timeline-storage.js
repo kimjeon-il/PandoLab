@@ -6,9 +6,9 @@ const fail = (code, detail) => { throw Object.assign(new Error(`${code}: ${detai
 function context(geometries, entities) {
   if (!Array.isArray(entities) || !geometries || typeof geometries.get !== 'function'
     || typeof geometries.snapshot !== 'function') fail('TIMELINE_CONTEXT', 'An entity catalog and geometry store are required.');
-  return { entities, geometryExists(ref, objectRef) {
-    const geometry = geometries.get(ref);
-    return (objectRef.domain==='territorial'?['Polygon','MultiPolygon']:['Polygon','MultiPolygon','LineString','MultiLineString']).includes(geometry?.type);
+  // Return only the stored type. Domain compatibility is a C++ rule.
+  return { entities, geometryType(ref) {
+    return geometries.get(ref)?.type ?? '';
   } };
 }
 
