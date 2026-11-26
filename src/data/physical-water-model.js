@@ -9,7 +9,9 @@ export function resolvePhysicalWaterObjects(catalog, date) {
   const identities = new Map(catalog.identities.map(row => [timelineObjectKey(row.objectRef), row]));
   return sharedCalculationCore.timelineResolveWorld(catalog.timelineRecords, {
     entities:catalog.identities.map(({objectRef, entityKind}) => ({objectRef, entityKind})),
-    geometryExists:ref => assets.has(JSON.stringify(ref)),
+    // The physical water catalog contains only lake polygons, so temporal
+    // resolution can check the polygon family before loading coordinates.
+    geometryType:ref => assets.has(JSON.stringify(ref)) ? 'Polygon' : '',
   }, date).entities.map(row => ({...row, identity:identities.get(timelineObjectKey(row.objectRef)), assets:assets.get(JSON.stringify(row.geometryRef))}));
 }
 

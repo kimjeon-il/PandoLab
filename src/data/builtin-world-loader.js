@@ -61,7 +61,7 @@ export function resolveBuiltinWorldGeometry(index, read, month) {
   const catalog = new Map(index.geometryAssets.map(asset => [geometryKey(asset), asset]));
   const world = sharedCalculationCore.timelineResolveWorld(read.records, {
     entities:read.identities.map(row => ({objectRef:{domain:'territorial', id:row.id}, entityKind:row.properties.entityKind})),
-    geometryExists:ref => catalog.has(geometryKey(ref)),
+    geometryType:ref => catalog.get(geometryKey(ref))?.type ?? '',
   }, month);
   return world.entities.map(row => ({owner:row.objectRef.id, asset:catalog.get(geometryKey(row.geometryRef))}));
 }

@@ -51,7 +51,7 @@ export function projectTimelineIdentity(identity, values, {immutableSource = fal
 export function resolveWorld(identities, records, geometries, month) {
   const context = {
     entities: identities.map(identity => ({ objectRef: {domain:identity.properties?.pandolab_domain==='hydro'?'hydro':'territorial', id:identity.id}, entityKind: identity.properties?.category || identity.properties?.entityKind })),
-    geometryExists: ref => geometries.get(ref) != null,
+    geometryType: ref => geometries.get(ref)?.type ?? '',
   };
   const resolved = sharedCalculationCore.timelineResolveWorld(records, context, month);
   const identityById = new Map(identities.map(identity => [timelineObjectKey({domain:identity.properties?.pandolab_domain==='hydro'?'hydro':'territorial', id:identity.id}), identity]));

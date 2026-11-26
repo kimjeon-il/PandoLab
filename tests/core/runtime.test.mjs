@@ -189,6 +189,25 @@ test('Core time selection resolves the active lifetime, geometry, name and paren
   } finally {session.delete();}
 });
 
+test('Core timeline geometry catalog rejects incompatible and missing territory geometry', async()=>{
+  const engine=await core();
+  const project=readFixture();
+  const entities=project.territorialEntities.map(row=>({
+    objectRef:{domain:'territorial',id:row.id}, entityKind:row.properties.entityKind,
+  }));
+  const geometryTypes=new Map(project.geometries.map(({id,version,geojson})=>[JSON.stringify([id,version]),geojson.type]));
+  const context={entities,geometryType:ref=>geometryTypes.get(JSON.stringify([ref.id,ref.version])) ?? ''};
+  const world=engine.timelineResolveWorld(project.timelineRecords,context,'1914-07');
+  assert.equal(world.entities.find(row=>row.objectRef.id==='A').geometryRef.version,2);
+
+  const boundRef=project.timelineRecords.geometryBindings[0].geometryRef;
+  const boundKey=JSON.stringify([boundRef.id,boundRef.version]);
+  geometryTypes.set(boundKey,'LineString');
+  assert.throws(()=>engine.timelineNormalizeRecords(project.timelineRecords,context),{code:'TIMELINE_GEOMETRY_TYPE'});
+  geometryTypes.delete(boundKey);
+  assert.throws(()=>engine.timelineNormalizeRecords(project.timelineRecords,context),{code:'TIMELINE_GEOMETRY'});
+});
+
 test('Core replacement rollback restores the document and timeline cursor', async()=>{
   const session=await sessionFor(readFixture());
   try {

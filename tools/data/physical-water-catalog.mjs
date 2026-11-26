@@ -6,7 +6,7 @@ import {normalizeTimelineRecords} from "../../src/document/timeline-records.js";
  * The shared C++ validator/resolver remains the sole temporal authority.
  */
 export function compilePhysicalWaterCatalog(sources,assignments) {
-  const resources=new Map(),geometries=new Map(),identities=[];
+  const resources=new Map(),geometries=new Map(),geometryTypes=new Map(),identities=[];
   const records={schemaVersion:3,lifetimes:[],geometryBindings:[],parentRelations:[],propertyBindings:[]};
   const key=(id,version)=>JSON.stringify([id,version]);
   for(const row of assignments){
@@ -30,10 +30,11 @@ export function compilePhysicalWaterCatalog(sources,assignments) {
       const entry={geometryRef,asset,land,...replaces.length?{replaces}:{}},ref=JSON.stringify(geometryRef);
       if(geometries.has(ref)&&JSON.stringify(geometries.get(ref))!==JSON.stringify(entry))throw new Error('Conflicting geometry asset identity: '+ref);
       geometries.set(ref,entry);
+      geometryTypes.set(ref,version.geometry.type);
       records.geometryBindings.push({id:entity.entityId+':'+version.versionId,objectRef,validFrom:version.validFrom,validTo:version.validTo,geometryRef});
     }
   }
   if(resources.size)throw new Error('Asset assignment has no library geometry version');
-  const timelineRecords=normalizeTimelineRecords(records,{entities:identities.map(({objectRef,entityKind})=>({objectRef,entityKind})),geometryExists:ref=>geometries.has(JSON.stringify(ref))});
+  const timelineRecords=normalizeTimelineRecords(records,{entities:identities.map(({objectRef,entityKind})=>({objectRef,entityKind})),geometryType:ref=>geometryTypes.get(JSON.stringify(ref)) ?? ''});
   return {identities,timelineRecords,geometries:[...geometries.values()]};
 }
