@@ -1,413 +1,42 @@
-import { sameStructuredValue } from '../runtime/structured-value.js';
-import { timelineObjectKey } from './timeline-records.js';
 import { createCanonicalGeometryVersionStore as createGeometryVersionStore } from '../geometry/geometry-version-store.js';
-import { projectTimelineIdentity } from './timeline-resolver.js';
-import { rememberWorldViewChange } from './world-view-change.js';
-import { createWorldLookup } from './world-view-lookup.js';
-import { normalizeTemporalInterval, temporalMonthEnd } from './temporal.js';
-import { createWorldBindingIndex, sourceBindingCertificate } from './world-binding-index.js';
+import { fields, invalid, freeze } from './core-read-contract.js';
+import { loadAcceptedStorage, candidateForDelta, candidateForGeometryAdmission } from './core-document-storage.js';
+import { createCoreWorldProjection } from './core-world-projection.js';
 
-const fields = Object.freeze({ territorial: 'territorialEntities', label: 'labels', hydro: 'hydroEdits',
-  generic: 'genericFeatures', distributionLayer: 'distributionLayers', distributionEntry: 'distributionEntries' });
-const refKey = ref => JSON.stringify([ref.id, ref.version]);
-const headerFields = new Set(['format','schemaVersion','version','savedAt','baseDataset','landObjectModel','territorialModel',
-  'distributionModel','projectSetup','documentId','physicalSourceInfo','sourceInfo']);
-const invalid = message => { throw Object.assign(new Error(message), { code: 'PL-CORE-RESPONSE' }); };
-const sameCoordinates = (left, right) => Array.isArray(left) && Array.isArray(right)
-  ? left.length===right.length && left.every((value, index) => sameCoordinates(value, right[index]))
-  : Object.is(left, right);
-// Preserve the document admission path's Object.is semantics.
-const sameDisplayValue = (left, right) => sameStructuredValue(left, right, Object.is);
-function freeze(value) {
-  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
-    for (const child of Object.values(value)) freeze(child);
-    Object.freeze(value);
-  }
-  return value;
-}
-
-/** Immutable presentation/storage projection; only accepted C++ deltas publish. */
+/** Publishes immutable storage and world projections from the same accepted Core responses. */
 export function createCoreDocumentReadModel(initialProject) {
-  const { geometries: initialGeometries, ...initialProperties } = initialProject;
+  const {geometries:initialGeometries, ...initialProperties} = initialProject;
   const initial = structuredClone(initialProperties);
   let geometries = createGeometryVersionStore(initialGeometries);
-  // Storage and render lookup share the same immutable geometry allocations.
-  // The lookup is rebuilt only when the C++ geometry archive delta changes.
-  let project = freeze({ ...initial, geometries: geometries.snapshot() });
+  let project = freeze({...initial, geometries:geometries.snapshot()});
   let provenance = null;
-  let world = null;
-  let worldSourceProject = null;
-  let territorialViews = Object.freeze([]);
-  let hydroViews = Object.freeze([]);
-  // Cache indexes by immutable source collections, not the whole project
-  // snapshot: a geometry-only delta does not invalidate object identities.
-  const identityIndexes = new WeakMap(), bindingIndexes = new WeakMap(), projectionSources = new WeakMap();
-  const worldBindingWindows = new WeakMap(), viewsByRow = new WeakMap(), worldLookups = new WeakMap(), viewOffsets = new WeakMap();
-  function identityIndex(identities) {
-    let index = identityIndexes.get(identities);
-    if (!index) {index = new Map(identities.map(identity => [identity.id, identity])); identityIndexes.set(identities, index);}
-    return index;
-  }
-  function sourceBindingCandidates(identity, ref) {
-    const bindings = identity.properties?.metadata?.historicalTimeline?.geometryBindings;
-    if (!Array.isArray(bindings))return [];
-    let index = bindingIndexes.get(bindings);
-    if (!index) {
-      index = new Map();
-      for (const binding of bindings) {
-        if (!binding.geometryRef)continue;
-        const key = refKey(binding.geometryRef);
-        if (!index.has(key))index.set(key, []);
-        index.get(key).push({binding, interval:null});
-      }
-      bindingIndexes.set(bindings, index);
-    }
-    return index.get(refKey(ref))||[];
-  }
-  function bindingInterval(row) {
-    return row.interval??=normalizeTemporalInterval(row.binding.validFrom, row.binding.validTo);
-  }
-  function canReuseWorldAt(month) {
-    if (worldSourceProject!==project)return false;
-    if (month===world.month)return true;
-    const window = worldBindingWindows.get(world.entities);
-    return !!window&&window.allows(temporalMonthEnd(month));
-  }
+  const projection = createCoreWorldProjection({readProject:() => project, readGeometries:() => geometries});
+
   function acceptLoadedProject(value) {
-    if (!value || !Array.isArray(value.geometries)) invalid('A complete accepted C++ storage snapshot is required after document load.');
-    for (const field of Object.values(fields)) if (!Array.isArray(value[field]))
-      invalid(`Required accepted C++ loaded domain is missing: ${field}`);
-    // The geometry registry validates, copies and freezes each untrusted shape.
-    // Cloning the entire archive first duplicated every coordinate allocation.
-    const { geometries: geometryRows, ...properties } = value;
-    const candidate=structuredClone(properties);
-    const nextGeometries=createGeometryVersionStore(geometryRows,{reuse:geometries});
-    const next=freeze({ ...candidate,geometries: nextGeometries.snapshot() });
-    project=next;
-    geometries=nextGeometries;
-    provenance=null;
-    world=null;
-    worldSourceProject=null;
-    territorialViews=Object.freeze([]);hydroViews=Object.freeze([]);
+    const next = loadAcceptedStorage(value, geometries);
+    project = next.project;
+    geometries = next.geometries;
+    provenance = null;
+    projection.reset();
     return project;
   }
   function list(domain) {
     const field = fields[domain];
     if (!field) invalid(`Unsupported C++ document domain: ${String(domain)}`);
-    if(domain==='hydro' && world)return hydroViews;
+    if (domain==='hydro' && projection.world())return projection.hydroViews();
     return project[field];
   }
   function get(ref) {
     if (!ref || typeof ref.id !== 'string') invalid('An explicit C++ document object reference is required.');
-    return identityIndex(list(ref.domain)).get(ref.id) || null;
+    return projection.getIdentity(list(ref.domain), ref.id);
   }
-  function worldAgainst(responseWorld,expectedEpoch,sourceProject,sourceGeometries,detached = false) {
-    if (!responseWorld || !Array.isArray(responseWorld.entities) || typeof responseWorld.month !== 'string')
-      invalid('A source-pinned C++ world response is required.');
-    if (detached ? Object.hasOwn(responseWorld,'sourceEpoch') : !Number.isSafeInteger(responseWorld.sourceEpoch) || !Number.isSafeInteger(expectedEpoch))
-      invalid('A detached import world must be distinct from an epoch-pinned active read model.');
-    if (!detached && responseWorld.sourceEpoch !== expectedEpoch) throw Object.assign(new Error('The C++ world belongs to another document operation epoch.'),
-      { code: 'PL-CORE-STALE', name: 'AbortError', cancelled: true });
-    const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)};
-    const referenceDate=temporalMonthEnd(responseWorld.month);
-    const previousWorld = !detached ? world : null;
-    const ranges=[];
-    const lookup=createWorldLookup();
-    const rows=responseWorld.entities.map(row=>{
-      const key=timelineObjectKey(row.objectRef);
-      if(lookup.has(key))invalid('Duplicate C++ world identity: '+row.objectRef.id);
-      const projected=projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,range=>ranges.push(range));
-      lookup.set(key,projected);return projected;
-    });
-    return makeWorld(responseWorld,rows,lookup,createWorldBindingIndex(ranges),detached);
-  }
-  function makeWorld(response,rows,lookup,window,detached=false){
-    Object.freeze(rows);worldBindingWindows.set(rows,window);worldLookups.set(rows,lookup);
-    return Object.freeze({month:response.month,...(detached?{}:{sourceEpoch:response.sourceEpoch}),entities:rows,
-      byId:Object.freeze({get:id=>lookup.get(timelineObjectKey({domain:'territorial',id})),getObject:ref=>lookup.get(timelineObjectKey(ref))})});
-  }
-  function projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,recordBinding){
-      const identity=identities[row.objectRef.domain]?.get(row.objectRef.id),geometry=sourceGeometries.get(row.geometryRef);
-      if (!identity || !geometry || !Array.isArray(row.ancestors))
-        invalid(`The C++ world contains an unknown/duplicate identity or geometry: ${row.objectRef.id}`);
-      for (const field of ['parentId','coverageMode','validFrom','validTo','rootId'])
-        if (!Object.hasOwn(row, field)) invalid(`Required C++ world field is missing: ${field}`);
-      if (!row.properties || typeof row.properties !== 'object') invalid('C++ temporal property projection is required.');
-      // Identity and geometry are from the unchanged, immutable source snapshot.
-      // Reuse a resolved row when only the cursor changed, not its visible data.
-      const candidates=sourceBindingCandidates(identity,row.geometryRef);
-      const {selected:selectedBinding,range}=sourceBindingCertificate(candidates,referenceDate,bindingInterval);
-      recordBinding(range);
-      const sourceBinding=selectedBinding?.binding;
-      const sourceVersion=sourceBinding?.sourceVersionId ?? String(identity.properties?.sourceGeometryVersion ?? '');
-      const prior=previousWorld?.byId?.getObject?.(row.objectRef);
-      const priorSource=projectionSources.get(prior);
-      if(prior && prior.geometry===geometry && priorSource?.identity===identity
-        && priorSource.version===sourceVersion&&priorSource.binding===sourceBinding
-        && (prior===row||(
-          ['parentId','coverageMode','validFrom','validTo','rootId'].every(field=>prior[field]===row[field])
-          && sameDisplayValue(prior.geometryRef,row.geometryRef)
-          && sameDisplayValue(prior.ancestors,row.ancestors)
-          && sameDisplayValue(prior.rendering,row.rendering)
-          && sameDisplayValue(prior.properties,row.properties)))) {
-        return prior;
-      }
-      const temporalIdentity=projectTimelineIdentity(identity,row.properties,{immutableSource:true});
-      const datedIdentity=sourceBinding
-        ?freeze({...temporalIdentity,properties:{...temporalIdentity.properties,
-          sourceGeometryVersion:sourceVersion}}):temporalIdentity;
-      const effectiveIdentity=row.objectRef.domain==='hydro'
-        ?freeze({...datedIdentity,properties:{...datedIdentity.properties,...row.rendering}}):datedIdentity;
-      const projected = freeze({ ...structuredClone(worldEntityPayload(row)), id:row.objectRef.id, identity:effectiveIdentity, geometry });
-      projectionSources.set(projected,{identity,version:sourceVersion,binding:sourceBinding});
-      return projected;
-  }
-  const projectWorld=(value,expectedEpoch) => worldAgainst(value,expectedEpoch,project,geometries);
-  function viewForRow(row){
-    const isHydro=row.objectRef.domain==='hydro';
-      let view=viewsByRow.get(row);
-      if(!view){
-        const prior=world?.byId.getObject(row.objectRef),priorView=prior&&viewsByRow.get(prior);
-        if(priorView&&prior.geometry===row.geometry
-          &&(prior.identity===row.identity||(prior.identity.id===row.identity.id&&sameDisplayValue(prior.identity.properties,row.identity.properties)))
-          &&['parentId','coverageMode','validFrom','validTo'].every(field=>prior[field]===row[field]))view=priorView;
-        else if(isHydro)view=freeze({...row.identity,geometry:row.geometry});
-        else view=freeze({...row.identity,geometry:row.geometry,properties:{...row.identity.properties,
-          parentId:row.parentId,coverageMode:row.coverageMode,validFrom:row.validFrom,validTo:row.validTo}});
-        viewsByRow.set(row,view);
-      }
-    return view;
-  }
-  function viewsForWorld(nextWorld) {
-    const territorial=[],hydro=[],territorialOffsets=new Map(),hydroOffsets=new Map();
-    let sameTerritorial=true,sameHydro=true;
-    for(const row of nextWorld.entities){
-      const isHydro=row.objectRef.domain==='hydro';
-      const target=isHydro?hydro:territorial,previous=isHydro?hydroViews:territorialViews;
-      const view=viewForRow(row);
-      if(view!==previous[target.length]){if(isHydro)sameHydro=false;else sameTerritorial=false;}
-      (isHydro?hydroOffsets:territorialOffsets).set(row.id,target.length);
-      target.push(view);
-    }
-    const nextTerritorial=sameTerritorial&&territorial.length===territorialViews.length?territorialViews:Object.freeze(territorial);
-    const nextHydro=sameHydro&&hydro.length===hydroViews.length?hydroViews:Object.freeze(hydro);
-    viewOffsets.set(nextTerritorial,territorialOffsets);viewOffsets.set(nextHydro,hydroOffsets);
-    return {territorial:nextTerritorial,hydro:nextHydro};
-  }
-  function acceptWorld(value,expectedEpoch) {
-    const nextWorld=projectWorld(value,expectedEpoch);
-    const views=viewsForWorld(nextWorld);
-    world=nextWorld;
-    worldSourceProject=project;
-    territorialViews=views.territorial;hydroViews=views.hydro;
-    return nextWorld;
-  }
-  const worldEntityPayload=({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties})=>
-    ({objectRef,geometryRef,rendering,parentId,coverageMode,validFrom,validTo,rootId,ancestors,properties});
-  function acceptStableWorldDelta(delta,positions){
-    const prior=world,oldWindow=worldBindingWindows.get(prior.entities),lookup=worldLookups.get(prior.entities);
-    if(!oldWindow||!lookup||worldSourceProject!==project)return null;
-    const referenceDate=temporalMonthEnd(delta.month);
-    const limit=Math.max(16,Math.floor(prior.entities.length/2));
-    if(positions.size>limit)return null;
-    // Core rows may be unchanged while their source-version metadata crosses
-    // a binding boundary. Reproject only those certified affected leaves.
-    const expired=oldWindow.changed(referenceDate,limit);
-    if(expired.length>limit)return null;
-    const affected=new Map(positions);
-    for(const index of expired)if(!affected.has(index))affected.set(index,prior.entities[index]);
-    if(affected.size>limit)return null;
-    const ranges=new Map();
-    const identities={territorial:identityIndex(project.territorialEntities),hydro:identityIndex(project.hydroEdits)};
-    let rows=prior.entities;
-    const updates=[];
-    const territorialChanges=[],hydroChanges=[];
-    for(const [index,entity]of affected){
-      const row=projectRow(entity,identities,geometries,referenceDate,prior,range=>ranges.set(index,range));
-      if(row===prior.entities[index])continue;
-      if(rows===prior.entities)rows=rows.slice();
-      rows[index]=row;updates.push([timelineObjectKey(row.objectRef),row]);
-      const isHydro=row.objectRef.domain==='hydro',before=isHydro?hydroViews:territorialViews;
-      const offset=viewOffsets.get(before)?.get(row.id);
-      if(offset===undefined)return null;
-      const view=viewForRow(row);
-      if(view!==before[offset])(isHydro?hydroChanges:territorialChanges).push([offset,view]);
-    }
-    const patchViews=(before,changed)=>{
-      if(!changed.length)return before;
-      const next=before.slice();
-      for(const [index,view]of changed)next[index]=view;
-      Object.freeze(next);viewOffsets.set(next,viewOffsets.get(before));
-      rememberWorldViewChange(before,next,changed.map(([index])=>index));
-      return next;
-    };
-    // A new certificate cannot replace the one attached to a previous
-    // immutable row array. Share the rows themselves, not the array key.
-    if(rows===prior.entities&&ranges.size)rows=rows.slice();
-    const next=makeWorld(delta,rows,updates.length?lookup.fork(updates):lookup,oldWindow.fork(ranges));
-    territorialViews=patchViews(territorialViews,territorialChanges);
-    hydroViews=patchViews(hydroViews,hydroChanges);
-    world=next;worldSourceProject=project;return next;
-  }
-  const temporalPropertyNames = new Set(['name', 'color', 'flag']);
-
-  function worldObjectKey(ref) {
-    if (!ref || typeof ref.domain !== 'string' || typeof ref.id !== 'string')
-      invalid('A world delta requires a valid object reference.');
-    return timelineObjectKey(ref);
-  }
-
-  function validateWorldDelta(delta, state) {
-    if (!world || delta.baseEpoch !== world.sourceEpoch || delta.sourceEpoch !== state.epoch
-      || delta.month !== state.timelineCursor || !Array.isArray(delta.upserts) || !Array.isArray(delta.removed)
-      || !Number.isSafeInteger(delta.entityCount) || delta.entityCount < 0
-      || delta.entityCount > world.entities.length + delta.upserts.length
-      || (Object.hasOwn(delta, 'retainedOrder') && !Array.isArray(delta.retainedOrder)))
-      invalid('A world delta requires its accepted base epoch and target cursor.');
-  }
-
-  function expandWorldUpsert(update) {
-    if (!update || typeof update !== 'object') invalid('Invalid world delta upsert.');
-    if (!Object.hasOwn(update, 'propertyPatch')) return update.entity;
-    const patch = update.propertyPatch;
-    if (Object.hasOwn(update, 'entity') || !patch || typeof patch !== 'object')
-      invalid('Invalid property-only world patch.');
-
-    const {objectRef, set, removed} = patch;
-    worldObjectKey(objectRef);
-    const prior = world.byId.getObject(objectRef);
-    if (!prior || !set || typeof set !== 'object' || Array.isArray(set) || !Array.isArray(removed))
-      invalid('Invalid property-only world patch.');
-
-    const validRemoval = name => typeof name === 'string' && temporalPropertyNames.has(name)
-      && Object.hasOwn(prior.properties, name) && !Object.hasOwn(set, name);
-    if (new Set(removed).size !== removed.length || !removed.every(validRemoval)
-      || Object.keys(set).some(name => !temporalPropertyNames.has(name)))
-      invalid('Invalid property-only world patch.');
-
-    const properties = {...prior.properties};
-    for (const name of removed) delete properties[name];
-    Object.assign(properties, set);
-    return {...worldEntityPayload(prior), properties};
-  }
-
-  function collectWorldChanges(delta) {
-    let retainedCount = world.entities.length;
-    const touched = new Set();
-    const positions = new Map();
-
-    for (const ref of delta.removed) {
-      const id = worldObjectKey(ref);
-      if (touched.has(id) || !world.byId.getObject(ref)) invalid('Invalid world delta removal.');
-      touched.add(id);
-      retainedCount--;
-    }
-
-    for (const update of delta.upserts) {
-      const entity = expandWorldUpsert(update);
-      const {index} = update;
-      const id = worldObjectKey(entity?.objectRef);
-      const validIndex = Number.isSafeInteger(index) && index >= 0 && index < delta.entityCount;
-      if (touched.has(id) || !validIndex || positions.has(index)) invalid('Invalid world delta upsert.');
-      touched.add(id);
-      if (world.byId.getObject(entity.objectRef)) retainedCount--;
-      positions.set(index, entity);
-    }
-
-    if (retainedCount + positions.size !== delta.entityCount) invalid('World delta entity count differs.');
-    return {touched, positions, retainedCount};
-  }
-
-  function stableWorldOrder(delta, positions) {
-    if (delta.removed.length || Object.hasOwn(delta, 'retainedOrder')
-      || delta.entityCount !== world.entities.length) return false;
-    for (const [index, entity] of positions) {
-      if (worldObjectKey(world.entities[index].objectRef) !== worldObjectKey(entity.objectRef)) return false;
-    }
-    return true;
-  }
-
-  function assembleWorldRows(delta, {touched, positions, retainedCount}) {
-    let retained = world.entities;
-    if (Object.hasOwn(delta, 'retainedOrder')) {
-      if (delta.retainedOrder.length !== retainedCount) invalid('Invalid retained world delta order count.');
-      const ordered = new Set();
-      retained = delta.retainedOrder.map(ref => {
-        const id = worldObjectKey(ref);
-        const row = world.byId.getObject(ref);
-        if (!row || touched.has(id) || ordered.has(id)) invalid('Invalid retained world delta order identity.');
-        ordered.add(id);
-        return row;
-      });
-    }
-
-    let cursor = 0;
-    return Array.from({length: delta.entityCount}, (_, index) => {
-      if (positions.has(index)) return positions.get(index);
-      while (cursor < retained.length) {
-        const row = retained[cursor++];
-        if (!touched.has(worldObjectKey(row.objectRef))) return row;
-      }
-      invalid('Missing retained world delta row.');
-    });
-  }
-
-  function acceptWorldDelta(delta, state) {
-    validateWorldDelta(delta, state);
-    const hasChanges = delta.upserts.length || delta.removed.length || Object.hasOwn(delta, 'retainedOrder');
-    const acceptRows = entities => acceptWorld({
-      month: delta.month, sourceEpoch: delta.sourceEpoch, entities,
-    }, state.epoch);
-
-    if (!hasChanges) {
-      if (delta.entityCount !== world.entities.length) invalid('World delta entity count differs.');
-      if (canReuseWorldAt(delta.month)) {
-        world = Object.freeze({...world, month: delta.month, sourceEpoch: state.epoch});
-        return world;
-      }
-      return acceptStableWorldDelta(delta, new Map()) || acceptRows(world.entities);
-    }
-
-    const changes = collectWorldChanges(delta);
-    if (stableWorldOrder(delta, changes.positions)) {
-      const stable = acceptStableWorldDelta(delta, changes.positions);
-      if (stable) return stable;
-    }
-    return acceptRows(assembleWorldRows(delta, changes));
-  }
-
-  function rebaseWorld(epoch) {
-    if (!world) invalid('A current C++ world must be admitted before rebasing an unchanged timeline.');
-    if(worldSourceProject===project){
-      world=Object.freeze({...world,sourceEpoch:epoch});
-      return world;
-    }
-    const entities=world.entities;
-    return acceptWorld({ month: world.month,sourceEpoch: epoch,entities },epoch);
-  }
-  function applyGeometryAdmission(delta,verified){
-    if(!Array.isArray(delta.admitted)||!Array.isArray(delta.removed))
-      invalid('A Core geometry resource receipt is required.');
-    if(!delta.admitted.length&&!delta.removed.length)return;
-    const incoming=new Map((verified?.resources||[]).map(row=>[refKey(row),row]));
-    const hashes=new Map((verified?.descriptors||[]).map(row=>[refKey(row),row.contentSha256]));
-    const removed=new Set(delta.removed.map(refKey)),admitted=new Set();
-    const rows=delta.admitted.map(ref=>{
-      const key=refKey(ref),payload=incoming.get(key);
-      if(!payload||admitted.has(key)||removed.has(key)||geometries.get(ref))
-        invalid('Core geometry receipt does not match the submitted immutable resource.');
-      admitted.add(key);
-      return {id:ref.id,version:ref.version,geojson:JSON.parse(payload.source)};
-    });
-    for(const ref of delta.removed)if(!geometries.get(ref))invalid('Unknown evicted geometry resource.');
-    const entries=project.geometries.filter(row=>!removed.has(refKey(row))).concat(rows);
-    const next=createGeometryVersionStore(entries,{reuse:geometries,verifiedContentHashes:hashes});
-    const sameSource=worldSourceProject===project;
-    project=freeze({...project,geometries:next.snapshot()});geometries=next;
-    // Do not pin the old archive through the current read model.
-    // Only a geometry-only admission on the same accepted source may rebase
-    // its certificate. A prior source edit still requires re-projection.
-    worldSourceProject=sameSource?project:null;
+  function applyGeometryAdmission(delta, verified) {
+    const next = candidateForGeometryAdmission(project, geometries, delta, verified);
+    if (!next)return;
+    const previousProject = project;
+    project = next.project;
+    geometries = next.geometries;
+    projection.rebaseGeometrySource(previousProject);
   }
   function acceptTransition(result,operation,verifiedResources) {
     if(operation==='core.document-temporal-candidate-adopt') {
@@ -426,89 +55,26 @@ export function createCoreDocumentReadModel(initialProject) {
     if (result?.delta) apply(result.delta,verifiedResources);
     if(operation==='core.document-timeline-cursor'||(operation==='core.document-temporal-candidate-adopt'&&result.delta!=null)) {
       if(!result?.worldDelta)invalid('A temporal transition requires a Core world delta.');
-      acceptWorldDelta(result.worldDelta,result.state);
+      projection.acceptWorldDelta(result.worldDelta,result.state);
     }
-    else if (result?.world) acceptWorld(result.world,result.state.epoch);
-    else if (result?.state && world && result.state.epoch!==world.sourceEpoch) {
+    else if (result?.world) projection.acceptWorld(result.world,result.state.epoch);
+    else if (result?.state && projection.world() && result.state.epoch!==projection.world().sourceEpoch) {
       if (result.delta && result.delta.timelineRecords!==null)
         invalid('A changed C++ timeline requires its authoritative resolved world acknowledgement.');
-      rebaseWorld(result.state.epoch);
+      projection.rebaseWorld(result.state.epoch);
     }
     return project;
   }
-  function candidateForDelta(delta,verifiedResources) {
-    for (const field of ['objects','geometries','removedGeometryRefs'])
-      if (!Array.isArray(delta[field])) invalid(`Required C++ delta collection is missing: ${field}`);
-    for (const field of ['timelineRecords','presentation','provenance','header'])
-      if (!Object.hasOwn(delta, field)) invalid(`Required C++ delta field is missing: ${field}`);
-    if (!delta.orders || typeof delta.orders !== 'object') invalid('Authoritative C++ domain orders are required.');
-    const candidate = { ...project };
-    const grouped = new Map();
-    for (const row of delta.objects) {
-      const field = fields[row.ref.domain];
-      if (!field || typeof row.ref.id !== 'string') invalid('Unsupported C++ object delta identity.');
-      if (!grouped.has(field)) grouped.set(field, []);
-      grouped.get(field).push(row);
-    }
-    for (const [field, rows] of grouped) {
-      const changed = new Set(rows.map(row => row.ref.id));
-      if (changed.size !== rows.length) invalid('Duplicate C++ object delta identity.');
-      const values = project[field].filter(value => !changed.has(value.id));
-      for (const row of rows.filter(row => row.value !== null).sort((a, b) => a.index - b.index)) {
-        if (!Number.isInteger(row.index) || row.index < 0 || row.index > values.length || row.value.id !== row.ref.id)
-          invalid('Authoritative C++ object delta vector index/value is required.');
-        values.splice(row.index, 0, freeze(structuredClone(row.value)));
-      }
-      candidate[field] = Object.freeze(values);
-    }
-    for (const [domain, field] of Object.entries(fields)) {
-      const order = delta.orders[domain], values = candidate[field];
-      if (!Array.isArray(order) || order.length !== values.length || new Set(order).size !== order.length)
-        invalid(`Invalid authoritative C++ domain order: ${domain}`);
-      const byId = new Map(values.map(value => [value.id, value]));
-      if (order.some(id => typeof id !== 'string' || !byId.has(id))) invalid(`Unknown C++ domain order identity: ${domain}`);
-      if (order.some((id, index) => values[index].id !== id)) candidate[field] = Object.freeze(order.map(id => byId.get(id)));
-    }
-    let nextGeometries = geometries;
-    if (delta.geometries.length || delta.removedGeometryRefs.length) {
-      const removed = new Set(delta.removedGeometryRefs.map(refKey));
-      const admitted = new Set();
-      for (const entry of delta.geometries) {
-        const key = refKey(entry);
-        if (admitted.has(key)) invalid('Duplicate C++ geometry delta version.');
-        admitted.add(key);
-        const existing = geometries.get({ id: entry.id, version: entry.version });
-        if (existing && (existing.type!==entry.geojson?.type
-          || !sameCoordinates(existing.coordinates, entry.geojson.coordinates)))
-          invalid('A C++ geometry delta cannot replace the coordinates of an existing immutable version.');
-      }
-      // Canonical archive admission can expose an already-stored reference.
-      // Upsert its identical version while retaining the geometry allocation.
-      const entries = project.geometries.filter(row => !removed.has(refKey(row)) && !admitted.has(refKey(row))).concat(delta.geometries);
-      const verifiedContentHashes = verifiedResources&&new Map(verifiedResources.map(row => [refKey(row), row.contentSha256]));
-      nextGeometries = createGeometryVersionStore(entries, { reuse: geometries, verifiedContentHashes });
-      candidate.geometries = nextGeometries.snapshot();
-    }
-    if (delta.timelineRecords !== null) candidate.timelineRecords = freeze(structuredClone(delta.timelineRecords));
-    if (delta.presentation !== null) Object.assign(candidate, freeze(structuredClone(delta.presentation)));
-    if (delta.header!==null) {
-      const { set, removedKeys } = delta.header;
-      if (!set || typeof set!=='object' || Array.isArray(set) || !Array.isArray(removedKeys)
-        || new Set(removedKeys).size!==removedKeys.length || [...Object.keys(set), ...removedKeys].some(key => !headerFields.has(key))
-        || removedKeys.some(key => Object.hasOwn(set, key))) invalid('A disjoint authoritative C++ root-field patch is required.');
-      for (const key of removedKeys) delete candidate[key];
-      Object.assign(candidate, freeze(structuredClone(set)));
-    }
-    const nextProvenance = delta.provenance === null ? provenance : freeze(structuredClone(delta.provenance));
-    return { project: freeze(candidate), geometries: nextGeometries, provenance: nextProvenance };
-  }
   function apply(delta, verifiedResources) {
-    const next = candidateForDelta(delta, verifiedResources);
+    const next = candidateForDelta(project, geometries, provenance, delta, verifiedResources);
     project = next.project;
     geometries = next.geometries;
     provenance = next.provenance;
     return project;
   }
-  return Object.freeze({ snapshot: () => project, get, list, geometry: ref => geometries.get(ref), provenance: () => provenance,
-    acceptLoadedProject, apply, projectWorld, acceptWorld, acceptTransition, world: () => world, territorialViews: () => territorialViews });
+  return Object.freeze({
+    snapshot:() => project, get, list, geometry:ref => geometries.get(ref), provenance:() => provenance,
+    acceptLoadedProject, apply, projectWorld:projection.projectWorld, acceptWorld:projection.acceptWorld,
+    acceptTransition, world:projection.world, territorialViews:projection.territorialViews,
+  });
 }
