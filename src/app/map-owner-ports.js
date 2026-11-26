@@ -1,8 +1,6 @@
 // One dependency contract for the common owners; no project state is stored here.
 // Each owner declares its capability groups once. '?' marks an optional port.
 const MAP_OWNER_PORT_CONTRACTS = Object.freeze({
-  projectResourcePorts:Object.freeze(["domains","runtimeConfiguration","territorialObjectModel","layerStyleServices","countries?","layerPresentation","objectDefinitions","platform?","projectState","rendering","territorialModel"]),
-  workspaceSurfaces:Object.freeze(["mapHostView","platform","uiControlServices","projectState","surfaceFactories","domains"]),
   projectSession:Object.freeze(["domains","applicationConstants","modelValidation","physicalConfig","runtimeConfiguration?","mapFactories"]),
   renderQuality:Object.freeze(["domains","mapFactories","preferences","projectState","rendering"]),
   pointerTargets:Object.freeze(["domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectPicking","physicalResources","physicalServices","platform","projectState","rendering","surfaces"]),
@@ -10,7 +8,7 @@ const MAP_OWNER_PORT_CONTRACTS = Object.freeze({
   countryIndex:Object.freeze(["countries","domains","geometryModel?","objectDisplay","mapView","platform","projectState","spatialQuery?"]),
   spatialIndex:Object.freeze(["geometryBounds","domains","mapView","projectState","rendering","spatialFactories","surfaces","territorialModel"]),
   mapProjection:Object.freeze(["mapLayout","platform","projectState","surfaces"]),
-  objectPresentation:Object.freeze(["colorModel","countries?","geometryBounds?","domains","objectDefinitions","objectPresentation","platform?","projectState","spatialQuery?","territorialModel","preferences","projectSession?","hydroModel?","labelPresentation?","hydroPresentation?","distributionPresentation?","distributionServices?","selectionServices?","objectLookup?","layerPresentation?"]),
+  objectPresentation:Object.freeze(["colorModel","domains","objectDefinitions","objectPresentation","preferences","projectState","territorialModel","countries?","geometryBounds?","platform?","spatialQuery?","projectSession?","hydroModel?","labelPresentation?","hydroPresentation?","distributionPresentation?","distributionServices?","selectionServices?","objectLookup?","layerPresentation?"]),
   hydroSettings:Object.freeze(["physicalResources","colorModel?","hydroPresentation","layerPresentation","mapLayout","objectPresentation","physicalConfig","platform","preferences","projectState","surfaces?"]),
   objectCatalog:Object.freeze(["projectSession","colorModel","countries?","distributionPresentation","domains","hydroPresentation","labelPresentation","layerPresentation","objectDefinitions","objectPresentation","platform?","projectState","rendering?","territorialModel","preferences?","hydroModel?","distributionServices?","selectionServices?","objectLookup?"]),
   territorialLabels:Object.freeze(["territorialObjectModel","countries","domains","feedback","labelPresentation","layerPresentation","mapHostView","objectPresentation","platform","preferences","projectState","renderScene","rendering","spatialQuery","territorialModel"]),
@@ -18,31 +16,21 @@ const MAP_OWNER_PORT_CONTRACTS = Object.freeze({
   mapHost:Object.freeze(["domains","mapLayout","mapView","platform","projectState","projectionView","renderFactories","rendering","workspaceUi"]),
   objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
 });
-// The existing object-presentation diagnostics check preferences before state.
-const REQUIRED_PORT_ORDER = Object.freeze({
-  objectPresentation:Object.freeze(["colorModel","domains","objectDefinitions","objectPresentation","preferences","projectState","territorialModel"]),
-});
-const portTable = select => Object.freeze(Object.fromEntries(
-  Object.entries(MAP_OWNER_PORT_CONTRACTS).map(([owner, entries]) => [owner, Object.freeze(select(entries, owner))])
-));
-export const MAP_OWNER_PORTS = portTable(entries => entries.map(name => name.replace(/\?$/,'')));
-export const MAP_OWNER_REQUIRED_PORTS = portTable((entries, owner) => REQUIRED_PORT_ORDER[owner]??entries.filter(name => !name.endsWith('?')));
-
-export function connectMapOwner(name, owner, ports, ...overrides) {
-  const allowed = MAP_OWNER_PORTS[name];
-  if (!allowed||typeof owner?.connect!=='function')throw new TypeError('Unknown map owner: '+name);
-  // Merge only admitted capability groups; unrelated getters stay untouched.
-  if (overrides.length)ports = mergePorts([ports, ...overrides], new Set(allowed));
-  for (const port of MAP_OWNER_REQUIRED_PORTS[name]) {
-    const descriptor = Object.getOwnPropertyDescriptor(ports, port);
-    if (!descriptor||(!descriptor.get&&descriptor.value==null))throw new TypeError(name+' requires '+port);
+export function connectMapOwner(name, owner, commonPorts, overrides = {}) {
+  const contract = MAP_OWNER_PORT_CONTRACTS[name];
+  if (!contract || typeof owner?.connect !== 'function')throw new TypeError('Unknown map owner: '+name);
+  const allowed = new Set(contract.map(entry => entry.endsWith('?') ? entry.slice(0, -1) : entry));
+  const ports = mergePorts([commonPorts, overrides], allowed);
+  for (const entry of contract) {
+    if (entry.endsWith('?'))continue;
+    const descriptor = Object.getOwnPropertyDescriptor(ports, entry);
+    if (!descriptor || (!descriptor.get && descriptor.value == null))throw new TypeError(name+' requires '+entry);
   }
   if (name==='objectPicking') {
     const scope = Object.getOwnPropertyDescriptor(ports.territorialObjectModel,'territorialScope');
-    if (!scope||(!scope.get&&typeof scope.value?.displayFeature!=='function'))throw new TypeError('objectPicking requires the canonical territorialScope');
+    if (!scope || (!scope.get && typeof scope.value?.displayFeature!=='function'))throw new TypeError('objectPicking requires the canonical territorialScope');
   }
-  const selected = Object.freeze(Object.defineProperties({}, Object.fromEntries(allowed.map(key => [key, {enumerable:true, get:() => ports[key]}]))));
-  owner.connect(selected);
+  owner.connect(ports);
   return owner;
 }
 
@@ -72,11 +60,11 @@ const MAP_READ_PORT_SPECS = Object.freeze({
   surfaces:Object.freeze([["isMobile","workspaceSurfaces"], ["layoutMode","workspaceSurfaces"], ["uid","workspaceSurfaces"]]),
 });
 
-export function createMapReadPorts(owners) {return createReadPorts(owners, MAP_READ_PORT_SPECS);}
-
-export function createReadPorts(providers, specs) {
-  return Object.freeze(Object.fromEntries(Object.entries(specs).map(([name, entries]) => {
-    const descriptors = Object.fromEntries(entries.map(([alias, provider, field = alias]) => [alias, { enumerable: true, get: () => providers[provider][field] }]));
+export function createMapReadPorts(owners) {
+  return Object.freeze(Object.fromEntries(Object.entries(MAP_READ_PORT_SPECS).map(([name, entries]) => {
+    const descriptors = Object.fromEntries(entries.map(([alias, provider, field = alias]) => [
+      alias, {enumerable:true, get:() => owners[provider][field]},
+    ]));
     return [name, Object.freeze(Object.defineProperties({}, descriptors))];
   })));
 }
@@ -97,6 +85,6 @@ function mergePorts(registries, allowed = null) {
   ])));
 }
 
-export function mergeCapabilityPorts(...registries) {
-  return mergePorts(registries);
+export function mergeMapPorts(common, overrides) {
+  return mergePorts([common, overrides]);
 }

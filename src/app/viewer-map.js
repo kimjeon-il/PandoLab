@@ -1,4 +1,4 @@
-import { connectMapOwner, createMapReadPorts, mergeCapabilityPorts } from './map-owner-ports.js';
+import { connectMapOwner, createMapReadPorts, mergeMapPorts } from './map-owner-ports.js';
 import { createMapInputPresentation } from '../map/map-input-presentation.js';
 import { workerAssetUrl } from '../runtime/worker-asset-url.js';
 import { createAtomicMapStateController } from './map-state-transition.js';
@@ -32,6 +32,7 @@ import { automaticLabelSettings, labelKey, LABEL_PRIORITIES } from '../rendering
 import { layerStyle } from '../ui/layer-presentation.js';
 import { coordinateBounds } from '../geometry/coordinate-bounds.js';
 import { createRingHitTester } from '../geometry/ring-hit-test.js';
+import { createProjectSourceRuntime } from '../document/project-source-runtime.js';
 
 function createViewerMapPreparationPresenter(getElement) {
   if (typeof getElement !== 'function') throw new TypeError('Viewer map presentation requires an element resolver.');
@@ -66,7 +67,7 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
   let presentedEntities = null;
   let presentedHydroEdits = null;
 
-  const {projectResourcePorts, projectSourceRuntime, territorialSceneRuntime, projectSession, renderQuality, pointerTargets, cameraNavigation:navigation, countryIndex, spatialIndex, mapProjection, objectPresentation, hydroSettings:physicalSettings, objectCatalog, territorialLabels:labelOwner, physicalResources, mapHost, objectPicking} = owners;
+  const {territorialSceneRuntime, projectSession, renderQuality, pointerTargets, cameraNavigation:navigation, countryIndex, spatialIndex, mapProjection, objectPresentation, hydroSettings:physicalSettings, objectCatalog, territorialLabels:labelOwner, physicalResources, mapHost, objectPicking} = owners;
   const commonPorts = createMapReadPorts(owners);
   const connectOwner = (name, ports) => connectMapOwner(name, owners[name], commonPorts, ports);
   connectOwner('projectSession', {applicationConstants:{DISTRIBUTION_RENDER_MODES},
@@ -119,9 +120,7 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
   const physicalConfig = {...createPhysicalSourceConfiguration({assetBaseUrl:runtimeContext.assetBaseUrl, mapProject:meta.mapProject}),
     DATA_REVISION:meta.dataRevision, HYDRO_DATA_VERSION, PHYSICAL_DATASET};
   const territorialScope = objectPresentation.territorialScope;
-  connectOwner('projectResourcePorts', {territorialModel:{entityRepository:repository}, territorialObjectModel:{territorialScope},
-    objectDefinitions:{builtinSubunitSourceId}, layerStyleServices:{layerStyle}, runtimeConfiguration:{BASE_DATASET}, domains:{projectDomain},
-    rendering:{get mapRenderer() {return renderer;}}, layerPresentation:objectCatalog});
+  const projectSourceRuntime = createProjectSourceRuntime({buildMeta:meta, projectDomain, baseDataset:BASE_DATASET});
   const releaseGeometryLoader = documentSession.commandOwner.setGeometryLoader(projectSourceRuntime.loadGeometryResources);
   connectOwner('hydroSettings', {physicalResources, physicalConfig, preferences:{mapPalette:palette}, platform:{$:id => document.getElementById(id), clamp},
     hydroPresentation:readPorts.hydroPresentation, objectPresentation, layerPresentation:objectCatalog});
@@ -140,6 +139,7 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     domains:{get renderingDomain() {return renderingDomain;}},
     feedback:{reportOperationError:onError}}, {presentMapPreparation:createViewerMapPreparationPresenter(id => document.getElementById(id)), onMapPreparationStatus,
     meta, initialCamera, onWorldFitChange, readSafeInsets:reason => (reason?mapProjection.refreshMapLayoutMetrics(reason):mapProjection.projectionLayoutMetrics()).safe});
+  territorialSceneRuntime.connect({territorialScope, entityRepository:repository, state, mapRenderer:renderer});
   let initialView = state.view;
   Object.defineProperty(state,'view', {configurable:true, enumerable:true, get() {
     const camera = renderer.cameraSnapshot();
@@ -274,7 +274,7 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     platform:{d3, clamp}, surfaces:{isMobile}, rendering:{mapRenderer:renderer}, feedback:{reportOperationError:onError}});
   pointerTargets.initializeHoverPickFrame();
   const inputPresentation = createMapInputPresentation({renderer, initialized,
-    ports:mergeCapabilityPorts(commonPorts, {
+    ports:mergeMapPorts(commonPorts, {
       platform:{$:id => document.getElementById(id), d3}, rendering:{mapRenderer:renderer},
       domains:{renderingDomain, selectionDomain, projectDomain}, navigation, mapView:mapProjection,
       objectPicking, surfaces:{isMobile}, feedback:{reportOperationError:onError},

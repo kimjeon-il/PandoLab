@@ -2,7 +2,6 @@ import { presentViewerLoadStatus } from './viewer-load-status.js';
 import { viewerPolicy } from './viewer-policy.js';
 import { createRuntimeContext } from '../runtime/runtime-context.js';
 import { createMapProjectRuntime } from '../data/map-project-runtime.js';
-import { connectMapOwner } from './map-owner-ports.js';
 import { createBrowserProjectStorage, createViewerViewStorage } from '../data/browser-project-storage.js';
 import { createNotificationPresentation } from '../ui/notification-presentation.js';
 import { createApplicationLifecycle } from './application-lifecycle.js';
@@ -146,10 +145,10 @@ export async function composeViewer({ meta }) {
     uiActions:{closeChooser:() => map.closeObjectChooser(), clearPresenter:() => {selectionStatus.textContent = '';}, syncLayerRows:() => searchController.syncSelection()}});
   disposables.push(selectionUiController);
   const activeSession = Object.freeze({...documentSession, projectDomain, selectionDomain, selectionUiController});
-  connectMapOwner('workspaceSurfaces', surfaces, {platform:{$:id => get(id==='app'?'viewer':id)}, projectState:{get state() {return map.viewState;}},
+  surfaces.connect({platform:{$:id => get(id==='app'?'viewer':id)}, projectState:{get state() {return map.viewState;}},
     surfaceFactories:{createSurfaceController}, domains:{get objectSearchController() {return searchController;}, get objectDetailsPanel() {return objectDetailsPanel;}},
     mapHostView:{queueMapResize:() => {owners.mapHost.queueMapResize('panel-layout');}},
-    uiControlServices:{selectController}, get mapNavigation() {return map.navigation;}});
+    uiControlServices:{selectController}});
   surfaces.initializeWorkspaceSurfaces();
   objectDetailsPanel = createObjectDetailsPanel({
     document, surfaces,
