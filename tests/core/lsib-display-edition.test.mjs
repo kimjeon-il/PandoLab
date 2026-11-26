@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { applyHistoricalLsibDisplay, applyLsibDisplay, coordinateDigest } from '../../tools/build/reviewed-border-edition.mjs';
-import { assertHistoricalCompiledChanges, historicalLsibDisplayEvidencePath, lsibDisplayEvidencePath } from '../../tools/gis/historical-display-review.mjs';
+import { applyHistoricalLsibDisplay, applyLsibDisplay, buildLsibDisplayEdition, coordinateDigest } from '../../tools/build/reviewed-border-edition.mjs';
+import { encodeBuiltinCountries, finalizeBuiltinWorldFiles } from '../../tools/data/builtin-country-bytes.mjs';
+import { assertHistoricalCompiledChanges, historicalLsibDisplayEvidencePath, lsibDisplayEvidencePath, worldPolygonsDisplayEvidencePath } from '../../tools/gis/historical-display-review.mjs';
 
 const polygon = size => ({ type: 'Polygon', coordinates: [[[0, 0], [size, 0], [0, size], [0, 0]]] });
 const objectRef = { id: 'ROU', domain: 'territorial' };
@@ -64,6 +65,53 @@ test('LSIB admission requires the approved World Polygons ownership mapping', ()
     () => applyLsibDisplay(originalCountry, differentDonor, {}, cutoff),
     /approved World Polygons source/,
   );
+});
+
+test('LSIB compiles a one-sided correction without rewriting the retained division member', () => {
+  const featureId = feature.properties.wpIds[0];
+  const division = gzipSync(JSON.stringify({ partitions: [{
+    featureId, ownerEntityId: 'state:ROU', memberEntityId: 'state:MEM',
+  }] }));
+  const sha256 = createHash('sha256').update(division).digest('hex');
+  const divisionSource = { reference: worldPolygonsDisplayEvidencePath(sha256, 'partitions'), sha256 };
+  const countries = ['ROU', 'MEM'].map(id => {
+    const country = structuredClone(originalCountry);
+    country.schemaVersion = 2;
+    country.entityId = country.identity.id = id;
+    country.sourceBindings[0].objectRef.id = id;
+    Object.assign(country.timelineRecords, { schemaVersion: 3, lifetimes: [], parentRelations: [], propertyBindings: [] });
+    Object.assign(country.timelineRecords.geometryBindings[0], { id: id + ':display', objectRef: { domain: 'territorial', id } });
+    const timeline = country.identity.properties.metadata.historicalTimeline;
+    timeline.entityId = 'state:' + id;
+    timeline.geometryVersions[0].historicalProvenance.worldPolygonsDisplay[0].source = divisionSource;
+    return country;
+  });
+  const index = { schema: 'pandolab-builtin-world', schemaVersion: 2, entities: countries.map(({ entityId }) => ({ entityId })) };
+  const indexPath = 'builtin/index.json';
+  const initial = finalizeBuiltinWorldFiles(index, encodeBuiltinCountries(index, countries, new Map()));
+  const read = path => {
+    if (path === divisionSource.reference) return division;
+    if (path === worldPolygonsDisplayEvidencePath()) return gzipSync(JSON.stringify({ sourcePackageSha256: 'world' }));
+    if (path === 'tools/historical-library/sources/lsib-11.4/provenance.json') return Buffer.from(JSON.stringify({ masterSha256: 'lines' }));
+    return initial.get(path.slice('builtin/'.length));
+  };
+  const selected = countries.map(({ entityId }) => ({
+    ...feature, id: entityId, geometry: entityId === 'ROU' ? feature.geometry : polygon(1),
+    properties: { ...feature.properties, divisionSource, sourceEntityId: 'state:' + entityId },
+  }));
+  const build = features => buildLsibDisplayEdition({
+    baseline: 'fixture', readBaseline: read, indexPath, expectedDisplayValidFrom: cutoff.displayValidFrom,
+    sourceBytes: gzipSync(JSON.stringify({
+      type: 'FeatureCollection', baseline: 'fixture', ...cutoff, features, method: 'geos-coverage-visvalingam-whyatt',
+      toleranceDegrees: .0075, held: {}, source: { lsibVersion: '11.4', boundarySha256: 'lines',
+        worldPolygonsSha256: 'world', polygonLayer: 'DoS_WP_11_4_G65', shorelineLayer: 'DoS_WP_Shoreline_G65' },
+    })),
+  });
+
+  assert.throws(() => build(selected.slice(0, 1)), /both sides of the approved division/);
+  const edition = build(selected);
+  assert.deepEqual(edition.plan.changed, ['ROU']);
+  assert.deepEqual(JSON.parse(edition.files.get(indexPath)).entities[1], index.entities[1]);
 });
 
 test('historical LSIB replacement preserves its exact date and current binding', () => {

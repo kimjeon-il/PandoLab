@@ -525,15 +525,19 @@ export function buildLsibDisplayEdition({baseline,readBaseline,indexPath,sourceB
    equal(bySourceId.get(id)?.properties.divisionSource,properties.divisionSource)))
    fail('LSIB display requires both sides of the approved division');
  }
- const changed=features.map(feature=>{
+ const changed=features.flatMap(feature=>{
   const entry=index.entities.find(row=>row.entityId===feature.id);
   if(!entry)fail('LSIB display candidate has no existing Viewer object '+feature.id);
   const prior=readBuiltinCountry(entry,index,file=>readBaseline(directory+file));
   const next=applyLsibDisplay(prior,feature,{reference,sha256},{displayValidFrom,previousDisplayThrough},readBaseline);
-  if(assertHistoricalCompiledChanges(next,prior,{readDisplayEvidence:p=>p===reference?sourceBytes:null})!==1)
+  const replacements=assertHistoricalCompiledChanges(next,prior,{readDisplayEvidence:p=>p===reference?sourceBytes:null});
+  // A reviewed division can include the exact retained side to prove the pair.
+  if(replacements===0&&feature.properties.divisionSource&&equal(next,prior))return [];
+  if(replacements!==1)
    fail('LSIB display candidate did not produce exactly one new display binding '+feature.id);
-  return next;
+  return [next];
  });
+ if(!changed.length)fail('LSIB display evidence contains no changed geometry');
  const encoded=encodeBuiltinCountries(nextIndex,changed,new Map());
  finalizeBuiltinWorldFiles(nextIndex,encoded,{previousIndex:index});
  for(const field of ['lifetimes','parentRelations','propertyBindings'])
