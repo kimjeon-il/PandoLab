@@ -5,7 +5,7 @@ import { planGlobeCompactionUpdates, mergeGlobeDrawRanges, copyGlobeDrawWrites, 
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges } from './globe-outline-cache.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
-import { renderCacheBudget, renderPacketBytes, renderPacketBuffers, touchRenderCache, trimRenderCache } from './render-cache-budget.js';
+import { renderCacheBudget, renderPacketBytes, renderPacketBuffers, renderBufferBytes, touchRenderCache, trimRenderCache } from './render-cache-budget.js';
 import { createGlobeSpatialSelection, createGlobeRangeCuller, globeStrokeRange } from './globe-spatial-partition.js';
 
 const surfaceVertex = `
@@ -403,7 +403,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const resource = riverMesh(packet, row.minZoom);
     const order = Math.max(0, row.order??0); resource.setOrder(4+.49*order/(order+1));
     resource.externalOwner = true;
-    return {residentBytes:[...resource.buffers].reduce((sum, buffer) => sum+buffer.byteLength, 0)+resource.deviceBytes, footprint:resource.footprint, setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
+    return {residentBytes:renderBufferBytes(resource.buffers, resource.deviceBytes), footprint:resource.footprint, setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
   }
   const countryStrokeStyle = {...palette.strokes.country};
   const strokeOptions = {style:countryStrokeStyle, cameraUniforms, viewport, margin, multisampling, strokeKind:'country'};
@@ -422,7 +422,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (existing)return existing.mesh;
     const mesh = prepare();
     // Buffer attributes retain their CPU arrays alongside the device copy.
-    residentMeshes.set(key, {mesh, bytes:[...mesh.buffers].reduce((sum, buffer) => sum+buffer.byteLength, 0)+mesh.deviceBytes}); residencyDirty = true;
+    residentMeshes.set(key, {mesh, bytes:renderBufferBytes(mesh.buffers, mesh.deviceBytes)}); residencyDirty = true;
     return mesh;
   }
   function activatePhysicalContext(parts) {
@@ -582,7 +582,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (meshChanged) {
       residencyDirty = false;
       const activeMeshes = activeMeshesNow(), protectedMeshes = new Set();
-      for (const [key, entry] of residentMeshes) {if (activeMeshes.has(entry.mesh))protectedMeshes.add(key); const footprint = entry.mesh.footprint(); entry.bytes = [...footprint.buffers].reduce((sum, buffer) => sum+buffer.byteLength, footprint.extraBytes);}
+      for (const [key, entry] of residentMeshes) {if (activeMeshes.has(entry.mesh))protectedMeshes.add(key); const footprint = entry.mesh.footprint(); entry.bytes = renderBufferBytes(footprint.buffers, footprint.extraBytes);}
       trimRenderCache(residentMeshes, protectedMeshes, cacheBudget.residentMeshBytes, entry => entry.bytes, (_key, entry) => {
         releaseMesh(entry.mesh);
       }, {entryLimit:512});

@@ -1,4 +1,4 @@
-import { createWorkerRpcClient } from '../runtime/worker-rpc.js';
+import { createStatelessWorkerLane } from '../runtime/stateless-worker-lane.js';
 import { workerAssetUrl } from '../runtime/worker-asset-url.js';
 import { createGlobeWorkScheduler } from './globe-work-scheduler.js';
 
@@ -14,7 +14,7 @@ export function createGlobePacketTasks({
 } = {}) {
   const count = Math.max(1, Math.min(3, Math.floor(maxWorkers)||1));
   const owned = !scheduler, work = scheduler??createGlobeWorkScheduler({maxConcurrent:count});
-  const lanes = Array.from({length:count}, () => ({rpc:null, busy:false}));
+  const lanes = Array.from({length:count}, () => ({worker:createStatelessWorkerLane(createWorker, 120_000), busy:false}));
   let disposed = false, submitted = 0, completed = 0, cancelled = 0, peakRunning = 0, running = 0;
   function request(operation, body, transfer, {signal, priority = 0}) {
     signal?.throwIfAborted(); submitted++;
@@ -22,9 +22,9 @@ export function createGlobePacketTasks({
       if (disposed)throw new DOMException('Packet tasks disposed','AbortError');
       const lane = lanes.find(row => !row.busy);
       if (!lane)throw Error('Globe packet Worker lane unavailable');
-      const owner = lane.rpc??=createWorkerRpcClient({createWorker, defaultTimeoutMs:120_000});
+      const owner = lane.worker.acquire();
       lane.busy = true; running++; peakRunning = Math.max(peakRunning, running);
-      const abort = () => {cancelled++; if (lane.rpc===owner)lane.rpc = null; owner.stop('globe-packet-superseded');};
+      const abort = () => {cancelled++; lane.worker.retire(owner, 'globe-packet-superseded');};
       signal?.addEventListener('abort', abort, {once:true});
       try {
         signal?.throwIfAborted();
@@ -45,6 +45,6 @@ export function createGlobePacketTasks({
     const packets = inputs.map(({bytes, spec}) => ({bytes, spec:{encoding:spec.encoding, decodedBytes:spec.decodedBytes, maxDecodedBytes:spec.maxDecodedBytes}}));
     return request('globe.combine-stored-strokes', {packets}, transfer, {priority, signal});
   }
-  function dispose() {disposed = true; if (owned)work.dispose(); for (const lane of lanes) {lane.rpc?.stop('globe-packet-disposed'); lane.rpc = null;}}
-  return Object.freeze({decode, combineStoredStrokes, dispose, stats:() => ({...work.stats(), submitted, completed, cancelled, workerLimit:count, workers:lanes.filter(row => row.rpc).length, running, peakRunning})});
+  function dispose() {disposed = true; if (owned)work.dispose(); for (const lane of lanes) {lane.worker.dispose('globe-packet-disposed');}}
+  return Object.freeze({decode, combineStoredStrokes, dispose, stats:() => ({...work.stats(), submitted, completed, cancelled, workerLimit:count, workers:lanes.filter(row => row.worker.active).length, running, peakRunning})});
 }

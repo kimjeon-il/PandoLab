@@ -36,8 +36,14 @@ export function renderPacketBuffers(value) {
   }
   visit(value); return buffers;
 }
+export function renderBufferBytes(buffers, extraBytes = 0) {
+  let total = extraBytes;
+  for (const buffer of buffers)total += buffer.byteLength;
+  return total;
+}
+
 export function renderPacketBytes(value) {
-  return [...renderPacketBuffers(value?.packet??value)].reduce((total, buffer) => total+buffer.byteLength, 0);
+  return renderBufferBytes(renderPacketBuffers(value?.packet??value));
 }
 
 // Maps remain owned by their resource owners. Insertion order is LRU order;
@@ -133,7 +139,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
       entry.controller.signal.throwIfAborted();
       if (entries.get(key)===entry) {
         entry.pending = false; pendingCount--; entry.buffers = renderPacketBuffers(value?.packet??value);
-        entry.bytes = [...entry.buffers].reduce((sum, buffer) => sum+buffer.byteLength, 0);
+        entry.bytes = renderBufferBytes(entry.buffers);
         residentBytes+=entry.bytes; sync(key, entry); trim();
       }
       return value;
@@ -196,7 +202,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
     const old = rows.get(key);
     const buffers = source.buffers instanceof Set?source.buffers:new Set(source.buffers??[]);
     const row = {...source, buffers, extraBytes:source.extraBytes??0,
-      localBytes:[...buffers].reduce((sum, buffer) => sum+buffer.byteLength, source.extraBytes??0)};
+      localBytes:renderBufferBytes(buffers, source.extraBytes??0)};
     if (old)detach(key, old);
     rows.set(key, row); extra+=row.extraBytes; groupDelta(row, 1);
     for (const buffer of buffers) {

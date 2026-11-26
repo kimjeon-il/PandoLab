@@ -1,7 +1,7 @@
 import { referenceZoomPixelsPerDegree } from '../map/map-display-zoom.js';
 import { globeVector } from './globe-camera.js';
 import { territorialLabelPixelSize } from './label-layout.js';
-import { renderCacheBudget, renderPacketBuffers } from './render-cache-budget.js';
+import { renderCacheBudget, renderPacketBuffers, renderBufferBytes } from './render-cache-budget.js';
 import { createGlobePacketIndex } from './globe-picking.js';
 import { createGlobeRangeCuller } from './globe-spatial-partition.js';
 import { createGlobeDistanceWorkspace } from './globe-label-sdf.js';
@@ -173,7 +173,6 @@ const labelFields = ['key','area','shortSide','place','selected','priority','mar
 const equalCoordinate = (a, b) => a?.[0]===b?.[0]&&a?.[1]===b?.[1];
 const sameLabel = (a, b) => a&&b&&labelFields.every(key => a[key]===b[key])&&a.ref?.key===b.ref?.key&&
   equalCoordinate(a.coordinate, b.coordinate)&&a.lines.length===b.lines.length&&a.lines.every((line, i) => line===b.lines[i]);
-const sumBuffers = buffers => [...buffers].reduce((sum, buffer) => sum+buffer.byteLength, 0);
 
 export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacity, viewport, maxTextureSize = 2048, byteBudget = renderCacheBudget().labelAtlasBytes, onReady = () => {}, onError = () => {}, createSdfTasks = createGlobeLabelSdfTasks, residency = null, workScheduler = null}) {
   const rasterOwner = createGlobeLabelRaster(), {canvas:raster, context} = rasterOwner;
@@ -457,9 +456,9 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function pageFootprint(page) {
     const buffers = renderPacketBuffers([page.pixels, ...page.batches.flatMap(batch => [batch.values,
       ...Object.values(batch.mesh.geometry.attributes).map(attribute => attribute.array), batch.mesh.geometry.index.array])]);
-    return {buffers, extraBytes:sumBuffers(buffers)};
+    return {buffers, extraBytes:renderBufferBytes(buffers)};
   }
-  function pageBytes(page) {const row = pageFootprint(page); return sumBuffers(row.buffers)+row.extraBytes;}
+  function pageBytes(page) {const row = pageFootprint(page); return renderBufferBytes(row.buffers)+row.extraBytes;}
   function disposePage(page) {
     for (const batch of page.batches)disposeBatch(batch);
     page.batches.length = 0; page.atlas.dispose();

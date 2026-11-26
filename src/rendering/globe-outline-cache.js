@@ -1,6 +1,6 @@
 import { createGlobeSpatialSelection } from './globe-spatial-partition.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture } from './three-globe-strokes.js';
-import { renderPacketBuffers } from './render-cache-budget.js';
+import { renderPacketBuffers, renderBufferBytes } from './render-cache-budget.js';
 import { planGlobeCompactionUpdates, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes } from './globe-draw-compaction.js';
 
 import { indexGlobeOutlineChunks, selectGlobeOutlineGroups } from './globe-outline-index.js';
@@ -38,7 +38,6 @@ export function outlineInstanceCapacity(current, needed, limit) {
   const desired = Math.max(32, 2**Math.ceil(Math.log2(needed)));
   return Math.min(limit, desired);
 }
-const bytesOf = buffers => [...buffers].reduce((sum, buffer) => sum+buffer.byteLength, 0);
 
 export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedIndex = null, strokeOptions, maxTextureSize, orderForChunk, residency, onResidencyChange = () => {}}) {
   const index = preparedIndex??indexGlobeOutlineChunks(packet, owners), partitions = packet.spatialParts;
@@ -226,7 +225,7 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
     }
     return {buffers, extraBytes};
   }
-  function bytes() {const row = footprint(); return bytesOf(row.buffers)+row.extraBytes;}
+  function bytes() {const row = footprint(); return renderBufferBytes(row.buffers)+row.extraBytes;}
   // Only altered chunk records enter the global ledger. An active base
   // packet no longer forces its entire cache to be traversed on each hover.
   function syncResidency({active, evict}) {
