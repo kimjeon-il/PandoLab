@@ -14,7 +14,7 @@ on:
       - scripts/build-ui-bundle.mjs
       - scripts/generate-build-metadata.mjs
       - scripts/lib/frontend-*.mjs
-      - scripts/lib/maplibre-*.mjs
+      - scripts/lib/globe-*.mjs
       - scripts/lib/product-*.mjs
       - scripts/lib/worker-assets.mjs
       - scripts/lib/map-catalog-coherence.mjs

@@ -140,6 +140,31 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
         priority: settings.priority ?? dependencies.labelPresentation.LABEL_PRIORITIES.country,
       });
     }
+    const {rows:places,count:placeCount}=placeLabelCandidates(frameContext.viewState);
+    const candidateCount=candidates.length+placeCount;
+    labelLayoutMetrics={qualityTier:dependencies.renderScene.currentRenderQuality.tier,
+      qualityCandidateCount:candidateCount,qualityCulledCount:0};
+    const territorialFlags = new Map(candidates.filter(item => item.flag).map(item => [String(item.source.id), item.flag]));
+    const visibleFlagIds = new Set(candidates.filter(item => item.viewportVisible).map(item => String(item.source.id)));
+    if (dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label) dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label.finalVisibleCount = places.length;
+    return {
+      territorialLabels: candidates.map(item => item.source),
+      territorialLabelNames: new Map(candidates.map(item => [String(item.source.id), item.nameVisible])),
+      territorialLabelRows: new Map(candidates.map(item => [String(item.source.id), territorialRows.get(String(item.source.id)) || []])),
+      territorialFlags,
+      visibleFlagIds,
+      territorialLabelShortSides: new Map(candidates.map(item => [String(item.source.id), item.shortSide])),
+      userLabels: places.map(item => item.source),
+      userLabelRows: new Map(places.map(item => [String(item.source.id), item.rows])),
+      territorialLabelPriorities:new Map(candidates.map(item=>[String(item.source.id),item.priority])),
+      userLabelPriorities:new Map(places.map(item=>[String(item.source.id),item.priority])),
+      userLabelMinZooms:new Map(places.map(item=>[String(item.source.id),item.minZoom])),
+      candidateCount,
+    };
+  }
+
+  function placeLabelCandidates({zoom,geographicBounds}) {
+    const candidates=[];
     const selectedIds = new Set(dependencies.domains.selectionDomain.snapshot().selection.items.filter(ref => ref.domain === 'label').map(ref => String(ref.id)));
     const loadedReferences=activeSource==='builtin'?[...new Map([...builtinPlaces.snapshot().records,
       ...[...selectedIds].map(id=>builtinPlaces.resolve(id)).filter(Boolean)]
@@ -158,7 +183,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
         : Math.max(settings.minZoom, Number(label.minZoom || 0)));
       if (!isWithinDisplayZoom(zoom,minZoom,settings.maxZoom)) continue;
       const coordinate = settings.pinned && settings.manualPosition ? settings.manualPosition : label.coordinates;
-      const viewportVisible=coordinateInGeographicBounds(coordinate,placeWindow?.bounds??frameContext.viewState.geographicBounds);
+      const viewportVisible=coordinateInGeographicBounds(coordinate,placeWindow?.bounds??geographicBounds);
       if(!Array.isArray(coordinate)||!Number.isFinite(coordinate[0])||!Number.isFinite(coordinate[1])||Math.abs(coordinate[1])>90)continue;
       const priority = builtinDisplay ? Number(builtinDisplay.priority) : (settings.priority ?? (label.kind === 'capital' ? dependencies.labelPresentation.LABEL_PRIORITIES.capital : label.kind === 'city' ? dependencies.labelPresentation.LABEL_PRIORITIES.majorCity : label.kind === 'region' ? dependencies.labelPresentation.LABEL_PRIORITIES.administrative : dependencies.labelPresentation.LABEL_PRIORITIES.place));
       const rows = builtinDisplay
@@ -166,40 +191,13 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
         : [{ language: 'ko', text: label.name }];
       if (!rows.length) continue;
       candidates.push({
-        key: (0, dependencies.labelPresentation.labelKey)('label', label.id), sourceType: 'label', source: label, rows,
+        key: (0, dependencies.labelPresentation.labelKey)('label', label.id), source: label, rows,coordinate,
         priority, minZoom, maxZoom: settings.maxZoom,
         pinned: settings.pinned, collisionGroup: settings.collisionGroup,
         selected, viewportVisible,
       });
     }
-    const nextLabelLayoutMetrics = {
-      qualityTier: dependencies.renderScene.currentRenderQuality.tier,
-      qualityCandidateCount: candidates.length,
-      qualityCulledCount: 0,
-    };
-    // Geographic country anchors remain installed across both hemispheres.
-    // MapLibre projects, occludes and places them on every camera frame.
-    const countries=candidates.filter(item=>item.sourceType==='territorial');
-    const places=selectPlaceLabelCandidates(candidates.filter(item=>item.sourceType==='label'),dependencies.renderScene.currentRenderQuality.labelCandidateLimit);
-    const territorialFlags = new Map(countries.filter(item => item.flag).map(item => [String(item.source.id), item.flag]));
-    const visibleFlagIds = new Set(countries.filter(item => item.viewportVisible).map(item => String(item.source.id)));
-    const placedUserLabels = places;
-    labelLayoutMetrics = nextLabelLayoutMetrics;
-    if (dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label) dependencies.spatialQuery.viewportCullingMetrics.lastByDomain.label.finalVisibleCount = placedUserLabels.length;
-    return {
-      territorialLabels: countries.map(item => item.source),
-      territorialLabelNames: new Map(countries.map(item => [String(item.source.id), item.nameVisible])),
-      territorialLabelRows: new Map(countries.map(item => [String(item.source.id), territorialRows.get(String(item.source.id)) || []])),
-      territorialFlags,
-      visibleFlagIds,
-      territorialLabelShortSides: new Map(countries.map(item => [String(item.source.id), item.shortSide])),
-      userLabels: placedUserLabels.map(item => item.source),
-      userLabelRows: new Map(placedUserLabels.map(item => [String(item.source.id), item.rows])),
-      territorialLabelPriorities:new Map(countries.map(item=>[String(item.source.id),item.priority])),
-      userLabelPriorities:new Map(placedUserLabels.map(item=>[String(item.source.id),item.priority])),
-      userLabelMinZooms:new Map(placedUserLabels.map(item=>[String(item.source.id),item.minZoom])),
-      candidateCount: candidates.length,
-    };
+    return {rows:selectPlaceLabelCandidates(candidates,dependencies.renderScene.currentRenderQuality.labelCandidateLimit),count:candidates.length};
   }
 
   function initializeCountryOutlineCache() {
@@ -231,6 +229,7 @@ export function createTerritorialLabels({ capabilities = {builtinPlaces:true,eag
     connect,
     setProjectSource,
     preparePlaces,
+    placeLabelCandidates,
     disposePlaces() {
 
 

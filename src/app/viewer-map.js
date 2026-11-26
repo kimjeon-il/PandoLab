@@ -1,11 +1,11 @@
 import {connectMapOwner,createMapReadPorts,mergeCapabilityPorts} from "./map-owner-ports.js";
-import {createMapLibreInputPresentation} from "../map/maplibre-input-presentation.js";
+import {createMapInputPresentation} from "../map/map-input-presentation.js";
 import {workerAssetUrl} from "../runtime/worker-asset-url.js";
 import {createAtomicMapStateController} from "./map-state-transition.js";
 import {classifyTerritorialPropertyOnly,createTerritorialEntityStore} from "../document/territorial-entity-store.js";
 import {temporalContains,temporalMonthEnd} from "../document/temporal.js";
 import {createMapRenderingResources} from "../rendering/map-renderer-composition.js";
-import {createMapLibreViewerRenderer} from "../rendering/maplibre-viewer-renderer.js";
+import {createThreeViewerRenderer} from "../rendering/three-viewer-renderer.js";
 import {createPhysicalSourceConfiguration,HYDRO_LAYER_META,HYDRO_CATEGORY_STYLES,PHYSICAL_DATASET} from "../data/physical-source-configuration.js";
 import {createMapSurfaceHost} from "../ui/map-surface-host.js";
 import "../geometry/polygon-geometry.js";
@@ -17,9 +17,8 @@ import {createMapObjectSpatialIndex} from "../map/map-object-spatial-index.js";
 import { createObjectQuery } from "../document/object-query.js";
 import { normalizeObjectRef } from "../document/object-ref-identity.js";
 import { COLOR_DOMAINS,readDomainColor,countryDefaultColor,DEFAULT_GENERIC_FEATURE_COLOR } from "../ui/color-adapter.js";
-import {createMapLibreRenderingDomain} from "../rendering/maplibre-rendering-domain.js";
+import {createViewerRenderingDomain} from "../rendering/viewer-rendering-domain.js";
 import {createAdaptiveRenderQualityController} from "../rendering/adaptive-render-quality.js";
-import {createMapDisplayClient} from "../ui/map-display-client.js";
 import {OVERLAY_GROUPS} from "../ui/layer-presentation.js";
 import {initializeMapReadOwners} from "./map-owner-composition.js";
 import {builtinSubunitSourceId} from "../document/territorial-display-identity.js";
@@ -59,7 +58,7 @@ function createViewerMapPreparationPresenter(getElement) {
 // End viewer map presentation helpers
 
 /** Presentation adapter shared by the Viewer and Windows reviewer. */
-export function createViewerMap({ runtimeContext,owners,element, projectDomain, documentSession, getPreferences, onError, onPlacesSettled, onStatus,isSafeKoreanErrorMessage,isMobile,diagnostics,getInteractionStyle,onMapPreparationStatus=null,isInitialPresentation,initialCamera,onWorldFitChange }) {
+export function createViewerMap({ runtimeContext,owners,element, projectDomain, documentSession, getPreferences, onError, onPlacesSettled, onStatus,isMobile,diagnostics,getInteractionStyle,onMapPreparationStatus=null,isInitialPresentation,initialCamera,onWorldFitChange }) {
   const meta=runtimeContext.meta;
   const d3 = globalThis.d3;
   if (!d3) throw new Error('지도 투영 라이브러리를 불러오지 못했습니다.');
@@ -74,7 +73,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
   let presentedHydroEdits=null;
   let lastFrame=null;
 
-  const {projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,projectSession,renderQuality,pointerTargets,cameraNavigation:navigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings:physicalSettings,objectCatalog,territorialLabels:labelOwner,physicalResources,mapScene,mapHost,objectPicking}=owners;
+  const {projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,projectSession,renderQuality,pointerTargets,cameraNavigation:navigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings:physicalSettings,objectCatalog,territorialLabels:labelOwner,physicalResources,mapHost,objectPicking}=owners;
   const commonPorts=createMapReadPorts(owners);
   connectMapOwner('projectSession',projectSession,mergeCapabilityPorts(commonPorts,{applicationConstants:{DISTRIBUTION_RENDER_MODES},
     modelValidation:{normalizeLayerPresentation},physicalConfig:{PHYSICAL_DATASET},domains:{selectionDomain:documentSession.selectionDomain},
@@ -138,18 +137,14 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     layerPresentation:objectCatalog,domains:{projectDomain,get renderingDomain(){return renderingDomain;},objectSearchController:{render:()=>onPlacesSettled('render')}},
     operationFeedback:{reliabilityDiagnostic:diagnostics},
     rendering:{get mapRenderer(){return renderer;}},feedback:{reportOperationError:onError}}));
-  const renderer=createMapLibreViewerRenderer({projectState:{state,mapWorkScheduler},physicalConfig,
-    runtimeConfiguration:{APP_VERSION:meta.appVersion},layerPresentation:{ASSET_REVISION:meta.assetRevision,isLayerItemVisible:objectCatalog.isLayerItemVisible},
-    preferences:{mapPalette:palette},colorModel:readPorts.colorModel,
-    platform:{d3,deepClone:structuredClone,$:id=>document.getElementById(id),runtimeAssetUrl},
-    countries:territorialSceneRuntime,builtinCountries:territorialSceneRuntime,countryLabelModel:labelOwner,
-    territorialModel:{entityRepository:repository},containsGeometry:(coordinate,geometry)=>hitTester.containsGeometry(coordinate,geometry),objectRefVisible:objectQuery.objectRefVisible,hydroPresentation:readPorts.hydroPresentation,hydroModel:{hydroFeatureById:hydroById},
-    physicalResources,physicalServices:{isHydroFeatureVisible:physicalSettings.isHydroFeatureVisible},surfaces:{isMobile},
-    readinessUi:{isSafeKoreanErrorMessage},mapHostView:{queueMapResize:()=>mapHost.queueMapResize()},
-    mapView:{get mapHost(){return mapHost.mapHost;}},domains:{get renderingDomain(){return renderingDomain;}},
-    renderQuality,renderScene:{get currentRenderQuality(){return renderQuality.currentRenderQuality;}},
-    feedback:{reportOperationError:onError,setActionStatus:onStatus}},{presentMapPreparation:createViewerMapPreparationPresenter(id=>document.getElementById(id)),onMapPreparationStatus,
-    initialCamera,onWorldFitChange,readSafeInsets:reason=>(reason?mapProjection.refreshMapLayoutMetrics(reason):mapProjection.projectionLayoutMetrics()).safe});
+  const renderer=createThreeViewerRenderer({projectState:{state},layerPresentation:{isLayerItemVisible:objectCatalog.isLayerItemVisible},
+    preferences:{mapPalette:palette,get userPreferences(){return getPreferences();}},colorModel:readPorts.colorModel,objectPresentation,
+    highlightCandidates:objectPicking.highlightCandidates,
+    countryLabelModel:labelOwner,objectRefVisible:objectQuery.objectRefVisible,hydroModel:{hydroFeatureById:hydroById},
+    physicalResources,physicalServices:{isHydroFeatureVisible:physicalSettings.isHydroFeatureVisible},
+    domains:{get renderingDomain(){return renderingDomain;}},
+    feedback:{reportOperationError:onError}},{presentMapPreparation:createViewerMapPreparationPresenter(id=>document.getElementById(id)),onMapPreparationStatus,
+    meta,initialCamera,onWorldFitChange,readSafeInsets:reason=>(reason?mapProjection.refreshMapLayoutMetrics(reason):mapProjection.projectionLayoutMetrics()).safe});
   let initialView=state.view;
   Object.defineProperty(state,'view',{configurable:true,enumerable:true,get(){
     const camera=renderer.cameraSnapshot();
@@ -163,7 +158,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
   connectMapOwner('mapProjection',mapProjection,mergeCapabilityPorts(commonPorts,{platform:{d3,clamp,$:id=>document.getElementById(id)},surfaces:{isMobile,},
     mapLayout:{createMapLayoutMetricsSnapshot,DEFAULT_SAFE_INSETS}}));
   initializeMapReadOwners(owners,'projection');
-  mapProjection.installMapLibreRenderer(renderer);
+  mapProjection.installRenderer(renderer);
 
   connectMapOwner('mapHost',mapHost,mergeCapabilityPorts(commonPorts,{platform:{d3,$:id=>document.getElementById(id),deepClone:structuredClone},mapView:mapProjection,projectionView:mapProjection,
     navigation,workspaceUi:owners.workspaceSurfaces,mapLayers:{},
@@ -198,22 +193,16 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
       get selectionDomain(){return documentSession.selectionDomain;},objectSearchController:{cancelSearch:()=>onPlacesSettled('cancel'),render:()=>onPlacesSettled('render')}}};
   connectMapOwner('territorialLabels',labelOwner,mergeCapabilityPorts(commonPorts,labelPorts));initializeMapReadOwners(owners,'labels');
   const places=()=>labelOwner.builtinPlaces;
-  connectMapOwner('mapScene',mapScene,mergeCapabilityPorts(commonPorts,{rendering:{mapRenderer:renderer}}));
-  mapScene.initializeSceneDomains();
   mapHost.attachMapOutput();
   initialized=Promise.all([renderer.initialize(),mapHost.initializeMapHost()]);
   initialized.then(()=>renderingDomain.invalidateProject('map-initialized'))
     .catch(error=>onError(error,'지도 표시를 준비하지 못했습니다.','PL-MAP-INITIALIZE-001'));
   const selectionDomain=documentSession.selectionDomain;
 
-  const mapDisplay=createMapDisplayClient();
-  renderingDomain=createMapLibreRenderingDomain({mapRenderer:renderer,projectDomain,selectionDomain:selectionDomain,
-    mapHost:()=>mapHost.mapHost,
-    prepareMapDisplay:mapDisplay.prepare,disposeMapDisplay:mapDisplay.dispose,
+  renderingDomain=createViewerRenderingDomain({mapRenderer:renderer,projectDomain,selectionDomain:selectionDomain,
     ...createMapRenderingResources({session:{selectionDomain,objectSearchController:{cancelSearch:()=>onPlacesSettled('cancel')}},ports:mergeCapabilityPorts(commonPorts,readPorts,{
     domains:{projectDomain,selectionDomain,get renderingDomain(){return renderingDomain;}},
-    objectPicking,mapSceneServices:mapScene,spatialRecords:spatialIndex,
-    preferences:{mapPalette:palette,get resolvedInteractionStyle(){return getInteractionStyle();}},
+    spatialQuery:spatialIndex,
     mapDisplayModel:{get distributionVisibilityRevision(){return objectPresentation.distributionVisibilityRevision;}},
   })}),
 
@@ -222,7 +211,6 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
       // Do not resize/clear visible GPU pixels during frame preparation.
       return lastFrame;
     },
-    renderers:{labelLayout:frame=>labelOwner.visibleLabelLayout(frame)},
     reportDiagnostic:entry=>diagnostics.push({category:'rendering-domain',...entry}),
   });
   renderQuality.applyAdaptiveRenderQuality();
@@ -234,9 +222,9 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     const entities=entityStore.snapshot();
     const previous=presentedEntities;
     if(!previous||previous!==entities)state.countryIndex=new Map(entities.map(feature=>[String(feature.id),feature]));
-    const territorialFeatures=territorialScope.displayEntities().filter(feature=>feature.properties.entityKind==='general');
+    const territorialFeatures=entities.filter(feature=>feature.properties.entityKind==='general');
     await initialized;if(generation!==updateGeneration)return;
-    // A dated source is admitted before its matching MapLibre render event.
+    // A dated source is admitted before publishing its frame.
     if(!await renderer.prepareTemporalCountrySource(territorialFeatures)||generation!==updateGeneration)return;
     if(!await renderer.setTerritorialFeatures(territorialFeatures)||generation!==updateGeneration)return;
     presentedEntities=entities;
@@ -266,7 +254,9 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     selectionServices:{normalizeObjectRef},objectLookup:objectQuery,objectOperations:objectQuery,territorialModel:{entityRepository:repository},
     renderScene:{OVERLAY_GROUPS},mapView:mapProjection,
     landRelations:{pointInCountryFeature:(coord,feature)=>hitTester.containsGeometry(coord,feature.geometry)},
-    hydroModel:{hydroFeatureById:hydroById},rendering:{mapRenderer:renderer,selectionPerformanceMetrics},hydroPresentation:{projectHydroById},surfaces:{isMobile},
+    hydroModel:{hydroFeatureById:hydroById},rendering:{mapRenderer:renderer,selectionPerformanceMetrics,
+      invalidateChooserHighlight:()=>renderingDomain.invalidateSelection('chooser-candidates'),
+    },hydroPresentation:{projectHydroById},surfaces:{isMobile},
 
     domains:{projectDomain,selectionDomain:selectionDomain,get selectionUiController(){return documentSession.selectionUiController;}},
 
@@ -279,7 +269,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     layerPresentation:objectCatalog,landRelations:{pointInCountryFeature:(coord,feature)=>hitTester.containsGeometry(coord,feature.geometry)},
     platform:{d3,clamp},surfaces:{isMobile},rendering:{mapRenderer:renderer},feedback:{reportOperationError:onError}}));
   pointerTargets.initializeHoverPickFrame();
-  const inputPresentation=createMapLibreInputPresentation({renderer,initialized,
+  const inputPresentation=createMapInputPresentation({renderer,initialized,
     ports:mergeCapabilityPorts(commonPorts,{
       platform:{$:id=>document.getElementById(id),d3},rendering:{mapRenderer:renderer},
       domains:{renderingDomain,selectionDomain,projectDomain},navigation,mapView:mapProjection,
@@ -291,9 +281,17 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     })});
   inputPresentation.bindMapEvents();
   mapHost.startMapResizeObserver();
+  const {preparePhysicalContext}=renderer;
+  async function prepareTimelineView(month,options){
+    await preparePhysicalContext(month,options);
+    const references=await projectSourceRuntime.readWorldGeometryReferences(month,options);
+    await renderer.prepareDatedTerritories(month,references,options);
+    return renderer.measureWork('core.timeline-geometry',()=>documentSession.commandOwner.prepareTimelineGeometry(month,options));
+  }
   return Object.freeze({
     async setSession(next,{view=null,prepareView=null,source='project'}={}){
       if(next!==documentSession)throw new Error('Map output requires its single document session.');
+      objectPicking.closeObjectChooser();
       // The admitted reader origin is an in-memory session property, not an
       // interpretation of the backward-compatible projectSetup.sourceMode.
       physicalResources.setProjectSource(source);
@@ -309,13 +307,14 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     },
     ready:initialized,
     cancelSearch:()=>places().cancelSearch(),update,features:entityStore.snapshot,searchPlaces:query=>labelOwner.searchPlaces(query),renderer,
-    loadPhysicalResources:physicalResources.loadPhysicalData,loadPhysicalLand:physicalResources.loadPhysicalLand,viewState:state,objectPresentation,searchActive:()=>places().isSearchOpen(),
+    loadHydroData:physicalResources.loadHydroData,
+    viewState:state,objectPresentation,searchActive:()=>places().isSearchOpen(),preparePhysicalContext,prepareTimelineView,
     prepareBuiltinProject:async(month,options)=>{
       // Parallel country/physical preparation must not orphan a native
       // candidate when only the physical half fails or is superseded.
       const [candidate,physical]=await Promise.allSettled([
         projectSourceRuntime.prepareProjectCandidate(month,options),
-        physicalResources.preparePhysicalContext(month,options),
+        preparePhysicalContext(month,options),
       ]);
       if(candidate.status==='fulfilled'&&physical.status==='rejected')
         await projectDomain.discardTemporalBuiltin(candidate.value);

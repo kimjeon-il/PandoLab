@@ -14,7 +14,6 @@ export const MAP_OWNER_PORTS=Object.freeze({
   objectCatalog:Object.freeze(["projectSession","colorModel","countries","distributionPresentation","domains","hydroPresentation","labelPresentation","layerPresentation","objectDefinitions","objectPresentation","platform","projectState","rendering","territorialModel","preferences","hydroModel","distributionServices","selectionServices","objectLookup"]),
   territorialLabels:Object.freeze(["territorialObjectModel","colorModel","countries","domains","feedback","labelPresentation","layerPresentation","mapLayout","mapHostView","objectDefinitions","objectPresentation","platform","preferences","projectState","renderScene","rendering","spatialQuery","surfaces","territorialModel","objectDisplay"]),
   physicalResources:Object.freeze(["geometryBounds","domains","feedback","hydroPresentation","layerPresentation","operationFeedback","physicalConfig","physicalServices","platform","projectState","rendering"]),
-  mapScene:Object.freeze(["countries","projectState","rendering"]),
   mapHost:Object.freeze(["applicationConstants","domains","lifecycleUi","mapLayout","mapView","navigation","platform","runtimeConfiguration","preferences","projectState","projectionView","readiness","renderFactories","renderQuality","rendering","surfaces","workspaceUi"]),
   objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
 });
@@ -34,7 +33,6 @@ export const MAP_OWNER_REQUIRED_PORTS=Object.freeze({
   objectCatalog:Object.freeze(["projectSession","colorModel","distributionPresentation","domains","hydroPresentation","labelPresentation","layerPresentation","objectDefinitions","objectPresentation","projectState","territorialModel"]),
   territorialLabels:Object.freeze(["territorialObjectModel","countries","domains","feedback","labelPresentation","layerPresentation","mapHostView","objectPresentation","platform","preferences","projectState","renderScene","spatialQuery","surfaces","territorialModel"]),
   physicalResources:Object.freeze(["geometryBounds","domains","feedback","hydroPresentation","layerPresentation","operationFeedback","physicalConfig","physicalServices","platform","projectState","rendering"]),
-  mapScene:Object.freeze(["countries","projectState","rendering"]),
   mapHost:Object.freeze(["applicationConstants","domains","mapLayout","mapView","navigation","platform","runtimeConfiguration","preferences","projectState","projectionView","readiness","renderFactories","renderQuality","rendering","surfaces","workspaceUi"]),
   objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
 });
@@ -71,12 +69,12 @@ const MAP_READ_PORT_SPECS=Object.freeze({
   objectDisplay:Object.freeze([["invalidateObjectPresentation","objectCatalog","invalidateObjectPresentation"]]),
   territorialObjectModel:Object.freeze([["territorialScope","objectPresentation","territorialScope"],["territorialStyleColor","objectPresentation","territorialStyleColor"]]),
   objectPresentation:Object.freeze([["genericFeatureName","objectPresentation","genericFeatureName"],["genericFeatureRoleLabel","objectPresentation","genericFeatureRoleLabel"],["territorialEntitySearchText","objectPresentation","territorialEntitySearchText"],["territorialEntityName","objectPresentation","territorialEntityName"]]),
-  physicalResources:Object.freeze([["physicalContextState","physicalResources","physicalContextState"],["isHydroObjectActive","physicalResources","isHydroObjectActive"],["admitHydroFeatures","physicalResources","admitHydroFeatures"],["builtinHydroSelectionReferences","physicalResources","builtinHydroSelectionReferences"],["loadPhysicalData","physicalResources","loadPhysicalData"],["prepareHydroFeature","physicalResources","prepareHydroFeature"]]),
+  physicalResources:Object.freeze([["isHydroObjectActive","physicalResources","isHydroObjectActive"],["admitHydroFeatures","physicalResources","admitHydroFeatures"],["builtinHydroSelectionReferences","physicalResources","builtinHydroSelectionReferences"]]),
   physicalServices:Object.freeze([["isHydroFeatureVisible","hydroSettings","isHydroFeatureVisible"]]),
   projectState:Object.freeze([["mapWorkScheduler","projectSession","mapWorkScheduler"],["state","projectSession","state"]]),
-  projectionView:Object.freeze([["currentMapSafeInsets","mapProjection","currentMapSafeInsets"],["graticule","mapProjection","graticule"],["mapLayoutMetricsRefreshCount","mapProjection","mapLayoutMetricsRefreshCount"],["refreshMapLayoutMetrics","mapProjection","refreshMapLayoutMetrics"]]),
+  projectionView:Object.freeze([["currentMapSafeInsets","mapProjection","currentMapSafeInsets"],["mapLayoutMetricsRefreshCount","mapProjection","mapLayoutMetricsRefreshCount"],["refreshMapLayoutMetrics","mapProjection","refreshMapLayoutMetrics"]]),
   renderQuality:Object.freeze([["applyAdaptiveRenderQuality","renderQuality","applyAdaptiveRenderQuality"],["queueAdaptiveRenderQualityRefresh","renderQuality","queueAdaptiveRenderQualityRefresh"],["renderQualityController","renderQuality","renderQualityController"]]),
-  renderScene:Object.freeze([["currentRenderQuality","renderQuality","currentRenderQuality"],["featureFromGeometry","mapScene","featureFromGeometry"],["selectionGeometryRevision","mapScene","selectionGeometryRevision"]]),
+  renderScene:Object.freeze([["currentRenderQuality","renderQuality","currentRenderQuality"]]),
   spatialQuery:Object.freeze([["geometryBounds","spatialIndex","geometryBounds"],["mapObjectGeometryRevisions","spatialIndex","mapObjectGeometryRevisions"],["rebuildSpatialIndex","spatialIndex","rebuildSpatialIndex"],["viewportCullingMetrics","spatialIndex","viewportCullingMetrics"],["visibleMapObjectCandidates","spatialIndex","visibleMapObjectCandidates"]]),
   surfaces:Object.freeze([["isMobile","workspaceSurfaces","isMobile"],["layoutMode","workspaceSurfaces","layoutMode"],["uid","workspaceSurfaces","uid"]]),
 });

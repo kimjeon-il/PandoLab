@@ -116,7 +116,7 @@ export async function composeViewer({ productMode, meta }) {
           if(camera){map.renderer.syncCameraFromState(camera);restoredCamera=true;}
         }
       }
-      await map.loadPhysicalLand();
+      await map.ready;
       if(!startupWorld&&!openingPreserved&&!restoredCamera){
         if(bounds)map.renderer.fitMapBounds([[bounds.west,bounds.south],[bounds.east,bounds.north]],map.mapProjection.currentMapSafeInsets());
         else map.navigation.resetView();
@@ -191,19 +191,14 @@ export async function composeViewer({ productMode, meta }) {
   disposables.push(objectDetailsPanel);
   const resetView=get('resetViewBtn');
   const syncResetView=()=>resetView.classList.toggle('is-world-view',map.renderer.isAtWorldView());
-  map=createViewerMap({owners,runtimeContext,element:get('map'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,isSafeKoreanErrorMessage:notifications.isSafeKoreanErrorMessage,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
+  map=createViewerMap({owners,runtimeContext,element:get('map'),projectDomain,documentSession:activeSession,isMobile:()=>surfaces.isMobile(),diagnostics,getInteractionStyle:()=>preferencePresentation.interactionStyle,onStatus:notifications.setActionStatus,getPreferences:()=>preferencePresentation.current,onPlacesSettled:action=>{if(action==='cancel')searchController.cancelSearch();else searchController.render();},onError:report,
     initialCamera:readSavedCamera(),onWorldFitChange:syncResetView,
     onMapPreparationStatus:(presentation,generation)=>{initialPresentation.observe(presentation,generation);mapSkeleton.reconsider();},isInitialPresentation:()=>!initialPresentation.hasPresented()});
   map.renderer.setInitialMapLoading(true);
   map.ready.then(()=>{
-    const instance=map.renderer.map;
-    instance.on('moveend',persistViewing);
-    instance.on('moveend',syncResetView);
+    const unsubscribe=map.renderer.subscribeInput('moveend',()=>{persistViewing();syncResetView();});
     syncResetView();
-    disposables.push({dispose(){
-      instance.off('moveend',persistViewing);
-      instance.off('moveend',syncResetView);
-    }});
+    disposables.push({dispose:unsubscribe});
   }).catch(error=>report(error,'지도 보기 설정을 연결하지 못했습니다.','PL-WORKSPACE-WRITE-001'));
   disposables.push(map);
   // One read-only inspector lifecycle for desktop, mobile, URL and keyboard.
@@ -242,11 +237,6 @@ export async function composeViewer({ productMode, meta }) {
   disposables.push(searchController);
   searchController.bind();surfaces.applyLayoutMode({initial:true});
   map.refreshAppearance({rerender:false});
-  // Background assets are global; hydro identities must wait for the Core
-  // replacement below. The resource owner handles errors and shared requests.
-  // The canonical white map is revealed when its country/land frame is ready.
-  Promise.resolve(map.loadPhysicalResources({includeHydro:false})).then(
-    mapSkeleton.reconsider,mapSkeleton.reconsider);
   syncStatus=({refreshHover=false}={})=>{
     if(map&&!projectDomain.isOpening()){
       selectionUiController.syncNow(null,{force:true});
@@ -266,7 +256,7 @@ export async function composeViewer({ productMode, meta }) {
     // replaceSnapshot.prepareView already launched physical background loading.
     afterMap:[()=>surfaces.syncOverlayState(),()=>syncStatus(),()=>{
       if(projectDomain.activeProject()?.source==='builtin')
-        return map.loadPhysicalResources({includeHydro:true});
+        return map.loadHydroData();
     }],
     onError:(error,stage)=>{
       diagnostics.push({category:'viewer-post-presentation',errorCode:'PL-VIEWER-POST-001',
@@ -408,11 +398,8 @@ export async function composeViewer({ productMode, meta }) {
       let geometryPreparation;
       const preparationCurrent=()=>preparing&&current();
       try{
-        [,geometryPreparation]=await Promise.all([
-          owners.physicalResources.preparePhysicalContext(month,{
-            isCurrent:preparationCurrent,activeProject:projectDomain.activeProject()}),
-          map.renderer.measureWork('core.timeline-geometry',()=>activeSession.commandOwner.prepareTimelineGeometry(month,{isCurrent:preparationCurrent})),
-        ]);
+        geometryPreparation=await map.prepareTimelineView(month,{
+          isCurrent:preparationCurrent,activeProject:projectDomain.activeProject()});
       }finally{preparing=false;}
       if(!current())return false;
       // Keep the current map interactive while immutable physical data loads.
@@ -426,12 +413,12 @@ export async function composeViewer({ productMode, meta }) {
       return true;
     }catch(error){
       if(current()){
-        if(previous){
+        if(previous&&(activeSession.commandOwner.state().timelineCursor!==previous||map.renderer.isFramePreserved())){
           const restoreTicket=map.renderer.beginTemporalViewTransition(current);
           try{
             map.renderer.preserveTemporalFrame();
             map.renderer.retryMapPreparation();
-            await owners.physicalResources.preparePhysicalContext(previous,{
+            await map.preparePhysicalContext(previous,{
               isCurrent:current,activeProject:projectDomain.activeProject()});
             if(!current())return false;
             // Do not report the prior map as restored merely because its C++
@@ -514,7 +501,7 @@ export async function composeViewer({ productMode, meta }) {
   disposables.push({ dispose: () => window.removeEventListener('pandolab:project-changed', onProjectPreferences) });
   if(inspectParams.get('debug')==='1')globalThis.__PANDOLAB_VIEWER__=Object.freeze({initialMapPresented:initialPresentation.hasPresented,productMode,documentState:()=>activeSession?.commandOwner.state(),
     documentSnapshot:()=>activeSession?.documentModel.snapshot(),resolvedWorld:()=>activeSession?.documentModel.world(),selectionSnapshot:()=>activeSession?.selectionDomain.snapshot().selection,
-    diagnostics:diagnostics.snapshot,rendererStats:()=>map.renderer.getStats(),previewExternalBasemap:style=>map.renderer.previewExternalBasemap(style),
+    diagnostics:diagnostics.snapshot,rendererStats:()=>map.renderer.getStats(),
     visibleTerritorialCount:()=>map.objectQuery.visibleTerritorialCount(),
     mapProjection:()=>map.viewState.projection,readOnly:documentSession.readOnly,
     builtinMonth:()=>({

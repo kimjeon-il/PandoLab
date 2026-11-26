@@ -1,14 +1,30 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
-import {readTerritorialSources,territorialSourceRoot} from "./territorial-entity-sources.mjs";
+import {readLibraryDataFile} from './library-context.mjs';
+import {readTerritorialSources} from './territorial-entity-sources.mjs';
+
+const defaultSourceIndex='assets/data/territorial-entities/generated/v2/index.json';
+
+export function indexedTerritorialWorldView(sourceIndex=JSON.parse(readLibraryDataFile(defaultSourceIndex))){
+  if(!Array.isArray(sourceIndex?.views) || !Array.isArray(sourceIndex.entities))
+    throw new Error('Expected a current world view in the territorial source index');
+  const views=sourceIndex.views.filter(view=>view.id==='world:catalog');
+  if(views.length!==1 || !Array.isArray(views[0].selections))
+    throw new Error('Expected a current world view in the territorial source index');
+  const view=views[0];
+  const entities=new Map(sourceIndex.entities.map(entity=>[entity.entityId,entity]));
+  for(const {entityId,geometryVersionId} of view.selections){
+    if(!entities.get(entityId)?.geometryVersions?.some(version=>version.versionId===geometryVersionId))
+      throw new Error('Missing indexed world view geometry: '+entityId+'/'+geometryVersionId);
+  }
+  return view;
+}
 
 // Streaming consumers supply getEntity so only the selected current source
 // versions are decoded. The object-returning API is preserved for callers
 // that explicitly need a materialized GeoJSON FeatureCollection.
 export function visitCurrentWorldFeatures({
   entities: sourceEntities = null, getEntity = null,
-  view = JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json'),'utf8')),
+  view = indexedTerritorialWorldView(),
   currentWorld = null, visit, cloneGeometry = true,
 } = {}) {
   if (typeof visit !== 'function') throw new TypeError('Current world feature visitor is required');
@@ -61,7 +77,7 @@ export function visitCurrentWorldFeatures({
 
 export function buildCurrentWorld({
   entities = readTerritorialSources(),
-  view = JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json'),'utf8')),
+  view = indexedTerritorialWorldView(),
   currentWorld = null,
 } = {}) {
   const features = [];

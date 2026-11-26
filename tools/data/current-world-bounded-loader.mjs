@@ -3,8 +3,8 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {gunzipSync} from 'node:zlib';
-import {readTerritorialSource,readTerritorialSourceDescriptors,territorialSourceRoot} from './territorial-entity-sources.mjs';
-import {visitCurrentWorldFeatures} from './territorial-current-world.mjs';
+import {readTerritorialSource,readTerritorialSourceDescriptors} from './territorial-entity-sources.mjs';
+import {indexedTerritorialWorldView,visitCurrentWorldFeatures} from './territorial-current-world.mjs';
 
 // The derived current world may exceed V8's maximum single-string length.
 // Consumers need its selected, immutable geometries, not a 603 MB JSON string.
@@ -36,7 +36,7 @@ export function loadBoundedCurrentWorld(filePath) {
     const raw=fs.readFileSync(filePath);
     return JSON.parse(filePath.endsWith('.gz')?gunzipSync(raw):raw);
   }
-  const view=JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json'),'utf8'));
+  const view=indexedTerritorialWorldView();
   const ids=new Set(readTerritorialSourceDescriptors().map(row=>row.entityId));
   const features=[];
   const {metadata,bbox,count}=visitCurrentWorldFeatures({

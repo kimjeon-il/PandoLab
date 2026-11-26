@@ -100,7 +100,6 @@ export function verifyStagedPagesIdentity({root,stage,evidence,expectedCommit=nu
       ||members.some(({asset,start,end})=>digest(bytes.subarray(start,end))!==asset.sha256))
       fail('ARTIFACT_DEPLOY_DATA_PIN','Startup geometry pack differs from its pinned members');
   }
-  const physical=metadata[mapProjectResourcePath(project,'physicalLand')];
   const boundary=meta.countryBoundarySeed;
   if(boundary&&(!HASH.test(boundary.algorithmSha256||'')||boundary.territorialCatalogSha256!==files.get(territorialPath).sha256
     ||boundary.worldCatalogSha256!==files.get(mapProjectResourcePath(project,'world')).sha256
@@ -113,17 +112,17 @@ export function verifyStagedPagesIdentity({root,stage,evidence,expectedCommit=nu
     if(!anchors||JSON.stringify(anchors)!==JSON.stringify(boundary.labelAnchors)||Object.values(anchors).some(row=>!row||!/^[a-f0-9]+:[a-f0-9]+$/.test(row.signature)||!Array.isArray(row.coordinates)||row.coordinates.length!==2||!row.coordinates.every(Number.isFinite)||Math.abs(row.coordinates[0])>180||Math.abs(row.coordinates[1])>90))
       fail('ARTIFACT_DEPLOY_DATA_PIN','Label anchors differ from the verified geometry derivative');
   }
-  const landSources=new Set([physical.asset,...(physical.waterObjects?.geometries||[]).map(row=>row.land)].filter(Boolean).map(spec=>spec.sha256));
-  if(!meta.physicalLandDisplays||Object.keys(meta.physicalLandDisplays).length!==landSources.size
-    ||[...landSources].some(identity=>!Object.hasOwn(meta.physicalLandDisplays,identity)))
-    fail('ARTIFACT_DEPLOY_DATA_PIN','Missing physical display derivatives for the selected catalog');
-  for(const [identity,spec]of Object.entries(meta.physicalLandDisplays||{})){
-    if(!landSources.has(identity)||spec.sourceSha256!==identity||spec.algorithmVersion!=='physical-display-union-v1'
-      ||!HASH.test(spec.algorithmSha256||'')||!HASH.test(spec.sha256||'')||spec.encoding!=='gzip'
-      ||spec.url!==`assets/data/display-land/sha256-${spec.sha256}.json.gz`
-      ||files.get(spec.url)?.sha256!==spec.sha256||files.get(spec.url)?.bytes!==spec.compressedBytes
-      ||digest(bytesFor(spec.url))!==spec.sha256)
-      fail('ARTIFACT_DEPLOY_DATA_PIN','Physical display derivative differs from its canonical source or byte receipt');
+  const globe=meta.globePreview;
+  if(!globe?.countries||!globe.graticule||!globe.physical||!Array.isArray(globe.historicalCountries))
+    fail('ARTIFACT_DEPLOY_DATA_PIN','Missing Three.js map asset manifest');
+  const physicalPackets=[globe.physical,...globe.physicalContexts].flatMap(row=>
+    [row.land,row.rivers,...[...row.waters,...row.lakes,...row.riverDetail].map(part=>part.spec)]);
+  const globePackets=[globe.countries,globe.outlines,globe.borders,globe.graticule,globe.hydroMetadata,
+    ...physicalPackets,...globe.historicalBorders,...globe.historicalCountries.flatMap(row=>[row.countries,row.outlines])];
+  for(const spec of new Set(globePackets.flatMap(packet=>[packet,...packet.pickGrid?[packet.pickGrid]:[]]))) {
+    if(!HASH.test(spec.sha256||'')||!spec.url?.startsWith('assets/data/globe-preview/')||
+      files.get(spec.url)?.sha256!==spec.sha256||files.get(spec.url)?.bytes!==spec.compressedBytes)
+      fail('ARTIFACT_DEPLOY_DATA_PIN','Three.js asset differs from its transfer receipt');
   }
   if(meta.projectCatalogs.rivers.version!==coherence.hydroVersion
     ||meta.projectCatalogs.lakes.version!==coherence.hydroVersion

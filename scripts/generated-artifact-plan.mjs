@@ -113,9 +113,8 @@ function validationOrPresentationOnly(changes,graph) {
   "src/map/map-input-presentation.js",
   "src/rendering/map-renderer-composition.js",
   "src/data/physical-water-model.js",
-  "src/rendering/maplibre-viewer-renderer.js",
-  "src/rendering/maplibre-rendering-domain.js",
-  "src/map/maplibre-input-presentation.js",
+  "src/rendering/three-viewer-renderer.js",
+  "src/rendering/viewer-rendering-domain.js",
   "scripts/lib/check-changes.mjs"
 ]);
 

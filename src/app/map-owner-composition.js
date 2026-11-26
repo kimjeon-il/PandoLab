@@ -14,7 +14,6 @@ import {createHydroSettings} from "../ui/physical-settings.js";
 import {createObjectCatalog} from "../document/object-catalog.js";
 import {createTerritorialLabels} from "../rendering/territorial-labels.js";
 import {createPhysicalResources} from "../rendering/physical-map-controller.js";
-import {createMapScene} from "../rendering/map-scene.js";
 import {createMapHost} from "../ui/map-workspace-host.js";
 import {createObjectPicking} from "../map/object-picking.js";
 import {mapProjectResourcePath} from "../data/map-project-manifest.js";
@@ -25,7 +24,7 @@ const READ_INITIALIZATION=Object.freeze({
   spatial:[['spatialIndex','initializeGeometryBoundsCache'],['spatialIndex','initializeMapObjectSpatialIndex'],['spatialIndex','initializeViewportCullingMetrics']],
   labels:[['territorialLabels','initializeCountryOutlineCache'],['territorialLabels','initializeLabelLayoutMetrics']],
   anchors:[['countryIndex','initializeCountryLandRevision'],['countryIndex','initializeCountryLabelAnchorWorker'],['countryIndex','initializeLabelFallbackQueue']],
-  projection:[['mapProjection','initializeMapLayoutMetricsSnapshot'],['mapProjection','initializeGraticule']],
+  projection:[['mapProjection','initializeMapLayoutMetricsSnapshot']],
 });
 export function initializeMapReadOwners(owners,phase){
   const stages=READ_INITIALIZATION[phase];
@@ -65,8 +64,7 @@ export function createMapOwners({productMode,readOnly=true,projection='globe',pl
     placeCatalog:buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'places'):null,
     placeLifetimesCatalog:buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'placeLifetimes'):null});
   const physicalResources=createPhysicalResources({capabilities,buildMeta});
-  const mapScene=createMapScene();
   const mapHost=createMapHost({productMode,readOnly,projection});
   const objectPicking=createObjectPicking({closeActiveOverlay});
-  return Object.freeze({capabilities,projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,workspaceSurfaces,projectSession,renderQuality,pointerTargets,cameraNavigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings,objectCatalog,territorialLabels,physicalResources,mapScene,mapHost,objectPicking});
+  return Object.freeze({capabilities,projectResourcePorts,projectSourceRuntime,territorialSceneRuntime,workspaceSurfaces,projectSession,renderQuality,pointerTargets,cameraNavigation,countryIndex,spatialIndex,mapProjection,objectPresentation,hydroSettings,objectCatalog,territorialLabels,physicalResources,mapHost,objectPicking});
 }

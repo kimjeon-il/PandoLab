@@ -10,15 +10,5 @@ export function renderCacheBudget(deviceMemory=globalThis.navigator?.deviceMemor
  const factor = isLowMemory ? 0.375 : isMediumMemory ? 0.625 : 1;
  return Object.freeze({
   hydroBytes:Math.round(64*MiB*factor),
-  hydroPacks:Math.max(24,Math.floor(96*factor)),
-  physicalBytes:Math.round(128*MiB*factor),
-  physicalEntries:isMediumMemory?2:3,
-  builtinGeometryBytes:Math.round(64*MiB*factor),
-  physicalDisplayBytes:Math.round(64*MiB*factor),
-  datedStandbyBytes:Math.round(96*MiB*factor),
-  workerMeshBytes:Math.round(64*MiB*factor),
-  workerGeometryInputBytes:Math.round(48*MiB*factor),
-  workerHydroShardBytes:Math.round(32*MiB*factor),
-  polarBatchBytes:Math.round(8*MiB*factor),
  });
 }

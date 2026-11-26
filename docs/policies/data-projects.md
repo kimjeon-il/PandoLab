@@ -23,7 +23,7 @@
 ## 국가 원자료·파생 자산
 
 - `assets/data/territorial-entities/source/countries/`의 객체별 원본은 메타데이터·존속기간·날짜별 `geometryVersions`를 소유한다. lineage는 명시적 참조·관계만 가지며 좌표를 복제하지 않는다. `metadata.representativeGeometryVersionId`는 무일자 대표 선택일 뿐 과거 자료 공백의 fallback이 아니다. `lifetime`은 단일 기간 객체 또는 서로 중첩되지 않는 날짜순 기간 객체 배열을 허용하며, 재성립 사이 공백에는 국가를 표시하지 않는다. 미상 기간은 null로 보존하며 역사 정확성을 뜻하지 않는다.
-- `source/views/world.json`은 공통 관측일 없는 명시적 entity/version 표시 선택이다. `source/snapshots/`의 실제 날짜 선택과 구별한다. current-world·chunk·미리보기·mesh·국가별 런타임은 파생물이며 소스의 좌표·속성을 대체하는 별도 정본이 아니다. donor 형상이 다르면 먼저 정본 선택 버전에 출처·검토와 함께 수용해야 한다.
+- `source/views/world.json`은 공통 관측일 없는 명시적 entity/version 표시 선택이다. `source/snapshots/`의 실제 날짜 선택과 구별한다. Viewer 생성기는 territorial source index에 짝지어진 세계지도 선택을 사용한다. 표시 선택을 바꾸면 소스에서 수정하고 인덱스를 먼저 재생성한다. current-world·chunk·미리보기·mesh·국가별 런타임은 파생물이며 소스의 좌표·속성을 대체하는 별도 정본이 아니다. donor 형상이 다르면 먼저 정본 선택 버전에 출처·검토와 함께 수용해야 한다.
 - sourceIndex를 사용하는 reader/생성기는 소비 원본마다 정확히 한 행과 저장 chunk SHA·해독 객체·메타데이터·bbox를 확인한다. 주입한 `entities`/`readSource`도 같은 검증 책임을 가진다. 국가별 날짜 기록·원본 binding·coverage는 각각의 현행 payload 계약을 따르며 별도 datePrecision·device-current mode를 만들지 않는다. 경로의 v1/v2 이름을 payload schema로 추정하지 않는다.
 - 현재 내장지도 index의 저장 layout은 `src/data/builtin-country-files.js`가 검증하는 `descriptor-geometries-v1`이다. 좌표 없는 국가 descriptor의 geometryRefs와 별도 geometryAssets를 연결하고 불변 readIndex로 날짜를 조회한다. 이전 country-files/합본 packed 형식의 compatibility reader를 만들지 않는다. 국가 gzip의 물리 파일은 최대 512KiB이며 큰 국가는 국가 소유 parts로 나눈다. 각 part와 재조립한 전체 gzip의 해시·길이·encoding, 해독 형상 content hash를 검증한다. 전체 국가 합본 전송이나 저장된 세계 프로젝트를 요구하지 않는다. 불변 archive payload와 chunk 원본·과거 판본은 보존하고 현재 런타임 참조 여부와 구별한다.
 - Viewer 시작용 형상 묶음은 고정 자료 판본으로부터 생성하는 전송 산출물이다. Core가 현재 조회에서 선택한 형상에 맞는 묶음만 사용한다. 묶음과 각 구성 형상의 길이·해시를 검증하며, 시점 이동과 묶음 실패 시에는 필요한 개별 형상만 기존 규칙으로 읽는다.
@@ -34,6 +34,7 @@
 ## 허용되는 원자료 수정과 활성화
 
 - 현대 원본 채택은 기존 `tools/gis/historical-display-review.mjs`의 source-only 검토 경계로만 한다. 미일자 단일 현대 버전 또는 두 대표 선택기가 이미 가리키는 선택된 dated open-ended current proxy 한 버전만 허용한다. 열린 끝점만으로 현대 자료 자격을 추정하지 않는다. 다른 버전·순서·기간·명칭·존속·부모·기존 불확실성과 출처를 유지한다.
+- 공식 World Polygons 99.5%를 표시 형상으로 채택할 때는 원본을 보존하고 확인된 Viewer 형상 구간에만 적용한다. 보관된 출처 바이트, 원본 피처 식별자 및 교체 전후의 표시 좌표 해시를 연결한다. 어느 외곽선과도 면적이 겹치지 않는 내부 링과 다른 면에 완전히 포함된 중복 폴리곤은 원본 위치를 기록하고 표시 파생본에서만 제외할 수 있다. 과거 판본 전체를 교체하려면 현대 형상의 재사용 근거와 기존 Viewer 형상 일치가 모두 필요하다.
 - `modernBoundarySupplement.sourceAdoptionReview`는 보관된 JSON의 경로·SHA로 entity/version·전후 형상 digest·원본 receipt·좌표 roundtrip·위상/소유 검사를 연결한다. 종전 attribution은 `priorPreparedAttribution`에 남긴다. 새 sourceInfo 형상 digest는 선언한 `sha256(JSON.stringify([geometry.type, geometry.coordinates]))` 기준으로 검증한다. source-only 채택에 역사 복원·생성 chunk·표시 출판물을 섞거나 다른 역사 버전을 함께 바꾸지 않는다. 원본 수용은 렌더링 승인이 아니다.
 - 확인된 잘못된 current identity의 폐기는 기존 `--retirement-manifest` 경계를 사용한다. 역사적 소멸일·과거 형상 재귀속을 만들지 않는다. 단일 선택 버전·관계 없는 단독 lineage·짝지어진 display subunit만 허용하고 모든 유입 참조를 검사한다. 일반 entity scope나 전체 prefix는 폐기 승인이 아니다.
 - 같은 scoped write lease에서 이전/활성 index·world view·display policy·builtin index/coverage/current-world 및 대상 source/chunk/lineage의 정확한 `{path,sha256}` 원본 receipt를 보존·검증한다. 선언한 파일과 정확한 view 선택만 제거하며 남은 descriptor·국가 bytes·비대상 revision을 유지한다. 폐기 producer의 정확한 file Map과 recovery receipts를 검증한 후 index를 마지막에 게시한다. 실패 시 이전 bytes를 복원하고 복원 실패는 불완전 복구로 보고한다. 이를 파일 여러 개의 원자적 filesystem 쓰기라고 주장하지 않는다.

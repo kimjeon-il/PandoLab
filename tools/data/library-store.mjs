@@ -1,6 +1,7 @@
 import {planSourceGeometryArchive,archiveStoredResources,packLibraryGzip} from './library-archive.mjs';
-import {assertVerifiedScopedWorldRetirement} from '../build/build-scoped-world-retirement.mjs';
-import {assertTerritorialRetirement,assertBuiltinRetirement,retirementDisplayPath,retirementWorldPath,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
+import {assertVerifiedScopedWorldRetirement,buildScopedWorldRetirement} from '../build/build-scoped-world-retirement.mjs';
+import {INDEPENDENT_WORLD_RETIREMENT_IDS} from '../../src/data/world-bundle-manifest.js';
+import {assertTerritorialRetirement,assertBuiltinRetirement,assertNoRetiredReferences,planTerritorialRetirement,retirementDisplayPath,retirementWorldPath,verifiedMixedCurrentWorld} from '../gis/territorial-retirement.mjs';
 import {isDeepStrictEqual} from 'node:util';
 import {execFileSync} from "node:child_process";
 import {createHash,randomUUID} from "node:crypto";
@@ -9,11 +10,11 @@ import {dirname,resolve} from "node:path";
 import {gunzipSync,gzipSync} from "node:zlib";
 import {contentFiles,contentHash,removeContentLink,replaceLibraryFile,shareContentFile} from "./library-content.mjs";
 import {assertHistoricalStorageChanges} from "../gis/historical-display-storage.mjs";
-import {assertHistoricalSourceStorageChanges} from "../gis/historical-display-review.mjs";
+import {assertHistoricalSourceStorageChanges,worldPolygonsDisplayEvidencePath} from "../gis/historical-display-review.mjs";
 import {readBuiltinCountry,readBuiltinCountryStoredBytes} from "./builtin-country-bytes.mjs";
 import {decodeTerritorialSource} from './territorial-source-codec.mjs';
 import {assertOriginalAuthoringSourceStorageChanges,assertTerritorialSourceResourceBytes} from './territorial-original-authoring.mjs';
-import {defaultRoot,gitOptions,git,libraryConfig,libraryCheckout,libraryMaterializedRoot,libraryReportRoot,librarySharedCheckout,libraryOwnerId,safeChild,decodeArchiveEntry,withLibraryLock,organizationTree} from "./library-context.mjs";
+import {defaultRoot,gitOptions,git,libraryConfig,libraryCheckout,libraryMaterializedRoot,libraryReportRoot,librarySharedCheckout,libraryOwnerId,safeChild,decodeArchiveEntry,decodeArchiveEntries,withLibraryLock,organizationTree} from "./library-context.mjs";
 import {reportRegistry,writeReportRegistry,checkedReportPath,assertReportSubject} from "./library-reports.mjs";
 import {compactOwnedCheckout,libraryWriteLeases,scopesOverlap,prepareOwnedLibraryData,ownedMaterializedView} from "./library-runtime.mjs";
 import {libraryStoragePath, preserveClassifiedStorage} from './library-storage-paths.mjs';
@@ -66,6 +67,103 @@ export async function storeBuiltinParentWindows({root=defaultRoot,windows}){
     build:inputs=>extendBuiltinParentWindows({...inputs,windows})});
 }
 
+export async function storeWorldPolygonsDisplay({root=defaultRoot,sourceBytes,repairDetachedHoles=false,composition=false,reviewed=false,partition=false,pendingRevision}){
+  const {buildWorldPolygonsDisplayEdition,assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
+  validateExpectedLibraryRevision(pendingRevision);
+  const appRevision=libraryConfig(root).revision,baselineRevision=pendingRevision??appRevision,sourceRevision=git(root,['rev-parse','HEAD']);
+  const indexPath='assets/data/builtin-world/generated/v1/index.json';
+  if([repairDetachedHoles,composition,reviewed,partition].filter(Boolean).length>1)throw Error('Choose one World Polygons display edition');
+  const sourcePath=worldPolygonsDisplayEvidencePath(repairDetachedHoles||composition||reviewed||partition?contentHash(sourceBytes):null,
+    partition?'partitions':reviewed?'reviewed':composition?'compositions':'repairs');
+  let plan;
+  const stored=storeLocalViewerEdition({root,baselineRevision,appRevision,sourceRevision,kind:'World Polygons 99.5% display',
+    advanceWorkBranch:true,prepare:readBaseline=>{
+      const edition=buildWorldPolygonsDisplayEdition({baseline:baselineRevision,readBaseline,indexPath,sourcePath,sourceBytes});
+      assertReviewedBorderEdition(edition);
+      plan=edition.plan;
+      return edition.files;
+    }});
+  return {...stored,plan};
+}
+
+export async function storeLocalTerritorialRetirement({root=defaultRoot,retirement,engine,replacementSource}){
+  const split=retirement?.kind==='split-us-minor-outlying-islands';
+  const independent=Object.hasOwn(INDEPENDENT_WORLD_RETIREMENT_IDS,retirement?.kind);
+  if(!split&&!independent&&retirement?.kind!=='existing-colombian-territories')throw Error('Explicit scoped territorial retirement manifest required');
+  if(split!==Buffer.isBuffer(replacementSource))throw Error('Original outlying-island features required for an aggregate split');
+  const {buildBuiltinWorldRetirementPublication,buildMinorOutlyingIslandPublication}=await import('../build/build-builtin-world.mjs');
+  const baselineRevision=libraryConfig(root).revision, sourceRevision=git(root,['rev-parse','HEAD']);
+  const shared=librarySharedCheckout(root), archive=JSON.parse(git(shared,['show',baselineRevision+':archive/index.json']));
+  const read=path=>{
+    const entry=archive.files[path];
+    if(!entry)throw Error('Missing retirement baseline: '+path);
+    return decodeArchiveEntry(shared,entry,baselineRevision);
+  };
+  const readRecovery=path=>split&&path===retirement.replacementSource?.path?replacementSource:read(path);
+  const territorial='assets/data/territorial-entities', builtin='assets/data/builtin-world/generated/v1';
+  const indexPath=territorial+'/generated/v2/index.json', viewPath=territorial+'/source/views/world.json';
+  const policyPath='assets/data/historical-world/policy.json', worldPath='assets/data/world/current.json';
+  const previousSourceIndex=JSON.parse(read(indexPath));
+  const plan=planTerritorialRetirement(retirement,previousSourceIndex,{readRecovery:read});
+  const {colombianChunk}=plan,policy=JSON.parse(read(policyPath));
+  if(plan.existingColombia){
+    const oldColombia=plan.previousBuiltinIndex.entities.find(row=>row.entityId==='COL');
+    if(retirement.recipient.builtinDescriptor.path!==builtin+'/'+oldColombia?.file
+      ||archive.files[retirement.recipient.builtinDescriptor.path]?.sha256!==retirement.recipient.builtinDescriptor.sha256)
+      throw Error('Unpaired archived Colombian descriptor');
+  }
+  for(const [path,receipt] of plan.recoveryReceipts){
+    if(receipt.path!==path||archive.files[path]?.sha256!==receipt.sha256)throw Error('Unpaired retirement recovery receipt: '+path);
+  }
+  const retiredReferences=new Set([...plan.sourceIds,...plan.featureIds,...plan.lineageIds]);
+  const adjacent=plan.independentId==='CNM'?['CYN','CYP','ESB','WSB']:['ARG','CHL'];
+  const survivingDescriptors=new Map(Object.entries(archive.files)
+    .filter(([path])=>path.startsWith(territorial+'/source/countries/')&&!plan.removePaths.includes(path)
+      &&(!independent||adjacent.some(id=>path===territorial+'/source/countries/state-'+id+'.json'))));
+  for(const bytes of decodeArchiveEntries(shared,survivingDescriptors,baselineRevision).values())
+    assertNoRetiredReferences(JSON.parse(bytes),retiredReferences);
+  const publication=split?buildMinorOutlyingIslandPublication({plan,previousSourceIndex,policy,readBaseline:read,readRecovery}):{
+    sourceIndex:plan.index,view:plan.index.views[0],displayPolicy:plan.displayPolicy,
+    sourceFiles:independent?new Map():new Map([[territorial+'/generated/v2/'+colombianChunk.nextEntry.file,colombianChunk.stored]]),
+    files:buildBuiltinWorldRetirementPublication({retirement,sourceIndex:plan.index,previousSourceIndex,view:plan.index.views[0],
+      policy,previousIndex:plan.previousBuiltinIndex,previousCoverage:plan.previousCoverage,displayPolicy:plan.displayPolicy,readRecovery}),
+  };
+  const world=await buildScopedWorldRetirement({kind:retirement.kind,worldBytes:read(worldPath),currentWorldBytes:read(retirementWorldPath),
+    readAsset:url=>read('assets/data/'+url),engine,replacements:publication.replacements});
+  const proof=assertVerifiedScopedWorldRetirement(world.files);
+  if(proof.baselineWorldSha256!==archive.files[worldPath].sha256
+    ||proof.baselineCurrentWorldSha256!==archive.files[retirementWorldPath].sha256
+    ||proof.baselineAssets.some(row=>archive.files[row.path]?.sha256!==row.sha256||archive.files[row.path]?.bytes!==row.bytes))
+    throw Error('Scoped world retirement preimages differ from the pinned archive');
+  const current=JSON.parse(world.files.get(retirementWorldPath));
+  if(split){
+    for(const feature of publication.replacements)
+      if(!isDeepStrictEqual(current.features.find(row=>row.id===feature.id),feature))
+        throw Error('Unpaired outlying-island world feature: '+feature.id);
+  }else if(plan.existingColombia&&!isDeepStrictEqual(current.features.find(feature=>feature.id==='COL')?.geometry,colombianChunk.geometry))
+    throw Error('Colombian world and territorial chunk geometry differ');
+  assertNoRetiredReferences(current,retiredReferences);
+  const serialize=value=>Buffer.from(JSON.stringify(value,null,2)+'\n');
+  const files=new Map(world.files);
+  for(const [file,bytes] of publication.files)files.set(builtin+'/'+file,bytes);
+  for(const [file,bytes] of publication.sourceFiles)files.set(file,bytes);
+  files.set(indexPath,serialize(publication.sourceIndex));
+  files.set(viewPath,serialize(publication.view));
+  if(!independent)files.set(retirementDisplayPath,serialize(publication.displayPolicy));
+  const evidence=serialize({schemaVersion:1,baselineRevision,retirement,worldProof:JSON.parse(world.proofBytes)});
+  files.set(territorial+'/source/retirements/sha256-'+contentHash(evidence)+'.json',evidence);
+  const removalReceipts=new Map(plan.removePaths.map(path=>[path,plan.recoveryReceipts.get(path)]));
+  const descriptorPrefix=builtin+'/countries/'+plan.independentId+'-sha256-';
+  if(independent)for(const [path,entry] of Object.entries(archive.files)){
+    if(!path.startsWith(descriptorPrefix)||!/^[a-f0-9]{64}\.json\.gz$/.test(path.slice(descriptorPrefix.length)))continue;
+    if(JSON.parse(gunzipSync(read(path))).entityId!==plan.independentId)throw Error('Retired descriptor identity differs: '+path);
+    removalReceipts.set(path,{path,sha256:entry.sha256});
+  }
+  const stored=storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:'territorial retirement',advanceWorkBranch:true,
+    prepare:()=>files,removalReceipts});
+  return {...stored,retired:[...plan.sourceIds],...(split?{registered:publication.replacements.map(f=>f.id)}:{}),world:world.summary};
+}
+
 async function storeBuiltinWorldSelection({root,kind,build}){
   const {readProjectGenerationContext}=await import('../build/project-generation-context.mjs');
   const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
@@ -77,14 +175,21 @@ async function storeBuiltinWorldSelection({root,kind,build}){
     }});
 }
 
-function storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind,prepare}){
+function storeLocalViewerEdition({root,baselineRevision,appRevision=baselineRevision,sourceRevision,kind,prepare,advanceWorkBranch=false,removalReceipts=new Map()}){
   return withLibraryLock(root,()=>{
-    if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active')
+    if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active'
+      ||libraryConfig(root).revision!==appRevision)
       throw Error('Application revision changed before storing the Viewer edition');
     const shared=librarySharedCheckout(root),head=git(shared,['rev-parse','HEAD']);
     if(git(shared,['symbolic-ref','--short','HEAD'])!=='main'||git(shared,['status','--porcelain','--untracked-files=no']))
       throw Error('Preserve the library checkout edits before storing the Viewer edition');
-    git(shared,['merge-base','--is-ancestor',baselineRevision,head]);
+    const workRef='refs/heads/work/active';
+    if(advanceWorkBranch){
+      if(git(shared,['rev-parse',workRef])!==baselineRevision)
+        throw Error('Local library work branch differs from the Viewer edition baseline');
+      if(baselineRevision!==appRevision&&git(shared,['rev-parse',baselineRevision+'^'])!==appRevision)
+        throw Error('Pending Viewer edition must directly descend from the paired data pin');
+    }else git(shared,['merge-base','--is-ancestor',baselineRevision,head]);
     const baseline=JSON.parse(git(shared,['show',baselineRevision+':archive/index.json']));
     const files=prepare(path=>{
       const entry=baseline.files[path];
@@ -92,7 +197,12 @@ function storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind,prep
       return decodeArchiveEntry(shared,entry,baselineRevision);
     });
     const archived=structuredClone(baseline),directories=directRuntimeDirectories(archived);
-    const selected=new Set(files.keys());
+    for(const [path,receipt] of removalReceipts){
+      if(files.has(path)||receipt.path!==path||baseline.files[path]?.sha256!==receipt.sha256)
+        throw Error('Viewer edition has an invalid removal preimage: '+path);
+      delete archived.files[path];
+    }
+    const selected=new Set([...files.keys(),...removalReceipts.keys()]);
     if(!selected.size)return {revision:baselineRevision,retained:head,files:[]};
     if(libraryWriteLeases(shared).some(lease=>lease.alive&&lease.prefixes.some(p=>[...selected].some(q=>scopesOverlap(p,q)))))
       throw Error('A library writer overlaps the Viewer edition');
@@ -118,102 +228,22 @@ function storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind,prep
       for(const [logical,bytes] of files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
       archived.sourceRevision=sourceRevision;
       put('archive/index.json',Buffer.from(JSON.stringify(archived)+'\n'));
-      run(['update-index','-z','--index-info'],[...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`).join(''));
+      const removedDirect=[...removalReceipts.keys()].filter(path=>baseline.files[path].stored===path&&!protectedPaths.has(path));
+      const removals=removedDirect.map(path=>`0 ${'0'.repeat(40)}\t${path}\0`);
+      run(['update-index','-z','--index-info'],removals.concat([...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`)).join(''));
       const tree=run(['write-tree']);
       const revision=run([...ident,'commit-tree',tree,'-p',baselineRevision,'-m','Store '+kind+' Viewer edition']);
       for(const [p,bytes] of files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
       for(const [p,entry] of Object.entries(baseline.files))if(!selected.has(p)&&!isDeepStrictEqual(entry,archived.files[p]))
         throw Error('Viewer edition changed an unselected file: '+p);
+      if(advanceWorkBranch){
+        git(shared,['update-ref',workRef,revision,baselineRevision]);
+        return {revision,retained:revision,files:[...files.keys()].sort(),removed:[...removalReceipts.keys()].sort()};
+      }
       // Reachability keeps the edition pinned without moving the authoring tree
       // back to the application's older data or publishing unrelated history.
       const retained=run([...ident,'commit-tree',git(shared,['rev-parse',head+'^{tree}']),'-p',head,'-p',revision,
         '-m','Retain local '+kind+' Viewer edition '+revision]);
-      git(shared,['update-ref','refs/heads/main',retained,head]);
-      return {revision,retained,files:[...selected].sort()};
-    }finally{
-      for(const p of [scratch+'.lock',scratch])if(existsSync(p))unlinkSync(p);
-    }
-  });
-}
-
-
-/** Create the application's scoped edition while retaining the authoring tree. */
-export async function storeReviewedBorderEdition({root=defaultRoot,result,evidenceRevision,sourceRevision,workingReports=new Map()}){
-  validateExpectedLibraryRevision(evidenceRevision);validateExpectedLibraryRevision(sourceRevision);
-  if(!evidenceRevision||!sourceRevision)throw Error('Reviewed edition requires explicit revisions');
-  const {assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
-  return withLibraryLock(root,()=>{
-    assertReviewedBorderEdition(result);
-    if(git(root,['rev-parse','HEAD'])!==sourceRevision||git(root,['symbolic-ref','--short','HEAD'])!=='work/active')
-      throw Error('Application revision changed before storing the reviewed edition');
-    const shared=librarySharedCheckout(root),head=git(shared,['rev-parse','HEAD']);
-    if(git(shared,['symbolic-ref','--short','HEAD'])!=='main'||git(shared,['status','--porcelain','--untracked-files=no']))
-      throw Error('Preserve the library checkout edits before storing the reviewed edition');
-    git(shared,['merge-base','--is-ancestor',result.baseline,head]);
-    git(shared,['merge-base','--is-ancestor',evidenceRevision,head]);
-    const baseline=JSON.parse(git(shared,['show',result.baseline+':archive/index.json']));
-    const evidence=JSON.parse(git(shared,['show',evidenceRevision+':archive/index.json']));
-    const archived=structuredClone(baseline),directories=directRuntimeDirectories(archived);
-    const selected=new Set([...result.files.keys(),...Object.keys(result.reports)]);
-    if(libraryWriteLeases(shared).some(lease=>lease.alive&&lease.prefixes.some(p=>[...result.files.keys()].some(q=>scopesOverlap(p,q)))))
-      throw Error('A library writer overlaps the reviewed edition');
-    const protectedPaths=new Set(Object.entries(baseline.files).filter(([p])=>!selected.has(p))
-      .flatMap(([,spec])=>archiveStoredResources(spec).map(r=>r.stored)));
-    const scratch=resolve(shared,'.pando-store','reviewed-border-'+randomUUID()+'.index');
-    mkdirSync(dirname(scratch),{recursive:true});
-    const date=git(root,['show','-s','--format=%aI',sourceRevision]);
-    const env={...process.env,GIT_INDEX_FILE:scratch,GIT_NO_LAZY_FETCH:'1',GIT_OPTIONAL_LOCKS:'0',
-      GIT_AUTHOR_DATE:date,GIT_COMMITTER_DATE:date};
-    const run=(args,input)=>execFileSync('git',[...gitOptions,...args],{cwd:shared,env,input,encoding:'utf8',maxBuffer:32*1024*1024}).trim();
-    const objects=new Map();
-    const mapObject=(path,oid)=>{
-      if(protectedPaths.has(path)&&git(shared,['rev-parse',result.baseline+':'+path])!==oid)
-        throw Error('Reviewed edition collides with a retained object: '+path);
-      if(objects.has(path)&&objects.get(path)!==oid)throw Error('Conflicting reviewed edition object: '+path);
-      objects.set(path,oid);
-    };
-    const put=(path,bytes)=>mapObject(path,run(['hash-object','-w','--stdin'],bytes));
-    const ident=['-c','user.name=Pando library publisher','-c','user.email=library-publisher@users.noreply.github.com'];
-    try{
-      run(['read-tree',result.baseline]);
-      for(const [logical,bytes] of result.files)archived.files[logical]=archiveFile(logical,bytes,directories.has(dirname(logical)),put);
-      for(const [logical,sha256] of Object.entries(result.reports)){
-        const entry=evidence.files[logical];
-        const prior=baseline.files[logical];
-        if(!entry&&prior){
-          if(contentHash(decodeArchiveEntry(shared,prior,result.baseline))!==sha256)
-            throw Error('Reviewed evidence differs from a retained report: '+logical);
-          continue;
-        }
-        if(!entry){
-          const bytes=workingReports.get(logical);
-          if(!Buffer.isBuffer(bytes)||contentHash(bytes)!==sha256)
-            throw Error('Reviewed working original does not match the sealed evidence: '+logical);
-          assertReportSubject(root,logical);
-          archived.files[logical]=archiveFile(logical,bytes,true,put);
-          continue;
-        }
-        if(entry?.sha256!==sha256)throw Error('Reviewed evidence is not archived with the verified hash: '+logical);
-        const bytes=decodeArchiveEntry(shared,entry,evidenceRevision);
-        if(prior&&prior.sha256!==contentHash(bytes))throw Error('Reviewed evidence differs from a retained report: '+logical);
-        if(prior)continue;
-        archived.files[logical]=entry;
-        for(const spec of archiveStoredResources(entry))mapObject(spec.stored,git(shared,['rev-parse',evidenceRevision+':'+spec.stored]));
-      }
-      archived.sourceRevision=sourceRevision;
-      put('archive/index.json',Buffer.from(JSON.stringify(archived)+'\n'));
-      run(['update-index','-z','--index-info'],[...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`).join(''));
-      const tree=run(['write-tree']);
-      const revision=run([...ident,'commit-tree',tree,'-p',result.baseline,'-m','Store reviewed shared border Viewer edition']);
-      for(const [p,bytes] of result.files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
-      for(const [p,sha256] of Object.entries(result.reports))
-        if(contentHash(decodeArchiveEntry(shared,archived.files[p],revision))!==sha256)throw Error('Edition evidence readback differs: '+p);
-      for(const [p,entry] of Object.entries(baseline.files))if(!selected.has(p)&&!isDeepStrictEqual(entry,archived.files[p]))
-        throw Error('Reviewed edition changed an unselected file: '+p);
-      // Reachability keeps the edition pinned without moving the authoring tree
-      // back to the application's older data or publishing unrelated history.
-      const retained=run([...ident,'commit-tree',git(shared,['rev-parse',head+'^{tree}']),'-p',head,'-p',revision,
-        '-m','Retain local reviewed Viewer edition '+revision]);
       git(shared,['update-ref','refs/heads/main',retained,head]);
       return {revision,retained,files:[...selected].sort()};
     }finally{
@@ -240,6 +270,8 @@ export function assertExpectedLibraryRevision({ expectedRevision, expectedBranch
 }
 
 export function storeLibraryData({ root = defaultRoot, push = false, prefixes = null, removePaths = [], expectedRevision, expectedBranch, expectedAppBranch, readPreviousCountry,readPreviousSource,retirement=null,worldRetirementFiles=null,materialized } = {}) {
+  if(['existing-colombian-territories','split-us-minor-outlying-islands',...Object.keys(INDEPENDENT_WORLD_RETIREMENT_IDS)].includes(retirement?.kind))
+    throw Error('Use --store-local-retirement for the paired archive transition');
   validateExpectedLibraryRevision(expectedRevision);
   if(retirement?.kind==='mixed-current-identity-retirement'){assertVerifiedScopedWorldRetirement(worldRetirementFiles);}else if(worldRetirementFiles)throw Error('Scoped world retirement token requires mixed retirement');
   validateExpectedBranch(expectedBranch);

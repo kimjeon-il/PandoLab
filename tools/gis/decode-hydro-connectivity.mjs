@@ -4,7 +4,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { createHydroWorkerDecoder } from "./hydro-pack-decoder.mjs";
+import { createHydroPackDecoder } from "./hydro-pack-decoder.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const [input, output] = process.argv.slice(2);
@@ -27,7 +27,7 @@ function verified(spec) {
   }
   return bytes;
 }
-const decoder = createHydroWorkerDecoder(manifest, {root});
+const decoder = createHydroPackDecoder(manifest, {root});
 decoder.readGlobalIndex(gunzipSync(verified(manifest.index)));
 decoder.readFeatureMetadata(gunzipSync(verified(manifest.metadata.core)));
 for (const row of JSON.parse(gunzipSync(verified(manifest.metadata.detail))).features) {

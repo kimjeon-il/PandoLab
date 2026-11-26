@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {open,readFile,realpath,stat} from 'node:fs/promises';
 import {isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {gunzipSync} from 'node:zlib';
-import {createHydroWorkerDecoder,decodeHydroGeneratedPack,decodeHydroSelectedPack} from './hydro-pack-decoder.mjs';
+import {createHydroPackDecoder,decodeHydroGeneratedPack,decodeHydroSelectedPack} from './hydro-pack-decoder.mjs';
 
 async function localSource(root,url){
   if(typeof url!=='string'||!url||isAbsolute(url)||url.includes('\\')||url.split('/').some(part=>!part||part==='.'||part==='..'))
@@ -43,7 +43,7 @@ export async function loadSelectedHydroFeatures({directory,bounds,logicalFids,si
   const files=new Map();for(const spec of [manifest.index,manifest.metadata.core,manifest.metadata.detail])
     files.set(spec.sha256,await readResource(root,spec,signal));
   const index=gunzipSync(files.get(manifest.index.sha256),{maxOutputLength:64*1024*1024}),
-    core=gunzipSync(files.get(manifest.metadata.core.sha256),{maxOutputLength:64*1024*1024}),decoder=createHydroWorkerDecoder({stages:manifest.stages});
+    core=gunzipSync(files.get(manifest.metadata.core.sha256),{maxOutputLength:64*1024*1024}),decoder=createHydroPackDecoder({stages:manifest.stages});
   decoder.readGlobalIndex(index);decoder.readFeatureMetadata(core);
   const ids=logicalFids??[...new Set([...decoder.featureMetadata.values()].filter(row=>{const b=row.bounds;
     if(!Array.isArray(b)||b.length!==4||b.some(value=>!Number.isFinite(value)))throw Error('Invalid Hydro selection metadata bounds');
@@ -66,7 +66,7 @@ export async function loadCompleteHydroFeatures({directory,acknowledgeWholeCatal
     !Array.isArray(manifest.stages)||manifest.stages.length!==4)throw Error('Invalid Hydro manifest');
   const files=new Map();for(const spec of [manifest.index,manifest.metadata.core,manifest.metadata.detail,...manifest.shards])
     files.set(spec.sha256,await readResource(root,spec,signal));
-  const decoder=createHydroWorkerDecoder({stages:manifest.stages});
+  const decoder=createHydroPackDecoder({stages:manifest.stages});
   decoder.readGlobalIndex(gunzipSync(files.get(manifest.index.sha256),{maxOutputLength:64*1024*1024}));
   const features=decodeHydroGeneratedPack({files,layout:manifest,stages:manifest.stages,expectedStats:manifest.stats});
   signal?.throwIfAborted();return {manifest,manifestBytes:manifestBytes.length,features,packCount:decoder.packSpecs.size,

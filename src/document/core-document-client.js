@@ -2,7 +2,6 @@ import { createWorkerRpcClient } from "../runtime/worker-rpc.js";
 import {createVerifiedCoreWorker} from '../runtime/core-wasm-loader.js';
 import {workerAssetUrl} from "../runtime/worker-asset-url.js";
 import { createProductModePolicy } from "../app/product-mode-policy.js";
-import {createCoreRequestQueue} from './core-request-queue.js';
 
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const stateResponses = new Set(['core.document-state']);
@@ -17,12 +16,12 @@ export function createCoreDocumentClient({
   const policy = createProductModePolicy(productMode,{readOnly});
   let currentState = null;
   let disposed = false;
-  let timelineIntent=null;
+  let queue = Promise.resolve();
   let geometryLoader=null;
-  let documentGeneration=0,geometryCacheRevision=0;
+  let documentGeneration=0;
   const staleGeometryReceipt=Symbol('stale geometry preparation');
   const geometryReceipts=new WeakMap();
-  const verifiedResourceAdmissions=new WeakMap(),geometryResponseRevisions=new WeakMap();
+  const verifiedResourceAdmissions=new WeakMap();
   const replacesDocument=new Set(['core.document-load','core.document-load-baseline','core.document-initialize',
     'core.storage-baseline-load','core.document-temporal-candidate-adopt','core.document-replacement-rollback']);
   const subscribers = new Set();
@@ -37,34 +36,21 @@ export function createCoreDocumentClient({
   ]);
   const cancelled = (code,message) => Object.assign(new Error(message),
     { code,name:'AbortError',cancelled:true });
-  const queue=createCoreRequestQueue(()=>cancelled('PL-CORE-CANCELLED','Request cancelled before dispatch.'));
-  // One latest-wins lane for interactive dates. A caller's explicit abort
-  // also cancels network preparation, but never interrupts an atomic commit.
-  function beginTimelineIntent(options){
-    if(disposed||options.signal?.aborted)throw cancelled('PL-CORE-CANCELLED','Timeline request cancelled.');
-    if(options.isCurrent?.()===false)throw cancelled('PL-CORE-STALE','Timeline request superseded.');
-    timelineIntent?.controller.abort();
-    const intent={controller:new AbortController()};
-    timelineIntent=intent;
-    return intent;
-  }
-  function timelineOptions(options,intent){
-    const signal=options.signal?AbortSignal.any([options.signal,intent.controller.signal]):intent.controller.signal;
-    return {...options,signal,isCurrent:()=>!disposed&&timelineIntent===intent&&!signal.aborted&&options.isCurrent?.()!==false};
-  }
   // After a lost reply the document state is unknown. Only load or initialize
   // can open a new session, since all other operations require currentState.
   const rpc = createWorkerRpcClient({ createWorker, isCurrent: () => true,
     onCrash: () => { currentState = null; } });
   function ordered(operation, payload, options = {}, requiresDocument = true, atomic = false, injectEpoch = requiresDocument, geometryReceipt = null) {
-    return queue.submit(async () => {
+    const result = queue.then(async () => {
       policy.assertOperation(operation);
-      if (disposed||options.signal?.aborted)
-        throw cancelled('PL-CORE-CANCELLED','Request cancelled before dispatch.');
+      if (disposed) throw Object.assign(new Error('The C++ document owner was disposed.'),
+        { code: 'PL-CORE-CANCELLED', name: 'AbortError', cancelled: true });
       if (options.isCurrent && !options.isCurrent()) fail('PL-CORE-STALE', 'The request belongs to another project generation.');
       if (requiresDocument && !currentState) fail('PL-CORE-NOT-LOADED', 'The complete C++ document has not been loaded.');
       const speculative=speculativeOps.get(operation);
-      if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration||geometryReceipt.cacheRevision!==geometryCacheRevision))
+      if ((atomic || speculative) && options.signal?.aborted)
+        throw cancelled('PL-CORE-CANCELLED','Document operation was cancelled before dispatch.');
+      if(geometryReceipt&&(geometryReceipt.epoch!==currentState?.epoch||geometryReceipt.generation!==documentGeneration))
         return staleGeometryReceipt;
       const request = injectEpoch ? { ...payload,
         expectedEpoch: Object.hasOwn(payload, 'expectedEpoch') ? payload.expectedEpoch : currentState?.epoch ?? 0 } : payload;
@@ -97,9 +83,6 @@ export function createCoreDocumentClient({
       if (detachedOps.has(operation))
         return result;
       if(replacesDocument.has(operation))documentGeneration++;
-      if(operation==='core.document-geometry-admit'||operation==='core.document-timeline-cursor')geometryCacheRevision++;
-      if(operation==='core.document-geometry-requirements'||operation==='core.document-geometry-admit')
-        geometryResponseRevisions.set(result,geometryCacheRevision);
       const next = stateResponses.has(operation) ? result : result?.state;
       if (next) {
         if (!Number.isSafeInteger(next.epoch) || next.epoch < 0) fail('PL-CORE-RESPONSE', 'A current document operation epoch is required.');
@@ -107,9 +90,7 @@ export function createCoreDocumentClient({
           ? { dirtyTerritorialIds: Object.freeze([...next.dirtyTerritorialIds]) }: {}) });
       }
       try {
-        const verified=verifiedResourceAdmissions.get(payload);
-        verifiedResourceAdmissions.delete(payload);
-        onTransition(result, operation, payload, verified);
+        onTransition(result, operation, payload, verifiedResourceAdmissions.get(payload));
         // Accepted read projections publish synchronously in this queue. A
         // subscriber must not dispatch and await another queued Core request.
         for (const listener of subscribers) listener(result, operation, payload);
@@ -121,42 +102,38 @@ export function createCoreDocumentClient({
         throw error;
       }
       return result;
-    },options.signal);
+    });
+    queue = result.catch(() => {});
+    return result;
   }
-  async function ensureGeometryResources(month,options={},intent){
+  async function ensureGeometryResources(month,options={}){
     const generation=documentGeneration;
     const query=await ordered('core.document-geometry-requirements',{month},options);
     if(!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
-    let cacheRevision=geometryResponseRevisions.get(query);
     const isCurrent=()=>!disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
-      &&geometryCacheRevision===cacheRevision&&options.isCurrent?.()!==false&&!options.signal?.aborted;
+      &&options.isCurrent?.()!==false&&!options.signal?.aborted;
     if(query.resources.length){
       if(typeof geometryLoader!=='function')fail('GEOMETRY_UNLOADED','Required immutable geometry loader is unavailable.');
       const resources=await geometryLoader(query.resources,{...options,isCurrent});
       if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
       const admission={resources,month,expectedEpoch:query.sourceEpoch};
-      verifiedResourceAdmissions.set(admission,{descriptors:query.resources,resources});
-      const admitted=await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
-      cacheRevision=geometryResponseRevisions.get(admitted);
+      verifiedResourceAdmissions.set(admission,{resources,descriptors:query.resources});
+      await ordered('core.document-geometry-admit',admission,{...options,isCurrent},true,true);
     }
     if(!isCurrent())throw cancelled('PL-CORE-STALE','Geometry admission crossed a document or date request.');
     const receipt=Object.freeze({});
-    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation,cacheRevision,intent});
+    geometryReceipts.set(receipt,{month,epoch:query.sourceEpoch,generation});
     return receipt;
   }
-  async function prepareTimelineGeometryForIntent(month,options,intent){
+  async function prepareTimelineGeometry(month,options={}){
     for(;;){
-      const epoch=currentState?.epoch,generation=documentGeneration,cacheRevision=geometryCacheRevision;
-      try{return await ensureGeometryResources(month,options,intent);}
+      const epoch=currentState?.epoch,generation=documentGeneration;
+      try{return await ensureGeometryResources(month,options);}
       catch(error){
         if((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
-          ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation&&geometryCacheRevision===cacheRevision)||!currentState)throw error;
+          ||options.isCurrent?.()===false||(currentState?.epoch===epoch&&documentGeneration===generation)||!currentState)throw error;
       }
     }
-  }
-  async function prepareTimelineGeometry(month,options={}){
-    const intent=beginTimelineIntent(options);
-    return prepareTimelineGeometryForIntent(month,timelineOptions(options,intent),intent);
   }
   return Object.freeze({
     productMode: policy.productMode,
@@ -200,15 +177,9 @@ export function createCoreDocumentClient({
     setTimelineCursor: async(month, options={}) => {
       try {
         let receipt=geometryReceipts.get(options.geometryPreparation);
-        if(receipt?.month===month&&(receipt.intent!==timelineIntent||receipt.intent.controller.signal.aborted))
-          throw cancelled('PL-CORE-STALE','Timeline geometry receipt was superseded.');
-        const intent=receipt?.month===month?receipt.intent:beginTimelineIntent(options);
-        const scoped=timelineOptions(options,intent);
         for(;;){
-          if(scoped.signal.aborted||!scoped.isCurrent())throw cancelled('PL-CORE-STALE','Timeline request superseded.');
-          if(receipt?.month!==month||receipt.intent!==intent)
-            receipt=geometryReceipts.get(await prepareTimelineGeometryForIntent(month,scoped,intent));
-          const accepted=await ordered('core.document-timeline-cursor',{month},scoped,true,true,true,receipt);
+          if(receipt?.month!==month)receipt=geometryReceipts.get(await prepareTimelineGeometry(month,options));
+          const accepted=await ordered('core.document-timeline-cursor',{month},options,true,true,true,receipt);
           if(accepted!==staleGeometryReceipt)return accepted;
           receipt=null;
         }
@@ -225,12 +196,10 @@ export function createCoreDocumentClient({
     projectState: options => ordered('core.document-state', {}, options),
     selectionCatalogLoad: (domain,refs,expectedEpoch,options) => ordered('core.document-selection-catalog',
       { domain,refs,...(expectedEpoch===undefined ? {}:{ expectedEpoch }) },options,true,true),
-    selectionCatalogPatch: (refs,removed,expectedEpoch,options) => ordered('core.document-selection-catalog',
-      {domain:'hydroBuiltin',refs,removed,...(expectedEpoch===undefined?{}:{expectedEpoch})},options,true,true),
     presentationCatalogLoad: (catalog,options) => ordered('core.document-presentation-catalog',{ catalog },options,true,true),
     selectionApply: (payload, options) => ordered('core.document-selection-apply', payload, options, true, true),
     selectionSnapshot: options => ordered('core.document-selection-snapshot', {}, options),
     state: () => currentState,
-    dispose: () => { if(disposed)return;disposed=true;timelineIntent?.controller.abort();timelineIntent=null;queue.close();geometryLoader=null;currentState = null; subscribers.clear(); rpc.stop(); },
+    dispose: () => { if(disposed)return;disposed=true;geometryLoader=null;currentState = null; subscribers.clear(); rpc.stop(); },
   });
 }

@@ -1,14 +1,7 @@
-import {loadPhysicalLandGeometry,selectPhysicalLandAsset} from '../data/physical-land-patch.js';
-import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
 import {timelineObjectKey} from '../document/timeline-records.js';
-import {normalizeObjectRef} from '../document/object-ref-identity.js';
-import {projectResourceOverlay} from '../document/project-resource-overlay.js';
-import {createPhysicalAssetReader} from '../data/physical-asset-reader.js';
 import {mapProjectResourcePath} from '../data/map-project-manifest.js';
-import {resolvePhysicalWaterObjects,physicalWaterContextKey,physicalWaterReferenceView,composePhysicalWaterGeometry} from '../data/physical-water-model.js';
-import {createPhysicalWaterPresentation} from './physical-water-presentation.js';
-import {createPhysicalContextCache} from './physical-context-cache.js';
-import {renderCacheBudget} from './render-cache-budget.js';
+import {selectPhysicalLandAsset} from '../data/physical-land-patch.js';
+import {resolvePhysicalWaterObjects,physicalWaterContextKey,physicalWaterReferenceView} from '../data/physical-water-model.js';
 
 // Runtime coordinator: the data layer owns source reads and the C++ owner
 // owns admitted identities; this rendering layer owns visual preparation.
@@ -17,20 +10,6 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
   const projectHydro=buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'rivers'):null;
   let dependencies;
   let hydroService;
-  // Data-layer reader owns immutable asset loading and retries; rendering only
-  // coordinates accepted source selection, Core admission and visual readiness.
-  const assetReader=createPhysicalAssetReader({buildMeta,
-    resolveBaseUrl:()=>dependencies.physicalConfig.PHYSICAL_DATA_BASE_URL,
-    onLandReady:()=>dependencies.domains.renderingDomain.invalidateProject('physical-land-ready')});
-  const storedPhysicalAssets=()=>assetReader.storedPhysicalAssets();
-  const loadPhysicalLand=assetReader.loadPhysicalLand;
-  const budget=renderCacheBudget();
-  const waterContexts=createPhysicalContextCache({byteBudget:budget.physicalBytes,entryLimit:budget.physicalEntries});
-  let requestedWaterKey=null,preparedWaterKey=null,preparedWaterRequest=null;
-  const trimWaterContexts=()=>{
-    const pins=[requestedWaterKey,preparedWaterKey];
-    waterContexts.cancelUnpinnedLoads(pins);waterContexts.trim(pins);
-  };
   let physicalSelection=null;
   // The active document, not the serialized sourceMode field, selects
   // optional project-owned Hydro/physical-water catalogs.
@@ -40,11 +19,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     hydroService?.cancel();
     activeSource=source==='builtin'?'builtin':'project';
     projectSourceEpoch++;
-    requestedWaterKey=null;physicalSelection=null;builtinTimelineView=null;
-    for(const entry of waterContexts.values())entry.activation=null;
-    presentPhysicalWater.clear();
-    if(activeSource!=='builtin'){preparedWaterKey=null;preparedWaterRequest=null;waterContexts.clear();}
-    else trimWaterContexts();
+    physicalSelection=null;builtinTimelineView=null;
   }
   function physicalSelectionFor(date) {
     const catalog=buildMeta.physicalWaterObjects;
@@ -53,10 +28,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     if(rows.some(row=>row.assets.land.sha256!==rows[0].assets.land.sha256))throw new Error('Selected water objects require one coherent physical land derivative.');
     const historicalLand=rows[0]?.assets.land??buildMeta.physicalLand;
     const landAsset=selectPhysicalLandAsset(buildMeta.physicalLand,buildMeta.modernCoast,historicalLand,date);
-    const modern=landAsset!==historicalLand;
-    const waterKey=physicalWaterContextKey(rows);
-    return {catalog,date,rows,landAsset,useDistinctContext:modern||rows.length>0,
-      key:modern?JSON.stringify([waterKey,landAsset.sha256]):waterKey};
+    return {catalog,date,rows,landAsset,key:physicalWaterContextKey(rows)};
   }
   function selectedPhysicalWater() {
     if(activeSource!=='builtin')
@@ -67,141 +39,17 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     }
     return physicalSelection;
   }
-  function ensurePhysicalContext({rows:selected,key,landAsset}) {
-    if(waterContexts.has(key))return waterContexts.get(key);
-    const controller=new AbortController();
-    const entry={status:'loading',value:null,promise:null,activation:null,presentation:null,presentationKey:null,controller,bytes:0};
-    waterContexts.set(key,entry);
-    const loader=storedPhysicalAssets(),decode=buffer=>JSON.parse(new TextDecoder().decode(buffer));
-    entry.promise=Promise.all([
-      loadPhysicalLandGeometry(landAsset,{
-        loadGeometry:spec=>loader.loadAsset(spec,'background',key+'-land','육지 배경',decode,controller.signal).then(result=>result.value),
-        loadPatch:spec=>loader.loadAsset(spec,'background',key+'-land-replacement','지역 육지 변경',decode,controller.signal).then(result=>result.value),
-      }).then(value=>({value})),
-      ...selected.map(row=>loader.loadAsset(row.assets.asset,'background',JSON.stringify(row.geometryRef)+'-water','수역 형상',decode,controller.signal)),
-    ]).then(([land,...waters])=>{
-      if(land.value.type!=='MultiPolygon'||waters.some(water=>!['Polygon','MultiPolygon'].includes(water.value.type)))throw new Error('Invalid physical-water geometry.');
-      entry.value=Object.freeze({geometry:land.value,revision:landAsset.sha256,
-        waters:selected.map((row,index)=>({row,water:waters[index].value,waterRevision:row.assets.asset.sha256}))});
-      entry.status='ready';entry.controller=null;
-      if(waterContexts.get(key)===entry){waterContexts.measure(entry);trimWaterContexts();}
-      return entry.value;
-    }).catch(error=>{controller.abort();entry.controller=null;entry.status='error';entry.error=error;
-      if(waterContexts.get(key)===entry)trimWaterContexts();throw error;});
-    return entry;
-  }
-  async function preparePhysicalContext(month,{isCurrent=()=>true,activeProject=null}={}) {
-    // Imported projects change their C++ cursor identically, but they must not
-    // prepare default-world's external historical lake/land references.
-    if(activeProject&&activeProject.source!=='builtin')return null;
-    const assertCurrent=()=>{if(!isCurrent())throw Object.assign(new Error('Physical preparation superseded'),{name:'AbortError',cancelled:true});};
-    assertCurrent();
-    const selection=physicalSelectionFor(month);
-    const request={};preparedWaterRequest=request;
-    preparedWaterKey=selection.useDistinctContext?selection.key:null;
-    const entry=waterContexts.touch(selection.key);
-    if(entry?.status==='error')waterContexts.delete(selection.key);
-    trimWaterContexts();
-    try{
-      const result=selection.useDistinctContext?await ensurePhysicalContext(selection).promise:await loadPhysicalLand();
-      assertCurrent();return result;
-    }catch(error){
-      if(preparedWaterRequest===request){preparedWaterRequest=null;preparedWaterKey=null;trimWaterContexts();}
-      throw error;
-    }
-  }
-  function activatePhysicalContext(entry,key) {
-    const cache=dependencies.projectState.state.hydroFeatureCache;
-    const epoch=projectSourceEpoch;
-    if(entry.activation&&entry.activation.cache===cache&&entry.activation.epoch===epoch)return;
-    const activation={cache,epoch};entry.activation=activation;
-    const isCurrent=()=>activeSource==='builtin'&&projectSourceEpoch===epoch
-      &&requestedWaterKey===key&&selectedPhysicalWater().key===key
-      &&dependencies.projectState.state.hydroFeatureCache===cache;
-    activation.promise=entry.promise.then(async()=>{
-      for(const value of entry.value.waters){
-        if(!isCurrent())break;
-        await admitSelectedWater(value.row,value,isCurrent);
-      }
-      if(isCurrent())dependencies.domains.renderingDomain.invalidateProject('physical-water-ready');
-    }).catch(error=>{
-      if(isCurrent())
-        dependencies.feedback.reportOperationError(error,'수역 형상을 준비하지 못했습니다. 시점을 바꿨다가 돌아오면 다시 불러옵니다.','PL-PHYSICAL-HISTORY-001',4200);
-    });
-  }
-  const presentPhysicalWater=createPhysicalWaterPresentation();
-  function currentPhysicalContext() {
-    const selection=selectedPhysicalWater(),{rows:selected,key}=selection;
-    if(!selection.useDistinctContext){
-      if(requestedWaterKey!==null){const previous=waterContexts.get(requestedWaterKey);if(previous)previous.activation=null;requestedWaterKey=null;trimWaterContexts();}
-      return assetReader.physicalLand;
-    }
-    if(key!==requestedWaterKey){
-      const previous=waterContexts.get(requestedWaterKey);if(previous)previous.activation=null;
-      requestedWaterKey=key;if(preparedWaterKey===key){preparedWaterKey=null;preparedWaterRequest=null;}
-      waterContexts.touch(key);trimWaterContexts();
-      if(waterContexts.get(key)?.status==='error')waterContexts.delete(key);
-      if(waterContexts.has(key))waterContexts.get(key).activation=null;
-      // An old version cannot remain selectable while its successor loads.
-      let changed=false;
-      for(const row of selected)if(dependencies.projectState.state.hydroFeatureCache?.delete(row.objectRef.id))changed=true;
-      if(changed){
-        hydroCatalogBase=null;
-        const state=dependencies.projectState.state;
-        state.hydroFeatureCatalogRevision=(state.hydroFeatureCatalogRevision||0)+1;
-      }
-    }
-    const entry=ensurePhysicalContext(selection),state=dependencies.projectState.state;
-    activatePhysicalContext(entry,key);
-    // Core catalog admission can be queued behind the current project
-    // replacement. Immutable mask readiness cannot wait for that queue.
-    if(entry.status!=='ready')return assetReader.physicalLand;
-    const edits=projectResourceOverlay('hydro',state.hydroEdits||[]);
-    const presentations=entry.value.waters.map(value=>{
-      const id=value.row.objectRef.id,replacement=edits.sourceReplacement(id);
-      const feature=state.hydroFeatureCache?.get(id);
-      const descriptor=feature||{id,properties:{pandolab_id:id,category:value.row.identity.entityKind,layer_id:value.row.identity.layerId}};
-      const visible=capabilities.builtinHydro||feature?dependencies.physicalServices.isHydroFeatureVisible(descriptor):true;
-      return {...value,replacement,visible};
-    });
-    const presentationKey=JSON.stringify(presentations.map(value=>[value.row.objectRef,value.row.geometryRef,
-      value.replacement?geometryReferenceFor(value.replacement.geometry):null,value.visible]));
-    if(entry.presentationKey===presentationKey)return entry.presentation;
-    let geometry=entry.value.geometry,revision=entry.value.revision;
-    const waterFeatures=[];
-    for(const value of presentations){
-      const result=presentPhysicalWater({geometry,revision,water:value.water,waterRevision:value.waterRevision,waterObjectRef:value.row.objectRef},value.replacement,value.visible);
-      geometry=result.geometry;revision=result.revision;
-      if(result.water)waterFeatures.push({type:'Feature',geometry:result.water,
-        properties:{objectKey:normalizeObjectRef({domain:'hydro',type:value.row.identity.entityKind,id:value.row.objectRef.id}).key}});
-    }
-    const water=composePhysicalWaterGeometry(waterFeatures.map(feature=>feature.geometry));
-    entry.presentationKey=presentationKey;
-    entry.presentation=Object.freeze({geometry,revision,water,waterFeatures,waterRevision:JSON.stringify([key,presentationKey])});
-    waterContexts.measure(entry);trimWaterContexts();
-    return entry.presentation;
-  }
-
-  async function admitSelectedWater(row,value,isCurrent) {
-    const state=dependencies.projectState.state;
-    if(!capabilities.builtinHydro||activeSource!=='builtin')return;
-    if(!(state.hydroFeatureCache instanceof Map))throw new TypeError("The canonical hydro resource cache is required.");
-    const feature=prepareHydroFeature({type:'Feature',id:row.objectRef.id,geometry:value.water,
-      properties:{pandolab_id:row.objectRef.id,category:row.identity.entityKind,layer_id:row.identity.layerId,
-        name:row.identity.name,name_ko:row.identity.name,source:row.identity.source,source_id:row.identity.sourceId||row.objectRef.id,
-        min_zoom:0,physical_water:true,geometryRef:row.geometryRef}});
-    await admitHydroFeatures([feature],{isCurrent});
+  function physicalSourceIdentity({landAsset,rows}) {
+    return JSON.stringify([landAsset.sha256,physicalWaterContextKey(rows)]);
   }
   let builtinTimelineView=null;
   function hydroActivityView() {
     if(activeSource!=='builtin'||!dependencies.projectState.state.timelineCursor)return null;
-    const selection=selectedPhysicalWater(),entry=waterContexts.get(selection.key);
-    const ready=entry?.status==='ready';
+    const selection=selectedPhysicalWater();
     if(!builtinTimelineView||builtinTimelineView.catalog!==selection.catalog
-      ||builtinTimelineView.key!==selection.key
-      ||builtinTimelineView.ready!==ready) {
-      builtinTimelineView={catalog:selection.catalog,key:selection.key,ready,
-        reference:physicalWaterReferenceView(selection.catalog,selection.rows,ready)};
+      ||builtinTimelineView.key!==selection.key) {
+      builtinTimelineView={catalog:selection.catalog,key:selection.key,
+        reference:physicalWaterReferenceView(selection.catalog,selection.rows,true)};
     }
     return builtinTimelineView.reference;
   }
@@ -212,15 +60,6 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
   function connect(ports) {
     if (dependencies) throw new Error('physical-resources already connected');
     dependencies = ports;
-  }
-
-  function prepareHydroFeature(feature) {
-    const bounds = (0, dependencies.geometryBounds.coordinateBounds)(feature?.geometry?.coordinates);
-    feature.__awBounds = bounds.every(Number.isFinite) ? bounds : [-180, -90, 180, 90];
-    try { feature.__awCentroid = dependencies.platform.d3.geo.centroid(feature); }
-    catch (_) { feature.__awCentroid = [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2]; }
-    feature.__awRadius = Math.min(180, Math.hypot(bounds[2] - bounds[0], bounds[3] - bounds[1]) / 2);
-    return feature;
   }
 
   function hydroDetailEnabled(){
@@ -246,66 +85,31 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     })).values()];
   }
 
-  let hydroAdmissionTail=Promise.resolve(),hydroCatalogBase=null;
-  function admitHydroFeatures(features=[],{isCurrent=()=>true,removedIds=[]}={}){
-    const cache=dependencies.projectState.state.hydroFeatureCache,epoch=projectSourceEpoch;
-    const sameScope=()=>activeSource==='builtin'&&epoch===projectSourceEpoch&&dependencies.projectState.state.hydroFeatureCache===cache;
-    const current=()=>sameScope()&&isCurrent();
-    const operation=hydroAdmissionTail.then(()=>applyHydroFeatures(features,{current,sameScope,cache,removedIds}));
-    hydroAdmissionTail=operation.catch(()=>{});
-    return operation;
-  }
-  async function applyHydroFeatures(features,{current,sameScope,cache,removedIds}){
-    if(!current())return false;
+  async function admitHydroFeatures(features=[],{isCurrent=()=>true}={}) {
+    if(activeSource!=='builtin')return false;
     if(typeof dependencies.domains.projectDomain?.admitSelectionCatalog!=='function')
       throw new TypeError('Hydro source identities require the canonical Core admission boundary.');
+    const cache=dependencies.projectState.state.hydroFeatureCache;
     if(!(cache instanceof Map))throw new TypeError('The canonical hydro resource cache is required.');
+    const current=()=>isCurrent()&&activeSource==='builtin'&&dependencies.projectState.state.hydroFeatureCache===cache;
+    if(!current())return false;
     const additions=new Map(features.map(feature=>[String(feature.properties?.pandolab_id||feature.id),feature]));
-    const removals=new Set(removedIds.map(String).filter(id=>cache.has(id)&&!additions.has(id)&&!cache.get(id)?.properties?.physical_water));
-    const state=dependencies.projectState.state,domain=dependencies.domains.projectDomain;
-    const generation=domain.getGeneration?.(),revision=state.hydroFeatureCatalogRevision||0;
-    const previous=hydroCatalogBase,epoch=projectSourceEpoch;
-    let submitted=false;
-    // Clear the receipt before dispatch. If native admission or its
-    // publisher throws, the next call reconciles with a complete catalog.
-    hydroCatalogBase=null;
-    await domain.admitSelectionCatalog('hydroBuiltin',()=>{
-      submitted=true;
-      const combined=[];
-      for(const [id,feature]of cache)if(!removals.has(id))combined.push(additions.get(id)||feature);
+    await dependencies.domains.projectDomain.admitSelectionCatalog('hydroBuiltin',()=>{
+      if(!current())return builtinHydroSelectionReferences();
+      const combined=[...cache].map(([id,feature])=>additions.get(id)||feature);
       for(const [id,feature]of additions)if(!cache.has(id))combined.push(feature);
       return builtinHydroSelectionReferences(combined);
-    },{
-      isCurrent:current,
-      changes:()=>{
-        if(!current()||generation===undefined||!previous||previous.cache!==cache||previous.epoch!==epoch
-          ||previous.generation!==generation||previous.revision!==(state.hydroFeatureCatalogRevision||0)
-          ||previous.size!==cache.size)return null;
-        submitted=true;
-        return {refs:builtinHydroSelectionReferences([...additions.values()]),removedIds:[...removals]};
-      },
     });
-    // A viewport can be superseded after its native catalog commit. Apply
-    // the acknowledged cache change in the same project scope; the next
-    // viewport then starts from the actual accepted catalog.
-    if(!submitted||!sameScope())return false;
-    const stable=(state.hydroFeatureCatalogRevision||0)===revision;
-    for(const id of removals)cache.delete(id);
-    for(const feature of additions.values()) {
+    if(!current())return false;
+    for(const feature of features) {
       const id=String(feature.properties?.pandolab_id || feature.id),existing=cache.get(id);
       // Descriptor/FID indexes point at this aggregate. Hydrate that same
       // resource allocation rather than replacing it with a second full row.
       if(existing && existing!==feature)Object.assign(existing,feature);
       else cache.set(id,feature);
+      dependencies.projectState.state.hydroFeatureCatalogRevision=(dependencies.projectState.state.hydroFeatureCatalogRevision||0)+1;
     }
-    if(removals.size||additions.size)state.hydroFeatureCatalogRevision=(state.hydroFeatureCatalogRevision||0)+1;
-    if(stable&&generation===domain.getGeneration?.())hydroCatalogBase={cache,epoch,generation,revision:state.hydroFeatureCatalogRevision||0,size:cache.size};
-    return current();
-  }
-
-  async function loadPhysicalData({includeHydro=true}={}){
-    try{return await Promise.all([loadPhysicalLand(),includeHydro ? loadHydroData() : false]);}
-    catch(error){dependencies.feedback.reportOperationError(error,'지도 배경 자료를 준비하지 못했습니다.','PL-PHYSICAL-LOAD-001',4200);return false;}
+    return true;
   }
 
   function initializeHydroService() {
@@ -332,7 +136,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
       onRetry: (_operation, attempt) => dependencies.operationFeedback.reliabilityDiagnostic.push({
         category: 'asset', operation: 'hydro-manifest', result: `retry-${attempt}`,
       }),
-      acceptManifest: async (manifest, manifestUrl,context) => {
+      acceptManifest: async (manifest, _manifestUrl,context) => {
         const isCurrent=context?.isCurrent||(()=>activeSource==='builtin');
         if(!isCurrent())return false;
         dependencies.projectState.state.hydroManifest = manifest;
@@ -340,14 +144,8 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
         dependencies.projectState.state.physicalLoadState.hydroCache = 'idle';
         dependencies.projectState.state.physicalLoadState.hydroCachePercent = 0;
         const renderer=dependencies.rendering.mapRenderer;
-        let generation,workerReady;
-        do {
-          if(!isCurrent())return false;
-          generation=renderer.getProjectGeneration();
-          workerReady=await renderer.setHydroManifest(manifest,manifestUrl);
-          if(!isCurrent())return false;
-        } while(generation!==renderer.getProjectGeneration());
-        if (!workerReady) return false;
+        await renderer.initialize();
+        if(!isCurrent())return false;
         await admitHydroFeatures();
         if(!isCurrent())return false;
         dependencies.projectState.state.physicalLoadState.hydroWorker = 'ready';
@@ -374,24 +172,13 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     connect,
     setProjectSource,
     initializeHydroService,
-    loadPhysicalLand,
-    preparePhysicalContext,
-    get physicalLand() { return currentPhysicalContext(); },
-    get physicalLandSourceRevision() { return buildMeta.physicalLand?.sha256 || null; },
-    physicalCacheStats:()=>waterContexts.stats(),
-    get physicalContextState() {
-      const context=currentPhysicalContext(),selection=selectedPhysicalWater(),entry=waterContexts.get(selection.key);
-      const ready=selection.useDistinctContext?entry?.status==='ready':!!assetReader.physicalLand;
-      return {ready,error:entry?.error||null,
-        landRevision:ready?context.revision:null,waterRevision:ready&&context.water?context.waterRevision:null};
-    },
+    get physicalSourceIdentity() { return physicalSourceIdentity(selectedPhysicalWater()); },
+    physicalSourceIdentityAtMonth:month=>physicalSourceIdentity(physicalSelectionFor(month)),
     get loadHydroData() { return loadHydroData; },
     builtinHydroSelectionReferences,
     hydroActivityView,
     isHydroObjectActive,
     hydroDetailEnabled,
     admitHydroFeatures,
-    get loadPhysicalData() { return loadPhysicalData; },
-    get prepareHydroFeature() { return prepareHydroFeature; },
   });
 }

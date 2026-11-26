@@ -8,41 +8,20 @@
         "--test",
         "tests/core/runtime.test.mjs",
         "tests/core/storage.test.mjs",
+        "tests/core/stored-asset-loader.test.mjs",
         "tests/core/current-world-stream.test.mjs",
         "tests/core/builtin-world-scope.test.mjs",
         "tests/core/world-bundle.test.mjs",
         "tests/core/builtin-geometry-packs.test.mjs",
         "tests/unit/data/core-timeline-preparation.test.mjs",
-        "tests/unit/data/maplibre-projection.test.mjs",
+        "tests/unit/data/globe-camera.test.mjs",
+        "tests/unit/data/globe-mesh.test.mjs",
+        "tests/unit/data/globe-picking.test.mjs",
         "tests/unit/app/map-color-visibility.test.mjs",
         "tests/unit/app/user-preferences.test.mjs",
-        "tests/unit/data/maplibre-place-viewport.test.mjs",
-        "tests/unit/data/maplibre-vendor.test.mjs",
-        "tests/unit/data/maplibre-hydro-loader.test.mjs",
-        "tests/unit/data/maplibre-hydro-presentation.test.mjs",
-        "tests/unit/data/maplibre-hydro-cancel.test.mjs",
-        "tests/unit/ui/object-details-panel.test.mjs"
-      ]
-    },
-    {
-      "id": "maplibre",
-      "argv": [
-        "node",
-        "--test",
-        "tests/unit/data/maplibre-territorial-boundaries.test.mjs",
-        "tests/unit/data/maplibre-feature-lifecycle.test.mjs",
-        "tests/unit/data/maplibre-viewer-admission.test.mjs",
-        "tests/unit/data/maplibre-base-layer.test.mjs",
-        "tests/unit/data/maplibre-physical-land.test.mjs",
-        "tests/unit/data/maplibre-physical-land-build.test.mjs",
-        "tests/unit/data/maplibre-style-controller.test.mjs",
-        "tests/unit/data/maplibre-vector-group.test.mjs",
-        "tests/unit/data/maplibre-vector-tile-fixture.test.mjs",
-        "tests/unit/data/maplibre-scene-owner.test.mjs",
-        "tests/unit/data/maplibre-label-presentation.test.mjs",
-        "tests/unit/data/maplibre-rendering-work.test.mjs",
-        "tests/unit/data/maplibre-performance-comparison.test.mjs",
-        "tests/unit/data/maplibre-external-style.test.mjs"
+        "tests/unit/ui/object-details-panel.test.mjs",
+        "tests/unit/data/place-viewport.test.mjs",
+        "tests/unit/data/hydro-source-display.test.mjs"
       ]
     },
     {
@@ -55,22 +34,6 @@
       ]
     },
     {
-      "id": "performance",
-      "argv": [
-        "node",
-        "node_modules/@playwright/test/cli.js",
-        "test",
-        "tests/browser/performance.spec.mjs"
-      ]
-    },
-    {
-      "id": "performance-compare",
-      "argv": [
-        "node",
-        "scripts/compare-maplibre-performance.mjs"
-      ]
-    },
-    {
       "id": "lint",
       "argv": [
         "node",
@@ -80,7 +43,7 @@
         "tools",
         "tests/core",
         "tests/browser",
-        "tests/unit/data/maplibre-*.test.mjs"
+        "tests/unit"
       ]
     }
   ]

@@ -132,10 +132,6 @@ export function readBuiltinWorldFormalNames(input) {
   const validId=id=>typeof id==='string'&&/^[a-z]+:[A-Za-z0-9_-]+$/.test(id);
   const nonempty=text=>typeof text==='string'&&text.trim().length>0;
   const validPrecision=value=>['month','date'].includes(parseTemporal(value,{nullable:false}).precision);
-  // The restored Nov 21 registry predates per-record date evidence. Preserve exactly
-  // its reviewed snapshot, while requiring direct evidence for every other edition.
-  const restoredRegistry=createHash('sha256').update(JSON.stringify(input)).digest('hex')
-    === 'e37f069e5ff214118b2ffdbdfa4476e444c1de74ca801b88e818190ebaabb704';
   const formalNames=new Map();
   for(const row of input.names) {
     if(!validId(row?.entityId)
@@ -145,9 +141,9 @@ export function readBuiltinWorldFormalNames(input) {
       throw Error('Invalid builtin formal name: '+row?.entityId);
     const evidence=row.dateEvidence;
     if(!['effective-date','documented-use'].includes(row.dateBasis)
-      ||(!restoredRegistry&&(evidence?.date!==row.validFrom||!nonempty(evidence.statement)
+      ||evidence?.date!==row.validFrom||!nonempty(evidence.statement)
       ||typeof evidence.sourceUrl!=='string'||!/^https?:\/\/\S+$/i.test(evidence.sourceUrl)
-      ||!Array.isArray(row.sources)||!row.sources.includes(evidence.sourceUrl))))
+      ||!Array.isArray(row.sources)||!row.sources.includes(evidence.sourceUrl))
       throw Error('Missing direct formal name date evidence: '+row.entityId);
     const names=formalNames.get(row.entityId)??[];
     const period=bounds(row);

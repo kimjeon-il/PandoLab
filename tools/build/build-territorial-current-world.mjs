@@ -3,12 +3,12 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {withLibraryOutputs} from '../data/library-runtime.mjs';
-import {readTerritorialSource,readTerritorialSourceDescriptors,territorialSourceRoot} from '../data/territorial-entity-sources.mjs';
-import {visitCurrentWorldFeatures} from '../data/territorial-current-world.mjs';
+import {readTerritorialSource,readTerritorialSourceDescriptors} from '../data/territorial-entity-sources.mjs';
+import {indexedTerritorialWorldView,visitCurrentWorldFeatures} from '../data/territorial-current-world.mjs';
 import {streamCurrentWorldJson} from '../data/current-world-json-stream.mjs';
 
 const output=fileURLToPath(new URL('../../assets/data/territorial-entities/generated/current-world.geojson',import.meta.url));
-const view=JSON.parse(fs.readFileSync(path.join(territorialSourceRoot,'views/world.json'),'utf8'));
+const view=indexedTerritorialWorldView();
 const knownIds=new Set(readTerritorialSourceDescriptors().map(entity=>entity.entityId));
 const {bbox,...metadata}=view.sourceInfo.collectionMetadata;
 

@@ -1,4 +1,4 @@
-// Display thresholds use native MapLibre zoom. Source stages still own the
+// Display thresholds use the Viewer camera zoom. Source stages still own the
 // tile layout and transport, independently of the display thresholds.
 const hydroStageZooms = new Map([[6, 2], [6.7, 3], [7, 4], [7.5, 5]]);
 export const HYDRO_DISPLAY_ZOOMS = Object.freeze([...hydroStageZooms.values()]);

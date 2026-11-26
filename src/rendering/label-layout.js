@@ -1,4 +1,3 @@
-import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
 import {PLACE_LIMITS} from '../document/place-limits.js';
 
 export const LABEL_PRIORITIES = Object.freeze({ country: 100, capital: 90, majorCity: 70, administrative: 60, place: 40 });
@@ -33,33 +32,6 @@ export function territorialLabelShortSide(componentBounds, [longitude, latitude]
   return Math.min(east - west, (north - south) / latitudeScale);
 }
 
-export const TERRITORIAL_FLAG_BASE_HEIGHT = 12;
-
-function territorialSizeAtZoom(kind, zoom) {
-  const upperIndex = zoom <= MAP_LABEL_SIZE_STOPS[1].zoom ? 1 : 2;
-  const upper = MAP_LABEL_SIZE_STOPS[upperIndex], lower = MAP_LABEL_SIZE_STOPS[upperIndex - 1];
-  const t = Math.min(1, Math.max(0, (zoom - lower.zoom) / (upper.zoom - lower.zoom)));
-  const cap = lower[kind] + t * (upper[kind] - lower[kind]);
-  const minimum = kind === 'name' ? 13 : TERRITORIAL_FLAG_BASE_HEIGHT;
-  const shortSide = ['*', ['number', ['get', 'territorialShortSide'], 0], referenceZoomPixelsPerDegree(zoom)];
-  const fraction = (start, end) => ['min', 1, ['max', 0, ['/', ['-', ['var', 'shortSide'], start], end - start]]];
-  const tenths = ['+', minimum * 10,
-    ['round', ['*', 60, fraction(22, 147)]],
-    ['round', ['*', (cap - minimum - 6) * 10, fraction(147, 440)]]];
-  const factor = kind === 'name' ? 1 : TERRITORIAL_FLAG_BASE_HEIGHT;
-  return ['let', 'shortSide', shortSide, ['/', tenths, factor * 10]];
-}
-
-function territorialZoomSize(kind) {
-  const expression = ['interpolate', ['linear'], ['zoom']];
-  // MapLibre interpolates between per-feature sizes sampled at adjacent zoom stops.
-  for (let zoom = 3; zoom <= 22; zoom++) expression.push(zoom, territorialSizeAtZoom(kind, zoom));
-  return expression;
-}
-
-export const TERRITORIAL_NAME_SIZE = territorialZoomSize('name');
-export const TERRITORIAL_ICON_SIZE = territorialZoomSize('flag');
-
 export function bufferedPlaceBounds(bounds, currentBounds) {
   const [west, south, east, north] = bounds;
   if (currentBounds) {
@@ -76,7 +48,7 @@ export function bufferedPlaceBounds(bounds, currentBounds) {
 }
 
 /** Conservative camera-bound check shared by the place Worker and Viewer.
- * MapLibre owns exact globe occlusion and symbol collision decisions.
+ * The globe renderer owns exact occlusion and label collision decisions.
  */
 export function coordinateInGeographicBounds(coordinate,bounds){
   const lon=Number(coordinate?.[0]),lat=Number(coordinate?.[1]);

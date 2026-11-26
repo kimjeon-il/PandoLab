@@ -1,8 +1,7 @@
 import {createHash} from 'node:crypto';
-import {gzipSync,gunzipSync} from 'node:zlib';
+import {gzipSync} from 'node:zlib';
 import {runInNewContext} from 'node:vm';
-import {resolveBuiltinWorldGeometry} from '../../src/data/builtin-world-loader.js';
-import {validateBuiltinReadIndex} from '../../src/data/builtin-country-files.js';
+import {readResolvedBuiltinGeometry} from './builtin-geometry-packs.mjs';
 import {buildCountrySharedBoundarySegments,serializeCountrySharedBoundarySegments} from '../../src/geometry/boundary-topology.js';
 import {countryGeometrySignature} from '../../src/rendering/country-shared-boundary-cache.js';
 let retained;
@@ -13,9 +12,7 @@ export function createCountryLabelAnchorComputer({d3Source,workerSource}){
 }
 export function buildCountryBoundarySeed({index,month,catalogSha256,algorithmSha256,readGeometryAssets,computeLabelAnchor}){
  const key=JSON.stringify([month,catalogSha256,algorithmSha256]);if(retained?.key===key)return retained.result;
- const selected=resolveBuiltinWorldGeometry(index,validateBuiltinReadIndex(index),month).sort((a,b)=>a.owner.localeCompare(b.owner));
- const inputs=readGeometryAssets([...new Set(selected.map(row=>row.asset.file))]);
- const features=selected.map(({owner,asset})=>{const bytes=inputs.get(asset.file);if(!bytes||hash(bytes)!==asset.sha256)throw Error('Boundary seed geometry bytes differ from catalog');const decoded=gunzipSync(bytes);if(decoded.length!==asset.decodedBytes||hash(decoded)!==asset.contentSha256)throw Error('Boundary seed decoded geometry differs from catalog');return {id:owner,geometry:JSON.parse(decoded)};});
+ const features=readResolvedBuiltinGeometry({index,month,readGeometryAssets});
  const signatures=Object.fromEntries(features.map(f=>[f.id,countryGeometrySignature(f)]));
  const labelAnchors=Object.fromEntries(features.flatMap(feature=>{const point=computeLabelAnchor(feature);return Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)?[[feature.id,{signature:signatures[feature.id],coordinates:Array.from(point)}]]:[];}));
  const segments=serializeCountrySharedBoundarySegments(buildCountrySharedBoundarySegments(features));

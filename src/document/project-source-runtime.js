@@ -1,5 +1,4 @@
-import {createBuiltinWorldLoader} from "../data/builtin-world-loader.js";
-import {createBuiltinAssetTasks} from '../data/builtin-asset-tasks.js';
+import {createBuiltinWorldLoader,resolveBuiltinWorldGeometry} from "../data/builtin-world-loader.js";
 import {deviceCurrentMonth} from "./calendar-month.js";
 import {createBuiltinProjectSetup} from "./project-setup.js";
 import {mapProjectResourcePath} from "../data/map-project-manifest.js";
@@ -16,7 +15,7 @@ export function createProjectSourceRuntime({
   let projectBaseline = null,projectBaselineGeneration=null;
   const injectedWorldLoader=builtinWorldLoader!==null;
   let sourceIdentity=null,disposed=false;
-  const preparedSources=new WeakMap(),assetTasks=createBuiltinAssetTasks();
+  const preparedSources=new WeakMap();
   const staleBuiltin=()=>Object.assign(new Error('Builtin source request was superseded'),
     {name:'AbortError',cancelled:true,code:'PL-CORE-STALE'});
   const territorialSpec=()=>buildMeta?.mapProject
@@ -59,7 +58,6 @@ export function createProjectSourceRuntime({
       builtinWorldLoader=createSourceLoader({
         manifestUrl:new URL(selected,assetRoot).href,
         manifestSpec:spec,dataRevision:meta.dataRevision,assetRoot,startupGeometryPacks:meta.startupGeometryPacks,
-        historicalGeometryDeltas:meta.historicalGeometryDeltas,
       });
     }
     const {project}=await builtinWorldLoader.loadProject(month,{isCurrent});
@@ -67,7 +65,10 @@ export function createProjectSourceRuntime({
     const active=()=>!disposed&&isCurrent()&&domain.getGeneration()===expectedGeneration
       &&currentSourceIdentity()===identity;
     if(!active())throw staleBuiltin();
-    const {bytes,fingerprint}=await assetTasks.serializeProject(project);
+    const bytes=new TextEncoder().encode(JSON.stringify(project));
+    if(!active())throw staleBuiltin();
+    const fingerprint=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))]
+      .map(value=>value.toString(16).padStart(2,'0')).join('');
     if(!active())throw staleBuiltin();
     const prepared=Object.freeze({kind:'stored-asset',encoding:'identity',
       compressedBytes:bytes.byteLength,decodedBytes:bytes.byteLength,
@@ -80,6 +81,13 @@ export function createProjectSourceRuntime({
     refreshSourceIdentity();
     if(!builtinWorldLoader)throw new Error('The builtin geometry catalog has not been admitted.');
     return builtinWorldLoader.loadGeometryResources(requirements,options);
+  }
+  async function readWorldGeometryReferences(month,{isCurrent=()=>true}={}){
+    const identity=refreshSourceIdentity();
+    if(!builtinWorldLoader)throw new Error('The builtin geometry catalog has not been admitted.');
+    const index=await builtinWorldLoader.loadIndex();
+    if(!isCurrent()||identity!==refreshSourceIdentity())throw staleBuiltin();
+    return new Map(resolveBuiltinWorldGeometry(index,index.readIndex,month).map(({owner,asset})=>[owner,asset]));
   }
 
   async function admitPreparedProjectSource(prepared,{isCurrent=()=>true}={}) {
@@ -149,7 +157,7 @@ export function createProjectSourceRuntime({
   }
 
   return Object.freeze({
-    prepareProjectSource,loadGeometryResources,admitPreparedProjectSource,
+    prepareProjectSource,loadGeometryResources,readWorldGeometryReferences,admitPreparedProjectSource,
     prepareProjectCandidate,prepareProjectBaseline,dispose,
     get projectBaseline(){return projectBaseline;},
   });
