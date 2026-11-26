@@ -71,7 +71,7 @@ export function globeHydroTextureRects(slots,width){
   return merged;
 }
 
-export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, hydroCount, cacheBudget=renderCacheBudget(),residency,onLabelReady=()=>{},onLabelError=()=>{} }) {
+export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, baseCountryCount=countryCount, hydroCount, cacheBudget=renderCacheBudget(),residency,onLabelReady=()=>{},onLabelError=()=>{} }) {
   const renderer = new THREE.WebGLRenderer({ canvas, context });
   const maxPointTextureSize=renderer.capabilities.maxTextureSize;
   renderer.setClearColor(palette.ocean);
@@ -85,8 +85,9 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   let countryVisibilityRevision=0,borderVisibilityRevision=0;
   const texture=new THREE.DataTexture(channels,countryWidth,countryHeight);
   texture.colorSpace = THREE.SRGBColorSpace;
-  let countryTextureUploaded=false;
-  texture.onUpdate=()=>{countryTextureUploaded=true;};
+  let countryTextureUploaded=false,countryPendingFull=true;
+  const countryDirtySlots=new Set();
+  texture.onUpdate=()=>{countryTextureUploaded=true;countryPendingFull=false;countryDirtySlots.clear();};
   texture.needsUpdate=true;
   const hydroWidth=Math.min(1024,Math.max(1,hydroCount)),hydroHeight=Math.ceil(Math.max(1,hydroCount)/hydroWidth);
   const hydroBytes=new Uint8Array(hydroWidth*hydroHeight);
@@ -109,35 +110,39 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const labels=createThreeGlobeLabels(THREE,{scene,renderer,palette:palette.labels,capacity:PLACE_LIMITS.layoutCandidates,maxTextureSize:maxPointTextureSize,viewport,byteBudget:cacheBudget.labelAtlasBytes,onReady:onLabelReady,onError:onLabelError});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint(){
-    countryTextureUploaded=false;texture.clearUpdateRanges();texture.needsUpdate=true;
+    countryTextureUploaded=false;countryPendingFull=true;texture.clearUpdateRanges();texture.needsUpdate=true;
     hydroUploaded=false;hydroDirtySlots.clear();hydroTexture.needsUpdate=true;labels.restoreTextures();
   }
   function setCountryPaint(paint,{full=false}={}) {
-    let changed = false;
-    // Full refreshes and device restoration must not inherit partial ranges.
-    if(full||!countryTextureUploaded)texture.clearUpdateRanges();
+    // Keep unconsumed full and partial writes across deferred frames.
+    // Only the actual texture upload callback may acknowledge them.
+    countryPendingFull||=full||!countryTextureUploaded;
     for(const [index,{color,visible,highlight}] of paint){
       reusableColor.set(color||palette.defaultLand);
       if(highlight?.alpha>0)reusableColor.lerp(highlightColor.set(highlight.color),highlight.alpha);
       reusableColor.convertLinearToSRGB();
-      const offset = index * 4;
-      const next = [Math.round(reusableColor.r*255),Math.round(reusableColor.g*255),Math.round(reusableColor.b*255),visible?255:0];
+      const offset=index*4,next=[Math.round(reusableColor.r*255),Math.round(reusableColor.g*255),Math.round(reusableColor.b*255),visible?255:0];
       if(next.every((value,channel)=>value===channels[offset+channel]))continue;
       if(countryVisible[index]!==Number(visible)){countryVisible[index]=Number(visible);countryVisibilityRevision++;}
-      channels.set(next,offset);
-      if(!full&&countryTextureUploaded)texture.addUpdateRange(offset,4);
-      changed = true;
+      channels.set(next,offset);countryDirtySlots.add(index);
     }
-    if(changed)texture.needsUpdate = true;
   }
-  const layers=new Map(),datedCountries=new Map(),residentMeshes=new Map();
+  function flushCountryPaint(){
+    if(!countryPendingFull&&!countryDirtySlots.size)return;
+    texture.clearUpdateRanges();
+    if(countryTextureUploaded&&!countryPendingFull){
+      for(const slot of countryDirtySlots)texture.addUpdateRange(slot*4,4);
+    }
+    texture.needsUpdate=true;
+  }
+  const layers=new Map(),residentMeshes=new Map();
   const spatialResources=new Set(),activeSpatialResources=new Set(),dirtyOutlineOwners=new Map();
   let spatialStats={triangles:0,submittedTriangles:0,segments:0,submittedSegments:0,ranges:0,visibleRanges:0,strokeBatches:0,strokeDrawCalls:0,directStrokeSegments:0,compactionUploadBytes:0};
   let cullingCamera=null,cullingWidth=0,cullingHeight=0,cullers=new Map();
   let residencyDirty=true;
   let activePhysical=null,physicalLayers=null;
   const visibleLayers={lakes:true,rivers:true};
-  let activeView=null,activeCountries=[],activeBorders=[],activeBase=[],baseInput=null,showBorders=true;
+  let activeView=null,activeTerritoryInput=null,activeBorders=[],activeBase=[],showBorders=true;
   function addLayer(name,mesh){
     if(!layers.has(name))layers.set(name,[]);
     layers.get(name).push(mesh);
@@ -304,6 +309,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     style:riverStyle,cameraUniforms,viewport,margin,multisampling,hydroUniforms});
   function attachRiverDetail(row,packet){
     const resource=riverMesh(packet,row.minZoom);
+    const order=Math.max(0,row.order??0);resource.setOrder(4+.49*order/(order+1));
     resource.externalOwner=true;
     return {residentBytes:[...resource.buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0)+resource.deviceBytes,footprint:resource.footprint,setVisible:visible=>{resource.visible=visible;},dispose:()=>resource.dispose()};
   }
@@ -326,33 +332,29 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     residentMeshes.set(key,{mesh,bytes:[...mesh.buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0)+mesh.deviceBytes});residencyDirty=true;
     return mesh;
   }
-  function activateBaseCountries(rows){
-    if(baseInput===rows)return;
-    baseInput=rows;residencyDirty=true;
-    for(const resource of activeBase)resource.visible=false;
-    activeBase=rows.map(({key,order,mesh})=>{
-      const resource=useMesh('base-country',key,()=>register(null,mesh.packet,palette.defaultLand,1,-2,'country'));
-      resource.setOrder(1-.1/(order+1));resource.visible=true;return resource;
-    });
-  }
   function activatePhysicalContext(parts){
     if(activePhysical===parts)return;
     residencyDirty=true;
-    if(physicalLayers)for(const mesh of Object.values(physicalLayers).flat())mesh.visible=false;
+    const previous=new Set(Object.values(physicalLayers??{}).flat());
     const {spec}=parts;
     physicalLayers={
       waters:parts.waters.map(({key,id,spec:row,mesh},i)=>{
         const resource=useMesh('water',key??`${id}:${row.sha256}`,()=>register(null,mesh.packet,palette.ocean,2));
         resource.setOrder(1.6+.3*i/Math.max(1,parts.waters.length));return resource;
       }),
-      lakes:parts.lakes.map(({spec:row,mesh,minZoom})=>useMesh('lake',`${row.sha256}:${minZoom}`,
-        ()=>register(null,mesh.packet,palette.ocean,2,minZoom,'lake'))),
-      rivers:parts.rivers?[useMesh('river',`${spec.rivers.sha256}:${spec.riverMinZoom}`,()=>riverMesh(parts.rivers,spec.riverMinZoom))]:[],
+      lakes:parts.lakes.map(({key,spec:row,mesh,minZoom},i)=>{
+        const resource=useMesh('lake',key??`${row.sha256}:${minZoom}`,()=>register(null,mesh.packet,palette.ocean,2,minZoom,'lake'));
+        resource.setOrder(2+.9*i/Math.max(1,parts.lakes.length));return resource;
+      }),
+      rivers:(parts.riverChunks??(parts.rivers?[{key:spec.rivers.sha256,packet:parts.rivers,minZoom:spec.riverMinZoom}]:[])).map((row,i,rows)=>{
+        const resource=useMesh('river',row.key,()=>riverMesh(row.packet,row.minZoom));resource.setOrder(3+.9*i/Math.max(1,rows.length));return resource;
+      }),
     };
     waterMeshes=new Map();
     parts.waters.forEach((row,index)=>{let group=waterMeshes.get(row.id);if(!group){group=[];waterMeshes.set(row.id,group);}group.push(physicalLayers.waters[index]);});
     activePhysical=parts;waterPaintDirty=true;
-    for(const [role,meshes] of Object.entries(physicalLayers))for(const mesh of meshes)mesh.visible=visibleLayers[role]!==false;
+    for(const [role,meshes] of Object.entries(physicalLayers))for(const mesh of meshes){mesh.visible=visibleLayers[role]!==false;previous.delete(mesh);}
+    for(const mesh of previous)mesh.visible=false;
   }
   function setHydroPaint(slots,waters,styles,color){
     for(const slot of new Set([...previousHydro.keys(),...slots.keys()])){
@@ -418,7 +420,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const targets=new Map();
     for(const [slot,code] of roles){
       if(!(styles[code]?.width>0&&styles[code]?.alpha>0))continue;
-      const target=touchRenderCache(outlineCache,datedCountries.has(slot)?slot:null);
+      const target=touchRenderCache(outlineCache,slot>=baseCountryCount?slot:null);
       if(!target)continue;
       let local=targets.get(target);
       if(!local){local=new Map();targets.set(target,local);}
@@ -427,34 +429,35 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     for(const target of paintedOutlines)if(!targets.has(target))target.hide();
     paintedOutlines=new Set([...targets].filter(([target,local])=>target.paint(local,styles,color)).map(([target])=>target));
   }
-  function activateDatedView(view,parts){
-    if(view===activeView)return;
+  function activateTerritorialChunks(view,rows){
+    if(activeTerritoryInput===rows&&view===activeView)return;
     residencyDirty=true;
-    for(const row of activeCountries){row.mesh.visible=false;}
-    for(const mesh of activeBorders)mesh.visible=false;
-    activeView=view;
-    activeCountries=(parts?.countries??[]).map(({slot,key,mesh})=>{
-      if(!datedCountries.has(slot))datedCountries.set(slot,{
-        mesh:useMesh('dated-country',key,()=>register(null,mesh.packet,palette.defaultLand,1,-2,'country')),
-      });
-      const row=datedCountries.get(slot);
-      row.mesh.setOrder(1+.5*(slot+1)/(countryCount+1));
-      touchRenderCache(residentMeshes,'dated-country:'+key);
-      return row;
+    // Reconcile resources by stable chunk identity. Do not toggle unchanged
+    // meshes on every camera plan or temporal metadata update.
+    const previous=new Set([...activeBase,...activeBorders]);
+    const countries=rows.filter(row=>row.role==='country'),borders=rows.filter(row=>row.role==='border');
+    activeBase=countries.map((row,i)=>{
+      const resource=useMesh('territory',row.key,()=>register(null,row.mesh.packet,palette.defaultLand,1,-2,'country'));
+      resource.setOrder(1+.5*i/Math.max(1,countries.length));resource.visible=true;previous.delete(resource);return resource;
     });
-    activeBorders=(parts?.borderBatches??[]).map(({key,packet})=>useMesh('dated-border-batch',key,()=>spatialStrokes(packet,{...strokeOptions,order:5})));
-    for(const row of activeCountries)row.mesh.visible=true;
-    for(const [i,mesh] of activeBorders.entries()){mesh.setOrder(5+.4*(i+1)/(activeBorders.length+1),.4/(activeBorders.length+1));mesh.visible=showBorders;}
-    borderBytes.fill(255);
-    for(const slot of view?.hiddenBorders??[])borderBytes[slot]=0;
-    borderVisibilityRevision++;
+    activeBorders=borders.map((row,i)=>{
+      const resource=useMesh('border',row.key,()=>spatialStrokes(row.packet,{...strokeOptions,order:5,baseBorder:row.baseBorder===true}));
+      resource.setOrder(5+.4*i/Math.max(1,borders.length),.4/Math.max(1,borders.length));resource.visible=showBorders;
+      previous.delete(resource);return resource;
+    });
+    for(const resource of previous)resource.visible=false;
+    activeTerritoryInput=rows;
+    if(view!==activeView){
+      activeView=view;borderBytes.fill(255);
+      for(const slot of view?.hiddenBorders??[])borderBytes[slot]=0;
+      borderVisibilityRevision++;
+    }
   }
 
   // Only called after successful visual publication. Never dispose the
   // previously published scene while a replacement is still being drawn.
-  function activeMeshesNow(){return new Set([...activeBase,...activeCountries.map(row=>row.mesh),...activeBorders,...Object.values(physicalLayers??{}).flat()]);}
+  function activeMeshesNow(){return new Set([...activeBase,...activeBorders,...Object.values(physicalLayers??{}).flat()]);}
   function evictMesh(key,entry){
-    for(const [slot,row] of datedCountries)if(row.mesh===entry.mesh)datedCountries.delete(slot);
     residentMeshes.delete(key);releaseMesh(entry.mesh);
   }
   function meshMemoryEntries(){
@@ -481,7 +484,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       const activeMeshes=activeMeshesNow(),protectedMeshes=new Set();
       for(const [key,entry] of residentMeshes)if(activeMeshes.has(entry.mesh))protectedMeshes.add(key);
       trimRenderCache(residentMeshes,protectedMeshes,cacheBudget.residentMeshBytes,entry=>entry.bytes,(_key,entry)=>{
-        for(const [slot,row] of datedCountries)if(row.mesh===entry.mesh)datedCountries.delete(slot);
         releaseMesh(entry.mesh);
       },{entryLimit:512});
       refreshMeshLedger();
@@ -504,7 +506,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     renderer.setPixelRatio(dpr);
     renderer.setSize(width, height, false);
   }
-  function draw(globeCamera, width, height,{requireCompleteLabels=false}={}) {
+  function prepareLabels(globeCamera,width,height,requireComplete=false){
+    return labels.update(globeCamera,width,height,createGlobeRangeCuller(globeCamera.frame,width,height),requireComplete);
+  }
+  function draw(globeCamera, width, height) {
     const {frame,view}=globeCamera;
     zoom.value = view.zoom;
     eyeHigh.fromArray(frame.eye.map(Math.fround));
@@ -520,9 +525,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       if(!cullers.has(padding))cullers.set(padding,createGlobeRangeCuller(frame,width,height,padding));
       return cullers.get(padding);
     };
-    const labelsReady=labels.update(globeCamera,width,height,getCuller(0),requireCompleteLabels);
-    if(requireCompleteLabels&&!labelsReady)return false;
-    flushHydroPaint();
+    flushCountryPaint();flushHydroPaint();
     const stats={triangles:0,submittedTriangles:0,segments:0,submittedSegments:0,ranges:0,visibleRanges:0,strokeBatches:0,strokeDrawCalls:0,directStrokeSegments:0,compactionUploadBytes:0};
     for(const resource of activeSpatialResources)resource.update(getCuller,view.zoom,stats);
     for(const outline of paintedOutlines)outline.update(getCuller,strokePadding,stats);
@@ -532,13 +535,13 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function dispose() {
     labels.dispose();
     for(const entry of outlineCache.values())entry.dispose();
-    outlineCache.clear();paintedOutlines.clear();dirtyOutlineOwners.clear();residentMeshes.clear();datedCountries.clear();
+    outlineCache.clear();paintedOutlines.clear();dirtyOutlineOwners.clear();residentMeshes.clear();
     refreshMeshLedger.dispose();refreshLabelLedger.dispose();
     for(const resource of [...spatialResources])resource.dispose();
-    layers.clear();waterMeshes.clear();activeCountries=[];activeBorders=[];activeBase=[];baseInput=null;physicalLayers=activePhysical=null;graticule=null;
+    layers.clear();waterMeshes.clear();activeBorders=[];activeBase=[];activeTerritoryInput=null;physicalLayers=activePhysical=null;graticule=null;
     texture.dispose();hydroTexture.dispose();hydroUploadSource.dispose();
     renderer.dispose();
   }
-  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installGraticule,hasGraticule:()=>graticule!==null,installBaseBorders,hasBaseBorders:()=>baseBordersInstalled,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateBaseCountries,activateDatedView,activatePhysicalContext,trimResidency,cacheStats,labels,dispose,
+  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installGraticule,hasGraticule:()=>graticule!==null,installBaseBorders,hasBaseBorders:()=>baseBordersInstalled,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateTerritorialChunks,activatePhysicalContext,prepareLabels,trimResidency,cacheStats,labels,dispose,
     drawCalls:()=>renderer.info.render.calls,hydroUploadStats:()=>({...hydroUploadStats}),spatialStats:()=>({...spatialStats})});
 }

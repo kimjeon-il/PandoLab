@@ -155,6 +155,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
   }
 
   async function handleObjectSelectionAt(screenPoint, { sourceEvent = dependencies.platform.d3.event, hitRef = null } = {}) {
+    if(dependencies.rendering.mapRenderer.canPickFrame?.()===false)return false;
     const requestRevision = ++objectPickRevision;
     clickController?.abort();const controller=new AbortController();clickController=controller;
     const projectGeneration = dependencies.domains.projectDomain?.getGeneration?.() ?? 0;

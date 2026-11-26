@@ -6,6 +6,7 @@ export function createMapInputPresentation({renderer,initialized,ports}){
  const beginMovement=()=>{ports.projectState.state.mapMoving=true;ports.objectPicking.closeObjectChooser();ports.renderQuality.renderQualityController.beginInteraction('map-move');ports.projectState.mapWorkScheduler.setInteractionActive(true);ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch(report);};
  const finishMovement=()=>{ports.projectState.state.mapMoving=false;ports.renderQuality.renderQualityController.endInteraction('map-move');ports.renderQuality.applyAdaptiveRenderQuality({refreshScene:false,reason:'map-move-end'});ports.projectState.mapWorkScheduler.setInteractionActive(false);hoverAfterMove=!!lastPointer;};
  const pick=point=>{
+  if(renderer.canPickFrame?.()===false){hoverAfterMove=true;return;}
   lastPickRevision=renderer.getPickingRevision();
   const coordinate=renderer.projection.screenToGeo(point);
   if(coordinate)ports.pointerInteraction.queueCountryHoverPick(point,coordinate);
@@ -26,7 +27,7 @@ export function createMapInputPresentation({renderer,initialized,ports}){
   }
   listen('movestart',beginMovement);listen('moveend',finishMovement);
   listen('click',event=>{
-   if(renderer.isFramePreserved()||ports.projectState.state.projectReplacing||ports.pointerInteraction.mapClickBlocked())return;
+   if(renderer.isFramePreserved()||renderer.canPickFrame?.()===false||ports.projectState.state.projectReplacing||ports.pointerInteraction.mapClickBlocked())return;
    ports.objectPicking.handleObjectSelectionAt(event.point,{sourceEvent:event.originalEvent}).catch(report);
   });
   listen('mousemove',event=>{if(ports.surfaces.isMobile()||ports.projectState.state.projectReplacing)return;

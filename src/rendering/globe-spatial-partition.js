@@ -68,7 +68,7 @@ export function createGlobeRangeCuller(frame,width,height,padding=0){
 // centres, not their source order. Each node stores the union of the original
 // vertex/endpoint bounds. The leaf permutation is shared by draw and picking.
 const MORTON_DEPTH=7,LEAF_SIZE=128,STROKE_BATCH_SIZE=250_000;
-function primitiveBounds(packet,i,out){
+export function globePrimitiveBounds(packet,i,out){
  for(let axis=0;axis<3;axis++){out[axis]=Infinity;out[axis+3]=-Infinity;}
  if(packet.indices){
   for(let j=i*3;j<i*3+3;j++)include(out,packet.positions,packet.residuals,packet.indices[j]*3);
@@ -96,12 +96,13 @@ function mortonCode(bounds){
  for(let bit=MORTON_DEPTH-1;bit>=0;bit--)code=(code<<3)|(((x>>bit)&1)<<2)|(((y>>bit)&1)<<1)|((z>>bit)&1);
  return code;
 }
-export function buildGlobeSpatialIndex(packet,{leafSize=LEAF_SIZE}={}){
- const count=packet.indices?packet.indices.length/3:packet.count;
- if(!count)return {count:0,leafCount:0,order:new Uint32Array(),bounds:new Float64Array(),nodes:new Uint32Array(),owners:new Int32Array(),rootBounds:null};
+// Shared offline and Worker spatial sort. Every primitive retains its
+// source ID. Preserve painter order between distinct owner runs when
+// rendering colors may differ (territories, lakes, highlighted rivers).
+function sortGlobePrimitives(packet,count){
  const codes=new Uint32Array(count),scratch=emptyBounds();
  let order=new Uint32Array(count),temp=new Uint32Array(count);
- for(let i=0;i<count;i++){primitiveBounds(packet,i,scratch);codes[i]=mortonCode(scratch);order[i]=i;}
+ for(let i=0;i<count;i++){globePrimitiveBounds(packet,i,scratch);codes[i]=mortonCode(scratch);order[i]=i;}
  // Stable linear-time radix sort of the spatial keys. Ties retain source order.
  for(let shift=0;shift<21;shift+=7){
   const offsets=new Uint32Array(128);
@@ -110,6 +111,28 @@ export function buildGlobeSpatialIndex(packet,{leafSize=LEAF_SIZE}={}){
   for(const id of order)temp[offsets[(codes[id]>>shift)&127]++]=id;
   [order,temp]=[temp,order];
  }
+
+ return {codes,order};
+}
+export function globeSpatialPrimitiveOrder(packet,{preserveOwnerOrder=true}={}){
+ const count=packet.indices?packet.indices.length/3:packet.count;
+ if(!count)return new Uint32Array();
+ const {order}=sortGlobePrimitives(packet,count);
+ if(!preserveOwnerOrder)return order;
+ const rank=new Uint32Array(count),result=new Uint32Array(count);
+ for(let i=0;i<count;i++){rank[order[i]]=i;result[i]=i;}
+ for(let first=0;first<count;){
+  const owner=globePrimitiveOwner(packet,first);let end=first+1;
+  while(end<count&&globePrimitiveOwner(packet,end)===owner)end++;
+  if(end-first>1)result.subarray(first,end).sort((a,b)=>rank[a]-rank[b]);
+  first=end;
+ }
+ return result;
+}
+export function buildGlobeSpatialIndex(packet,{leafSize=LEAF_SIZE}={}){
+ const count=packet.indices?packet.indices.length/3:packet.count;
+ if(!count)return {count:0,leafCount:0,order:new Uint32Array(),bounds:new Float64Array(),nodes:new Uint32Array(),owners:new Int32Array(),rootBounds:null};
+ const {codes,order}=sortGlobePrimitives(packet,count),scratch=emptyBounds();
  const rows=[],boxes=[],owners=[];let leafCount=0;
  function node(first,end,depth){
   const index=owners.length;
@@ -118,7 +141,7 @@ export function buildGlobeSpatialIndex(packet,{leafSize=LEAF_SIZE}={}){
   const take=(childBounds,childOwner)=>{extend(bounds,childBounds);owner=owner===-2?childOwner:owner===childOwner?owner:-1;};
   if((depth>=3&&end-first<=leafSize)||end-first===1){
    leafCount++;
-   for(let i=first;i<end;i++){const id=order[i];primitiveBounds(packet,id,scratch);take(scratch,globePrimitiveOwner(packet,id));}
+   for(let i=first;i<end;i++){const id=order[i];globePrimitiveBounds(packet,id,scratch);take(scratch,globePrimitiveOwner(packet,id));}
   }else if(depth<MORTON_DEPTH){
    const shift=(MORTON_DEPTH-depth-1)*3;
    for(let at=first;at<end;){

@@ -11,9 +11,10 @@ export function selectGlobeRiverChunks(chunks,bounds,zoom){
 
 /** Retain prepared line buffers for the accepted viewport and recent visits. */
 export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onError}){
- const entries=new Map();
+ const entries=new Map(),failed=new Map();
  let wanted=new Set(),published=new Set(),residentBytes=0;
  function discard(id,entry){
+  if(entries.get(id)!==entry)return;
   entries.delete(id);
   if(!entry.resource){entry.controller.abort();return;}
   entry.resource.dispose();
@@ -35,13 +36,16 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
    trim();invalidate();
   }catch(error){
    if(entries.get(row.id)!==entry)return;
-   discard(row.id,entry);onError(error,row);
+   discard(row.id,entry);failed.set(row.id,performance.now()+1500);onError(error,row);
   }
  }
  function update(rows){
   const next=new Set(rows.map(row=>row.id));
-  if(wanted.size===next.size&&[...next].every(id=>wanted.has(id)))return false;
+  const changed=wanted.size!==next.size||[...next].some(id=>!wanted.has(id));
+  const retry=rows.some(row=>!entries.has(row.id)&&(failed.get(row.id)??0)<=performance.now());
+  if(!changed&&!retry)return false;
   const previous=wanted;wanted=next;
+  for(const id of failed.keys())if(!next.has(id))failed.delete(id);
   for(const id of previous){
    if(next.has(id))continue;
    const entry=entries.get(id);
@@ -57,6 +61,8 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
     }
     continue;
    }
+   if((failed.get(row.id)??0)>performance.now())continue;
+   failed.delete(row.id);
    const entry={row,controller:new AbortController(),bytes:0,resource:null,packet:null};
    entries.set(row.id,entry);prepare(row,entry);
   }
@@ -71,7 +77,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
  }
  function dispose(){
   for(const [id,entry] of entries)discard(id,entry);
-  wanted.clear();published.clear();
+  wanted.clear();published.clear();failed.clear();
  }
  return Object.freeze({update,commit,stats,activeEntries,memoryEntries,dispose});
 }

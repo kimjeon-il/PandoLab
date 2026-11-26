@@ -545,3 +545,68 @@ test('packet worker count and speculative gate preserve foreground capacity',asy
  running.resolve();await foreground;await speculative;
  assert.deepEqual(order,['visible','warm']);gate.dispose();
 });
+
+
+test('spatial download chunks isolate alternating hemispheres without losing exact primitives',async()=>{
+ const {globeMeshChunks,globeStrokeChunks}=await import('../../../scripts/lib/globe-preview-assets.mjs');
+ const {globeSpatialPrimitiveOrder}=await import('../../../src/rendering/globe-spatial-partition.js');
+ const coordinates=[],indices=[];
+ for(let i=0;i<20;i++){
+  const lon=i%2?180:0;coordinates.push(lon,0,lon+.01,0,lon,.01);indices.push(i*3,i*3+1,i*3+2);
+ }
+ const source=encodeGlobeMesh({coordinates,indices:Uint32Array.from(indices)});
+ const chunks=[...globeMeshChunks(source,{span:.45})];
+ assert.equal(chunks.length,2);assert.equal(chunks.reduce((n,row)=>n+row.end-row.first,0),20);
+ assert.ok(chunks.every(row=>row.bounds[3]-row.bounds[0]<.45));
+ const slots=Uint16Array.from({length:coordinates.length/2},(_,i)=>i<30?0:1);
+ const owned=decodeGlobeMesh(encodeGlobeMesh({coordinates,indices:Uint32Array.from(indices),slots}));
+ const order=globeSpatialPrimitiveOrder(owned);
+ assert.ok(order.subarray(0,10).every(id=>id<10));assert.ok(order.subarray(10).every(id=>id>=10));
+ const lines=Array.from({length:20},(_,i)=>[i%2?180:0,0,i%2?180.01:.01,0]).flat();
+ const strokes=[...globeStrokeChunks(encodeGlobeStrokes(lines),{preserveOwnerOrder:false})];
+ assert.equal(strokes.length,2);assert.equal(strokes.reduce((n,row)=>n+decodeGlobeStrokes(row.buffer).count,0),20);
+});
+
+test('optional spatial preparation failure cannot blacklist required coverage',async()=>{
+ const {createGlobePlanFailures,createGlobeChunkCatalog}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+ const failures=createGlobePlanFailures();
+ failures.fail('view',false);assert.equal(failures.allow('view',false),false);
+ assert.equal(failures.allow('view',true),true);
+ failures.clear();assert.equal(failures.allow('view',false),true);
+ const index=createGlobeChunkCatalog([
+  {key:'far',bounds:[-1,0,0,-.9,.1,.1],spec:{sha256:'a'}},
+  {key:'near',bounds:[.9,0,0,1,.1,.1],spec:{sha256:'b'}},
+ ]);
+ assert.deepEqual(index.select(box=>box[0]>0).map(row=>row.key),['near']);
+});
+
+test('shared pending packet consumer promotes queued priority before speculative cancellation',async()=>{
+ const {createRenderPacketCache}=await import('../../../src/rendering/render-cache-budget.js');
+ const cache=createRenderPacketCache({byteBudget:1024}),hold=Promise.withResolvers(),old=new AbortController(),next=new AbortController();
+ let readPriority=null,observed=[];
+ const speculative=cache.read('same',async(signal,priority)=>{
+  readPriority=priority;priority.subscribe(()=>observed.push(priority()));await hold.promise;
+  signal.throwIfAborted();return new Uint8Array(8);
+ },old.signal,{priority:-20});
+ await Promise.resolve();
+ const required=cache.read('same',()=>assert.fail('Common packet was loaded twice'),next.signal,{priority:20});
+ old.abort();await assert.rejects(speculative,{name:'AbortError'});
+ assert.equal(readPriority(),20);assert.deepEqual(observed,[20]);
+ hold.resolve();assert.equal((await required).length,8);cache.dispose();
+});
+
+test('physical catalog selects lake and base/detail river chunks through Cartesian coverage',async()=>{
+ const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+ const near=[.8,0,0,1,.1,.1],far=[-1,0,0,-.8,.1,.1],chunk=(id,bounds)=>({spec:{sha256:id},bounds});
+ const reads=[],load=async spec=>{reads.push(spec.sha256);return {points:new Float32Array(6)};};
+ const assets=createGlobePhysicalAssets([{identity:'world',waters:[],lakes:[{minZoom:3,chunks:[chunk('lake-near',near),chunk('lake-far',far)]}],
+  riverMinZoom:3,riverChunks:[chunk('river-near',near),chunk('river-far',far)],riverDetail:[
+   {...chunk('detail-near',near),id:'d1',minZoom:5},{...chunk('detail-far',far),id:'d2',minZoom:5},
+  ]}],{loadMesh:load,loadStroke:load});
+ const cull=box=>box[0]>0,plan=assets.plan('world',{zoom:5,cull,strokeCull:cull});
+ assets.retain([plan]);const prepared=await assets.prepare(plan);
+ assert.equal(prepared.lakes.length,1);assert.equal(prepared.riverChunks.length,1);
+ assert.deepEqual(reads.sort(),['lake-near','river-near']);
+ assert.deepEqual(assets.detailPlan('world',{zoom:5,strokeCull:cull}).map(row=>row.id),['d1']);
+ assets.dispose();
+});

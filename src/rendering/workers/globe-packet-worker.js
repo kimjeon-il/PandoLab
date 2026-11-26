@@ -43,6 +43,11 @@ rpc.install({handlers:{
      throw Error('Invalid globe outline owners');
     if(spatial)value=prepareGlobeSpatialPacket(value,{outline:ownerCount!==undefined});
     break;
+   case 'catalog':
+    value=JSON.parse(new TextDecoder().decode(decoded.buffer));
+    if(value?.version!==1||!Array.isArray(value.historicalCountries)||!Array.isArray(value.historicalBorders)||!Array.isArray(value.physicalContexts))
+     throw Error('Invalid Three.js spatial catalog');
+    break;
    case 'hydro':
     value=JSON.parse(new TextDecoder().decode(decoded.buffer));
     if(!Array.isArray(value)||value.length!==identityCount)throw Error('Invalid Three.js hydro identities');
@@ -50,6 +55,6 @@ rpc.install({handlers:{
    default:throw Error('Unsupported globe packet kind: '+kind);
   }
   context.throwIfCancelled();
-  return kind==='hydro'?value:transfer(value);
+  return kind==='hydro'||kind==='catalog'?value:transfer(value);
  },
 }});

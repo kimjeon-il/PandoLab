@@ -110,14 +110,19 @@ export function createRenderPacketCache({byteBudget,entryLimit=256,onEvict,resid
    if(signal.aborted)abort();
   });
  }
- function read(key,load,signal=null){
+ function read(key,load,signal=null,{priority=0}={}){
   if(disposed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render packet cache disposed','AbortError'));
   const existing=entries.get(key);
-  if(existing)return consume(key,existing,signal);
-  const entry={pending:true,bytes:0,promise:null,controller:new AbortController(),users:0,unscoped:false,lastUsed:performance.now(),buffers:null};
+  if(existing){
+   if(existing.pending&&priority>existing.priority){existing.priority=priority;for(const notify of existing.priorityListeners)notify();}
+   return consume(key,existing,signal);
+  }
+  const entry={pending:true,bytes:0,promise:null,controller:new AbortController(),users:0,unscoped:false,lastUsed:performance.now(),buffers:null,priority,priorityListeners:new Set()};
+  const readPriority=()=>entry.priority;
+  readPriority.subscribe=notify=>{entry.priorityListeners.add(notify);return ()=>entry.priorityListeners.delete(notify);};
   entries.set(key,entry);pendingCount++;
   entry.promise=Promise.resolve().then(()=>{
-   entry.controller.signal.throwIfAborted();return load(entry.controller.signal);
+   entry.controller.signal.throwIfAborted();return load(entry.controller.signal,readPriority);
   }).then(value=>{
    entry.controller.signal.throwIfAborted();
    if(entries.get(key)===entry){
@@ -256,7 +261,7 @@ export function createRenderLoadGate({concurrency,byteBudget}){
     if(at<0)break;
     head.bypassed++;bypasses++;
    }
-   const [row]=queue.splice(at,1);row.signal?.removeEventListener('abort',row.abort);
+   const [row]=queue.splice(at,1);row.signal?.removeEventListener('abort',row.abort);row.unsubscribePriority?.();
    if(row.signal?.aborted){row.reject(row.signal.reason);continue;}
    const isSpeculative=row.priority<0;
    active++;if(isSpeculative)speculative++;else foreground++;
@@ -270,14 +275,15 @@ export function createRenderLoadGate({concurrency,byteBudget}){
  function run({bytes:estimate=0,priority=0,signal},task){
   if(closed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render load gate closed','AbortError'));
   return new Promise((resolve,reject)=>{
-   const row={bytes:Math.max(1,Number(estimate)||1),priority,signal,task,resolve,reject,sequence:++sequence,bypassed:0};
-   row.abort=()=>{const i=queue.indexOf(row);if(i>=0){queue.splice(i,1);reject(signal.reason);pump();}};
+   const row={bytes:Math.max(1,Number(estimate)||1),get priority(){return typeof priority==='function'?priority():priority;},signal,task,resolve,reject,sequence:++sequence,bypassed:0};
+   row.unsubscribePriority=priority?.subscribe?.(pump);
+   row.abort=()=>{const i=queue.indexOf(row);if(i>=0){queue.splice(i,1);row.unsubscribePriority?.();reject(signal.reason);pump();}};
    queue.push(row);signal?.addEventListener('abort',row.abort,{once:true});pump();
   });
  }
  function dispose(){
   closed=true;
-  for(const row of queue.splice(0)){row.signal?.removeEventListener('abort',row.abort);row.reject(new DOMException('Render load gate closed','AbortError'));}
+  for(const row of queue.splice(0)){row.signal?.removeEventListener('abort',row.abort);row.unsubscribePriority?.();row.reject(new DOMException('Render load gate closed','AbortError'));}
  }
  return Object.freeze({run,dispose,stats:()=>({active,foreground,speculative,queued:queue.length,reservedBytes:bytes,peakBytes,peakActive,bypasses,byteBudget,concurrency})});
 }

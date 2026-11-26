@@ -196,8 +196,10 @@ export function createMapPresentationSession({
   function markTemporalFrame(frame) {
     if (temporalPending()) temporalTicket.frameId = frame.frameId;
   }
-  function commitVisualFrame(frame) {
+  function commitVisualFrame(frame,publish=null) {
     if (!canPresentVisualFrame(frame)) return false;
+    // Publish renderer-owned camera/picking state before notifying clients.
+    publish?.();
     if (temporalPending()) {
       const ticket = temporalTicket;
       ticket.presented = true;

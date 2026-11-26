@@ -178,6 +178,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   const candidateGroups=[{source:null,rows:[],index:createGlobeLabelSpatialIndex([])},{source:null,rows:[],index:createGlobeLabelSpatialIndex([])}];
   const sdfTasks=createSdfTasks();
   let placed=[],previous=new Set(),lastCamera=null,cacheDirty=true,lastComplete=true,lastStrict=false,disposed=false;
+  let layoutCache=null,candidateRevision=0;
   let pendingSdf=null,desiredKeys=new Set(),sdfFallback=false,pendingMaskBytes=0;
   let activePages=new Set(),hitSnapshot=()=>null,layoutStats={};
   const counters={rasterizedRuns:0,textMeasurements:0,fullUploadBytes:0,partialUploadBytes:0,partialUploads:0,fullUploads:0,evictedPages:0,compactedPages:0,shrunkBatches:0};
@@ -417,7 +418,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       const point=valid?(vector??globeVector(row.coordinate)):null;
       return {...row,vector:point,bounds:point?[...point,...point]:null,atlasKey:JSON.stringify([Boolean(row.place),row.marker??'',row.lines])};
     });
-    group.index=createGlobeLabelSpatialIndex(group.rows);lastCamera=null;cacheDirty=true;return true;
+    group.index=createGlobeLabelSpatialIndex(group.rows);candidateRevision++;layoutCache=null;lastCamera=null;cacheDirty=true;return true;
   }
   function setCandidateGroups(countries,places){
     const changedCountries=setGroup(candidateGroups[0],countries),changedPlaces=setGroup(candidateGroups[1],places);
@@ -429,7 +430,8 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     cacheDirty=false;
     for(const page of pages)while(page.batches.length&&page.batches.at(-1).count===0)disposeBatch(page.batches.pop());
     let bytes=pages.reduce((sum,page)=>sum+pageBytes(page),0);
-    const inactive=pages.filter(page=>!activePages.has(page)).sort((a,b)=>Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
+    const preparingPages=new Set([...desiredKeys].map(key=>cachedRun(key)?.page).filter(Boolean));
+    const inactive=pages.filter(page=>!activePages.has(page)&&!preparingPages.has(page)).sort((a,b)=>Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
     for(const page of inactive){
       if(!page.retired&&bytes<=byteBudget)break;
       bytes-=pageBytes(page);evictPage(page);
@@ -439,10 +441,14 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   function update(camera,width,height,cull=createGlobeRangeCuller(camera.frame,width,height),requireComplete=false){
     if(camera===lastCamera&&lastStrict===requireComplete)return lastComplete;
     lastCamera=camera;lastStrict=requireComplete;
-    const visible=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?candidateGroups.flatMap(group=>group.index.query(cull)):[];
-    layoutStats={candidates:candidateGroups.reduce((sum,group)=>sum+group.rows.length,0),spatialCandidates:visible.length,projectedCandidates:0,collisionComparisons:0,duplicateCollisionSkips:0};
-    let hitGrid=null;
-    const layout=placeGlobeLabels(visible,camera,{width,height},previous,(cells,columns,cellSize)=>{hitGrid={cells,columns,cellSize};},measureLabel,layoutStats);
+    if(!layoutCache||layoutCache.camera!==camera||layoutCache.width!==width||layoutCache.height!==height||layoutCache.revision!==candidateRevision){
+      const visible=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?candidateGroups.flatMap(group=>group.index.query(cull)):[];
+      const stats={candidates:candidateGroups.reduce((sum,group)=>sum+group.rows.length,0),spatialCandidates:visible.length,projectedCandidates:0,collisionComparisons:0,duplicateCollisionSkips:0};
+      let hitGrid=null;
+      const layout=placeGlobeLabels(visible,camera,{width,height},previous,(cells,columns,cellSize)=>{hitGrid={cells,columns,cellSize};},measureLabel,stats);
+      layoutCache={camera,width,height,revision:candidateRevision,layout,hitGrid,stats};
+    }
+    const {layout,hitGrid,stats}=layoutCache;layoutStats={...stats};
     lastComplete=prepareMissing(layout);
     layoutStats.pending=layout.filter(row=>!cachedRun(row.atlasKey)).length;
     // Initial/temporal frames retain the previous label buffers until the
@@ -480,12 +486,13 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     activePages=new Set(byPage.keys());layoutStats.placed=placed.length;
     return lastComplete;
   }
-  function cancelPending(){desiredKeys.clear();cancelSdf();lastCamera=null;}
+  function cancelPending(){desiredKeys.clear();cancelSdf();layoutCache=null;lastCamera=null;cacheDirty=true;}
   function restoreTextures(){
     for(const page of pages){restoreTexture(page.upload);for(const batch of page.batches)restoreTexture(batch.upload);}
   }
   function memoryEntries(){
-    const rows=pages.map(page=>({key:page,...pageFootprint(page),lastUsed:page.lastUsed,protected:activePages.has(page),evict:()=>evictPage(page)}));
+    const preparingPages=new Set([...desiredKeys].map(key=>cachedRun(key)?.page).filter(Boolean));
+    const rows=pages.map(page=>({key:page,...pageFootprint(page),lastUsed:page.lastUsed,protected:activePages.has(page)||preparingPages.has(page),evict:()=>evictPage(page)}));
     rows.push({key:raster,protected:true,extraBytes:raster.width*raster.height*4+pendingMaskBytes*10+metricsCache.size*192+candidateGroups.reduce((sum,group)=>sum+group.rows.length*192+group.index.rows.length*160,0)+placed.length*128});
     return rows;
   }
@@ -494,7 +501,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     for(const page of pages)disposePage(page);
     uploadSource.dispose();pages.length=0;cache.clear();metricsCache.clear();
     for(const group of candidateGroups){group.source=null;group.rows=[];group.index=createGlobeLabelSpatialIndex([]);}
-    placed=[];previous.clear();activePages.clear();lastCamera=null;hitSnapshot=()=>null;
+    placed=[];previous.clear();activePages.clear();lastCamera=null;layoutCache=null;hitSnapshot=()=>null;
     raster.width=1;raster.height=1;
   }
   function cacheStats(){

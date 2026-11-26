@@ -157,3 +157,21 @@ test('single-channel hydro upload rectangles merge only compatible changed slots
   {x:1,y:0,width:2,height:2},{x:3,y:2,width:1,height:1},
  ]);
 });
+
+
+test('accepted map camera state is published before temporal presentation listeners',async()=>{
+ const {createMapPresentationSession}=await import('../../../src/rendering/map-presentation-session.js');
+ const order=[],session=createMapPresentationSession({
+  getGeneration:()=>1,getContextRevision:()=>0,isDisposed:()=>false,
+  getReadiness:()=>({mapReady:true}),invalidateFrame:()=>{},prepareContentKey:()=> 'world',
+  isProjectBlocked:()=>false,isRecoveryFrameAdmissible:()=>true,waitForCanonicalFrame:()=>Promise.resolve(true),
+ });
+ const token=session.beginTemporalViewTransition(()=>true,()=>order.push('presented'));
+ await session.prepareTemporalCountrySource([]);
+ session.admitTemporalViewTransition(token);
+ const frame={frameId:1,projectGeneration:1};
+ session.markTemporalFrame(frame);
+ assert.equal(session.commitVisualFrame(frame,()=>order.push('published-camera')),true);
+ assert.deepEqual(order,['published-camera','presented']);
+ session.dispose();
+});
