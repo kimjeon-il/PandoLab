@@ -435,7 +435,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   return false;
  }
  function labelsNeeded(){
-  return view.zoom>=COUNTRY_LABEL_MIN_ZOOM&&territorialNamesVisible(state)||view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR;
+  return view.zoom>=COUNTRY_LABEL_MIN_ZOOM&&territorialNamesVisible(state)||view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false;
  }
  function ensureLabelFont(){
   const wanted=labelsNeeded();
@@ -456,7 +456,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  function updateLabelContent(){
   if(!labelsNeeded()||!fontReady){surface.labels.setCandidates([]);labelContentDirty=false;return;}
   const namesVisible=territorialNamesVisible(state);
-  const countries=territories.slots.flatMap(slot=>{
+  const countries=namesVisible?territories.slots.flatMap(slot=>{
    const ref=refs[slot],metadata=labelsBySlot[slot];
    if(!metadata)return [];
    const row=features.get(ref.id),primaryName=deps.objectPresentation.territorialEntityName(row,{fallback:''});
@@ -469,8 +469,9 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
     minZoom:settings.minZoom,maxZoom:settings.maxZoom,lines,visible:namesVisible&&deps.objectRefVisible(ref)
       &&deps.layerPresentation.isLayerItemVisible('objectLabels',ref.id),
    }]:[];
-  });
-  const {rows:placeCandidates}=deps.countryLabelModel.placeLabelCandidates({zoom:view.zoom,geographicBounds:camera.geographicBounds()});
+  }):[];
+  const placeCandidates=view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false?
+   deps.countryLabelModel.placeLabelCandidates({zoom:view.zoom,geographicBounds:camera.geographicBounds()}).rows:[];
   const places=placeCandidates.filter(row=>row.viewportVisible||row.selected).flatMap(row=>{
    const ref=normalizeObjectRef({domain:'label',type:row.source.kind,id:row.source.id});
    if(!ref||!deps.objectRefVisible(ref))return [];
@@ -696,7 +697,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   isAtWorldView:()=>Boolean(viewport&&Math.abs(view.zoom-worldFit().zoom)<0.01&&Math.abs(view.center[0]-15)<0.1&&Math.abs(view.center[1]-12)<0.1),
   panBy(dx,dy){if(!camera)return false;beginMovement();const point=camera.frame.center;setCamera(camera.drag(point,[point[0]+dx,point[1]+dy]));finishMovement();return true;},
   setTerritorialFeatures,preparePhysicalContext,prepareDatedTerritories,
-  setSelection(value){selection=value;paintDirty=true;},setInteractionStyle(value){style=value;appearance();},
+  setSelection(value){
+   const prior=(selection?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
+   const next=(value?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
+   if(prior.length!==next.length||prior.some((key,i)=>key!==next[i]))labelContentDirty=true;
+   selection=value;paintDirty=true;
+  },setInteractionStyle(value){style=value;appearance();},
   invalidateCountryColors:appearance,invalidateCountryPalette:appearance,invalidatePhysicalStyle:appearance,invalidateHydroVisibility:appearance,
   setRenderQuality:appearance,
   labelZoomVisibility:()=>({country:Boolean(camera&&camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM),

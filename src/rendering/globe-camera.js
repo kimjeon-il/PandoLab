@@ -116,11 +116,13 @@ export function createGlobeCamera(view, viewport) {
     return bounds;
   }
 
-  function projectVisibleCoordinate(coordinate, { allowOutsideViewport = false } = {}) {
-    const vector = globeVector(coordinate);
-    if (dot(vector, frame.eye) < 1) return null;
-    const point = projectVector(vector, frame);
-    return point && (allowOutsideViewport || inside(point)) ? point : null;
+  function projectVisibleVector(vector,{allowOutsideViewport=false}={}){
+    if(dot(vector,frame.eye)<1)return null;
+    const point=projectVector(vector,frame);
+    return point&&(allowOutsideViewport||inside(point))?point:null;
+  }
+  function projectVisibleCoordinate(coordinate,options){
+    return projectVisibleVector(globeVector(coordinate),options);
   }
 
   function projectStroke(start,end){
@@ -149,7 +151,7 @@ export function createGlobeCamera(view, viewport) {
   }
 
   return Object.freeze({ view: snapshot, frame: Object.freeze(frame),
-    projectCoordinate: coordinate => projectVector(globeVector(coordinate), frame), projectVisibleCoordinate,
+    projectCoordinate: coordinate => projectVector(globeVector(coordinate), frame), projectVisibleCoordinate,projectVisibleVector,
     screenToGeo: point => { const ray=worldRay(point);return ray?mapCoordinate(add(ray.origin,scale(ray.direction,ray.start))):null; },
     worldRay,geographicBounds,projectStroke,drag,zoomAt });
 }

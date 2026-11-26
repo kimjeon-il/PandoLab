@@ -110,3 +110,33 @@ test('range culling preserves visible date-line and polar bounds and stroke padd
   // fall outside. The conservative bound must survive.
   assert.equal(createGlobeRangeCuller(frame,100,100)([.8,-.8,-.1,1,.8,.1]),true);
 });
+
+
+test('label spatial selection preserves priority across the date line and defers off-screen measurements',async()=>{
+  const {createGlobeLabelSpatialIndex,orderGlobeLabels,placeGlobeLabels}=await import('../../../src/rendering/three-globe-labels.js');
+  const {createGlobeRangeCuller}=await import('../../../src/rendering/globe-spatial-partition.js');
+  const camera=createGlobeCamera({center:[179.9,0],zoom:5},viewport);
+  const rows=orderGlobeLabels([
+    {key:'near-city',place:true,priority:10,coordinate:[-179.9,0]},
+    {key:'far-country',area:.01,shortSide:30,coordinate:[0,0]},
+    {key:'hidden',area:.1,shortSide:30,coordinate:[179.9,0],visible:false},
+    {key:'near-country',area:.01,shortSide:30,coordinate:[179.9,0]},
+  ]);
+  const index=createGlobeLabelSpatialIndex(rows),visible=index.query(createGlobeRangeCuller(camera.frame,viewport.width,viewport.height));
+  assert.deepEqual(visible.map(row=>row.key),['near-country','near-city']);
+  assert.ok(visible.every(row=>Array.isArray(row.vector)));
+  const measured=[];
+  placeGlobeLabels(visible,camera,viewport,new Set(),null,row=>{measured.push(row.key);return {width:56,height:56};});
+  assert.ok(measured.includes('near-country'));assert.ok(!measured.includes('far-country'));assert.ok(!measured.includes('hidden'));
+});
+
+test('label dirty rectangles merge adjacent updates and dynamic batches shrink without losing rows',async()=>{
+  const {mergeLabelTextureRects,labelInstanceCapacity}=await import('../../../src/rendering/three-globe-labels.js');
+  assert.deepEqual(mergeLabelTextureRects([
+    {x:0,y:4,width:2,height:1},{x:0,y:5,width:2,height:2},{x:20,y:30,width:10,height:10},
+  ]),[{x:0,y:4,width:2,height:3},{x:20,y:30,width:10,height:10}]);
+  assert.equal(labelInstanceCapacity(0,5,2048),16);
+  assert.equal(labelInstanceCapacity(1024,350,2048),1024);
+  assert.equal(labelInstanceCapacity(1024,200,2048),256);
+  assert.equal(labelInstanceCapacity(0,1500,1500),1500);
+});

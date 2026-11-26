@@ -1,6 +1,7 @@
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
-import {compactGlobeStrokeRange} from './globe-mesh.js';
+import {createGlobeOutlineCache} from './globe-outline-cache.js';
+export {indexGlobeOutlineRanges,selectGlobeOutlineGroups,globeOutlineRanges} from './globe-outline-cache.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
 import {renderCacheBudget,renderPacketBytes,renderPacketBuffers,touchRenderCache,trimRenderCache} from './render-cache-budget.js';
@@ -51,42 +52,6 @@ const surfaceFragment = `
   }
 `;
 
-// Index immutable outline segments once by owner group and owner slot.
-export function indexGlobeOutlineRanges(packet,owners){
-  const groupsBySlot=new Map(),rangesByGroup=Array.from({length:owners.length},()=>[]);
-  owners.forEach((slots,group)=>{
-    for(const slot of slots){
-      let groups=groupsBySlot.get(slot);
-      if(!groups){groups=[];groupsBySlot.set(slot,groups);}
-      groups.push(group);
-    }
-  });
-  for(let first=0;first<packet.count;){
-    const group=packet.ownerGroups[first];
-    let end=first+1;
-    while(end<packet.count&&packet.ownerGroups[end]===group)end++;
-    rangesByGroup[group].push([first,end]);first=end;
-  }
-  return {groupsBySlot,rangesByGroup};
-}
-
-export function selectGlobeOutlineGroups(index,roles,styles){
-  const groups=new Map();
-  for(const [slot,code] of roles){
-    const style=styles[code];
-    if(!style||style.width<=0||style.alpha<=0)continue;
-    for(const group of index.groupsBySlot.get(slot)??[]){
-      if(code>(groups.get(group)??0))groups.set(group,code);
-    }
-  }
-  return groups;
-}
-
-export function globeOutlineRanges(index,groups){
-  return [...groups].flatMap(([group,code])=>index.rangesByGroup[group].map(([first,end])=>({first,end,code})))
-    .sort((a,b)=>a.first-b.first);
-}
-
 export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, hydroCount, cacheBudget=renderCacheBudget() }) {
   const renderer = new THREE.WebGLRenderer({ canvas, context });
   const maxPointTextureSize=renderer.capabilities.maxTextureSize;
@@ -117,10 +82,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const zoom = { value: 0 };
   const cameraUniforms = { eyeHigh: { value: eyeHigh }, eyeLow: { value: eyeLow }, viewRotation: { value: viewRotation }, zoom };
   const viewport = { value: new THREE.Vector2() }, margin = { value: 0.5 };
-  const labels=createThreeGlobeLabels(THREE,{scene,palette:palette.labels,capacity:Math.max(countryCount,PLACE_LIMITS.layoutCandidates),viewport,byteBudget:cacheBudget.labelAtlasBytes});
+  const labels=createThreeGlobeLabels(THREE,{scene,renderer,palette:palette.labels,capacity:PLACE_LIMITS.layoutCandidates,maxTextureSize:maxPointTextureSize,viewport,byteBudget:cacheBudget.labelAtlasBytes});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint(){
-    countryTextureUploaded=false;texture.clearUpdateRanges();texture.needsUpdate=true;
+    countryTextureUploaded=false;texture.clearUpdateRanges();texture.needsUpdate=true;labels.restoreTextures();
   }
   function setCountryPaint(paint,{full=false}={}) {
     let changed = false;
@@ -360,103 +325,19 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   if(packets.borders)installBaseBorders(packets.borders);
 
-  function createOutlines({packet,owners}){
-    const index=indexGlobeOutlineRanges(packet,owners);
-    const partitions=packet.spatialParts;
-    const outlineStyles=Array.from({length:5},()=>new THREE.Vector2());
-    const attributeNames=['endpointIndices','ownerGroup'];
-    const chunks=new Map();
-    let previousGroups=new Map(),activeChunks=new Set(),groupRevision=0;
-    function ensureCapacity(chunk,partition,count){
-      if(chunk.capacity>=count)return;
-      chunk.resource?.dispose();
-      const capacity=Math.min(partition.end-partition.first,Math.max(count,Math.ceil(chunk.capacity*1.5),64));
-      chunk.source??=compactGlobeStrokeRange(packet,partition.first,partition.end);
-      const buffer={count:capacity,endpointIndices:new Uint32Array(capacity*2),widths:new Float32Array(0),ownerGroups:new Uint16Array(capacity)};
-      const points=createGlobeStrokePointTexture(THREE,chunk.source.points,maxPointTextureSize);
-      const options={...strokeOptions,order:6,outlineUniforms:{outlineStyles:{value:outlineStyles}}};
-      const mesh=createThreeGlobeStrokes(THREE,{...options,packet:buffer,pointUniforms:points.uniforms});
-      for(const name of attributeNames)mesh.geometry.getAttribute(name).setUsage(THREE.DynamicDrawUsage);
-      mesh.geometry.instanceCount=0;
-      const selection=createGlobeSpatialSelection(chunk.source,partition.index);
-      const resource=spatialResource([mesh],mesh.material,(getCuller,_zoom,stats)=>{
-        const selected=selection.select(getCuller(strokePadding(options,1)),chunk.revision,group=>chunk.groups.has(group));
-        if(selected.changed&&selected.count){
-          let offset=0;
-          for(let i=0;i<selected.ranges.length;i+=2){
-            const first=selected.ranges[i],end=selected.ranges[i+1];
-            buffer.endpointIndices.set(chunk.source.endpointIndices.subarray(first*2,end*2),offset*2);
-            for(let id=first;id<end;id++)buffer.ownerGroups[offset++]=chunk.groups.get(chunk.source.ownerGroups[id])??0;
-          }
-          for(const name of attributeNames){
-            const attribute=mesh.geometry.getAttribute(name);
-            attribute.clearUpdateRanges();attribute.addUpdateRange(0,selected.count*attribute.itemSize);attribute.needsUpdate=true;
-          }
-        }
-        mesh.geometry.instanceCount=selected.count;mesh.visible=selected.count>0;
-        stats.segments+=chunk.selectedCount;stats.ranges+=partition.index.leafCount;
-        stats.submittedSegments+=selected.count;stats.visibleRanges+=selected.leaves;
-      },[points],chunk.source);
-      resource.outlineOwner=true;
-      chunk.capacity=capacity;chunk.buffer=buffer;chunk.mesh=mesh;chunk.resource=resource;
-    }
-    function hide(){for(const chunk of activeChunks)chunk.resource.visible=false;}
-    function paint(roles,styles,color){
-      for(const [code,style] of styles.entries())outlineStyles[code].set(style.width/2,style.alpha);
-      const groups=selectGlobeOutlineGroups(index,roles,styles);
-      if(!groups.size){hide();return;}
-      const changed=groups.size!==previousGroups.size||[...groups].some(([group,code])=>previousGroups.get(group)!==code);
-      if(changed){
-        groupRevision++;
-        const ranges=globeOutlineRanges(index,groups),next=new Set();
-        let cursor=0;
-        for(let part=0;part<partitions.length&&cursor<ranges.length;part++){
-          const partition=partitions[part],local=[];
-          while(cursor<ranges.length&&ranges[cursor].first<partition.end){
-            const {first,end,code}=ranges[cursor];
-            if(end>partition.first)local.push({first:Math.max(first,partition.first),end:Math.min(end,partition.end),code});
-            if(end>partition.end)break;
-            cursor++;
-          }
-          if(!local.length)continue;
-          let chunk=chunks.get(part);
-          if(!chunk){chunk={capacity:0};chunks.set(part,chunk);}
-          const count=local.reduce((sum,{first,end})=>sum+end-first,0);
-          ensureCapacity(chunk,partition,count);
-          chunk.groups=groups;chunk.revision=groupRevision;chunk.selectedCount=count;
-          next.add(chunk);
-        }
-        for(const chunk of activeChunks)if(!next.has(chunk))chunk.resource.visible=false;
-        activeChunks=next;previousGroups=groups;
-      }
-      for(const chunk of activeChunks){
-        chunk.resource.visible=true;
-        chunk.resource.material.uniforms.strokeColor.value.set(color);
-      }
-    }
-    const indexBytes=owners.reduce((sum,slots)=>sum+slots.length*8,0)
-      +index.rangesByGroup.reduce((sum,ranges)=>sum+ranges.length*32,0);
-    function bytes(){return renderPacketBytes(packet)+indexBytes+[...chunks.values()].reduce((sum,chunk)=>sum+chunk.resource.bytes*2+chunk.source.points.byteLength+chunk.source.endpointIndices.byteLength,0);}
-    function dispose(){for(const chunk of chunks.values())chunk.resource?.dispose();chunks.clear();activeChunks.clear();previousGroups.clear();}
-    function footprint(){
-      const buffers=renderPacketBuffers(packet);let extraBytes=indexBytes;
-      for(const chunk of chunks.values())if(chunk.resource){
-        for(const buffer of chunk.resource.buffers)buffers.add(buffer);
-        extraBytes+=chunk.resource.deviceBytes;
-      }
-      return {buffers,extraBytes};
-    }
-    return {paint,hide,bytes,dispose,footprint,lastUsed:performance.now()};
-  }
   const outlineCache=new Map();
   let paintedOutlines=new Set();
   function installOutlines(slot,data){
     if(outlineCache.has(slot))return;
-    outlineCache.set(slot,createOutlines(data));residencyDirty=true;
+    const outline=createGlobeOutlineCache(THREE,{scene,...data,strokeOptions,maxTextureSize:maxPointTextureSize,
+      orderForChunk:(part,count)=>6+.9*((slot===null?0:slot+1)+(part+1)/(count+1))/(countryCount+1),
+      onResidencyChange:()=>{residencyDirty=true;}});
+    outlineCache.set(slot,outline);residencyDirty=true;
   }
   function setOutlinePaint(roles,styles,color){
     const targets=new Map();
     for(const [slot,code] of roles){
+      if(!(styles[code]?.width>0&&styles[code]?.alpha>0))continue;
       const target=touchRenderCache(outlineCache,datedCountries.has(slot)?slot:null);
       if(!target)continue;
       let local=targets.get(target);
@@ -464,8 +345,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       local.set(slot,code);
     }
     for(const target of paintedOutlines)if(!targets.has(target))target.hide();
-    for(const [target,local] of targets){target.lastUsed=performance.now();target.paint(local,styles,color);}
-    paintedOutlines=new Set(targets.keys());residencyDirty=true;
+    paintedOutlines=new Set([...targets].filter(([target,local])=>target.paint(local,styles,color)).map(([target])=>target));
   }
   function activateDatedView(view,parts){
     if(view===activeView)return;
@@ -503,7 +383,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       owned.add(entry.mesh);
       rows.push({...entry.mesh.footprint(),lastUsed:entry.mesh.lastUsed,protected:protectedMeshes.has(entry.mesh),evict:()=>evictMesh(key,entry)});
     }
-    for(const [slot,entry] of outlineCache)rows.push({...entry.footprint(),lastUsed:entry.lastUsed,protected:paintedOutlines.has(entry),evict:()=>{outlineCache.delete(slot);entry.dispose();}});
+    for(const [slot,entry] of outlineCache)rows.push(...entry.memoryEntries({active:paintedOutlines.has(entry),evict:()=>{outlineCache.delete(slot);entry.dispose();}}));
     for(const resource of spatialResources)if(!owned.has(resource)&&!resource.outlineOwner&&!resource.externalOwner)rows.push({...resource.footprint(),protected:true});
     rows.push({buffers:renderPacketBuffers([channels,countryVisible,hydroBytes,borderBytes]),extraBytes:channels.byteLength+hydroBytes.byteLength,protected:true});
     return [...rows,...labels.memoryEntries()];
@@ -519,12 +399,26 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       for(const [slot,row] of datedCountries)if(row.mesh===entry.mesh)datedCountries.delete(slot);
       releaseMesh(entry.mesh);
     },{entryLimit:512});
+    // Trim individual standby chunks even while their base outline packet
+    // is protected. Only a visible chunk is needed for the committed frame.
+    const standby=[...outlineCache.values()].flatMap(entry=>entry.standbyChunks()).sort((a,b)=>a.lastUsed-b.lastUsed);
+    let outlineBytes=[...outlineCache.values()].reduce((sum,entry)=>sum+entry.bytes(),0);
+    let standbyBytes=standby.reduce((sum,row)=>sum+row.bytes,0),standbyCount=standby.length;
+    const standbyLimit=Math.floor(cacheBudget.outlineBytes/4);
+    for(const row of standby){
+      if(outlineBytes<=cacheBudget.outlineBytes&&standbyBytes<=standbyLimit&&standbyCount<=64)break;
+      row.evict();outlineBytes-=row.bytes;standbyBytes-=row.bytes;standbyCount--;
+    }
     const protectedOutlines=new Set();
     for(const [slot,resource] of outlineCache)if(paintedOutlines.has(resource))protectedOutlines.add(slot);
     trimRenderCache(outlineCache,protectedOutlines,cacheBudget.outlineBytes,entry=>entry.bytes(),(_slot,entry)=>entry.dispose(),{entryLimit:128});
     return true;
   }
-  function cacheStats(){return {meshes:residentMeshes.size,meshResidentBytes:[...residentMeshes.values()].reduce((sum,row)=>sum+row.bytes,0),outlines:outlineCache.size,outlineResidentBytes:[...outlineCache.values()].reduce((sum,row)=>sum+row.bytes(),0)};}
+  function cacheStats(){
+    const outlineChunks={residentChunks:0,visibleChunks:0,activeChunks:0,evictedChunks:0,createdChunks:0,shrunkBuffers:0,updatedChunks:0};
+    for(const entry of outlineCache.values())for(const [key,value] of Object.entries(entry.stats()))outlineChunks[key]+=value;
+    return {meshes:residentMeshes.size,meshResidentBytes:[...residentMeshes.values()].reduce((sum,row)=>sum+row.bytes,0),outlines:outlineCache.size,outlineResidentBytes:[...outlineCache.values()].reduce((sum,row)=>sum+row.bytes(),0),outlineChunks};
+  }
 
   function resize(width, height, dpr) {
     viewport.value.set(width, height);
@@ -550,8 +444,9 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     };
     const stats={triangles:0,submittedTriangles:0,segments:0,submittedSegments:0,ranges:0,visibleRanges:0};
     for(const resource of activeSpatialResources)resource.update(getCuller,view.zoom,stats);
+    for(const outline of paintedOutlines)outline.update(getCuller,strokePadding,stats);
     spatialStats=stats;
-    labels.update(globeCamera,width,height);
+    labels.update(globeCamera,width,height,getCuller(0));
     renderer.render(scene, camera);
   }
   function dispose() {

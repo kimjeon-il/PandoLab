@@ -403,3 +403,27 @@ test('load gate bounds queued work and cancels a superseded waiter',async()=>{
   first.resolve(true);await running;assert.equal(await next,42);
   assert.equal(gate.stats().peakBytes,8);gate.dispose();
 });
+
+
+test('outline chunks index owner memberships and retain only selected point words',async()=>{
+  const {indexGlobeOutlineChunks,buildGlobeOutlinePointSubset,outlineInstanceCapacity}=await import('../../../src/rendering/globe-outline-cache.js');
+  const {globeStrokeRange}=await import('../../../src/rendering/globe-spatial-partition.js');
+  const source=decodeGlobeStrokes(encodeGlobeStrokes([0,0,1,0,1,0,2,0,2,0,3,0,3,0,4,0],null,[],Uint16Array.of(0,1,0,2)));
+  const packet={...source,spatialParts:[{packet:globeStrokeRange(source,0,2)},{packet:globeStrokeRange(source,2,4)}]};
+  const index=indexGlobeOutlineChunks(packet,[[0,1],[1],[2]]);
+  assert.deepEqual(index.groupsBySlot.get(1),[0,1]);
+  assert.deepEqual(index.chunksByGroup[0].map(row=>[row.chunkId,row.count,row.ranges]),[[0,1,[[0,1]]],[1,1,[[0,1]]]]);
+  assert.equal(index.chunksByGroup[2][0].chunkId,1);
+  const subset=buildGlobeOutlinePointSubset(source,[[0,1],[2,3]]);
+  assert.equal(subset.count,2);
+  assert.deepEqual([...subset.segmentOffsets],[0,-1,1,-1]);
+  assert.deepEqual([...subset.endpointIndices],[0,1,2,3]);
+  const originalWords=new Uint32Array(source.points.buffer,source.points.byteOffset,source.points.length);
+  const subsetWords=new Uint32Array(subset.points.buffer);
+  for(const [offset,sourceId] of [0,1,2,3].entries()){
+    assert.deepEqual(subsetWords.subarray(offset*6,offset*6+6),originalWords.subarray(sourceId*6,sourceId*6+6));
+  }
+  assert.equal(outlineInstanceCapacity(0,70,8192),128);
+  assert.equal(outlineInstanceCapacity(1024,400,8192),1024);
+  assert.equal(outlineInstanceCapacity(1024,200,8192),256);
+});
