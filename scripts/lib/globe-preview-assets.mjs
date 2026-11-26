@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { globeVector } from '../../src/rendering/globe-camera.js';
 import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes, GLOBE_MESH_HEADER_BYTES, GLOBE_MESH_MAGIC,
@@ -22,6 +23,35 @@ import { createCountryBoundaryOutput } from '../../src/rendering/country-boundar
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const archivePath = url => url.startsWith('assets/data/') ? url : 'assets/data/' + url;
 const toBuffer = value => value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+
+export function globeSkeletonLandPath(land, d3Source) {
+  const context = {};
+  runInNewContext(String(d3Source), context);
+  const geo = context.d3.geo;
+  const projection = geo.orthographic().rotate([-15, -12]).clipAngle(90)
+    .translate([128, 128]).scale(128).precision(1);
+  const coordinates = land.coordinates.flatMap(([exterior]) => {
+    const area = geo.area({type: 'Polygon', coordinates: [exterior]});
+    if (Math.min(area, 4 * Math.PI - area) < 0.0003) return [];
+    return [[area > 2 * Math.PI ? exterior.slice().reverse() : exterior]];
+  });
+  let ring = [];
+  const paths = [];
+  const drawing = {
+    moveTo(x, y) {
+      ring = [[Math.round(x), Math.round(y)]];
+    },
+    lineTo(x, y) {
+      const point = [Math.round(x), Math.round(y)], previous = ring.at(-1);
+      if ((point[0] - previous[0]) ** 2 + (point[1] - previous[1]) ** 2 >= 9) ring.push(point);
+    },
+    closePath() {
+      if (ring.length >= 3) paths.push('M' + ring.join('L') + 'Z');
+    },
+  };
+  geo.path().projection(projection).context(drawing)({type: 'MultiPolygon', coordinates});
+  return paths.join('');
+}
 
 function writePosition(high, low, offset, longitude, latitude) {
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || Math.abs(latitude) > 90) throw new Error('Invalid globe mesh coordinate');
@@ -321,7 +351,7 @@ function readGlobeHydro({ hydro, hydroPath, readPinnedData, waterVisibility, slo
   return {...buildGlobeRiverPackets(activeRivers(),stages,slotFor),lakesByZoom};
 }
 
-export async function buildGlobePreviewAssets({ territorial, physical, prepared, hydro, hydroPath, month, readPinnedData, readPinnedDataBatch, readGeometryAssets,boundarySeed,computeLabelAnchor }) {
+export async function buildGlobePreviewAssets({ territorial, physical, prepared, hydro, hydroPath, month, readPinnedData, readPinnedDataBatch, readGeometryAssets,boundarySeed,computeLabelAnchor,d3Source }) {
   const { resolvePhysicalWaterObjects, physicalWaterContextKey, physicalWaterReferenceView } = await import('../../src/data/physical-water-model.js');
   const { timelineObjectKey } = await import('../../src/document/timeline-records.js');
   const assets = new Map();
@@ -407,6 +437,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const outlines = emit(outlineBuffer,'outlines/');
   const readGeometry = async spec => JSON.parse(source(spec));
   const physicalContexts=new Map(),landPackets=new Map(),waterParts=new Map(),hydroParts=new Map();
+  let skeletonLandPath;
   const hydroSlots=new Map(),hydroObjects=[];
   function hydroSlot(feature){
     const id=String(feature.id),bounds=feature.__awBounds;
@@ -431,7 +462,9 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     const identity=JSON.stringify([landSpec.sha256,physicalWaterContextKey(selected)]);
     if(physicalContexts.has(identity))return physicalContexts.get(identity);
     if(!landPackets.has(landSpec.sha256)){
-      const mesh=physicalMesh(await loadPhysicalLandGeometry(landSpec,{loadGeometry:readGeometry,loadPatch:readGeometry}),'physical-land');
+      const geometry=await loadPhysicalLandGeometry(landSpec,{loadGeometry:readGeometry,loadPatch:readGeometry});
+      if(target===month)skeletonLandPath=globeSkeletonLandPath(geometry,d3Source);
+      const mesh=physicalMesh(geometry,'physical-land');
       const land = emitPackedMesh(encodeGlobeMesh({ coordinates: mesh.positions, indices: mesh.indices }));
       landPackets.set(landSpec.sha256,land);
     }
@@ -532,7 +565,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       hiddenBorders:baseGroups.flatMap(({key},slot)=>activeBase.has(key)?[]:[slot]),borders:activeHistory});
   }
   const hydroMetadata=emit(Buffer.from(JSON.stringify(hydroObjects)),'hydro-pick/');
-  return {assets,preview:{countries,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
+  return {assets,skeletonLandPath,preview:{countries,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:basePhysical,physicalContexts:[...physicalContexts.values()].filter(row=>row!==basePhysical),physicalMonth:month,
     historicalCountries,historicalBorders,historicalViews}};
 }

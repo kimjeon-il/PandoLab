@@ -54,6 +54,26 @@ async function open(page,query=''){
 
 const camera=page=>page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState());
 
+test('Viewer shows the land skeleton while the first globe frame is loading', async ({page})=>{
+ let release;
+ const pending=new Promise(resolve=>{release=resolve;});
+ await page.route('**/assets/data/globe-preview/**',async route=>{
+  await pending;
+  await route.continue();
+ });
+ const canvas=page.locator('#map canvas'),skeleton=page.locator('#mapSkeleton');
+ try{
+  await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
+  await canvas.waitFor({state:'attached'});
+  await expect(canvas).toBeHidden({timeout:3000});
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton.locator('path')).toHaveAttribute('d',/^M.+Z$/);
+ }finally{release();}
+ await ready(page,'globe reveal');
+ await expect(canvas).toBeVisible();
+ await expect(skeleton).toBeHidden();
+});
+
 test('Three globe draws prepared surfaces with no base uploads while dragging', async ({ browser, baseURL }) => {
  const context = await browser.newContext({ baseURL, viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1.5 });
  let allowOutlines;

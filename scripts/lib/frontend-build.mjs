@@ -128,13 +128,14 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
      ...(role==='rivers'||role==='lakes'?{version:hydroVersion}:{}),
      ...(role==='preparedMeshes'?{current:preparedMeshesCurrent}:{})}];
  }));
- let countryBoundarySeed,globePreview,globeAssetPaths=[];
+ let countryBoundarySeed,globePreview,globeAssetPaths=[],skeletonLandPath;
  if(startupGeometryPacks&&resourceProfile!=='test-fixture'){
   const {readBuiltinGeometryPackInputs}=await import('./builtin-geometry-packs.mjs');
   const recipe=['scripts/lib/country-boundary-seed.mjs','src/geometry/boundary-topology.js','src/geometry/country-contact-core.js','src/geometry/country-contact-row-pruning.js','src/geometry/geographic-boundary.js','src/geometry/boundary-spatial-index.js','src/rendering/workers/label-anchor-worker.js','assets/js-vendor/d3.min.js'];
   const {sharedCalculationCore}=await import('../../src/document/temporal.js');
   const algorithmSha256=hash(JSON.stringify([recipe.map(path=>[path,hash(readSourceBytes(path))]),hash(read('assets/wasm/pandoeditor-core.manifest.json')),sharedCalculationCore.polygonMeshAlgorithmRevision]));
-  const computeLabelAnchor=createCountryLabelAnchorComputer({d3Source:readSourceBytes('assets/js-vendor/d3.min.js'),workerSource:readSourceBytes('src/rendering/workers/label-anchor-worker.js')});
+  const d3Source=readSourceBytes('assets/js-vendor/d3.min.js');
+  const computeLabelAnchor=createCountryLabelAnchorComputer({d3Source,workerSource:readSourceBytes('src/rendering/workers/label-anchor-worker.js')});
   const prepared=buildCountryBoundarySeed({index:metadata[resource('territorial')],month:startupGeometryPacks.month,catalogSha256:projectCatalogs.territorial.sha256,algorithmSha256,
    computeLabelAnchor,
    readGeometryAssets:files=>readBuiltinGeometryPackInputs(resource('territorial'),files,readPinnedData,readPinnedDataBatch)});
@@ -142,8 +143,9 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
   const {buildGlobePreviewAssets}=await import('./globe-preview-assets.mjs');
   const globe=await buildGlobePreviewAssets({territorial:territorial.value,physical:physicalCatalog,
    prepared:metadata[resource('preparedMeshes')],hydro:metadata[resource('rivers')],hydroPath:resource('rivers'),
-   month:startupGeometryPacks.month,readPinnedData,readPinnedDataBatch,boundarySeed:prepared,computeLabelAnchor,
+   month:startupGeometryPacks.month,readPinnedData,readPinnedDataBatch,boundarySeed:prepared,computeLabelAnchor,d3Source,
    readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
+  skeletonLandPath=globe.skeletonLandPath;
   globePreview={...globe.preview,moduleUrl:'assets/vendor/three/three.module.js'};
   for(const [path,bytes] of globe.assets)generated(path,bytes,'viewer');
   globeAssetPaths=[...globe.assets.keys()];
@@ -190,6 +192,8 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
    ...(globePreview?{globePreview}:{})};
  generated('assets/js/build-meta.js','// Generated product identity.\nglobalThis.PANDOLAB_BUILD_META = Object.freeze('+JSON.stringify(buildMeta,null,2)+');\n');
  const templates=renderProductHtml(sourceText),moduleImports=Object.fromEntries([...assets.keys()].filter(p=>p.startsWith('assets/js/')&&p.endsWith('.js')).map(p=>['./'+p,'./'+p+'?v='+encodeURIComponent(assetRevision)]));
+ templates.web=templates.web.replace('<!-- viewer:map-skeleton -->',skeletonLandPath?
+  `<svg id="mapSkeleton" viewBox="0 0 256 256" aria-hidden="true"><path d="${skeletonLandPath}"/></svg>`:'');
  const render=(template,imports)=>{
   let html=template.replaceAll('{{assetRevision}}',assetRevision).replace(/(\bdata-app-version=")[^"]+(")/,'$1'+appVersion+'$2');
   html=html.replace(/(\b(?:href|src)="[^"]*assets\/[^"?]+)(?:\?v=[^"]*)?(")/g,(_,start,end)=>/\.woff2$/.test(start)?start+end:start+'?v='+assetRevision+end);
