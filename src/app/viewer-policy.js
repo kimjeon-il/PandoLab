@@ -1,5 +1,3 @@
-// Viewer admission and view-state operations are explicit. New Core operations
-// remain unavailable to the viewer until their effects have been reviewed.
 const viewerOperations = new Set([
   'core.document-load', 'core.document-initialize',
   'core.document-baseline-coverage', 'core.document-load-baseline',
@@ -17,24 +15,15 @@ const viewerOperations = new Set([
   'core.document-temporal-candidate-adopt',
 ]);
 
-export function createProductModePolicy(productMode, {readOnly = true, projection = 'globe'} = {}) {
-  if (productMode !== 'viewer') throw new TypeError('Only viewer product mode is supported.');
-  if (readOnly !== true) throw new TypeError('Viewer must remain read-only.');
-  if (projection !== 'globe') throw new TypeError('Viewer supports only the globe projection.');
-  return viewerPolicy;
-}
-
 export const viewerPolicy = Object.freeze({
-    productMode:'viewer',
-    readOnly:true,
     projection:'globe',
     assertProjection(requested) {
       if (requested !== undefined && requested !== 'globe')
-        throw Object.assign(new Error('The viewer supports only the globe projection.'), { code: 'PL-PRODUCT-PROJECTION', productMode:'viewer', projection: requested });
+        throw Object.assign(new Error('The viewer supports only the globe projection.'), { code: 'PL-PRODUCT-PROJECTION', projection: requested });
     },
     assertOperation(operation) {
       if (!viewerOperations.has(operation))
         throw Object.assign(new Error('This operation is unavailable in the read-only viewer.'),
-          { code: 'PL-PRODUCT-READONLY', productMode:'viewer', operation });
+          { code: 'PL-PRODUCT-READONLY', operation });
     },
   });

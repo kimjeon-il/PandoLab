@@ -3,10 +3,9 @@ import { distributionValueRange } from '../document/distribution-model.js';
 import { setDialogReturnFocus } from './dialog-accessibility-controller.js';
 
 /** One settings dialog. No detached View surface, DOM reparenting or duplicate state. */
-export function createPreferencesDialog({ document, window = globalThis.window, productMode = 'viewer',
+export function createPreferencesDialog({ document, window = globalThis.window,
   getPreferences, applyPreferences, mapSettings, getMapState,
   returnFocus = null, onError = () => {} }) {
-  if (productMode !== 'viewer') throw new TypeError('Preference dialog requires viewer product mode.');
   const get = id => document.getElementById(id);
   const modal = get('preferencesModal');
   const listeners = [];

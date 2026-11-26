@@ -1,8 +1,7 @@
-import { createProductModePolicy } from '../app/product-mode-policy.js';
+import { viewerPolicy } from '../app/viewer-policy.js';
 
 /** The Viewer host measures layout; its active renderer owns canvas and camera. */
-export function createMapHost({productMode = 'viewer', readOnly = true, projection = 'globe'} = {}) {
-  const policy = createProductModePolicy(productMode, {readOnly, projection});
+export function createMapHost() {
   let dependencies, host = null, ready = false, observer = null, resolution = null, resizeFrame = 0, viewRevision = 0, lastSignature = '', lastFrame = null;
   const element = () => dependencies.platform.$('map');
   const renderer = () => dependencies.rendering.mapRenderer;
@@ -37,10 +36,10 @@ export function createMapHost({productMode = 'viewer', readOnly = true, projecti
     host = Object.freeze({
       getKind:() => 'pando',
       isReady:() => ready,
-      getProjectionKind:() => policy.projection,
+      getProjectionKind:() => viewerPolicy.projection,
       getViewState:projectionViewSnapshot,
       setViewState(view) {
-        policy.assertProjection(view?.projection);
+        viewerPolicy.assertProjection(view?.projection);
         if (view?.view)dependencies.projectState.state.view = structuredClone(view.view);
         syncMapHostFromState(); return true;
       },
@@ -50,7 +49,7 @@ export function createMapHost({productMode = 'viewer', readOnly = true, projecti
       requestRepaint:reason => dependencies.domains.renderingDomain.invalidateView(reason),
       resize:() => queueMapResize('host'),
       dragBy:(dx, dy) => renderer().panBy(dx, dy),
-      getDebugState:() => ({kind:'pando', ready, projection:policy.projection, viewRevision, frameId:lastFrame?.frameId, renderer:renderer().kind}),
+      getDebugState:() => ({kind:'pando', ready, projection:viewerPolicy.projection, viewRevision, frameId:lastFrame?.frameId, renderer:renderer().kind}),
     });
   }
   async function initializeMapHost() {

@@ -4,16 +4,15 @@ import { loadUserPreferences } from '../ui/user-preferences.js';
 import { createMapWorkScheduler } from '../runtime/map-work-scheduler.js';
 import { createEmptyTerritorialState } from './territorial-entity-store.js';
 import { createInitialDocument } from './initial-document.js';
-import { resourceCapabilities } from '../runtime/resource-capabilities.js';
-import { createProductModePolicy } from '../app/product-mode-policy.js';
+import { VIEWER_RESOURCE_CAPABILITIES } from '../runtime/resource-capabilities.js';
+import { viewerPolicy } from '../app/viewer-policy.js';
 const readonlyIds = ids => Object.freeze({ get size() { return ids.length; }, has: id => ids.includes(id),
   [Symbol.iterator]: () => ids[Symbol.iterator]() });
 /** ProjectSession: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
  */
-export function createProjectSession({productMode = 'viewer', readOnly = true, projection = 'globe', capabilities = resourceCapabilities(productMode, null, {projection}), resolveVisibilityGroup, onViewingChange = null} = {}) {
-  const productPolicy = createProductModePolicy(productMode, {readOnly, projection});
+export function createProjectSession({resolveVisibilityGroup, onViewingChange = null} = {}) {
   const viewingFields = new Set(['layerVisibility','layerPresentation','itemVisibility','physicalSettings','distributionSettings']);
   let viewingPresentation = null, documentProjection = null, physicalSettings;
   let dependencies;
@@ -67,8 +66,8 @@ export function createProjectSession({productMode = 'viewer', readOnly = true, p
       layerPresentation: (0, dependencies.modelValidation.normalizeLayerPresentation)(),
       // SelectionDomain owns selection. Before domain initialization it is empty.
       get selected() { return dependencies.domains.selectionDomain?.primary() || null; },
-      projection: productPolicy.projection,
-      resourceCapabilities:capabilities,
+      projection: viewerPolicy.projection,
+      resourceCapabilities:VIEWER_RESOURCE_CAPABILITIES,
       backgroundSettings:{...background},
       layerVisibility: normalizeLayerVisibility(),
       physicalSettings: {
@@ -111,9 +110,9 @@ export function createProjectSession({productMode = 'viewer', readOnly = true, p
       applySnapshot: snapshot => {
         const projection = snapshot.projection || state.projection;
         const view = { ...state.view, ...snapshot.view };
-        productPolicy.assertProjection(projection);
+        viewerPolicy.assertProjection(projection);
         state.view = view;
-        state.projection = productPolicy.projection;
+        state.projection = viewerPolicy.projection;
         state.transitionRevision = Number(snapshot.stateRevision || state.transitionRevision || 0);
       },
     }));

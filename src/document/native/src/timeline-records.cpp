@@ -206,9 +206,18 @@ struct ParentGraph {
 };
 }
 
+namespace {
+bool timelineGeometryTypeAllowed(const ObjectRef& owner, const std::string& type) {
+    const bool polygon=type=="Polygon"||type=="MultiPolygon";
+    if(owner.domain=="territorial")return polygon;
+    return (owner.domain=="hydro"||owner.domain=="hydroBuiltin")
+        &&(polygon||type=="LineString"||type=="MultiLineString");
+}
+}
+
 TimelineRecords normalizeTimelineRecords(const TimelineRecords& input, const TimelineValidationContext& context) {
     if (input.schemaVersion!=TimelineRecordSchemaVersion) fail("TIMELINE_SCHEMA","Unsupported timeline version.");
-    if (!context.geometryExists) fail("TIMELINE_CONTEXT","A geometry repository is required.");
+    if (!context.geometryType) fail("TIMELINE_CONTEXT","A geometry repository is required.");
     std::map<ObjectRef, std::string> entities;
     std::map<ObjectRef, Slots> active;
     for (const auto& entity:context.entities) {
@@ -258,8 +267,11 @@ TimelineRecords normalizeTimelineRecords(const TimelineRecords& input, const Tim
             if (key=="border_aligned"&&value.kind!=codecjson::Value::Bool)fail("TIMELINE_GEOMETRY","Invalid river alignment.");
         }
         row.rendering = rendering.encode();
-        // Repository exceptions propagate unchanged; they are not missing records.
-        if (!context.geometryExists(row.objectRef, row.geometryRef)) fail("TIMELINE_GEOMETRY","Missing geometry for "+row.id+".");
+        // The C++ domain rule owns geometry-type compatibility. Repository
+        // exceptions propagate unchanged; an empty type means missing data.
+        const auto type=context.geometryType(row.objectRef,row.geometryRef);
+        if(type.empty())fail("TIMELINE_GEOMETRY","Missing geometry for "+row.id+".");
+        if(!timelineGeometryTypeAllowed(row.objectRef,type))fail("TIMELINE_GEOMETRY_TYPE","Incompatible geometry type for "+row.id+".");
     }
     for (auto& row:result.parentRelations) {
         if (row.objectRef.domain!="territorial")fail("TIMELINE_KIND","Only territorial objects have administrative parents.");

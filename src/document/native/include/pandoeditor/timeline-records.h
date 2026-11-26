@@ -41,10 +41,11 @@ struct TimelineRecords {
     std::vector<TimelinePropertyBinding> propertyBindings;
 };
 // A read-only validation input, not another persisted entity collection.
+// C++ owns domain/type compatibility; adapters only return the stored type.
 struct TimelineEntityIdentity { ObjectRef objectRef; std::string entityKind; };
 struct TimelineValidationContext {
     std::vector<TimelineEntityIdentity> entities;
-    std::function<bool(const ObjectRef&, const GeometryRef&)> geometryExists;
+    std::function<std::string(const ObjectRef&, const GeometryRef&)> geometryType;
 };
 class TimelineError : public std::invalid_argument {
 public:

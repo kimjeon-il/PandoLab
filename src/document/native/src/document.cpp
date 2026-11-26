@@ -231,8 +231,8 @@ DocumentIndex validateDocumentImpl(const ProjectDocument& d, void(*readContent)(
     }
     readContent(d, idx);
     for (const auto& [ref, s]:d.presentation.objectStyles) require(idx.objects.count(ref)&&s.color<=0xffffff,"INVALID_STYLE");
-    const auto records = normalizeTimelineRecords(d.timelineRecords, {timelineEntityCatalog(d), [&](const ObjectRef& owner, const GeometryRef& ref) {
-        const auto type = d.geometries.type(ref); return owner.domain=="territorial"?(type=="Polygon"||type=="MultiPolygon"):(type=="Polygon"||type=="MultiPolygon"||type=="LineString"||type=="MultiLineString");
+    const auto records = normalizeTimelineRecords(d.timelineRecords, {timelineEntityCatalog(d), [&](const ObjectRef&, const GeometryRef& ref) {
+        return d.geometries.type(ref);
     }});
     for (const auto& binding:records.geometryBindings)idx.geometryUsers[binding.geometryRef].push_back(binding.objectRef);
     for (std::size_t i = 0; i<records.parentRelations.size(); ++i) {

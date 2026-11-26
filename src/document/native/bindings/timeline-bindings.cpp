@@ -154,7 +154,7 @@ val webRecords(const TimelineRecords& records) {
 }
 TimelineValidationContext context(const val& value) {
     if(value.isNull()||!is(value,"object")||arrayValue(value)
-        ||!arrayValue(value["entities"])||!is(value["geometryExists"],"function"))
+        ||!arrayValue(value["entities"])||!is(value["geometryType"],"function"))
         fail("TIMELINE_CONTEXT","Entity catalog and geometry repository are required.");
     TimelineValidationContext result;
     const auto entities=value["entities"];
@@ -165,10 +165,10 @@ TimelineValidationContext context(const val& value) {
         result.entities.push_back({readObjectRef(identity["objectRef"]),
             readText(identity["entityKind"],"TIMELINE_KIND")});
     }
-    const auto exists=value["geometryExists"];
-    result.geometryExists=[exists](const ObjectRef& owner,const GeometryRef& ref) {
-        const val response=exists(webRef(ref),webObjectRef(owner));
-        return is(response,"boolean")&&response.as<bool>();
+    const auto type=value["geometryType"];
+    result.geometryType=[type](const ObjectRef& owner,const GeometryRef& ref) {
+        const val response=type(webRef(ref),webObjectRef(owner));
+        return is(response,"string")?response.as<std::string>():std::string{};
     };
     return result;
 }

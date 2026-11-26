@@ -8,12 +8,10 @@ import { mapProjectDocumentIdentity } from '../data/map-project-identity.js';
 // Project-scoped source preparation and Core admission. A source adapter
 // supplies country bytes; the accepted C++ document is the only writable map.
 // Historical geometry bytes stay lazy and retain their existing verified cache.
-export function createProjectSourceRuntime({
-  builtinWorldLoader = null, buildMeta, getDependencies, createSourceLoader = createBuiltinWorldLoader
-} = {}) {
+export function createProjectSourceRuntime({buildMeta, getDependencies, createSourceLoader = createBuiltinWorldLoader} = {}) {
   if (typeof getDependencies!=='function')throw new TypeError('Project source runtime requires an owner dependency accessor');
+  let builtinWorldLoader = null;
   let projectBaseline = null, projectBaselineGeneration = null;
-  const injectedWorldLoader = builtinWorldLoader!==null;
   let sourceIdentity = null, disposed = false;
   const preparedSources = new WeakMap();
   const staleBuiltin = () => Object.assign(new Error('Builtin source request was superseded'),
@@ -33,7 +31,7 @@ export function createProjectSourceRuntime({
     if (sourceIdentity!==identity) {
       sourceIdentity = identity;
       projectBaseline = null; projectBaselineGeneration = null;
-      if (!injectedWorldLoader)builtinWorldLoader = null;
+      builtinWorldLoader = null;
     }
     return identity;
   }
