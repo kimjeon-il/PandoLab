@@ -40,7 +40,7 @@ export function createMapOwners({buildMeta, isObjectVisible, resolveVisibilityGr
   const cameraNavigation = createCameraNavigation();
   const countryIndex = createCountryIndex();
   const spatialIndex = createSpatialIndex();
-  const mapProjection = createMapProjection({capabilities});
+  const mapProjection = createMapProjection();
   const objectPresentation = createObjectPresentation();
   const hydroSettings = createHydroSettings();
   const objectCatalog = createObjectCatalog({isObjectVisible});
