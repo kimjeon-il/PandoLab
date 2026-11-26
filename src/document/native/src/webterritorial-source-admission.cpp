@@ -33,7 +33,7 @@ ActiveFrame activeFrame(const ProjectSnapshot& snapshot) {
     if(snapshot.timelineEditsEnabled()) {
         require(!snapshot.timelineMonth().empty(),"TIMELINE_ACTIVATION","A timeline month is required.");
         const auto point=parseTemporal(snapshot.timelineMonth());require(point.precision=="month","INVALID_TIMELINE_CURSOR","Month precision is required.");
-        const auto world=resolveWorld(source.timelineRecords,{timelineEntityCatalog(source),[&](const ObjectRef& owner,const GeometryRef& ref){return source.geometries.contains(ref);}},snapshot.timelineMonth());
+        const auto world=resolveWorld(source.timelineRecords,{timelineEntityCatalog(source),[&](const ObjectRef&,const GeometryRef& ref){return source.geometries.type(ref);}},snapshot.timelineMonth());
         for(const auto& resolved:world.entities()) {
             if(resolved.objectRef.domain!="territorial")continue;
             const auto found=snapshot.index().objects.find(resolved.objectRef);require(found!=snapshot.index().objects.end(),"invalid","Territorial identity is missing.");
@@ -193,8 +193,8 @@ ProjectDocument applyWebTerritorialSource(const ProjectSnapshot& snapshot,const 
         const auto projected=timelineDocumentView(snapshot.document(),snapshot.timelineMonth());
         captureTimelinePropertyChanges(snapshot.document(),projected.document,candidate,snapshot.timelineMonth());
     }else applyStatic(candidate,next);
-    candidate.timelineRecords=normalizeTimelineRecords(candidate.timelineRecords,{timelineEntityCatalog(candidate),[&](const ObjectRef& owner,const GeometryRef& ref){
-        const auto geometry=candidate.geometries.get(ref);return geometry&&(geometry->type=="Polygon"||geometry->type=="MultiPolygon"||(owner.domain=="hydro"&&(geometry->type=="LineString"||geometry->type=="MultiLineString")));}});
+    candidate.timelineRecords=normalizeTimelineRecords(candidate.timelineRecords,{timelineEntityCatalog(candidate),[&](const ObjectRef&,const GeometryRef& ref){
+        return candidate.geometries.type(ref);}});
     return candidate;
 }
 }
