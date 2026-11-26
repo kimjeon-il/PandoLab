@@ -150,7 +150,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if(physicalLayers)for(const mesh of Object.values(physicalLayers).flat())mesh.visible=false;
     const {spec}=parts;
     physicalLayers={
-      land:[useMesh('land',spec.land.sha256,()=>register(null,parts.land.packet,palette.defaultLand,0))],
       waters:parts.waters.map(({id,spec:row,mesh})=>useMesh('water',`${id}:${row.sha256}`,()=>register(null,mesh.packet,palette.ocean,2))),
       lakes:parts.lakes.map(({spec:row,mesh,minZoom})=>useMesh('lake',`${row.sha256}:${minZoom}`,
         ()=>register(null,mesh.packet,palette.ocean,2,minZoom,'lake'))),

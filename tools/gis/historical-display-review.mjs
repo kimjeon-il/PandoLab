@@ -769,6 +769,82 @@ export function worldPolygonsViewerGeometry(source,{detachedHoles=[],coveredPoly
 const worldPolygonsSourcePath='assets/data/builtin-world/source/world-polygons-11.4-g99_5';
 export const worldPolygonsDisplayEvidencePath=(sha256=null,kind='repairs')=>sha256
  ?worldPolygonsSourcePath+'-'+kind+'/'+sha256+'.json.gz':worldPolygonsSourcePath+'.json.gz';
+export const lsibDisplayEvidencePath=sha256=>'assets/data/builtin-world/source/lsib-11.4-display/'+sha256+'.json.gz';
+export const historicalLsibDisplayEvidencePath=sha256=>'assets/data/builtin-world/source/lsib-11.4-historical-display/'+sha256+'.json.gz';
+export const historicalLsibBindingKey=({entityId,sourceVersionId,validFrom,validTo})=>
+ JSON.stringify([entityId,sourceVersionId,validFrom,validTo]);
+const historicalLsibEvidence=new WeakMap();
+export function readHistoricalLsibDisplayEvidence(bytes){
+ if(!Buffer.isBuffer(bytes))throw Error('Historical LSIB display evidence is missing');
+ if(!historicalLsibEvidence.has(bytes)){
+  const data=JSON.parse(gunzipSync(bytes));
+  if(data.schemaVersion!==1||data.method!=='lsib-historical-common-display'||!Array.isArray(data.rows))
+   throw Error('Historical LSIB display evidence format is invalid');
+  const rows=new Map(data.rows.map(row=>[historicalLsibBindingKey(row),row]));
+  if(rows.size!==data.rows.length)throw Error('Historical LSIB display evidence repeats a dated binding');
+  historicalLsibEvidence.set(bytes,{sha256:createHash('sha256').update(bytes).digest('hex'),data,rows});
+ }
+ return historicalLsibEvidence.get(bytes);
+}
+const lsibDisplayEvidence=new WeakMap();
+
+function assertHistoricalLsibCompiledDisplay({next,previous,binding,geometry,geometryDigest,claim,readDisplayEvidence,oldGeometries}){
+ const {sha256,reference}=claim.source??{};
+ if(!requiredHash(sha256)||reference!==historicalLsibDisplayEvidencePath(sha256))
+  throw Error('Historical LSIB display evidence reference is invalid');
+ const evidence=readHistoricalLsibDisplayEvidence(readDisplayEvidence?.(reference));
+ if(evidence.sha256!==sha256)throw Error('Historical LSIB display evidence hash differs');
+ const row=evidence.rows.get(historicalLsibBindingKey({...binding,entityId:next.entityId}));
+ const isPeriod=other=>other.sourceVersionId===binding.sourceVersionId&&other.validFrom===binding.validFrom&&other.validTo===binding.validTo;
+ const prior=previous?.sourceBindings.find(isPeriod);
+ const old=prior&&oldGeometries.get(prior.geometryRef.id+':'+prior.geometryRef.version);
+ const scheduled=next.timelineRecords.geometryBindings.filter(other=>other.validFrom===binding.validFrom&&other.validTo===binding.validTo
+  &&isDeepStrictEqual(other.objectRef,binding.objectRef));
+ if(!old||!row||binding.validTo==null||row.sourceEntityId!==next.identity.properties.metadata.historicalTimeline.entityId
+  ||!isDeepStrictEqual(prior.geometryRef,row.before)||!isDeepStrictEqual(geometry.geojson,row.geometry)
+  ||claim.previousGeometrySha256!==digest(old.geojson)||claim.geometrySha256!==geometryDigest
+  ||scheduled.length!==1||!isDeepStrictEqual(scheduled[0].geometryRef,binding.geometryRef))
+  throw Error('Historical LSIB display evidence does not match the selected object, dates or shape');
+}
+
+function assertLsibCompiledDisplay({next,previous,binding,geometry,geometryDigest,claim,readDisplayEvidence,oldGeometries}){
+ const fail=message=>{throw Error(message);};
+ const {sha256,reference}=claim.source??{};
+ if(!requiredHash(sha256)||reference!==lsibDisplayEvidencePath(sha256))
+  fail('LSIB display evidence reference is invalid');
+ const bytes=readDisplayEvidence?.(reference);
+ if(!Buffer.isBuffer(bytes))fail('LSIB display evidence is missing');
+ let evidence=lsibDisplayEvidence.get(bytes);
+ if(!evidence){
+  const data=JSON.parse(gunzipSync(bytes));
+  if(data.type!=='FeatureCollection'||data.method!=='geos-coverage-visvalingam-whyatt'||!Array.isArray(data.features))
+   fail('LSIB display evidence format is invalid');
+  const rows=new Map(data.features.map(row=>[row.id,row]));
+  if(rows.size!==data.features.length)fail('LSIB display evidence repeats an object');
+  evidence={sha256:createHash('sha256').update(bytes).digest('hex'),data,rows};
+  lsibDisplayEvidence.set(bytes,evidence);
+ }
+ if(evidence.sha256!==sha256)fail('LSIB display evidence hash differs');
+ const selected=evidence.rows.get(next.entityId);
+ const oldBinding=previous?.sourceBindings.find(row=>row.sourceVersionId===binding.sourceVersionId&&row.validTo===null);
+ const old=oldBinding&&oldGeometries.get(oldBinding.geometryRef.id+':'+oldBinding.geometryRef.version);
+ if(!old||!selected||binding.validTo!==null||evidence.data.displayValidFrom!==binding.validFrom
+  ||selected.properties?.sourceEntityId!==next.identity.properties.metadata.historicalTimeline.entityId
+  ||!isDeepStrictEqual(oldBinding.geometryRef,selected.properties.before)
+  ||!isDeepStrictEqual(selected.properties.wpIds,claim.featureIds)
+  ||!isDeepStrictEqual(selected.properties.divisionSource,claim.divisionSource)
+  ||!isDeepStrictEqual(geometry.geojson,selected.geometry)
+  ||claim.previousGeometrySha256!==digest(old.geojson)||claim.geometrySha256!==geometryDigest)
+  fail('LSIB display evidence does not match the current object, interval or shape');
+ const through=evidence.data.previousDisplayThrough;
+ const retained=oldBinding.validFrom!==binding.validFrom;
+ const currentTimeline=next.timelineRecords.geometryBindings.filter(row=>row.validTo===null
+  &&row.objectRef.id===binding.objectRef.id);
+ if(currentTimeline.length!==1||currentTimeline[0].validFrom!==binding.validFrom
+  ||!isDeepStrictEqual(currentTimeline[0].geometryRef,binding.geometryRef)
+  ||(retained&&!next.sourceBindings.some(row=>isDeepStrictEqual(row,{...oldBinding,validTo:through}))))
+  fail('LSIB display evidence does not match the retained and current timeline bindings');
+}
 
 const palestineWorldPolygonsSources=[
  ['7abdd7db-fe64-4143-93b6-64a7af99b24b','Gaza Strip','XGZ'],
@@ -956,8 +1032,24 @@ export function assertHistoricalCompiledChanges(next,previous,{readDisplayEviden
  if(previous&&next.entityId!==previous.entityId)throw Error('Historical compiled identity changed');
  const oldGeometries=new Map((previous?.geometries||[]).map(g=>[g.id+':'+g.version,g])),digests=new WeakMap(),content=g=>{if(!digests.has(g))digests.set(g,digest(g.geojson));return digests.get(g);};let checked=0;
  for(const binding of next.sourceBindings){const geometry=next.geometries.find(g=>g.id===binding.geometryRef.id&&g.version===binding.geometryRef.version);if(!geometry)throw Error('Missing reviewed compiled geometry');const geometryDigest=content(geometry);
-  const unchanged=(previous?.sourceBindings||[]).some(b=>{if(b.sourceVersionId!==binding.sourceVersionId)return false;const old=oldGeometries.get(b.geometryRef.id+':'+b.geometryRef.version);if(!old)throw Error('Missing previous compiled geometry');return content(old)===geometryDigest;});if(unchanged)continue;
-  const timeline=next.identity.properties.metadata.historicalTimeline,version=timeline.geometryVersions.find(v=>v.versionId===binding.sourceVersionId);if(!version)throw Error('Missing compiled source version metadata');
+  const timeline=next.identity.properties.metadata.historicalTimeline,version=timeline.geometryVersions.find(v=>v.versionId===binding.sourceVersionId);
+  const historicalLsib=version?.historicalProvenance?.historicalLsibDisplay?.find(r=>r.validFrom===binding.validFrom&&r.validTo===binding.validTo);
+  const previousBindings=previous?.sourceBindings??[];
+  const unchanged=previousBindings.some(b=>{
+   if(b.sourceVersionId!==binding.sourceVersionId||(historicalLsib&&(b.validFrom!==binding.validFrom||b.validTo!==binding.validTo)))return false;
+   const old=oldGeometries.get(b.geometryRef.id+':'+b.geometryRef.version);if(!old)throw Error('Missing previous compiled geometry');return content(old)===geometryDigest;
+  });
+  if(unchanged)continue;
+  if(!version)throw Error('Missing compiled source version metadata');
+  if(historicalLsib){
+   assertHistoricalLsibCompiledDisplay({next,previous,binding,geometry,geometryDigest,claim:historicalLsib,readDisplayEvidence,oldGeometries});
+   checked++;continue;
+  }
+  const lsib=version.historicalProvenance?.lsibDisplay?.find(r=>r.validFrom===binding.validFrom&&r.validTo===binding.validTo);
+  if(lsib){
+   assertLsibCompiledDisplay({next,previous,binding,geometry,geometryDigest,claim:lsib,readDisplayEvidence,oldGeometries});
+   checked++;continue;
+  }
   const wp=version.historicalProvenance?.worldPolygonsDisplay?.find(r=>r.validFrom===binding.validFrom&&r.validTo===binding.validTo);
   if(wp){
    const cutover=['partitions','compositions'].some(kind=>wp.source?.reference===worldPolygonsDisplayEvidencePath(wp.source?.sha256,kind));

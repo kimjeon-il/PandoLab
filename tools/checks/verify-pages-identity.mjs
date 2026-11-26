@@ -116,7 +116,7 @@ export function verifyStagedPagesIdentity({root,stage,evidence,expectedCommit=nu
   if(!globe?.countries||!globe.graticule||!globe.physical||!Array.isArray(globe.historicalCountries))
     fail('ARTIFACT_DEPLOY_DATA_PIN','Missing Three.js map asset manifest');
   const physicalPackets=[globe.physical,...globe.physicalContexts].flatMap(row=>
-    [row.land,row.rivers,...[...row.waters,...row.lakes,...row.riverDetail].map(part=>part.spec)]);
+    [row.rivers,...[...row.waters,...row.lakes,...row.riverDetail].map(part=>part.spec)]);
   const globePackets=[globe.countries,globe.outlines,globe.borders,globe.graticule,globe.hydroMetadata,
     ...physicalPackets,...globe.historicalBorders,...globe.historicalCountries.flatMap(row=>[row.countries,row.outlines])];
   for(const spec of new Set(globePackets.flatMap(packet=>[packet,...packet.pickGrid?[packet.pickGrid]:[]]))) {

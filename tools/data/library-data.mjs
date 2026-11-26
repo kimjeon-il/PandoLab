@@ -1,12 +1,14 @@
 import {execFileSync} from "node:child_process";
+import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
+import {gzipSync} from 'node:zlib';
 import {isAbsolute,relative,resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {defaultRoot,git,libraryConfig,libraryReportRoot,libraryReportEditRoot} from "./library-context.mjs";
 import {centralizeLibraryReports} from "./library-reports.mjs";
 import {prepareLibraryData,prepareLibraryMetadata,mountLibraryInputs,beginLibraryWrite,endLibraryWrite,withLibraryWrite} from "./library-runtime.mjs";
 import {organizeLibraryReports,publishLibraryReports,checkLibraryReports} from "./library-report-publication.mjs";
-import {storeLibraryData,storeLocalTerritorialRetirement,publishLibraryRuntime} from "./library-store.mjs";
+import {storeLibraryData,storeLocalTerritorialRetirement,storeLsibDisplay,publishLibraryRuntime} from "./library-store.mjs";
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv[2] === '--publish-runtime') {
@@ -14,6 +16,20 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const prefixes=process.argv.filter(arg=>arg.startsWith('--include-prefix=')).map(arg=>arg.slice(17));
     const expectedRemote=process.argv.find(arg=>arg.startsWith('--expected-remote='))?.slice(18);
     console.log(JSON.stringify(publishLibraryRuntime({root,prefixes,expectedRemote})));
+  } else if (['--store-local-lsib-display', '--store-local-lsib-history'].includes(process.argv[2])) {
+    const root=process.argv.find(arg=>arg.startsWith('--root='))?.slice(7)||defaultRoot;
+    const historical=process.argv[2]==='--store-local-lsib-history';
+    const candidate=process.argv.find(arg=>arg.startsWith('--candidate='))?.slice(12);
+    const displayValidFrom=process.argv.find(arg=>arg.startsWith('--display-valid-from='))?.slice(21);
+    const reviewedHash=process.argv.find(arg=>arg.startsWith('--candidate-sha256='))?.slice(19);
+    const includeSameSource=process.argv.includes('--include-same-source');
+    if(!candidate||!/^[a-f0-9]{64}$/.test(reviewedHash??''))
+      throw Error('Specify --candidate and --candidate-sha256 for the LSIB display');
+    if(historical?displayValidFrom:!displayValidFrom||includeSameSource)
+      throw Error('Use --display-valid-from for current LSIB or --include-same-source to extend historical LSIB scope');
+    const bytes=readFileSync(resolve(candidate));
+    if(createHash('sha256').update(bytes).digest('hex')!==reviewedHash)throw Error('LSIB candidate differs from the verified bytes');
+    console.log(JSON.stringify(await storeLsibDisplay({root,displayValidFrom,historical,includeSameSource,sourceBytes:gzipSync(bytes)})));
   } else if (process.argv[2] === '--store-local-retirement') {
     const root=process.argv.find(arg=>arg.startsWith('--root='))?.slice(7)||defaultRoot;
     const manifestPath=process.argv.find(arg=>arg.startsWith('--retirement-manifest='))?.slice('--retirement-manifest='.length);

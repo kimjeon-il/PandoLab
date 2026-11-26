@@ -11,6 +11,7 @@
         "tests/core/stored-asset-loader.test.mjs",
         "tests/core/current-world-stream.test.mjs",
         "tests/core/builtin-world-scope.test.mjs",
+        "tests/core/lsib-display-edition.test.mjs",
         "tests/core/world-bundle.test.mjs",
         "tests/core/builtin-geometry-packs.test.mjs",
         "tests/unit/data/core-timeline-preparation.test.mjs",

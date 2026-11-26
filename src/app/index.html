@@ -13,8 +13,8 @@
   <link rel="stylesheet" href="assets/css/app.css?v={{assetRevision}}">
   <link rel="stylesheet" href="assets/css/ui-viewer.bundle.css?v={{assetRevision}}" data-pandolab-ui="ui-bundle">
   <link rel="stylesheet" href="assets/css/viewer.css?v={{assetRevision}}">
-  <script src="assets/js/build-meta.js?v={{assetRevision}}"></script>
-  <script src="assets/js/vendor/d3.min.js?v={{assetRevision}}"></script>
+  <script defer src="assets/js/build-meta.js?v={{assetRevision}}"></script>
+  <script defer src="assets/js/vendor/d3.min.js?v={{assetRevision}}"></script>
   <script type="module" src="assets/js/viewer.js?v={{assetRevision}}"></script>
 </head>
 <body>
@@ -63,6 +63,7 @@
         </div>
         <!-- include:object-chooser -->
         <div id="map" class="map-stage" aria-label="지도" tabindex="0">
+          <!-- viewer:map-skeleton -->
         </div>
         <div class="viewer-map-tools">
         <div class="ui-toolbar ui-floating-surface ui-floating-toolbar map-command-toolbar" aria-label="지도 명령">

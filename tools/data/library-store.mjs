@@ -86,6 +86,22 @@ export async function storeWorldPolygonsDisplay({root=defaultRoot,sourceBytes,re
   return {...stored,plan};
 }
 
+export async function storeLsibDisplay({root=defaultRoot,sourceBytes,displayValidFrom,historical=false,includeSameSource=false}){
+  const {buildHistoricalLsibDisplayEdition,buildLsibDisplayEdition,assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
+  const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  let plan;
+  const stored=storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:historical?'historical LSIB 11.4 display':'LSIB 11.4 display',
+    advanceWorkBranch:true,prepare:readBaseline=>{
+      const inputs={baseline:baselineRevision,readBaseline,indexPath:'assets/data/builtin-world/generated/v1/index.json',sourceBytes};
+      const edition=historical?buildHistoricalLsibDisplayEdition({...inputs,includeSameSource})
+        :buildLsibDisplayEdition({...inputs,expectedDisplayValidFrom:displayValidFrom});
+      assertReviewedBorderEdition(edition);
+      plan=edition.plan;
+      return edition.files;
+    }});
+  return {...stored,plan};
+}
+
 export async function storeLocalTerritorialRetirement({root=defaultRoot,retirement,engine,replacementSource}){
   const split=retirement?.kind==='split-us-minor-outlying-islands';
   const independent=Object.hasOwn(INDEPENDENT_WORLD_RETIREMENT_IDS,retirement?.kind);
@@ -299,13 +315,13 @@ function verifyRemoteRuntimeResources(input){
  execFileSync(process.execPath,['--input-type=module','-e',script],{input:JSON.stringify(input),stdio:['pipe','inherit','inherit']});
 }
 
-export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,verifyRemote=verifyRemoteRuntimeResources}={}){
+export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,updateAppPin=true,verifyRemote=verifyRemoteRuntimeResources}={}){
  if(!/^[a-f0-9]{40}$/.test(expectedRemote||'')||!Array.isArray(prefixes)||!prefixes.length
    ||prefixes.some(path=>!/^assets\/data\/[A-Za-z0-9._/-]+$/.test(path)||path.split('/').some(part=>!part||part==='.'||part==='..')))
   throw Error('Runtime publication requires explicit data prefixes and expected remote main');
  return withLibraryLock(root,()=>{
   const shared=librarySharedCheckout(root),config=libraryConfig(root),source=config.revision,head=git(shared,['rev-parse','HEAD']);
-  if(git(shared,['branch','--show-current'])!=='main'||git(shared,['status','--porcelain']))throw Error('Preserve library source work before runtime publication');
+  if(git(shared,['branch','--show-current'])!=='main'||git(shared,['status','--porcelain','--untracked-files=no']))throw Error('Preserve library source work before runtime publication');
   if(libraryWriteLeases(shared).some(lease=>lease.alive&&lease.prefixes.some(a=>prefixes.some(b=>scopesOverlap(a,b)))))throw Error('Runtime publication overlaps an active writer');
   const included=path=>prefixes.some(prefix=>path===prefix||path.startsWith(prefix+'/'));
   const remote=()=>git(shared,['ls-remote','--exit-code','origin','refs/heads/main']).split(/\s+/)[0];
@@ -318,7 +334,8 @@ export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,
    if(a?.sha256!==b?.sha256||a?.bytes!==b?.bytes)throw Error('Unselected runtime differs from remote main: '+path);
   }
   const selected=Object.entries(candidate.files).filter(([path])=>included(path));
-  if(!selected.length)throw Error('Runtime publication selected no stored assets');
+  const removed=Object.keys(baseline.files).filter(path=>included(path)&&!candidate.files[path]);
+  if(!selected.length&&!removed.length)throw Error('Runtime publication selected no stored assets');
   const protectedPaths=new Set(Object.entries(baseline.files).filter(([path])=>!included(path)).flatMap(([,entry])=>archiveStoredResources(entry).map(spec=>spec.stored)));
   const scratch=resolve(shared,'.pando-store','runtime-publication-'+randomUUID()+'.index');mkdirSync(dirname(scratch),{recursive:true});
   const env={...process.env,GIT_INDEX_FILE:scratch,GIT_NO_LAZY_FETCH:'1',GIT_OPTIONAL_LOCKS:'0'};
@@ -326,6 +343,7 @@ export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,
   const resources=new Map(),files={...baseline.files};
   try{
    run(['read-tree',expectedRemote]);
+   for(const path of removed)delete files[path];
    for(const [path,entry]of selected){
     decodeArchiveEntry(shared,entry,source,{fetch:false});
     files[path]=entry;
@@ -352,8 +370,8 @@ export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,
    let recorded=false;try{run(['merge-base','--is-ancestor',revision,head]);recorded=true;}catch(error){if(error.status!==1)throw error;}
    const receipt=recorded?head:run(['-c','user.name=Pando library publisher','-c','user.email=library-publisher@users.noreply.github.com','commit-tree',git(shared,['rev-parse',head+'^{tree}']),'-p',head,'-p',revision,'-m','Record scoped runtime publication '+revision]);
    if(!recorded)run(['update-ref','refs/heads/main',receipt,head]);
-   writeFileSync(resolve(root,'config/library-data.json'),JSON.stringify({...config,revision},null,2)+'\n');
-   return {revision,parent:expectedRemote,sourceRevision:source,localReceipt:receipt,paths:selected.map(([path])=>path),storedObjects:resources.size-1};
+   if(updateAppPin)writeFileSync(resolve(root,'config/library-data.json'),JSON.stringify({...config,revision},null,2)+'\n');
+   return {revision,parent:expectedRemote,sourceRevision:source,localReceipt:receipt,paths:selected.map(([path])=>path),removed,storedObjects:resources.size-1};
   }finally{for(const path of [scratch+'.lock',scratch])if(existsSync(path))unlinkSync(path);}
  });
 }

@@ -1,12 +1,26 @@
 import {PLACE_LIMITS} from '../document/place-limits.js';
+import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
 
 export const LABEL_PRIORITIES = Object.freeze({ country: 100, capital: 90, majorCity: 70, administrative: 60, place: 40 });
 
-export const MAP_LABEL_SIZE_STOPS = Object.freeze([
-  Object.freeze({zoom:4,flag:26,name:28,cityDiameter:5,cityName:12}),
-  Object.freeze({zoom:6,flag:34,name:38,cityDiameter:7,cityName:16}),
-  Object.freeze({zoom:9,flag:46,name:50,cityDiameter:10,cityName:20}),
-]);
+const territorialSizeStops = [{zoom:4,size:28},{zoom:6,size:38},{zoom:9,size:50}];
+const fraction = (value,start,end) => Math.max(0,Math.min(1,(value-start)/(end-start)));
+
+function territorialSizeAtZoom(shortSide, zoom) {
+  const index = zoom <= 6 ? 0 : 1;
+  const lower = territorialSizeStops[index], upper = territorialSizeStops[index + 1];
+  const cap = lower.size + (upper.size - lower.size) * fraction(zoom, lower.zoom, upper.zoom);
+  const pixels = shortSide * referenceZoomPixelsPerDegree(zoom);
+  const smallTerritory = Math.round(60 * fraction(pixels, 22, 147));
+  const largeTerritory = Math.round((cap - 19) * 10 * fraction(pixels, 147, 440));
+  return 13 + (smallTerritory + largeTerritory) / 10;
+}
+
+export function territorialLabelPixelSize(shortSide, zoom) {
+  const lowerZoom = Math.floor(zoom), t = zoom - lowerZoom;
+  const base = territorialSizeAtZoom(shortSide, lowerZoom);
+  return t === 0 ? base : base + (territorialSizeAtZoom(shortSide, lowerZoom + 1) - base) * t;
+}
 
 export function territorialLabelShortSide(componentBounds, [longitude, latitude]) {
   let nearest, distance = Infinity, area = 0;

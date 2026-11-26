@@ -2,6 +2,9 @@ import {test,expect} from '@playwright/test';
 
 import {readFile} from 'node:fs/promises';
 
+import {validateBuiltinReadIndex} from '../../src/data/builtin-country-files.js';
+import {resolveBuiltinWorldGeometry} from '../../src/data/builtin-world-loader.js';
+import {globeTerritoryKey} from '../../src/rendering/globe-mesh.js';
 import { COUNTRY_DEFAULT_COLORS } from '../../src/ui/country-default-colors.js';
 
 async function ready(page,stage='map presentation'){
@@ -53,6 +56,41 @@ async function open(page,query=''){
 }
 
 const camera=page=>page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState());
+
+test('Viewer shows the land skeleton while the first globe frame is loading', async ({page})=>{
+ let release;
+ const pending=new Promise(resolve=>{release=resolve;});
+ await page.route('**/assets/data/globe-preview/**',async route=>{
+  await pending;
+  await route.continue();
+ });
+ const canvas=page.locator('#map canvas'),skeleton=page.locator('#mapSkeleton');
+ try{
+  await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
+  await canvas.waitFor({state:'attached'});
+  await expect(canvas).toBeHidden({timeout:3000});
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton.locator('path')).toHaveAttribute('d',/^M.+Z$/);
+  // This inland sample used to fall through a crack between simplified rings.
+  const landAlpha=await skeleton.evaluate(async element=>{
+   const svg=element.cloneNode(true);
+   svg.setAttribute('xmlns','http://www.w3.org/2000/svg');
+   svg.setAttribute('width','768');svg.setAttribute('height','768');
+   const url=URL.createObjectURL(new Blob([svg.outerHTML],{type:'image/svg+xml'}));
+   try{
+    const image=new Image();image.src=url;await image.decode();
+    const context=new OffscreenCanvas(768,768).getContext('2d');
+    context.drawImage(image,0,0);
+    return context.getImageData(356,453,1,1).data[3];
+   }finally{URL.revokeObjectURL(url);}
+  });
+  expect(landAlpha).toBe(255);
+  await expect(skeleton).toHaveCSS('fill','rgb(241, 241, 241)');
+ }finally{release();}
+ await ready(page,'globe reveal');
+ await expect(canvas).toBeVisible();
+ await expect(skeleton).toBeHidden();
+});
 
 test('Three globe draws prepared surfaces with no base uploads while dragging', async ({ browser, baseURL }) => {
  const context = await browser.newContext({ baseURL, viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1.5 });
@@ -135,7 +173,7 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   expect(assetRequests.filter(path => landSources.includes(path))).toEqual([]);
   expect(requests).toBe(await page.evaluate(() => {
    const { waters, lakes } = window.PANDOLAB_BUILD_META.globePreview.physical;
-   return 5 + waters.length + lakes.length;
+   return 4 + waters.length + lakes.length;
   }));
   expect(writes).toBeGreaterThan(0);
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
@@ -177,7 +215,8 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
    return window.__PANDOLAB_VIEWER__.rendererStats().drawCount - count;
   })).toBe(0);
   const dateCamera = (await camera(page)).camera;
-  await month(page, '2026-10');
+  // This month shares the startup edition's territorial packets.
+  await month(page, '2026-12');
   expect((await camera(page)).camera).toEqual(dateCamera);
   expect(await page.evaluate(() => window.globeBufferWrites)).toBe(selectionWrites);
   expect(meshRequests()).toBe(requests);
@@ -305,14 +344,26 @@ test('Three globe switches to changed historical meshes and reuses them on retur
  const canvas=page.locator('#map canvas'),modernMap=await canvas.screenshot();
  const base=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.builtinMonth().month,
   count:window.__PANDOLAB_VIEWER__.rendererStats().countrySlotCount}));
+ const catalogUrl=await page.evaluate(()=>new URL(window.PANDOLAB_BUILD_META.projectCatalogs.territorial.catalog,location.href).href);
+ const response=await page.request.get(catalogUrl);
+ expect(response.ok()).toBe(true);
+ const catalog=await response.json(),read=validateBuiltinReadIndex(catalog);
+ const rowsAt=date=>resolveBuiltinWorldGeometry(catalog,read,date);
+ const key=({owner,asset})=>globeTerritoryKey(owner,asset);
+ const current=new Set(rowsAt(base.month).map(key));
+ const expectedAt=date=>{
+  const rows=rowsAt(date);
+  return {count:rows.length,changed:rows.filter(row=>!current.has(key(row))).length};
+ };
+ expect(base.count).toBe(current.size);
  const initialCamera=(await camera(page)).camera;
  const active=()=>page.evaluate(()=>{const stats=window.__PANDOLAB_VIEWER__.rendererStats();
   return {count:stats.countrySlotCount,changed:stats.activeHistoricalTerritories,writes:window.globeHistoryBufferWrites};});
  expect(historyRequests).toEqual([]);
  await month(page,'2020-12');
  const first=await active(),requests=historyRequests.length;
- expect(first.count).toBe(base.count+1);
- expect(first.changed).toBe(3);
+ expect(first).toMatchObject(expectedAt('2020-12'));
+ expect(first.changed).toBeGreaterThan(0);
  expect(requests).toBeGreaterThan(0);
  expect((await camera(page)).camera).toEqual(initialCamera);
  expect((await canvas.screenshot()).equals(modernMap)).toBe(false);
@@ -323,10 +374,11 @@ test('Three globe switches to changed historical meshes and reuses them on retur
  expect(await active()).toEqual(first);
  expect(historyRequests).toHaveLength(requests);
  await month(page,'1991-12');
+ expect(await active()).toMatchObject(expectedAt('1991-12'));
  expect((await active()).count).toBeLessThan(base.count);
- expect((await active()).changed).toBeGreaterThan(first.changed);
  await month(page,'1910-07');
  const earlier=await active();
+ expect(earlier).toMatchObject(expectedAt('1910-07'));
  expect(earlier.count).toBeLessThan(base.count);
  expect(earlier.changed).toBeGreaterThan(0);
  expect((await camera(page)).camera).toEqual(initialCamera);
@@ -336,7 +388,7 @@ test('Three globe switches to changed historical meshes and reuses them on retur
  expect((await active()).count).toBeLessThan(earlier.count);
 });
 
-test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{
+async function openGeographicSampleMap(page){
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,backgrounds:{viewer:{graticule:false}}})));
  await page.goto('./?debug=1');
  await ready(page,'geographic samples startup');
@@ -359,6 +411,18 @@ test('Three globe preserves polar, date-line and microstate surfaces',async({pag
   const actual=await pixel(coordinate);
   return Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value)));
  }).toBeLessThanOrEqual(1);
+ return {canvas,go,paint};
+}
+
+test('Three globe uses territorial coastlines for coastal fill',async({page})=>{
+ const {go,paint}=await openGeographicSampleMap(page);
+ // Samples in the ocean just beyond the territory polygons on these coasts.
+ await go([166.32,-22.17],10);await paint([166.216213,-22.126016],'#ffffff');
+ await go([-73.86,-43.07],10);await paint([-74.209291,-42.942997],'#ffffff');
+});
+
+test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{
+ const {canvas,go,paint}=await openGeographicSampleMap(page);
  const ant=[20,-85],north=[0,89.9];
  await go(ant,5);await paint(ant,'#f1f1f1');
  await go(north,5);await paint(north,'#ffffff');
@@ -379,12 +443,12 @@ test('Three globe preserves polar, date-line and microstate surfaces',async({pag
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(row=>row.id))).toContain('VAT');
 });
 
-test('Three globe switches historical land and water in the same dated frame',async({page})=>{
+test('Three globe switches historical territories and water in the same dated frame',async({page})=>{
  await page.goto('./?debug=1');
  await ready(page,'dated physical startup');
  const state=()=>page.evaluate(()=>{
   const viewer=window.__PANDOLAB_VIEWER__,stats=viewer.rendererStats();
-  return {month:viewer.builtinMonth().month,land:stats.physicalLandSha256,water:stats.physicalWaterIds,territories:stats.countrySlotCount};
+  return {month:viewer.builtinMonth().month,water:stats.physicalWaterIds,territories:stats.countrySlotCount};
  });
  await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-58,-43,0]}}));
  const initialCamera=(await camera(page)).camera,before=await state();
@@ -392,7 +456,6 @@ test('Three globe switches historical land and water in the same dated frame',as
  await month(page,'1923-11');
  const dated=await state();
  expect(dated).toMatchObject({month:'1923-11',water:expect.arrayContaining(['waterbody:aral','waterbody:caspian'])});
- expect(dated.land).not.toBe(before.land);
  expect(dated.territories).toBeLessThan(before.territories);
  expect((await camera(page)).camera).toEqual(initialCamera);
  expect((await canvas.screenshot()).equals(modern)).toBe(false);

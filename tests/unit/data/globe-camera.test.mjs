@@ -41,16 +41,18 @@ test('country labels stay in front of the globe and give larger countries priori
   const {orderGlobeLabels,placeGlobeLabels}=await import('../../../src/rendering/three-globe-labels.js');
   const camera=createGlobeCamera({center:[0,0],zoom:4},viewport);
   const candidates=[
-    {key:'small',coordinate:[0,0],area:.0002,width:90,height:45},
-    {key:'large',coordinate:[0,0],area:.013,width:90,height:45},
-    {key:'behind',coordinate:[180,0],area:.027,width:90,height:45},
-    {key:'clear',coordinate:[8,0],area:.0002,width:90,height:45},
+    {key:'small',coordinate:[0,0],area:.0002,shortSide:2,width:90,height:45},
+    {key:'large',coordinate:[0,0],area:.013,shortSide:30,width:90,height:45},
+    {key:'behind',coordinate:[180,0],area:.027,shortSide:30,width:90,height:45},
+    {key:'clear',coordinate:[8,0],area:.0002,shortSide:2,width:90,height:45},
     {key:'competing city',place:true,coordinate:[0,0],priority:1000,width:110,height:45},
     {key:'city',place:true,coordinate:[-8,0],priority:500,width:110,height:45},
   ];
   const placed=placeGlobeLabels(orderGlobeLabels(candidates),camera,viewport,new Set());
   assert.deepEqual(placed.map(row=>row.key),['large','clear','city']);
   assert.ok(placed[0].bottom-placed[0].top>placed[1].bottom-placed[1].top);
+  assert.equal(placed[0].bottom-placed[0].top,22.5,'large territory labels at zoom 4 use the 28px type size');
+  assert.ok(Math.abs(placed[2].bottom-placed[2].top-45*12/56)<1e-9);
   assert.equal((placed[0].left+placed[0].right)/2,viewport.width/2);
 });
 

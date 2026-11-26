@@ -110,8 +110,22 @@
   --projection-safe-right: calc(var(--phone-panel-width) + var(--viewer-dock-right));
 }
 
-/* Pulse the Viewer canvas while the first frame is being prepared. */
+/* The landing silhouette is available before WebGL and the map data. */
+#mapSkeleton {
+  position: absolute;
+  inset: 0;
+  width: 86%;
+  height: 86%;
+  margin: auto;
+  fill: #f1f1f1;
+  pointer-events: none;
+  visibility: hidden;
+}
 .viewer-root[data-initial-loading='true'] #map canvas {
+  visibility: hidden;
+}
+.viewer-root[data-initial-loading='true'] #mapSkeleton {
+  visibility: visible;
   animation: viewer-map-skeleton-pulse 2.4s ease-in-out infinite;
 }
 @keyframes viewer-map-skeleton-pulse {
@@ -119,7 +133,7 @@
   50% { filter: brightness(1.02); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .viewer-root[data-initial-loading='true'] #map canvas { animation: none; }
+  .viewer-root[data-initial-loading='true'] #mapSkeleton { animation: none; }
 }
 
 /* E4: independent read-only review, no map-viewport ownership or edit gestures. */
