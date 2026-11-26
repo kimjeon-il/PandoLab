@@ -15,7 +15,6 @@ import {createStoredAssetLoader} from '../../src/data/stored-asset-loader.js';
 import {loadVerifiedCore} from '../../src/runtime/core-wasm-loader.js';
 import {decodeCountryMesh, encodeCountryMesh} from '../../src/rendering/country-mesh-codec.js';
 import {createApplicationLifecycle} from '../../src/app/application-lifecycle.js';
-import {createPhysicalAssetReader} from '../../src/data/physical-asset-reader.js';
 
 import {createAdaptiveRenderQualityController, renderQualityProfile, resolveInitialRenderQuality} from '../../src/rendering/adaptive-render-quality.js';
 
@@ -351,23 +350,25 @@ test('required physical resource failure ends startup loading with an error and 
   const window=new EventTarget();window.CustomEvent=CustomEvent;
   window.addEventListener('pandolab:ready',()=>events.push('ready'));
   window.addEventListener('pandolab:error',event=>events.push(event.detail));
-  const reader=createPhysicalAssetReader({buildMeta:{dataRevision:'selected-pin',physicalLand:{
-    url:'assets/data/physical/land.json',encoding:'identity',sha256:hash('{}'),compressedBytes:2}},
-    resolveBaseUrl:()=>new URL('https://fixture.invalid/data/'),
-    createLoader:options=>createStoredAssetLoader({...options,cacheStorage:null,subtle:webcrypto.subtle,
-      fetchFn:()=>{requested.resolve();return network.promise;}})});
-  const lifecycle=createApplicationLifecycle({window,startup:()=>reader.loadPhysicalLand(),
+  const spec={url:'https://fixture.invalid/globe/water.bin',encoding:'identity',sha256:hash('{}'),compressedBytes:2};
+  const loader=createStoredAssetLoader({dataRevision:'selected-pin',cachePolicy:'immutable',resolveUrl:asset=>asset.url,
+    cacheStorage:null,subtle:webcrypto.subtle,fetchFn:()=>{requested.resolve();return network.promise;}});
+  let admitted=false;
+  const lifecycle=createApplicationLifecycle({window,startup:async()=>{
+    await loader.loadAsset(spec,'startup','water','Water surface',bytes=>bytes);
+    admitted=true;
+  },
     onReady:()=>{ready++;},onError:error=>errors.push(error),
     getDisposables:()=>[{dispose(){disposed++;}}]});
   try {
     const completion=lifecycle.start();
     await requested.promise;
-    assert.equal(ready,0);assert.equal(disposed,0);assert.equal(reader.physicalLand,null);
+    assert.equal(ready,0);assert.equal(disposed,0);assert.equal(admitted,false);
     network.resolve(new Response('missing',{status:404}));
     assert.equal(await completion,false,'required resource rejection settles the startup attempt');
     assert.equal(errors.length,1);assert.match(errors[0].message,/404/);
     assert.deepEqual(events,[errors[0].message],'error event replaces the ready event');
-    assert.equal(ready,0);assert.equal(disposed,1);assert.equal(reader.physicalLand,null);
+    assert.equal(ready,0);assert.equal(disposed,1);assert.equal(admitted,false);
     assert.equal(await lifecycle.start(),false,'a failed disposed startup cannot remain pending');
   } finally {lifecycle.dispose();}
 });
