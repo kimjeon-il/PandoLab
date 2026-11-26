@@ -121,15 +121,20 @@ export function createGlobeHistoryIndex(history,baseCount,{decodedLimit=DECODED_
   }
   return null;
  }
- function neighbors(month,direction=0){
-  if(!moments.length)return [];
+ function intervalAt(month){
+  if(!moments.length)return -1;
   const key=globeHistoryMonthKey(month);
   let lo=0,hi=moments.length;
   while(lo<hi){const mid=(lo+hi)>>1;if(moments[mid].key<=key)lo=mid+1;else hi=mid;}
-  const current=Math.max(0,lo-1),before=moments[current-1],after=moments[current+1];
+  return Math.max(0,lo-1);
+ }
+ const intervalKey=month=>String(intervalAt(month));
+ function neighbors(month,direction=0){
+  const current=intervalAt(month);if(current<0)return [];
+  const before=moments[current-1],after=moments[current+1];
   return (direction<0?[before,after]:[after,before]).filter(Boolean).map(row=>({
    month:row.month,physicalIdentity:row.physicalIdentity,territories:row.view===-1?base:get(row.view),
   }));
  }
- return Object.freeze({base,find,neighbors,stats:()=>({views:rows.length,decodedViews:decoded.size,checkpointStride:stride,timelineMoments:moments.length})});
+ return Object.freeze({base,find,neighbors,intervalKey,stats:()=>({views:rows.length,decodedViews:decoded.size,checkpointStride:stride,timelineMoments:moments.length})});
 }

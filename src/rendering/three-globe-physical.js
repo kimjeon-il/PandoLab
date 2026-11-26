@@ -79,8 +79,8 @@ export function createGlobePhysicalAssets(descriptors,{loadMesh,loadStroke,byteB
  function coversWaters(have,needed){return !!have&&have.spec.identity===needed.spec.identity&&globeChunkSetContains(have.waters,needed.waters);}
  function covers(have,needed){return coversWaters(have,needed)&&have.rivers===needed.rivers&&
   globeChunkSetContains(have.lakes,needed.lakes)&&globeChunkSetContains(have.riverChunks,needed.riverChunks);}
- async function warm(target,{signal,priority=-20,claim}){
-  for(const row of target.rows){signal?.throwIfAborted();if(files.has(keyOf(row))||!claim(row.spec))continue;await read(row,signal,priority);}
+ async function warm(target,{signal,priority=-20,claim,holdBytes=0}){
+  for(const row of target.rows){signal?.throwIfAborted();if(files.has(keyOf(row))){if(holdBytes)files.holdWarm(keyOf(row),holdBytes);continue;}if(!claim(row.spec,row.kind))continue;await read(row,signal,priority);if(holdBytes)files.holdWarm(keyOf(row),holdBytes);}
  }
  function detailPlan(identity,{zoom,strokeCull=()=>true,geographicBounds}){
   const source=catalog.get(identity);if(!source)return [];
@@ -89,6 +89,6 @@ export function createGlobePhysicalAssets(descriptors,{loadMesh,loadStroke,byteB
  }
  function retain(plans){retained=plans.filter(Boolean);refresh();}
  function dispose(){disposed=true;contexts.clear();pending.clear();catalog.clear();retained=[];files.dispose();}
- return Object.freeze({has:identity=>catalog.has(identity),addDescriptors,plan,prepare,coversWaters,covers,warm,detailPlan,
+ return Object.freeze({has:identity=>catalog.has(identity),addDescriptors,plan,prepare,coversWaters,covers,warm,releaseWarm:()=>files.releaseWarm(),detailPlan,
   readDetail:(row,signal)=>read(row,signal,5),retain,memoryEntries:files.memoryEntries,stats:()=>({...files.stats(),contexts:contexts.size}),dispose});
 }

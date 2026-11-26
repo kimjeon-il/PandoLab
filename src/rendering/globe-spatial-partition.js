@@ -185,30 +185,34 @@ export function globeSpatialUnion(boundsList){
 export function createGlobeSpatialSelection(packet,index){
  let priorLeaves=[],priorRevision=-1,priorCull=null,result={ranges:new Uint32Array(),count:0,leaves:0,changed:true};
  const all=index.count;
+ let marks=null,ids=null,nextLeaves=[];
+ const footprint=()=>[marks,ids,result.ranges];
  function select(cull,revision=0,ownerVisible=null){
   if(cull===priorCull&&revision===priorRevision)return {...result,changed:false};
-  const leaves=[];
+  const leaves=nextLeaves;leaves.length=0;
   walkGlobeSpatialLeaves(index,cull,(first,end,owner,node)=>{leaves.push(node);},ownerVisible);
   if(revision===priorRevision&&leaves.length===priorLeaves.length&&leaves.every((id,i)=>id===priorLeaves[i])){
    priorCull=cull;return {...result,changed:false};
   }
-  priorLeaves=leaves;priorRevision=revision;priorCull=cull;
+  nextLeaves=priorLeaves;priorLeaves=leaves;priorRevision=revision;priorCull=cull;
   let possible=0;
   for(const node of leaves)possible+=index.nodes[node*3+1]-index.nodes[node*3];
   if(possible===all&&!ownerVisible){result={ranges:Uint32Array.of(0,all),count:all,leaves:leaves.length,changed:true};return result;}
   let n=0;
-  const dense=possible>all/4,marks=dense?new Uint8Array(all):null,ids=dense?null:new Uint32Array(possible);
+  const dense=possible>all/4;
+  if(dense){marks??=new Uint8Array(all);marks.fill(0);}
+  else if(!ids||ids.length<possible)ids=new Uint32Array(Math.min(all,Math.max(128,2**Math.ceil(Math.log2(Math.max(1,possible))))));
   for(const node of leaves){
    const at=node*3,owner=index.owners[node];
    for(let i=index.nodes[at];i<index.nodes[at+1];i++){
     const id=index.order[i];
     if(ownerVisible&&owner<0&&!ownerVisible(globePrimitiveOwner(packet,id)))continue;
-    if(marks)marks[id]=1;else ids[n]=id;n++;
+    if(dense)marks[id]=1;else ids[n]=id;n++;
    }
   }
   if(n===all){result={ranges:Uint32Array.of(0,all),count:all,leaves:leaves.length,changed:true};return result;}
   const ranges=[];
-  if(marks){
+  if(dense){
    for(let i=0;i<all;){
     if(!marks[i]){i++;continue;}
     const first=i++;while(i<all&&marks[i])i++;ranges.push(first,i);
@@ -223,7 +227,7 @@ export function createGlobeSpatialSelection(packet,index){
   }
   result={ranges:Uint32Array.from(ranges),count:n,leaves:leaves.length,changed:true};return result;
  }
- return {select};
+ return {select,footprint};
 }
 
 /** Run in the packet Worker; GPU slices share the immutable point dictionary

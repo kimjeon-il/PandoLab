@@ -165,7 +165,7 @@ const sameLabel=(a,b)=>a&&b&&labelFields.every(key=>a[key]===b[key])&&a.ref?.key
   equalCoordinate(a.coordinate,b.coordinate)&&a.lines.length===b.lines.length&&a.lines.every((line,i)=>line===b.lines[i]);
 const sumBuffers=buffers=>[...buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);
 
-export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,viewport,maxTextureSize=2048,byteBudget=renderCacheBudget().labelAtlasBytes,onReady=()=>{},onError=()=>{},createSdfTasks=createGlobeLabelSdfTasks}){
+export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,viewport,maxTextureSize=2048,byteBudget=renderCacheBudget().labelAtlasBytes,onReady=()=>{},onError=()=>{},createSdfTasks=createGlobeLabelSdfTasks,residency=null,workScheduler=null}){
   const raster=new OffscreenCanvas(1,1),context=raster.getContext('2d',{willReadFrequently:true});
   const size=Math.min(atlasSize,maxTextureSize),maxRows=Math.max(1,Math.min(maxTextureSize,capacity));
   const pages=[],cache=new Map(),metricsCache=new Map();
@@ -176,7 +176,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   const uploadSource=new THREE.DataTexture(null,1,1,THREE.RedFormat);
   const copyRegion=new THREE.Box2(new THREE.Vector2(),new THREE.Vector2()),copyPosition=new THREE.Vector2();
   const candidateGroups=[{source:null,rows:[],index:createGlobeLabelSpatialIndex([])},{source:null,rows:[],index:createGlobeLabelSpatialIndex([])}];
-  const sdfTasks=createSdfTasks();
+  const sdfTasks=createSdfTasks({scheduler:workScheduler});
   let placed=[],previous=new Set(),lastCamera=null,cacheDirty=true,lastComplete=true,lastStrict=false,disposed=false;
   let layoutCache=null,candidateRevision=0;
   let pendingSdf=null,desiredKeys=new Set(),sdfFallback=false,pendingMaskBytes=0;
@@ -284,25 +284,33 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     const missing=new Map();
     for(const row of layout)if(!cachedRun(row.atlasKey))missing.set(row.atlasKey,row);
     if(!missing.size)return true;
-    if(sdfFallback){
-      for(const label of missing.values()){
-        const row=rasterMask(label);
-        installText(label,distanceMask(row.mask,row.width,row.height,row.outlineRange));
-      }
-      return true;
-    }
     if(pendingSdf)return false;
-    const rows=[],labels=new Map();
-    let bytes=0;
+    const labels=new Map();let bytes=0;
     for(const label of missing.values()){
       const estimate=label.width*label.height;
-      // Bound main-thread mask work and temporary worker input.
-      if(rows.length&&(rows.length>=24||bytes+estimate>512*1024))break;
-      const row=rasterMask(label);rows.push(row);labels.set(row.key,label);bytes+=estimate;
+      if(labels.size&&(labels.size>=24||bytes+estimate>512*1024))break;
+      labels.set(label.atlasKey,label);bytes+=estimate;
     }
     const controller=new AbortController(),job={controller,labels};
     pendingSdf=job;pendingMaskBytes=bytes;cacheDirty=true;
-    sdfTasks.run(rows,controller.signal).then(result=>{
+    // Reserve before rasterization; include RGBA readback, alpha mask,
+    // two distance arrays, result and possible atlas page allocation.
+    const release=residency?.reserve(bytes*14+2*size*size,{kind:'label-sdf',trimFirst:false})??(()=>{});
+    const execute=async()=>{
+      const rows=[];
+      for(const label of labels.values()){controller.signal.throwIfAborted();rows.push(rasterMask(label));}
+      if(sdfFallback){
+        const result=[];
+        for(const row of rows){
+          controller.signal.throwIfAborted();
+          result.push({key:row.key,width:row.width,height:row.height,pixels:distanceMask(row.mask,row.width,row.height,row.outlineRange)});
+          await new Promise(resolve=>setTimeout(resolve,0));
+        }
+        return result;
+      }
+      return sdfTasks.run(rows,controller.signal,{priority:lastStrict?25:8});
+    };
+    Promise.resolve().then(execute).then(result=>{
       if(disposed||pendingSdf!==job||controller.signal.aborted)return;
       if(!Array.isArray(result)||result.length!==labels.size||new Set(result.map(row=>row.key)).size!==labels.size)
         throw Error('Incomplete label SDF response');
@@ -317,6 +325,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       // path if Worker creation or execution is unsupported.
       sdfFallback=true;onError(error);
     }).finally(()=>{
+      release();
       if(disposed||pendingSdf!==job)return;
       pendingSdf=null;pendingMaskBytes=0;lastCamera=null;cacheDirty=true;onReady();
     });
@@ -493,7 +502,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   function memoryEntries(){
     const preparingPages=new Set([...desiredKeys].map(key=>cachedRun(key)?.page).filter(Boolean));
     const rows=pages.map(page=>({key:page,...pageFootprint(page),lastUsed:page.lastUsed,protected:activePages.has(page)||preparingPages.has(page),evict:()=>evictPage(page)}));
-    rows.push({key:raster,protected:true,extraBytes:raster.width*raster.height*4+pendingMaskBytes*10+metricsCache.size*192+candidateGroups.reduce((sum,group)=>sum+group.rows.length*192+group.index.rows.length*160,0)+placed.length*128});
+    rows.push({key:raster,protected:true,extraBytes:raster.width*raster.height*4+metricsCache.size*192+candidateGroups.reduce((sum,group)=>sum+group.rows.length*192+group.index.rows.length*160,0)+placed.length*128});
     return rows;
   }
   function dispose(){

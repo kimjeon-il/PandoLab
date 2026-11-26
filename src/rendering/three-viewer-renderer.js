@@ -13,7 +13,8 @@ import {globeTerritoryKey} from './globe-mesh.js';
 import {createGlobeChunkAssets,createGlobeChunkCatalog,globeViewChunkCuller,globeChunkSetContains,globeChunkPlanKey,createGlobePlanFailures} from './globe-view-mesh-assets.js';
 import {createGlobeHistoryIndex,globeHistoryMonthKey} from './globe-history-index.js';
 import {createGlobeTemporalPresentation} from './globe-temporal-presentation.js';
-import {createGlobePacketTasks} from './globe-packet-tasks.js';
+import {createGlobePacketTasks,globePacketWorkerCount} from './globe-packet-tasks.js';
+import {createGlobeWorkScheduler,estimateGlobeWorkingBytes} from './globe-work-scheduler.js';
 import {globeRayIntersectsBounds,globeStrokePickPredicate,createGlobePacketIndex,createGlobePickBudget,pickGlobeSlotsCooperative,pickGlobeStrokeSlotsCooperative} from './globe-picking.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
 import {createThreeGlobeSurface} from './three-globe-surface.js';
@@ -45,7 +46,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   outlineChunk:{byteBudget:Math.floor(cacheBudget.outlineBytes/4),entryLimit:64,standbyOnly:true},
  }});
  const historyCatalogCache=createRenderPacketCache({byteBudget:Infinity,entryLimit:1});
- const loadGate=createRenderLoadGate({concurrency:cacheBudget.concurrentLoads,byteBudget:cacheBudget.pendingBytes});
+ const loadGate=createRenderLoadGate({concurrency:cacheBudget.concurrentLoads,byteBudget:cacheBudget.pendingBytes,residency});
+ const workScheduler=createGlobeWorkScheduler({maxConcurrent:globePacketWorkerCount(),residency});
  const hydroMetadataCache=createRenderPacketCache({byteBudget:16*1024*1024,entryLimit:1});
  let refreshRiverLedger=()=>{},refreshHydroLedger=()=>{};
  let acceptedPick=null,drawnFrame=null,countryPaintInputsDirty=true,basePaint=new Map(),visiblePaintSlots=new Set(),residencyDirty=true;
@@ -55,13 +57,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  let prefetchTerritoryPlan=null,prefetchPhysical=null,visiblePhysicalPlan=null,publishedPhysical=null;
  let basePrepared=null,basePreparing=null,publishedBase=null,baseJobRequired=false,physicalJobRequired=false;
  const baseFailures=createGlobePlanFailures(),physicalFailures=createGlobePlanFailures();
- let neighborTimer=null,neighborKey=null,publishedMonth=null,monthDirection=0;
- const neighborStats={runs:0,completed:0,cancelled:0,claimedBytes:0};
+ let neighborTimer=null,neighborIdleOff=null,neighborKey=null,publishedMonth=null,monthDirection=0;
+ const neighborStats={runs:0,completed:0,cancelled:0,claimedBytes:0,idleWaits:0,pressureSkips:0};
  let fontReady=false,fontPending=null,fontFailed=false,lastLabelsNeeded=false;
  const failedLineLayers=new Set();
  const invalidate=reason=>deps.domains.renderingDomain.invalidateView(reason);
  const events=new Map(),pointers=new Map(),lifetime=new AbortController();
- const metrics=createRenderingMetrics(),packetTasks=createGlobePacketTasks();
+ const metrics=createRenderingMetrics(),packetTasks=createGlobePacketTasks({scheduler:workScheduler});
  let host,canvas,surface,camera,viewport,pending,disposed=false,lost=false,loaded=false,ready=false,error;
  let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null;
  let territories=baseTerritories,acceptedTerritories=baseTerritories,activeSlots=new Set(baseTerritories.slots);
@@ -95,6 +97,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const controller=requestScopes.get(name);requestScopes.delete(name);controller?.abort();
  }
  function cancelNeighborPrefetch(){
+  if(neighborIdleOff){neighborIdleOff();neighborIdleOff=null;neighborKey=null;}
   if(neighborTimer!==null){clearTimeout(neighborTimer);neighborTimer=null;neighborKey=null;}
   if(requestScopes.has('neighbor-prefetch')){cancelRequest('neighbor-prefetch');neighborKey=null;neighborStats.cancelled++;}
  }
@@ -190,12 +193,22 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   canvas.style.cssText='display:block;width:100%;height:100%;touch-action:none';
   host.appendChild(canvas);installInput();
  }
- const loader=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',deferCacheWrite:true,resolveUrl:row=>new URL(row.url,document.baseURI).href});
+ let persistenceBytes=0,persistencePeakBytes=0,persistenceSkipped=0;
+ function reserveDeferredWrite(bytes){
+  // Cache writes may retain the verified source and a Response copy.
+  const size=bytes*2;
+  if(persistenceBytes+size>cacheBudget.persistenceBytes){persistenceSkipped++;return null;}
+  const release=residency.reserve(size,{kind:'disk-cache-write',optional:true,trimFirst:false});
+  if(!release){persistenceSkipped++;return null;}
+  persistenceBytes+=size;persistencePeakBytes=Math.max(persistencePeakBytes,persistenceBytes);
+  let ended=false;return ()=>{if(ended)return;ended=true;persistenceBytes-=size;release();};
+ }
+ const loader=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',deferCacheWrite:true,reserveDeferredWrite,resolveUrl:row=>new URL(row.url,document.baseURI).href});
  async function load(row,kind,{phase='startup',label='Three.js 지도 자산',signal=lifetime.signal,priority=phase==='startup'?10:0,...parameters}={}){
-  const estimate=(Number(row.compressedBytes)||0)+Math.max(1,Number(row.decodedBytes)||0)*4;
-  return loadGate.run({bytes:estimate,priority,signal},async()=>{
+  const estimate=estimateGlobeWorkingBytes(row,kind);
+  return loadGate.run({bytes:estimate,priority,signal,kind:'load-'+kind},async()=>{
    const result=await loader.loadStoredAsset(row,phase,row.sha256,label,bytes=>
-    metrics.track('three.decode-packet',()=>packetTasks.decode(kind,bytes,row,{signal,priority:typeof priority==='function'?priority():priority,...parameters})),signal);
+    metrics.track('three.decode-packet',()=>packetTasks.decode(kind,bytes,row,{signal,priority,...parameters})),signal);
    return result.value;
   });
  }
@@ -213,14 +226,14 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }
  async function loadTerritorialStroke(row,signal,priority,descriptor){
   if(!descriptor.sources)return load(row,'stroke',{signal,priority});
-  return loadGate.run({bytes:descriptor.spec.estimatedBytes,priority,signal},async()=>{
+  return loadGate.run({bytes:estimateGlobeWorkingBytes(descriptor.spec,'stroke'),priority,signal,kind:'border-batch'},async()=>{
    const inputs=[];
    for(const item of descriptor.sources){
     signal.throwIfAborted();
     const result=await loader.loadStoredAsset(item.spec,'startup',item.spec.sha256,'역사 국경선',bytes=>bytes,signal);
     inputs.push({bytes:result.value,spec:item.spec});
    }
-   return metrics.track('three.combine-borders',()=>packetTasks.combineStoredStrokes(inputs,{signal,priority:typeof priority==='function'?priority():priority}));
+   return metrics.track('three.combine-borders',()=>packetTasks.combineStoredStrokes(inputs,{signal,priority}));
   });
  }
  const territorialAssets=createGlobeChunkAssets(territorialDescriptors(),{loadMesh,loadStroke:loadTerritorialStroke,residency,byteBudget:cacheBudget.historicalCpuBytes});
@@ -243,7 +256,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
      if(bounds)for(const row of sources)for(let axis=0;axis<3;axis++){
       bounds[axis]=Math.min(bounds[axis],row.bounds[axis]);bounds[axis+3]=Math.max(bounds[axis+3],row.bounds[axis+3]);
      }
-     result.push({role:'border',kind:'stroke',key,sources,bounds,spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*2+decodedBytes*5}});
+     result.push({role:'border',kind:'stroke',key,sources,bounds,spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
     }
     sources=[];decodedBytes=0;
    };
@@ -342,7 +355,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const threeUrl=new URL(spec.moduleUrl,document.baseURI);
    const [THREE,restored]=await Promise.all([import(threeUrl.href),initialCamera]);
    lifetime.signal.throwIfAborted();
-   surface=createThreeGlobeSurface(THREE,{canvas,context,palette:deps.preferences.mapPalette(),countryCount,baseCountryCount:baseSlots.length,hydroCount:spec.hydroCount,cacheBudget,residency,
+   surface=createThreeGlobeSurface(THREE,{canvas,context,palette:deps.preferences.mapPalette(),countryCount,baseCountryCount:baseSlots.length,hydroCount:spec.hydroCount,cacheBudget,residency,workScheduler,
     onLabelReady:()=>invalidate('three-label-sdf-ready'),onLabelError:cause=>deps.feedback.reportOperationError(cause,'지도 지명 SDF Worker를 사용할 수 없어 로컬 계산으로 전환했습니다.','PL-THREE-SDF-001'),packets:{
     borderGroupCount:spec.borderOwners.length,
    }});
@@ -445,38 +458,70 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  // Warm only verified neighboring geometry/physical states after a
  // committed stable frame. No speculative result changes the active scene.
  function scheduleNeighborPrefetch(month){
-  if(disposed||moving||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical)return;
-  const key=month+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
-  if(neighborKey===key||neighborTimer!==null||requestScopes.has('neighbor-prefetch'))return;
+  if(disposed||lost||moving||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical)return;
+  const interval=historyLoaded?historyIndex.intervalKey(month):'catalog';
+  const key=interval+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
+  if(neighborKey===key||neighborTimer!==null||neighborIdleOff||requestScopes.has('neighbor-prefetch'))return;
   neighborKey=key;
   const epoch=generation;
-  neighborTimer=setTimeout(()=>{
+  const valid=()=>!disposed&&!lost&&!moving&&!framePreserved&&!presentation.temporalPending()&&generation===epoch&&ready&&
+   (!historyLoaded||historyIndex.intervalKey(state.timelineCursor)===interval||interval==='catalog');
+  const begin=()=>{
    neighborTimer=null;
-   if(disposed||moving||framePreserved||presentation.temporalPending()||generation!==epoch||state.timelineCursor!==month){neighborKey=null;return;}
+   if(!valid()){neighborKey=null;return;}
    const gate=loadGate.stats();
-   if(gate.active||gate.queued){neighborKey=null;scheduleNeighborPrefetch(month);return;}
+   if(gate.active||gate.queued){
+    neighborStats.idleWaits++;
+    neighborIdleOff=loadGate.onIdle(()=>{
+     const off=neighborIdleOff;neighborIdleOff=null;off?.();
+     if(!valid()){neighborKey=null;return;}
+     neighborTimer=setTimeout(begin,100);
+    });
+    return;
+   }
    const controller=startRequest('neighbor-prefetch'),signal=controller.signal;
-   let remaining=Math.min(16*1024*1024,Math.floor(cacheBudget.historicalCpuBytes/8));
-   const claim=row=>{
-    const bytes=Math.max(1,row.estimatedBytes??((Number(row.decodedBytes)||0)*4+(Number(row.compressedBytes)||0)));
+   let remaining=Math.min(24*1024*1024,Math.floor(cacheBudget.pendingBytes/2));
+   const holdBytes=cacheBudget.neighborBytes;
+   const claim=(row,kind='mesh')=>{
+    if(!requestCurrent('neighbor-prefetch',controller)||!valid())return false;
+    const bytes=estimateGlobeWorkingBytes(row,kind);
     if(bytes>remaining)return false;
     remaining-=bytes;neighborStats.claimedBytes+=bytes;return true;
    };
    neighborStats.runs++;
    (async()=>{
     if(!historyLoaded){
-     if(!claim(spec.historyCatalog))return;
-     await ensureHistoryCatalog(signal,-20);
+     const catalogEstimate=estimateGlobeWorkingBytes(spec.historyCatalog,'catalog');
+     // Catalog acquisition is independently bounded; a large one is
+     // deliberately left to a required history request.
+     if(catalogEstimate>cacheBudget.pendingBytes/2)return;
+     neighborStats.claimedBytes+=catalogEstimate;
+     await ensureHistoryCatalog(signal,-15);
     }
-    for(const target of historyIndex.neighbors(month,monthDirection)){
-     signal.throwIfAborted();
-     await territorialAssets.warm(territorialPlan(target.territories),{signal,priority:-20,claim});
-     if(physicalAssets.has(target.physicalIdentity))await physicalAssets.warm(physicalPlan(target.physicalIdentity),{signal,priority:-20,claim});
+    const targets=historyIndex.neighbors(state.timelineCursor,monthDirection);
+    // Hold a bounded portion of each cache against ordinary local LRU,
+    // but leave speculative results reclaimable by the global budget.
+    const territorialHold=Math.floor(holdBytes*.65),physicalHold=holdBytes-territorialHold;
+    for(const target of targets){
+     signal.throwIfAborted();if(!valid())break;
+     // The nearest state in the travel direction receives most of the
+     // available transfer/work budget; cached hits require no reservation.
+     await territorialAssets.warm(territorialPlan(target.territories),{signal,priority:-20,claim,holdBytes:territorialHold});
+     if(physicalAssets.has(target.physicalIdentity))await physicalAssets.warm(physicalPlan(target.physicalIdentity),{signal,priority:-20,claim,holdBytes:physicalHold});
      if(remaining<=0)break;
     }
     if(requestCurrent('neighbor-prefetch',controller)){neighborStats.completed++;residency.trim();}
-   })().catch(()=>{/* Speculation never blocks the authoritative request. */}).finally(()=>finishRequest('neighbor-prefetch',controller));
-  },180);
+   })().catch(cause=>{if(cause?.memoryPressure)neighborStats.pressureSkips++;})
+    .finally(()=>{
+     finishRequest('neighbor-prefetch',controller);
+     // When the catalog was first loaded, key the completed preparation
+     // by the real transition interval, not the month or bootstrap token.
+     if(!signal.aborted&&valid()&&historyLoaded&&interval==='catalog'){
+      neighborKey=historyIndex.intervalKey(state.timelineCursor)+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
+     }
+    });
+  };
+  neighborTimer=setTimeout(begin,180);
  }
  async function prepareDatedTerritories(month,references,{isCurrent=()=>true}={}){
   const controller=startRequest('country-prefetch');
@@ -931,7 +976,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   waitForTemporalPresentation:presentation.waitForTemporalPresentation,getProjectGeneration:()=>generation,
   preserveTemporalFrame(){cancelNeighborPrefetch();framePreserved=true;},isFramePreserved:()=>framePreserved,
   resetProjectRenderState(options){generation=options.generation;features=null;ready=false;error=null;
-    drawnFrame=null;surface?.labels.cancelPending();clearPreparation();neighborKey=null;publishedMonth=null;monthDirection=0;cancelOutlines();temporalInputs.reset();countryLabels.clear();countryLabelList=[];dirtyPaintSlots.clear();dirtyCountryLabels.clear();allCountryLabelsDirty=countryPaintInputsDirty=true;labelContentDirty=true;presentation.resetForProject(options);},
+    drawnFrame=null;surface?.labels.cancelPending();clearPreparation();neighborKey=null;publishedMonth=null;monthDirection=0;cancelOutlines();territorialAssets.releaseWarm();physicalAssets.releaseWarm();temporalInputs.reset();countryLabels.clear();countryLabelList=[];dirtyPaintSlots.clear();dirtyCountryLabels.clear();allCountryLabelsDirty=countryPaintInputsDirty=true;labelContentDirty=true;presentation.resetForProject(options);},
   measureWork:metrics.track,measureSyncWork:metrics.run,failMapPreparation,retryMapPreparation,getRuntimeState,
   getStats:()=>({...getRuntimeState(),mapReadiness:readyState(),displayedRevision:ready?revision:0,sourceRevision:revision,
    generation,certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
@@ -943,8 +988,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
    territorialChunkCache:territorialAssets.stats(),historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes},historicalMetadata:historyIndex.stats(),temporalPresentation:temporalStats,physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
-   labelAtlas:surface?.labels.cacheStats()??null,hydroTextureUploads:surface?.hydroUploadStats()??null,packetWorker:packetTasks.stats(),residency:residency.stats(),loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
-  dispose(){cancelNeighborPrefetch();disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historyCatalogCache.dispose();territorialAssets.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();packetTasks.dispose();surface?.dispose();residency.dispose();canvas?.remove();
+   labelAtlas:surface?.labels.cacheStats()??null,hydroTextureUploads:surface?.hydroUploadStats()??null,packetWorker:packetTasks.stats(),workScheduler:workScheduler.stats(),residency:residency.stats(),persistence:{bytes:persistenceBytes,peakBytes:persistencePeakBytes,skipped:persistenceSkipped},loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
+  dispose(){cancelNeighborPrefetch();disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historyCatalogCache.dispose();territorialAssets.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();packetTasks.dispose();surface?.dispose();workScheduler.dispose();residency.dispose();canvas?.remove();
    acceptedPick=drawnFrame=features=basePrepared=publishedBase=basePreparing=physical=acceptedPhysical=publishedPhysical=hydroMetadata=null;
    acceptedRiverChunks=[];hydroSlots.clear();basePaint.clear();temporalInputs.reset();countryLabels.clear();countryLabelList=[];surface=riverDetail=null;},
  });

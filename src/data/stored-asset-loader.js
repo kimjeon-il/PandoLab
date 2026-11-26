@@ -17,7 +17,7 @@ function waitForConsumer(promise, signal) {
 }
 
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
-export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',deferCacheWrite = false,subtle=globalThis.crypto?.subtle}) {
+export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',deferCacheWrite = false,reserveDeferredWrite=null,subtle=globalThis.crypto?.subtle}) {
  const flightScope = cacheStorage ?? fetchFn;
  if (cachePolicy === 'immutable' && !immutableFlightsByStorage.has(flightScope))
    immutableFlightsByStorage.set(flightScope, new Map());
@@ -218,7 +218,9 @@ async function loadImmutable(spec,phase,key,label,validate,signal,representation
         flightSignal.throwIfAborted();
         const cache=await flight.cache;
         flightSignal.throwIfAborted();
-        flight.writing=persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label);
+        const release=deferCacheWrite&&reserveDeferredWrite?reserveDeferredWrite(read.storedBuffer.byteLength):null;
+        flight.writing=deferCacheWrite&&reserveDeferredWrite&&!release?Promise.resolve({cached:false,cacheWriteMs:0}):
+          persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label).finally(()=>release?.());
         // A deferred caller may leave before the write settles.
         flight.writing.catch(()=>{});
         return {read,attempt:current};

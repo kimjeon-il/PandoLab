@@ -1,6 +1,6 @@
 import {createWorkerRpcClient} from '../runtime/worker-rpc.js';
 import {workerAssetUrl} from '../runtime/worker-asset-url.js';
-import {createLatestWorkerJobScheduler,createWorkerCancellationError} from '../runtime/worker-job-scheduler.js';
+import {createGlobeWorkScheduler} from './globe-work-scheduler.js';
 
 /** A bounded pool of stateless packet Workers. Cancel only the worker
  * owned by the obsolete job. Network/input reservations remain global. */
@@ -10,38 +10,32 @@ export function globePacketWorkerCount({deviceMemory=globalThis.navigator?.devic
 }
 export function createGlobePacketTasks({
  createWorker=()=>new Worker(workerAssetUrl(new URL('./workers/globe-packet-worker.js',import.meta.url)),{type:'module'}),
- maxWorkers=globePacketWorkerCount(),
+ maxWorkers=globePacketWorkerCount(),scheduler=null,
 }={}){
  const count=Math.max(1,Math.min(3,Math.floor(maxWorkers)||1));
- const lanes=Array.from({length:count},()=>({rpc:null,entry:null})),running=new Map();
- let sequence=0,peakRunning=0;
- const scheduler=createLatestWorkerJobScheduler({
-  maxConcurrent:count,
-  execute:async entry=>{
-   if(entry.obsolete)throw createWorkerCancellationError();
-   const lane=lanes.find(row=>!row.entry);
+ const owned=!scheduler,work=scheduler??createGlobeWorkScheduler({maxConcurrent:count});
+ const lanes=Array.from({length:count},()=>({rpc:null,busy:false}));
+ let disposed=false,submitted=0,completed=0,cancelled=0,peakRunning=0,running=0;
+ function request(operation,body,transfer,{signal,priority=0}){
+  signal?.throwIfAborted();submitted++;
+  return work.run({signal,priority,kind:'packet'},async()=>{
+   if(disposed)throw new DOMException('Packet tasks disposed','AbortError');
+   const lane=lanes.find(row=>!row.busy);
    if(!lane)throw Error('Globe packet Worker lane unavailable');
    const owner=lane.rpc??=createWorkerRpcClient({createWorker,defaultTimeoutMs:120_000});
-   lane.entry=entry;running.set(entry,lane);peakRunning=Math.max(peakRunning,running.size);
+   lane.busy=true;running++;peakRunning=Math.max(peakRunning,running);
+   const abort=()=>{cancelled++;if(lane.rpc===owner)lane.rpc=null;owner.stop('globe-packet-superseded');};
+   signal?.addEventListener('abort',abort,{once:true});
    try{
-    const {result}=await owner.request(entry.payload.operation,entry.payload.body,{transfer:entry.payload.transfer,priority:entry.priority});
-    return result;
-   }finally{
-    running.delete(entry);
-    if(lane.entry===entry)lane.entry=null;
-   }
-  },
-  cancelRunning:entry=>{
-   const lane=running.get(entry);
-   if(!lane||lane.entry!==entry)return;
-   const owner=lane.rpc;lane.rpc=null;
-   owner?.stop('globe-packet-superseded');
-  },
- });
+    signal?.throwIfAborted();
+    const {result}=await owner.request(operation,body,{transfer,priority:typeof priority==='function'?priority():priority});
+    signal?.throwIfAborted();completed++;return result;
+   }finally{signal?.removeEventListener('abort',abort);running--;lane.busy=false;}
+  });
+ }
  function decode(kind,bytes,spec,{signal,priority=0,...parameters}={}){
   signal?.throwIfAborted();
-  return scheduler.enqueue({jobKey:'packet-'+(++sequence),priority,signal,
-   payload:{operation:'globe.decode-packet',transfer:[bytes],body:{kind,bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes},...parameters}}}).promise;
+  return request('globe.decode-packet',{kind,bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes},...parameters},[bytes],{priority,signal});
  }
  function combineStoredStrokes(inputs,{signal,priority=10}={}){
   signal?.throwIfAborted();
@@ -49,9 +43,8 @@ export function createGlobePacketTasks({
   // packets. Transfer their backing stores exactly once.
   const transfer=[...new Set(inputs.map(row=>row.bytes))];
   const packets=inputs.map(({bytes,spec})=>({bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes}}));
-  return scheduler.enqueue({jobKey:'stroke-batch-'+(++sequence),priority,signal,
-   payload:{operation:'globe.combine-stored-strokes',body:{packets},transfer}}).promise;
+  return request('globe.combine-stored-strokes',{packets},transfer,{priority,signal});
  }
- function dispose(){scheduler.close('globe-packet-disposed');for(const lane of lanes){lane.rpc?.stop('globe-packet-disposed');lane.rpc=null;}}
- return Object.freeze({decode,combineStoredStrokes,dispose,stats:()=>({...scheduler.stats(),workerLimit:count,workers:lanes.filter(row=>row.rpc).length,running:running.size,peakRunning})});
+ function dispose(){disposed=true;if(owned)work.dispose();for(const lane of lanes){lane.rpc?.stop('globe-packet-disposed');lane.rpc=null;}}
+ return Object.freeze({decode,combineStoredStrokes,dispose,stats:()=>({...work.stats(),submitted,completed,cancelled,workerLimit:count,workers:lanes.filter(row=>row.rpc).length,running,peakRunning})});
 }

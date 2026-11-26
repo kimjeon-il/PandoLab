@@ -45,14 +45,16 @@ export function createGlobeChunkAssets(descriptors,{loadMesh,loadStroke,residenc
   signal?.throwIfAborted();
   return Promise.all(plan.map(async row=>({...row,[row.kind==='stroke'?'packet':'mesh']:await read(row,signal,priority)})));
  }
- async function warm(plan,{signal,priority=-20,claim}){
+ async function warm(plan,{signal,priority=-20,claim,holdBytes=0}){
   for(const row of plan){
    signal?.throwIfAborted();
-   if(packets.has(keyOf(row))||!claim(row.spec))continue;
+   if(packets.has(keyOf(row))){if(holdBytes)packets.holdWarm(keyOf(row),holdBytes);continue;}
+   if(!claim(row.spec,row.kind??'mesh'))continue;
    await read(row,signal,priority);
+   if(holdBytes)packets.holdWarm(keyOf(row),holdBytes);
   }
  }
- return Object.freeze({plan,retain,prepare,warm,read,stats:packets.stats,dispose:packets.dispose,addDescriptors});
+ return Object.freeze({plan,retain,prepare,warm,releaseWarm:()=>packets.releaseWarm(),read,stats:packets.stats,dispose:packets.dispose,addDescriptors});
 }
 export function createGlobeBaseAssets(descriptors,options){
  const owner=createGlobeChunkAssets(descriptors,options);
