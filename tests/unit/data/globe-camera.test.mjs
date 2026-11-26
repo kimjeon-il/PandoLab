@@ -81,3 +81,13 @@ test('label collision grid keeps the retained gap rule across cell boundaries', 
   const retained=placeGlobeLabels(candidates,camera,{width:128,height:128},new Set(['overlap-gap']));
   assert.deepEqual(retained.map(row=>row.key),['first','overlap-gap','clear']);
 });
+
+test('atlas compaction repacks live runs without mixing place and country pages', async () => {
+  const {planGlobeAtlasPages}=await import('../../../src/rendering/three-globe-labels.js');
+  const run=(place,width,height)=>({page:{place},width,height});
+  const plan=planGlobeAtlasPages([run(false,40,32),run(false,24,32),run(true,64,32)],64);
+  assert.equal(plan.length,2);
+  assert.deepEqual(plan[0].placements.map(row=>[row.x,row.y]),[[0,0],[40,0]]);
+  assert.equal(plan[1].place,true);
+  assert.equal(planGlobeAtlasPages([run(false,65,20)],64),null);
+});

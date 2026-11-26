@@ -1,6 +1,7 @@
 import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
 import {globeVector} from './globe-camera.js';
 import {territorialLabelPixelSize} from './label-layout.js';
+import {renderCacheBudget} from './render-cache-budget.js';
 
 export const COUNTRY_LABEL_MIN_ZOOM=3;
 const fontSize=56, outlineRange=7, padding=outlineRange+2, atlasSize=2048;
@@ -111,12 +112,31 @@ export function orderGlobeLabels(rows){
     (a.place?Number(Boolean(b.selected))-Number(Boolean(a.selected))||b.priority-a.priority:b.area-a.area)||a.key.localeCompare(b.key));
 }
 
-export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport}){
+// Shelf-pack current cached runs without changing their SDF bitmap or metrics.
+export function planGlobeAtlasPages(runs,size=atlasSize){
+ const pages=[];
+ for(const place of [false,true]){
+  const ordered=runs.filter(run=>run.page.place===place).sort((a,b)=>b.height-a.height||b.width-a.width);
+  let page=null;
+  for(const run of ordered){
+   if(run.width>size||run.height>size)return null;
+   if(page&&page.x+run.width>size){page.y+=page.rowHeight;page.x=0;page.rowHeight=0;}
+   if(!page||page.y+run.height>size){
+    page={place,x:0,y:0,rowHeight:0,placements:[]};pages.push(page);
+   }
+   page.placements.push({run,x:page.x,y:page.y});
+   page.x+=run.width;page.rowHeight=Math.max(page.rowHeight,run.height);
+  }
+ }
+ return pages;
+}
+
+export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport,byteBudget=renderCacheBudget().labelAtlasBytes}){
   const raster=new OffscreenCanvas(1,1);
   const context=raster.getContext('2d',{willReadFrequently:true});
   const pages=[],cache=new Map();
   const textColor=new THREE.Color(palette.text),haloColor=new THREE.Color(0xffffff);
-  let candidates=[],placed=[],previous=new Set(),lastCamera=null;
+  let candidates=[],placed=[],previous=new Set(),lastCamera=null,clock=0,cacheDirty=true;
 
   function addPage(place){
     const pixels=new Uint8Array(atlasSize*atlasSize), values=new Float32Array(capacity*8);
@@ -133,19 +153,21 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport}){
         textColor:{value:textColor},haloColor:{value:haloColor}}});
     const mesh=new THREE.Mesh(geometry,material);
     mesh.frustumCulled=false;mesh.renderOrder=7;geometry.instanceCount=0;scene.add(mesh);
-    const page={pixels,values,atlas,boxes,mesh,place,x:0,y:0,rowHeight:0,count:0,keys:new Set()};
-    pages.push(page);return page;
+    const page={pixels,values,atlas,boxes,mesh,place,x:0,y:0,rowHeight:0,count:0,keys:new Set(),lastUsed:++clock,retired:false};
+    pages.push(page);cacheDirty=true;return page;
   }
 
   function prepareText(lines,place,marker){
     const key=JSON.stringify([place,marker,lines]);
-    if(cache.has(key))return cache.get(key);
+    const cached=cache.get(key);
+    if(cached&&!cached.page.retired)return cached;
+    if(cached)cache.delete(key);
     const font=`${place?600:800} ${fontSize}px "Pretendard Variable", sans-serif`;
     context.font=font;
     const markerWidth=marker?36:0;
     const width=Math.min(atlasSize,Math.ceil(Math.max(...lines.map(line=>context.measureText(line).width)))+padding*2+markerWidth);
     const lineHeight=Math.ceil(fontSize*1.26),height=lineHeight*lines.length+padding*2;
-    let page=pages.findLast(row=>row.place===place)??addPage(place);
+    let page=pages.findLast(row=>row.place===place&&!row.retired)??addPage(place);
     if(page.x+width>atlasSize){page.y+=page.rowHeight;page.x=0;page.rowHeight=0;}
     if(page.y+height>atlasSize)page=addPage(place);
     raster.width=width;raster.height=height;
@@ -157,19 +179,51 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport}){
     const field=distanceMask(context.getImageData(0,0,width,height).data,width,height);
     for(let y=0;y<height;y++)page.pixels.set(field.subarray(y*width,(y+1)*width),(page.y+y)*atlasSize+page.x);
     const uv=[page.x/atlasSize,page.y/atlasSize,(page.x+width)/atlasSize,(page.y+height)/atlasSize];
-    const run={page,width,height,uv,anchorX,anchorY};
+    const run={page,width,height,uv,anchorX,anchorY,atlasKey:key};
     cache.set(key,run);page.keys.add(key);page.x+=width;page.rowHeight=Math.max(page.rowHeight,height);page.atlas.needsUpdate=true;
     return run;
   }
 
+  // Account for atlas pixels, per-page boxes and instance rows on both CPU
+  // and GPU. The budget never limits the currently required labels.
+  const pageBytes=2*(atlasSize*atlasSize+capacity*8*4+capacity*4+12*4+6*2);
+  function compactActivePages(current){
+    const keys=new Set(candidates.map(row=>row.atlasKey));
+    const runs=[...keys].map(key=>cache.get(key));
+    const plan=planGlobeAtlasPages(runs);
+    if(!plan||plan.length>=current.size)return;
+    for(const page of current)page.retired=true;
+    for(const layout of plan){
+      const page=addPage(layout.place);
+      for(const {run,x,y} of layout.placements){
+        const sourceX=Math.round(run.uv[0]*atlasSize),sourceY=Math.round(run.uv[1]*atlasSize);
+        for(let row=0;row<run.height;row++){
+          const offset=(sourceY+row)*atlasSize+sourceX;
+          page.pixels.set(run.page.pixels.subarray(offset,offset+run.width),(y+row)*atlasSize+x);
+        }
+        const uv=[x/atlasSize,y/atlasSize,(x+run.width)/atlasSize,(y+run.height)/atlasSize];
+        cache.set(run.atlasKey,{...run,page,uv});page.keys.add(run.atlasKey);
+      }
+      page.x=layout.x;page.y=layout.y;page.rowHeight=layout.rowHeight;page.atlas.needsUpdate=true;
+    }
+    candidates=candidates.map(row=>({...row,...cache.get(row.atlasKey)}));
+  }
   function setCandidates(rows){
     candidates=orderGlobeLabels(rows).map(({lines,...label})=>({...label,...prepareText(lines,Boolean(label.place),label.marker??'')}));
     const current=new Set(candidates.map(row=>row.page));
-    for(let i=pages.length-1;i>=0;i--){
-      if(!pages[i].place||current.has(pages[i]))continue;
-      disposePage(pages[i]);pages.splice(i,1);
+    if(current.size*pageBytes>byteBudget&&current.size>1)compactActivePages(current);
+    for(const page of new Set(candidates.map(row=>row.page)))page.lastUsed=++clock;
+    cacheDirty=true;lastCamera=null;
+  }
+  function trim(){
+    if(!cacheDirty)return;
+    cacheDirty=false;
+    const current=new Set(candidates.map(row=>row.page));
+    const inactive=pages.filter(page=>!current.has(page)).sort((a,b)=>Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
+    for(const page of inactive){
+      if(!page.retired&&pages.length*pageBytes<=byteBudget)break;
+      disposePage(page);pages.splice(pages.indexOf(page),1);
     }
-    lastCamera=null;
   }
   function update(camera,width,height){
     if(camera===lastCamera)return;
@@ -183,18 +237,19 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport}){
     }
     for(const page of pages){
       page.mesh.geometry.instanceCount=page.count;
+      page.mesh.visible=page.count>0;
       if(page.count)page.boxes.needsUpdate=true;
     }
   }
   function disposePage(page){
     scene.remove(page.mesh);page.mesh.geometry.dispose();page.mesh.material.dispose();page.atlas.dispose();page.boxes.dispose();
-    for(const key of page.keys)cache.delete(key);
+    for(const key of page.keys)if(cache.get(key)?.page===page)cache.delete(key);
   }
   function dispose(){
     for(const page of pages)disposePage(page);
-    pages.length=0;cache.clear();
+    pages.length=0;cache.clear();candidates=[];placed=[];previous.clear();lastCamera=null;
   }
-  return Object.freeze({setCandidates,update,dispose,
+  return Object.freeze({setCandidates,update,trim,dispose,cacheStats:()=>({pages:pages.length,residentBytes:pages.length*pageBytes}),
     visibleCount:place=>placed.filter(row=>Boolean(row.place)===place).length,atlasEntryCount:()=>cache.size,
     hitTest:([x,y])=>placed.find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null,
   });

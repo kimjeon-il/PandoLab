@@ -2,6 +2,7 @@ import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, hydroStyleLookup } from './three-globe-strokes.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
+import {renderCacheBudget,renderPacketBytes,touchRenderCache,trimRenderCache} from './render-cache-budget.js';
 
 const surfaceVertex = `
   attribute vec3 positionLow;
@@ -83,7 +84,7 @@ export function globeOutlineRanges(index,groups){
     .sort((a,b)=>a.first-b.first);
 }
 
-export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, hydroCount }) {
+export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, hydroCount, cacheBudget=renderCacheBudget() }) {
   const renderer = new THREE.WebGLRenderer({ canvas, context });
   renderer.setClearColor(palette.ocean);
   renderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
@@ -110,7 +111,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const zoom = { value: 0 };
   const cameraUniforms = { eyeHigh: { value: eyeHigh }, eyeLow: { value: eyeLow }, viewRotation: { value: viewRotation }, zoom };
   const viewport = { value: new THREE.Vector2() }, margin = { value: 0.5 };
-  const labels=createThreeGlobeLabels(THREE,{scene,palette:palette.labels,capacity:Math.max(countryCount,PLACE_LIMITS.layoutCandidates),viewport});
+  const labels=createThreeGlobeLabels(THREE,{scene,palette:palette.labels,capacity:Math.max(countryCount,PLACE_LIMITS.layoutCandidates),viewport,byteBudget:cacheBudget.labelAtlasBytes});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint(){
     countryTextureUploaded=false;texture.clearUpdateRanges();texture.needsUpdate=true;
@@ -133,6 +134,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if(changed)texture.needsUpdate = true;
   }
   const layers=new Map(),datedCountries=new Map(),residentMeshes=new Map();
+  let residencyDirty=true,meshResidentBytes=0,outlineResidentBytes=0;
   let activePhysical=null,physicalLayers=null;
   const visibleLayers={lakes:true,rivers:true};
   let activeView=null,activeCountries=[],activeBorders=[],showBorders=true;
@@ -185,13 +187,24 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const strokeOptions={style:palette.strokes.country,cameraUniforms,viewport,margin,multisampling};
   addLayer('graticule',createThreeGlobeStrokes(THREE,{...strokeOptions,packet:packets.graticule,order:5.5,
     multisampling:false,style:{color:'#aaaaaa',width:0.55,opacity:0.34}}));
+  function meshBytes(mesh){
+    const attributes=mesh.geometry.attributes;
+    return Object.values(attributes).reduce((sum,attribute)=>sum+attribute.array.byteLength,0)
+      +(mesh.geometry.index?.array.byteLength??0);
+  }
+  function releaseMesh(mesh){scene.remove(mesh);mesh.geometry.dispose();mesh.material.dispose();}
   function useMesh(role,identity,prepare){
     const key=role+':'+identity;
-    if(!residentMeshes.has(key))residentMeshes.set(key,prepare());
-    return residentMeshes.get(key);
+    const existing=touchRenderCache(residentMeshes,key);
+    if(existing)return existing.mesh;
+    const mesh=prepare();
+    // Buffer attributes retain their CPU arrays alongside the device copy.
+    residentMeshes.set(key,{mesh,bytes:meshBytes(mesh)*2});residencyDirty=true;
+    return mesh;
   }
   function activatePhysicalContext(parts){
     if(activePhysical===parts)return;
+    residencyDirty=true;
     if(physicalLayers)for(const mesh of Object.values(physicalLayers).flat())mesh.visible=false;
     const {spec}=parts;
     physicalLayers={
@@ -270,17 +283,22 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       }
       if(mesh){mesh.visible=true;mesh.material.uniforms.strokeColor.value.set(color);}
     }
-    return {paint,hide};
+    const indexBytes=owners.reduce((sum,slots)=>sum+slots.length*8,0)
+      +index.rangesByGroup.reduce((sum,ranges)=>sum+ranges.length*32,0);
+    function bytes(){return renderPacketBytes(packet)+indexBytes+(mesh?meshBytes(mesh)*2:0);}
+    function dispose(){if(mesh)releaseMesh(mesh);mesh=null;buffer=null;capacity=0;previousGroups.clear();}
+    return {paint,hide,bytes,dispose};
   }
-  let outlines=null,paintedOutlines=new Set();
+  const outlineCache=new Map();
+  let paintedOutlines=new Set();
   function installOutlines(slot,data){
-    if(slot===null)outlines=createOutlines(data);
-    else datedCountries.get(slot).outlines=createOutlines(data);
+    if(outlineCache.has(slot))return;
+    outlineCache.set(slot,createOutlines(data));residencyDirty=true;
   }
   function setOutlinePaint(roles,styles,color){
     const targets=new Map();
     for(const [slot,code] of roles){
-      const target=datedCountries.has(slot)?datedCountries.get(slot).outlines:outlines;
+      const target=touchRenderCache(outlineCache,datedCountries.has(slot)?slot:null);
       if(!target)continue;
       let local=targets.get(target);
       if(!local){local=new Map();targets.set(target,local);}
@@ -288,18 +306,21 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     }
     for(const target of paintedOutlines)if(!targets.has(target))target.hide();
     for(const [target,local] of targets)target.paint(local,styles,color);
-    paintedOutlines=new Set(targets.keys());
+    paintedOutlines=new Set(targets.keys());residencyDirty=true;
   }
   function activateDatedView(view,parts){
     if(view===activeView)return;
-    for(const row of activeCountries){row.mesh.visible=false;row.outlines?.hide();}
+    residencyDirty=true;
+    for(const row of activeCountries){row.mesh.visible=false;}
     for(const mesh of activeBorders)mesh.visible=false;
     activeView=view;
     activeCountries=(parts?.countries??[]).map(({slot,key,mesh})=>{
       if(!datedCountries.has(slot))datedCountries.set(slot,{
-        mesh:useMesh('dated-country',key,()=>register(null,mesh.packet,palette.defaultLand,1,-2,'country')),outlines:null,
+        mesh:useMesh('dated-country',key,()=>register(null,mesh.packet,palette.defaultLand,1,-2,'country')),
       });
-      return datedCountries.get(slot);
+      const row=datedCountries.get(slot);
+      touchRenderCache(residentMeshes,'dated-country:'+key);
+      return row;
     });
     activeBorders=(parts?.borders??[]).map(({key,packet})=>useMesh('dated-border',key,()=>{
         const mesh=createThreeGlobeStrokes(THREE,{...strokeOptions,packet,order:5});
@@ -311,6 +332,25 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     for(const slot of view?.hiddenBorders??[])borderBytes[slot]=0;
     borderTexture.needsUpdate=true;
   }
+
+  // Only called after successful visual publication. Never dispose the
+  // previously published scene while a replacement is still being drawn.
+  function trimResidency(){
+    labels.trim();
+    if(!residencyDirty)return;
+    residencyDirty=false;
+    const activeMeshes=new Set([...activeCountries.map(row=>row.mesh),...activeBorders,...Object.values(physicalLayers??{}).flat()]);
+    const protectedMeshes=new Set();
+    for(const [key,entry] of residentMeshes)if(activeMeshes.has(entry.mesh))protectedMeshes.add(key);
+    meshResidentBytes=trimRenderCache(residentMeshes,protectedMeshes,cacheBudget.residentMeshBytes,entry=>entry.bytes,(_key,entry)=>{
+      for(const [slot,row] of datedCountries)if(row.mesh===entry.mesh)datedCountries.delete(slot);
+      releaseMesh(entry.mesh);
+    },{entryLimit:512});
+    const protectedOutlines=new Set();
+    for(const [slot,resource] of outlineCache)if(paintedOutlines.has(resource))protectedOutlines.add(slot);
+    outlineResidentBytes=trimRenderCache(outlineCache,protectedOutlines,cacheBudget.outlineBytes,entry=>entry.bytes(),(_slot,entry)=>entry.dispose(),{entryLimit:128});
+  }
+  function cacheStats(){return {meshes:residentMeshes.size,meshResidentBytes,outlines:outlineCache.size,outlineResidentBytes};}
 
   function resize(width, height, dpr) {
     viewport.value.set(width, height);
@@ -332,6 +372,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   function dispose() {
     labels.dispose();
+    for(const entry of outlineCache.values())entry.dispose();
+    outlineCache.clear();paintedOutlines.clear();residentMeshes.clear();datedCountries.clear();
     for (const mesh of scene.children) {
       mesh.geometry.dispose();
       mesh.material.dispose();
@@ -340,6 +382,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     borderTexture.dispose();
     renderer.dispose();
   }
-  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installOutlines,setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateDatedView,activatePhysicalContext,labels,dispose,
+  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateDatedView,activatePhysicalContext,trimResidency,cacheStats,labels,dispose,
     drawCalls:()=>renderer.info.render.calls});
 }

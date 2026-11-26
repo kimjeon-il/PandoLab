@@ -208,3 +208,48 @@ test('outline selection submits only active owner ranges in original segment ord
   ]);
   assert.equal(selectGlobeOutlineGroups(index,new Map([[8,0]]),styles).size,0);
 });
+
+test('render packet cache retains published inputs, shares pending reads and reloads evicted data', async () => {
+  const {createRenderPacketCache}=await import('../../../src/rendering/render-cache-budget.js');
+  const cache=createRenderPacketCache({byteBudget:16});
+  const reads=[];
+  const read=key=>cache.read(key,async()=>{reads.push(key);return {packet:{positions:new Float32Array(2)}};});
+  cache.retain(['published']);
+  const first=read('published');
+  assert.equal(read('published'),first);
+  await first;
+  await read('old');
+  await read('new');
+  assert.equal(cache.has('published'),true);
+  assert.equal(cache.has('old'),false);
+  assert.equal(cache.has('new'),true);
+  await read('old');
+  assert.deepEqual(reads,['published','old','new','old']);
+  cache.retain(['published','old','new']);
+  await read('new');
+  assert.equal(cache.stats().residentBytes,24);
+  cache.retain(['new']);
+  assert.equal(cache.stats().residentBytes,16);
+  cache.dispose();
+  assert.equal(cache.stats().entries,0);
+});
+
+test('dated physical cache drops inactive contexts without releasing a shared active river', async () => {
+  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+  const reads=[];
+  const load=async spec=>{reads.push(spec.sha256);return {positions:new Float32Array(2)};};
+  const context=identity=>({identity,rivers:{sha256:'river'},waters:[{id:'water',spec:{sha256:identity}}],lakes:[]});
+  const assets=createGlobePhysicalAssets([context('old'),context('current')],{loadMesh:load,loadStroke:load,byteBudget:16});
+  assets.retain(['old']);
+  const old=await assets.prepare('old');
+  assets.retain(['current']);
+  const current=await assets.prepare('current');
+  assert.equal(old.rivers,current.rivers);
+  assert.equal(assets.stats().contexts,1);
+  assets.retain(['old']);
+  const restored=await assets.prepare('old');
+  assert.equal(restored.rivers,current.rivers);
+  assert.notEqual(restored.waters[0].mesh,old.waters[0].mesh);
+  assert.deepEqual(reads,['river','old','current','old']);
+  assets.dispose();
+});
