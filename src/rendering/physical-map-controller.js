@@ -145,7 +145,7 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
         dependencies.projectState.state.physicalLoadState.hydro = 'ready';
         (0, dependencies.layerPresentation.invalidateObjectPresentation)();
         dependencies.domains.objectSearchController?.render();
-        dependencies.domains.renderingDomain?.invalidateOverlayGeometry('hydro', 'hydro-ready');
+        dependencies.domains.renderingDomain?.invalidateProject('hydro-ready');
         return true;
       },
       onFailure: error => {

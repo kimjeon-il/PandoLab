@@ -3,7 +3,7 @@ import {createProductModePolicy} from '../app/product-mode-policy.js';
 /** The Viewer host measures layout; its active renderer owns canvas and camera. */
 export function createMapHost({productMode='viewer',readOnly=true,projection='globe'}={}){
  const policy=createProductModePolicy(productMode,{readOnly,projection});
- let dependencies,host=null,observer=null,resolution=null,resizeFrame=0,viewRevision=0,lastSignature='',lastFrame=null;
+ let dependencies,host=null,ready=false,observer=null,resolution=null,resizeFrame=0,viewRevision=0,lastSignature='',lastFrame=null;
  const element=()=>dependencies.platform.$('map');
  const renderer=()=>dependencies.rendering.mapRenderer;
  function connect(ports){if(dependencies)throw new Error('map-host already connected');dependencies=ports;}
@@ -33,16 +33,30 @@ export function createMapHost({productMode='viewer',readOnly=true,projection='gl
  function syncMapHostFromState(){renderer().syncCameraFromState();return dependencies.domains.renderingDomain.invalidateView('host-camera');}
  function attachMapOutput(){
   renderer().attach(element());
-  host=dependencies.renderFactories.createMapSurfaceHost({getProjectionKind:()=>dependencies.projectState.state.projection,
-   setProjectionKind:kind=>{policy.assertProjection(kind);return true;},getViewState:projectionViewSnapshot,
-   setViewState:view=>{policy.assertProjection(view?.projection);if(view?.view)dependencies.projectState.state.view=structuredClone(view.view);syncMapHostFromState();return true;},
+  // Preserve the browser inspection API without a second surface lifecycle.
+  host=Object.freeze({
+   getKind:()=> 'pando',
+   isReady:()=>ready,
+   getProjectionKind:()=>policy.projection,
+   getViewState:projectionViewSnapshot,
+   setViewState(view){
+    policy.assertProjection(view?.projection);
+    if(view?.view)dependencies.projectState.state.view=structuredClone(view.view);
+    syncMapHostFromState();return true;
+   },
    getViewportSize:()=>({...dependencies.projectState.state.size,dpr:renderer().getRenderPixelRatio()}),
-   project:coordinate=>renderer().projection.projectVisibleCoordinate(coordinate),unproject:point=>renderer().projection.screenToGeo(point),
-   requestRepaint:reason=>dependencies.domains.renderingDomain.invalidateView(reason),resize:()=>queueMapResize('host'),
-   dragBy:(dx,dy)=>renderer().panBy(dx,dy),getDebugState:()=>({viewRevision,frameId:lastFrame?.frameId,renderer:renderer().kind})});
-  host.attach(element());
+   project:coordinate=>renderer().projection.projectVisibleCoordinate(coordinate),
+   unproject:point=>renderer().projection.screenToGeo(point),
+   requestRepaint:reason=>dependencies.domains.renderingDomain.invalidateView(reason),
+   resize:()=>queueMapResize('host'),
+   dragBy:(dx,dy)=>renderer().panBy(dx,dy),
+   getDebugState:()=>({kind:'pando',ready,projection:policy.projection,viewRevision,frameId:lastFrame?.frameId,renderer:renderer().kind}),
+  });
  }
- async function initializeMapHost(){await renderer().initialize();await host.initialize();document.body.dataset.mapHost=renderer().kind;window.__PANDOLAB_MAP_HOST__=host;return true;}
+ async function initializeMapHost(){
+  await renderer().initialize();
+  ready=true;document.body.dataset.mapHost=renderer().kind;window.__PANDOLAB_MAP_HOST__=host;return true;
+ }
  function queueMapResize(reason='layout'){
   if(resizeFrame)return;
   resizeFrame=requestAnimationFrame(()=>{resizeFrame=0;const layout=dependencies.projectionView.refreshMapLayoutMetrics(reason);
@@ -51,7 +65,7 @@ export function createMapHost({productMode='viewer',readOnly=true,projection='gl
  function watchResolution(){resolution?.removeEventListener('change',watchResolution);resolution=window.matchMedia?.('(resolution: '+(window.devicePixelRatio||1)+'dppx)');resolution?.addEventListener('change',watchResolution,{once:true});queueMapResize('resolution');}
  const viewportResize=()=>{dependencies.workspaceUi.refreshMapSheetMetrics();queueMapResize('visual-viewport');};
  function startMapResizeObserver(){observer=new ResizeObserver(()=>queueMapResize('resize-observer'));observer.observe(element());window.visualViewport?.addEventListener('resize',viewportResize);watchResolution();}
- function stopMapResizeObserver(){observer?.disconnect();resolution?.removeEventListener('change',watchResolution);window.visualViewport?.removeEventListener('resize',viewportResize);if(resizeFrame)cancelAnimationFrame(resizeFrame);host?.destroy();}
+ function stopMapResizeObserver(){observer?.disconnect();resolution?.removeEventListener('change',watchResolution);window.visualViewport?.removeEventListener('resize',viewportResize);if(resizeFrame)cancelAnimationFrame(resizeFrame);ready=false;}
  return Object.freeze({connect,attachMapOutput,initializeMapHost,prepareVisualFrame,projectionViewSnapshot,syncViewRevision,syncMapHostFromState,
   queueMapResize,startMapResizeObserver,stopMapResizeObserver,get mapHost(){return host;},get viewRevision(){return viewRevision;}});
 }

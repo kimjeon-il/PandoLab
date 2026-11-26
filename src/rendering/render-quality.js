@@ -31,7 +31,7 @@ export function createRenderQuality() {
   function syncResolvedInteractionStyle({ redraw = false } = {}) {
     dependencies.rendering.mapRenderer.setInteractionStyle?.(dependencies.preferences.resolvedInteractionStyle);
     if (redraw) {
-      dependencies.domains.renderingDomain?.invalidateSelectionStyle?.('selection-style');
+      dependencies.domains.renderingDomain?.invalidateSelection?.('selection-style');
     }
     return dependencies.preferences.resolvedInteractionStyle;
   }
@@ -41,7 +41,7 @@ export function createRenderQuality() {
     dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true, emphasis: true }, reason);
     if (rerender) {
       const domain=dependencies.domains.renderingDomain;
-      if(domain.invalidateAppearance)domain.invalidateAppearance(reason);else domain.invalidateBaseScene(reason);
+      domain.invalidateOverlayStyle(reason);
     }
   }
 
@@ -62,10 +62,10 @@ export function createRenderQuality() {
     connect,
     initializeRenderQualityController,
     applyMapAppearanceChange,
-    get applyAdaptiveRenderQuality() { return applyAdaptiveRenderQuality; },
+    applyAdaptiveRenderQuality,
     get currentRenderQuality() { return currentRenderQuality; },
-    get queueAdaptiveRenderQualityRefresh() { return queueAdaptiveRenderQualityRefresh; },
+    queueAdaptiveRenderQualityRefresh,
     get renderQualityController() { return renderQualityController; },
-    get syncResolvedInteractionStyle() { return syncResolvedInteractionStyle; },
+    syncResolvedInteractionStyle,
   });
 }

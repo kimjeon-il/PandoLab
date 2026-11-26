@@ -1,4 +1,5 @@
 import { defaultUserPreferences } from "./user-preferences.js";
+import { distributionValueRange } from "../document/distribution-model.js";
 import { setDialogReturnFocus } from "./dialog-accessibility-controller.js";
 
 /** One settings dialog. No detached View surface, DOM reparenting or duplicate state. */
@@ -48,7 +49,7 @@ export function createPreferencesDialog({ document, window = globalThis.window, 
     const legend = get('distributionLegend');
     legend.replaceChildren(...chosen.map(layer => {
       const entries = (stateSnapshot.distributionEntries || []).filter(entry => entry.layerId === layer.id);
-      const range = mapSettings.distributionValueRange(layer,entries);
+      const range = distributionValueRange(layer,entries);
       const row = element('div','distribution-legend-row');
       const title = element('strong',null,layer.name);
       const bar = element('span','distribution-legend-bar');

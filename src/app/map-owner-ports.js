@@ -15,7 +15,7 @@ const MAP_OWNER_PORT_CONTRACTS=Object.freeze({
   objectCatalog:Object.freeze(["projectSession","colorModel","countries?","distributionPresentation","domains","hydroPresentation","labelPresentation","layerPresentation","objectDefinitions","objectPresentation","platform?","projectState","rendering?","territorialModel","preferences?","hydroModel?","distributionServices?","selectionServices?","objectLookup?"]),
   territorialLabels:Object.freeze(["territorialObjectModel","countries","domains","feedback","labelPresentation","layerPresentation","mapHostView","objectPresentation","platform","preferences","projectState","renderScene","rendering","spatialQuery","territorialModel"]),
   physicalResources:Object.freeze(["geometryBounds","domains","feedback","hydroPresentation","layerPresentation","operationFeedback","physicalConfig","physicalServices","platform","projectState","rendering"]),
-  mapHost:Object.freeze(["applicationConstants","domains","lifecycleUi?","mapLayout","mapView","navigation","platform","runtimeConfiguration","preferences","projectState","projectionView","readiness","renderFactories","renderQuality","rendering","surfaces","workspaceUi"]),
+  mapHost:Object.freeze(["domains","mapLayout","mapView","platform","projectState","projectionView","renderFactories","rendering","workspaceUi"]),
   objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
 });
 // The existing object-presentation diagnostics check preferences before state.
@@ -58,7 +58,7 @@ const MAP_READ_PORT_SPECS=Object.freeze({
   layerPresentation:Object.freeze([["isCountryVisibleById","objectCatalog"],["isLayerItemVisible","objectCatalog"],["LAYER_GROUP_KEYS","objectPresentation"],["layerGroupNames","objectPresentation"],["invalidateObjectPresentation","objectCatalog"]]),
   layerResources:Object.freeze([["loadHydroData","physicalResources"],["preparePlaces","territorialLabels"]]),
   mapLayout:Object.freeze([["mapLayoutMetricsSnapshot","mapProjection"],["projectVisibleCoordinate","mapProjection"],["viewRevision","mapHost"]]),
-  mapView:Object.freeze([["activeProjection","mapProjection"],["isCoordVisible","mapProjection"],["mapHost","mapHost"],["projectionLayoutMetrics","mapProjection"],["ringRepresentativePoint","mapProjection"],["screenToGeo","mapProjection"],["syncMapHostFromState","mapHost"],]),
+  mapView:Object.freeze([["activeProjection","mapProjection"],["isCoordVisible","mapProjection"],["projectionLayoutMetrics","mapProjection"],["ringRepresentativePoint","mapProjection"],["screenToGeo","mapProjection"],["syncMapHostFromState","mapHost"],]),
   objectDisplay:Object.freeze([["invalidateObjectPresentation","objectCatalog"]]),
   territorialObjectModel:Object.freeze([["territorialScope","objectPresentation"],["territorialStyleColor","objectPresentation"]]),
   objectPresentation:Object.freeze([["genericFeatureName","objectPresentation"],["genericFeatureRoleLabel","objectPresentation"],["territorialEntitySearchText","objectPresentation"],["territorialEntityName","objectPresentation"]]),

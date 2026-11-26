@@ -1,6 +1,6 @@
 /** Schedule and publish the next drawn Viewer frame. */
 export function createViewerRenderingDomain(options){
- const {mapRenderer:renderer,selectionDomain,prepareView,reportDiagnostic,labelResources}=options;
+ const {mapRenderer:renderer,selectionDomain,prepareView,labelResources}=options;
  let disposed=false,queued=false,frameId=0,contentDirty=true,selectionDirty=true;
  let pendingPlaceViewport=null;
  const stats={invalidations:0,visualFrameCommittedCount:0};
@@ -46,18 +46,12 @@ export function createViewerRenderingDomain(options){
   invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason);},
   invalidateLabels:reason=>{renderer.invalidateLabelContent({countries:reason!=='document-month-labels'&&reason!=='builtin-places-ready',places:reason!=='formal-country-name-display'});return invalidate(reason);},
   invalidateQuality:reason=>invalidate(reason),
-  invalidateBaseScene:reason=>invalidate(reason,true),
-  invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),
   invalidateOverlayStyle:reason=>invalidate(reason,renderer.invalidatePresentationStyle?.()===true),
-  invalidateAppearance:reason=>invalidate(reason,renderer.invalidatePresentationStyle?.()===true),
-  invalidateSelectionStyle:reason=>{selectionDirty=true;return invalidate(reason);},
   beginInteraction(){labelResources.getState().mapMoving=true;labelResources.beginPlaceInteraction();},
   endInteraction(reason){labelResources.getState().mapMoving=false;preparePlacesForPublication();return invalidate(reason);},
   resetProjectGeneration(generation,presentation){renderer.resetProjectRenderState({generation,...presentation});return invalidate('project-generation',true);},
   getStats:()=>({...stats,lastFrameId:frameId}),getDistributionRenderRows:options.getDistributionRenderRows,
-  recordSelectionRenderError:entry=>reportDiagnostic(entry),
   dispose(){disposed=true;labelResources.disposePlaces();},
  };
- for(const name of ['invalidateCountryPatch','invalidateHydroPatch','invalidateTerritorialPatch','invalidateGenericPatch','invalidateProjection','invalidateViewSettle'])methods[name]=reason=>invalidate(reason,true);
  return Object.freeze(methods);
 }

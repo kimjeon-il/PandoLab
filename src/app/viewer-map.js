@@ -5,10 +5,9 @@ import {createAtomicMapStateController} from "./map-state-transition.js";
 import {classifyTerritorialPropertyOnly,createTerritorialEntityStore} from "../document/territorial-entity-store.js";
 import {worldViewChange} from '../document/world-view-change.js';
 import {temporalContains,temporalMonthEnd} from "../document/temporal.js";
-import {createMapRenderingResources} from "../rendering/map-renderer-composition.js";
+import {createDistributionRenderRows} from "../ui/map-content-presentation.js";
 import {createThreeViewerRenderer} from "../rendering/three-viewer-renderer.js";
 import {createPhysicalSourceConfiguration,HYDRO_LAYER_META,HYDRO_CATEGORY_STYLES,PHYSICAL_DATASET} from "../data/physical-source-configuration.js";
-import {createMapSurfaceHost} from "../ui/map-surface-host.js";
 import "../geometry/polygon-geometry.js";
 import "../geometry/polygon-clipping-core.js";
 import {MAP_OBJECT_CATEGORIES,MAP_OBJECT_TYPES} from "../document/map-object-categories.js";
@@ -23,7 +22,6 @@ import {createAdaptiveRenderQualityController} from "../rendering/adaptive-rende
 import {OVERLAY_GROUPS} from "../ui/layer-presentation.js";
 import {builtinSubunitSourceId} from "../document/territorial-display-identity.js";
 import { createMapLayoutMetricsSnapshot, DEFAULT_SAFE_INSETS } from "../map/map-layout-metrics.js";
-import { MAP_HOST_KINDS } from "../ui/map-host.js";
 import { createMapVisualFrame } from "../rendering/map-visual-frame.js";
 import {resolveMapPalette} from "../ui/map-palette.js";
 import { createTerritorialEntityRepository } from "../document/territorial-entity-repository.js";
@@ -157,13 +155,12 @@ export function createViewerMap({ runtimeContext,owners,projectDomain, documentS
   mapProjection.initializeMapLayoutMetricsSnapshot();
   mapProjection.installRenderer(renderer);
 
-  connectOwner('mapHost',{platform:{d3,$:id=>document.getElementById(id),deepClone:structuredClone},mapView:mapProjection,projectionView:mapProjection,
-    navigation,workspaceUi:owners.workspaceSurfaces,mapLayers:{},
-    readiness:{reliabilityDiagnostic:diagnostics},preferences:{syncResolvedInteractionStyle:renderQuality.syncResolvedInteractionStyle},
-    applicationConstants:{MAP_HOST_KINDS},
-    runtimeConfiguration:{},rendering:{mapRenderer:renderer},surfaces:{isMobile},
-    mapLayout:{DEFAULT_SAFE_INSETS,},
-    domains:{projectDomain,get renderingDomain(){return renderingDomain;}},renderQuality,renderFactories:{createMapVisualFrame,createMapSurfaceHost}});
+  connectOwner('mapHost',{
+    platform:{$:id=>document.getElementById(id)},mapView:mapProjection,projectionView:mapProjection,
+    workspaceUi:owners.workspaceSurfaces,rendering:{mapRenderer:renderer},
+    domains:{projectDomain,get renderingDomain(){return renderingDomain;}},
+    renderFactories:{createMapVisualFrame},
+  });
 
   connectOwner('cameraNavigation',{platform:{d3,clamp},surfaces:{isMobile},
     rendering:{mapRenderer:renderer},objectLookup:objectQuery,physicalData:{HYDRO_LAYER_META:readPorts.hydroPresentation.HYDRO_LAYER_META},
@@ -195,21 +192,31 @@ export function createViewerMap({ runtimeContext,owners,projectDomain, documentS
   connectOwner('territorialLabels',labelPorts);labelOwner.initializePlaceRuntime();
   const places=()=>labelOwner.builtinPlaces;
   mapHost.attachMapOutput();
-  initialized=Promise.all([renderer.initialize(),mapHost.initializeMapHost()]);
+  initialized=mapHost.initializeMapHost();
   initialized.then(()=>renderingDomain.invalidateProject('map-initialized'))
     .catch(error=>onError(error,'지도 표시를 준비하지 못했습니다.','PL-MAP-INITIALIZE-001'));
   const selectionDomain=documentSession.selectionDomain;
 
-  renderingDomain=createViewerRenderingDomain({mapRenderer:renderer,projectDomain,selectionDomain:selectionDomain,
-    ...createMapRenderingResources({session:{selectionDomain,objectSearchController:{cancelSearch:()=>onPlacesSettled('cancel')}},ports:mergeCapabilityPorts(commonPorts,readPorts,{
-    domains:{projectDomain,selectionDomain,get renderingDomain(){return renderingDomain;}},
-    spatialQuery:spatialIndex,
-    mapDisplayModel:{get distributionVisibilityRevision(){return objectPresentation.distributionVisibilityRevision;}},
-  })}),
-
+  renderingDomain=createViewerRenderingDomain({
+    mapRenderer:renderer,selectionDomain,
+    labelResources:{
+      getState:()=>state,
+      preparePlaces:labelOwner.preparePlaces,
+      beginPlaceInteraction:()=>{
+        labelOwner.builtinPlaces.beginInteraction();
+        onPlacesSettled('cancel');
+      },
+      disposePlaces:labelOwner.disposePlaces,
+    },
+    getDistributionRenderRows:createDistributionRenderRows({
+      getState:()=>state,territorialEntityRepository:repository,
+      geometryBounds:spatialIndex.geometryBounds,DISTRIBUTION_MODES,DISTRIBUTION_RENDER_MODES,
+      isLayerItemVisible:objectCatalog.isLayerItemVisible,
+      getCountryGeometryRevision:()=>countryIndex.countryLandRevision,
+      getDistributionVisibilityRevision:()=>objectPresentation.distributionVisibilityRevision,
+    }),
     // Do not resize/clear visible GPU pixels during frame preparation.
-    prepareView:options=>mapHost.prepareVisualFrame(options),
-    reportDiagnostic:entry=>diagnostics.push({category:'rendering-domain',...entry}),
+    prepareView:mapHost.prepareVisualFrame,
   });
   renderQuality.applyAdaptiveRenderQuality();
   renderQuality.syncResolvedInteractionStyle();

@@ -45,3 +45,29 @@ test('read ports support a natural field name and explicit alias with live gette
  assert.equal(merged.group.renamed,3);
  assert.equal(merged.group.extra,true);
 });
+
+test('map host initializes the real renderer once and retains the browser inspection API',async()=>{
+  const {createMapHost}=await import('../../../src/ui/map-workspace-host.js');
+  const oldWindow=globalThis.window,oldDocument=globalThis.document;
+  const events=[],element={},state={projection:'globe',view:{globeRotation:[0,0,0],zoom:1},size:{width:800,height:600}};
+  const renderer={kind:'three',loaded:true,attach:value=>events.push(['attach',value]),
+    initialize:async()=>{events.push(['initialize']);return true;},getRenderPixelRatio:()=>1,
+    cameraSnapshot:()=>({center:[0,0],zoom:1}),projection:{projectVisibleCoordinate:point=>point,screenToGeo:point=>point,geographicBounds:()=>null},
+    syncCameraFromState:()=>events.push(['sync']),panBy:()=>true};
+  globalThis.window={devicePixelRatio:1};globalThis.document={body:{dataset:{}}};
+  try {
+    const owner=createMapHost();
+    owner.connect({platform:{$:()=>element},rendering:{mapRenderer:renderer},projectState:{state},
+      mapView:{projectionLayoutMetrics:()=>({safe:{}})},domains:{renderingDomain:{invalidateView:reason=>events.push(['invalidate',reason])}}});
+    owner.attachMapOutput();assert.equal(owner.mapHost.isReady(),false);
+    await owner.initializeMapHost();
+    assert.equal(owner.mapHost.isReady(),true);
+    assert.equal(globalThis.window.__PANDOLAB_MAP_HOST__,owner.mapHost);
+    assert.deepEqual(owner.mapHost.project([1,2]),[1,2]);
+    owner.mapHost.setViewState({projection:'globe',view:{globeRotation:[1,2,0],zoom:3}});
+    assert.deepEqual(events,[['attach',element],['initialize'],['sync'],['invalidate','host-camera']]);
+    assert.equal(state.view.zoom,3);
+    assert.throws(()=>owner.mapHost.setViewState({projection:'flat'}));
+    owner.stopMapResizeObserver();assert.equal(owner.mapHost.isReady(),false);
+  } finally {globalThis.window=oldWindow;globalThis.document=oldDocument;}
+});

@@ -14,13 +14,6 @@ export function createCameraNavigation() {
     return dependencies.rendering.mapRenderer.panBy(dx,dy);
   }
 
-  function dragMapBy(dx, dy) {
-    if (dependencies.mapView.mapHost?.isReady?.() && typeof dependencies.mapView.mapHost.dragBy === 'function') {
-      return dependencies.mapView.mapHost.dragBy(dx, dy, { animate: false });
-    }
-    return panMapViewBy(dx, dy);
-  }
-
   function fitMapToFeature(feature) {
     const safe=dependencies.mapView.projectionLayoutMetrics().safe;
     if(feature?.geometry||feature?.type==='FeatureCollection')dependencies.rendering.mapRenderer.fitGeometry(feature,safe);
@@ -67,11 +60,11 @@ export function createCameraNavigation() {
   return Object.freeze({
     connect,
 
-    get panMapViewBy() { return panMapViewBy; },
-    get dragMapBy() { return dragMapBy; },
-    get focusCoordinate() { return focusCoordinate; },
-    get fitMapToFeature() { return fitMapToFeature; },
-    get resetView() { return resetView; },
-    get selectObjectSearchItem() { return selectObjectSearchItem; },
+    panMapViewBy,
+    dragMapBy:panMapViewBy,
+    focusCoordinate,
+    fitMapToFeature,
+    resetView,
+    selectObjectSearchItem,
   });
 }

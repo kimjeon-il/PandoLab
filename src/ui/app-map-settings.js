@@ -1,5 +1,3 @@
-import { distributionValueRange } from "../document/distribution-model.js";
-
 /** The single viewing-presentation adapter for settings.
  * DOM/keyboard behavior belongs exclusively to preferences-dialog.
  */
@@ -33,7 +31,7 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (key === 'labels' || key === 'objectNames')
       ports.domains.renderingDomain.invalidateLabels('label-visibility');
     else {
-      ports.domains.renderingDomain.invalidateBaseScene('layer-visibility');
+      ports.domains.renderingDomain.invalidateProject('layer-visibility');
       if (key === 'objects') ports.domains.renderingDomain.invalidateLabels('layer-visibility');
     }
     if (key === 'rivers' || key === 'lakes') await ports.layerResources.loadHydroData(true);
@@ -77,7 +75,7 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
       ...current.backgrounds,viewer:{...current.backgrounds.viewer,[key]:visible},
     }});
     ports.preferences.setUserPreferences(next);
-    ports.domains.renderingDomain.invalidateBaseScene('background-preference');
+    ports.domains.renderingDomain.invalidateProject('background-preference');
     return true;
   }
   async function setDistributionControl(action,value) {
@@ -94,6 +92,5 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
   }
 
   return Object.freeze({connect,dispose(){ports=null;},setLayerVisibility,
-    updateLayerPresentationStyle,setNativeNameOverlay,setBackgroundSetting,setDistributionControl,
-    distributionValueRange});
+    updateLayerPresentationStyle,setNativeNameOverlay,setBackgroundSetting,setDistributionControl});
 }
