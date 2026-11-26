@@ -427,3 +427,13 @@ test('Viewer loading notice owns one accessible retry button',async()=>{
  presentViewerLoadStatus(element,'loading');
  assert.equal(attributes.role,'status');
 });
+
+test('distribution hierarchy normalization shares the compiled Core reference graph',async()=>{
+ const {normalizeDistributionLayers}=await import('../../src/document/distribution-model.js');
+ const layer=(id,parentId='')=>({id,parentId,schemaVersion:3});
+ assert.deepEqual(normalizeDistributionLayers([layer('root'),layer('leaf','root')]).map(row=>row.id),['root','leaf']);
+ assert.throws(()=>normalizeDistributionLayers([layer('leaf','missing')]),/leaf의 상위 분포 레이어가 존재하지 않거나/);
+ assert.throws(()=>normalizeDistributionLayers([layer('self','self')]),/self의 상위 분포 레이어가 존재하지 않거나/);
+ assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','a')]),/a의 상위 분포 레이어 관계가 순환/);
+ assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','missing')]),/b의 상위 분포 레이어가 존재하지 않거나/);
+});

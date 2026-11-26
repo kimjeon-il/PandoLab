@@ -1,4 +1,4 @@
-import { normalizeTemporalInterval } from "./temporal.js";
+import { normalizeTemporalInterval, sharedCalculationCore } from "./temporal.js";
 
 export const DISTRIBUTION_SCHEMA_VERSION = 3;
 
@@ -71,20 +71,21 @@ export function normalizeDistributionLayers(value) {
     seen.add(layer.id);
     output.push(layer);
   }
-  const byId = new Map(output.map(layer => [layer.id, layer]));
-  for (const layer of output) {
-    const parent = byId.get(layer.parentId);
-    if (layer.parentId && (!parent || parent.id === layer.id)) {
+  // The C++ reference-graph kernel is shared with document admission.
+  // Keep Web input normalization and the existing first-error diagnostics.
+  const layerIds = new Set(output.map(layer => layer.id));
+  if (!output.some(layer => layer.parentId)) return output;
+  if (typeof sharedCalculationCore.referenceGraphDiagnostics !== 'function') {
+    throw Object.assign(new Error('Canonical C++ reference graph validator is unavailable.'), {code:'PL-CORE-WASM-CAPABILITY'});
+  }
+  const diagnostics = sharedCalculationCore.referenceGraphDiagnostics(
+    output.map(layer => layer.id), output.map(layer => layer.parentId));
+  for (const [index, layer] of output.entries()) {
+    if (layer.parentId && (!layerIds.has(layer.parentId) || layer.parentId === layer.id)) {
       throw new Error(`${layer.id}의 상위 분포 레이어가 존재하지 않거나 올바르지 않습니다.`);
     }
-    let cursor = parent;
-    const visited = new Set([layer.id]);
-    while (cursor) {
-      if (visited.has(cursor.id)) {
-        throw new Error(`${layer.id}의 상위 분포 레이어 관계가 순환합니다.`);
-      }
-      visited.add(cursor.id);
-      cursor = byId.get(cursor.parentId);
+    if (diagnostics[index].cycle) {
+      throw new Error(`${layer.id}의 상위 분포 레이어 관계가 순환합니다.`);
     }
   }
   return output;
