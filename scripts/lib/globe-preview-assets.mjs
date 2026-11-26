@@ -321,7 +321,7 @@ function readGlobeHydro({ hydro, hydroPath, readPinnedData, waterVisibility, slo
   return {...buildGlobeRiverPackets(activeRivers(),stages,slotFor),lakesByZoom};
 }
 
-export async function buildGlobePreviewAssets({ territorial, physical, prepared, hydro, hydroPath, month, readPinnedData, readGeometryAssets,boundarySeed,computeLabelAnchor }) {
+export async function buildGlobePreviewAssets({ territorial, physical, prepared, hydro, hydroPath, month, readPinnedData, readPinnedDataBatch, readGeometryAssets,boundarySeed,computeLabelAnchor }) {
   const { resolvePhysicalWaterObjects, physicalWaterContextKey, physicalWaterReferenceView } = await import('../../src/data/physical-water-model.js');
   const { timelineObjectKey } = await import('../../src/document/timeline-records.js');
   const assets = new Map();
@@ -340,9 +340,24 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     assets.set(url, bytes);
     return { url, sha256: digest, encoding: 'gzip', compressedBytes: bytes.length, decodedBytes: decoded.byteLength };
   }
-  function preparedMesh(geometry) {
+  function preparedMeshSpec(geometry) {
     const digest = sha256(JSON.stringify([geometry.type, geometry.coordinates]));
-    const spec = prepared.meshes[digest];
+    return prepared.meshes[digest];
+  }
+  function readCountryMeshInputs(features) {
+    const specs = features.map(feature => preparedMeshSpec(feature.geometry));
+    if (readPinnedDataBatch) {
+      const paths = new Set();
+      for (const spec of specs) {
+        if (!spec) continue;
+        const inputs = spec.storageLayout === preparedMeshDeltaLayout ? [spec.base, spec.replacement] : [spec];
+        for (const input of inputs) paths.add(archivePath(input.url));
+      }
+      readPinnedDataBatch([...paths]);
+    }
+    return specs;
+  }
+  function preparedMesh(spec) {
     if (!spec) return null;
     let packet;
     if (spec.storageLayout === preparedMeshDeltaLayout) {
@@ -366,7 +381,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   await import('../../src/rendering/workers/polygon-mesh-core.js');
   const engine = globalThis.PandoLabPolygonMeshCore;
   const physicalMesh=(geometry,id)=>{
-    const packet=preparedMesh(geometry);
+    const packet=preparedMesh(preparedMeshSpec(geometry));
     if(packet)return packet;
     const mesh=engine.buildPolygonMeshFeatures([{id,geometry}],{validate:true});
     return {positions:Float64Array.from(mesh.positions,value=>value*1e-6),indices:mesh.triangleIndices};
@@ -375,15 +390,16 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const resolve=target=>resolveBuiltinWorldGeometry(territorial,read,target).sort((a,b)=>a.owner.localeCompare(b.owner));
   const baseRows=resolve(month);
   const features=readBuiltinGeometryRows(baseRows,readGeometryAssets);
-  const countryMeshRow=feature=>{
+  const countryMeshRow=(feature,spec)=>{
     const {id,version,contentSha256} = feature.asset;
     const geometry = {id,version,contentSha256};
-    const packet = preparedMesh(feature.geometry);
+    const packet = preparedMesh(spec);
     if (packet) return {id:feature.id,geometry,vertices:packet.positions,indices:packet.indices};
     const mesh = engine.buildPolygonMeshFeatures([feature],{validate:true});
     return {id:feature.id,geometry,vertices:mesh.positions,indices:mesh.triangleIndices,units:1e-6};
   };
-  const preparedCountries = combineGlobeCountryMeshes(features.map(countryMeshRow));
+  const baseMeshSpecs = readCountryMeshInputs(features);
+  const preparedCountries = combineGlobeCountryMeshes(features.map((feature,index)=>countryMeshRow(feature,baseMeshSpecs[index])));
   const {countrySlots} = preparedCountries;
   const countries = withPickGrid(preparedCountries.buffer, '', emitPackedMesh);
   const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors);
@@ -476,10 +492,11 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const historyDirectory='historical/';
   const versionFeatures=readBuiltinGeometryRows([...versions.values()],readGeometryAssets,features);
   const featureBySlot=[...features,...versionFeatures].map(align);
+  const historicalMeshSpecs = readCountryMeshInputs(versionFeatures);
   const historicalCountries=versionFeatures.map((feature,index)=>{
     const slot=countrySlots.length+index;
     slotByKey.set(globeTerritoryKey(feature.id,feature.asset),slot);
-    const packet=combineGlobeCountryMeshes([countryMeshRow(feature)],{slotOffset:slot});
+    const packet=combineGlobeCountryMeshes([countryMeshRow(feature,historicalMeshSpecs[index])],{slotOffset:slot});
     const extraOutlines=buildGlobeOutlineStrokes([feature.geometry],slot);
     const anchors={[feature.id]:{coordinates:computeLabelAnchor(feature)}};
     return {...packet.countrySlots[0],label:countryLabelMetadata(decodeGlobeMesh(packet.buffer),packet.countrySlots,anchors)[feature.id]??null,

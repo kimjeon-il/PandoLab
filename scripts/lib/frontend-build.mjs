@@ -44,7 +44,7 @@ function pinnedContext(root){
   const bytes=new Map();
   const entry=path=>{assert.ok(index.files[path],'Missing pinned input: '+path);return index.files[path];};
   pinnedContexts.set(key,{revision:configuration.revision,index,dataPaths:Object.keys(index.files).filter(p=>p.startsWith('assets/data/')),
-   read:path=>{if(!bytes.has(path))bytes.set(path,decodeArchiveEntry(checkout,entry(path),configuration.revision));return bytes.get(path);},
+   read:path=>{if(!bytes.has(path))bytes.set(path,decodeArchiveEntry(checkout,entry(path),configuration.revision,{fetch:process.env.CI==='true'}));return bytes.get(path);},
    readBatch:paths=>{
     const missing=new Map(paths.filter(path=>!bytes.has(path)).map(path=>[path,entry(path)]));
     for(const [path,buffer] of decodeArchiveEntries(checkout,missing,configuration.revision,{fetch:process.env.CI==='true'}))bytes.set(path,buffer);
@@ -142,7 +142,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
   const {buildGlobePreviewAssets}=await import('./globe-preview-assets.mjs');
   const globe=await buildGlobePreviewAssets({territorial:territorial.value,physical:physicalCatalog,
    prepared:metadata[resource('preparedMeshes')],hydro:metadata[resource('rivers')],hydroPath:resource('rivers'),
-   month:startupGeometryPacks.month,readPinnedData,boundarySeed:prepared,computeLabelAnchor,
+   month:startupGeometryPacks.month,readPinnedData,readPinnedDataBatch,boundarySeed:prepared,computeLabelAnchor,
    readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
   globePreview={...globe.preview,moduleUrl:'assets/vendor/three/three.module.js'};
   for(const [path,bytes] of globe.assets)generated(path,bytes,'viewer');
