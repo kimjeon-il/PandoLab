@@ -1,8 +1,7 @@
 import { builtinCountryAssets } from './builtin-country-files.js';
-import { regionalLandLayout } from './physical-land-patch.js';
 import { preparedMeshDeltaLayout } from './prepared-mesh-delta.js';
 import { isPublishedPreparedMeshSpec } from './prepared-mesh-publication.js';
-import { MAP_PROJECT_ROLES, validateMapProjectManifest } from './map-project-manifest.js';
+import { MAP_PROJECT_ROLES, regionalLandLayout, validateMapProjectManifest } from './map-project-manifest.js';
 
 /** All independently source-verified name receipts that belong with a Hydro release.
  * Prehistoric/old production manifests may only have the 42-system receipt.

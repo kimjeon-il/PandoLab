@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
-import {applyPhysicalLandPatch,physicalLandPatchSchema,regionalLandLayout} from '../../src/data/physical-land-patch.js';
+import {applyPhysicalLandPatch,physicalLandPatchSchema} from '../../src/data/physical-land-patch.js';
+import {regionalLandLayout} from '../../src/data/map-project-manifest.js';
 import {readFileSync,existsSync,mkdirSync,writeFileSync,renameSync,unlinkSync} from 'node:fs';
 import {dirname,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';

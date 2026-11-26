@@ -1,9 +1,9 @@
 import { temporalContains } from '../document/temporal.js';
+import { regionalLandLayout } from './map-project-manifest.js';
 
 export const physicalLandPatchSchema = 'pando-physical-land-replacements-v1';
 const hash = /^[a-f0-9]{64}$/;
 const fail = message => {throw Error('Physical land replacement: '+message);};
-export const regionalLandLayout = 'regional-land-v1';
 
 export function selectPhysicalLandAsset(base, modernCoast, land, date) {
   const selected = land??base;

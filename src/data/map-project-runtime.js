@@ -1,7 +1,7 @@
 import { validateMapProjectManifest, mapProjectResourcePath } from './map-project-manifest.js';
 import { createStoredAssetLoader } from './stored-asset-loader.js';
 import { parseTemporal } from '../document/temporal.js';
-import { regionalLandLayout } from './physical-land-patch.js';
+import { regionalLandLayout } from './map-project-manifest.js';
 
 const HEX = /^[a-f0-9]{64}$/;
 const WATER_EMPTY = Object.freeze({

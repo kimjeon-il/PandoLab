@@ -4,6 +4,7 @@ export const MAP_PROJECT_ROLES = Object.freeze([
   'world','territorial','rivers','lakes','places','placeLifetimes',
   'physicalLand','preparedMeshes',
 ]);
+export const regionalLandLayout = 'regional-land-v1';
 const ROLES = new Set(MAP_PROJECT_ROLES);
 const CATALOG_PATH = /^assets\/data\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const isRecord = value => value!==null&&typeof value==='object'&&!Array.isArray(value);
