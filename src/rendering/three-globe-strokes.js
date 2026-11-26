@@ -114,7 +114,7 @@ const fragmentShader = `
   }
 `;
 
-export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, viewport, margin, multisampling, order, minZoom = -2, outlineUniforms, visibilityUniforms, hydroUniforms }) {
+export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, viewport, margin, multisampling, order, minZoom = -2, outlineUniforms, visibilityUniforms, hydroUniforms, sharedMaterial }) {
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(Float32Array.of(0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0), 3));
   geometry.setIndex([0, 1, 2, 2, 1, 3]);
@@ -124,7 +124,7 @@ export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, 
   if (packet.widths.length) geometry.setAttribute('sourceWidth', new THREE.InstancedBufferAttribute(packet.widths, 1));
   if (outlineUniforms||visibilityUniforms||hydroUniforms) geometry.setAttribute('ownerGroup', new THREE.InstancedBufferAttribute(packet.ownerGroups, 1));
   geometry.instanceCount = packet.count;
-  const material = new THREE.ShaderMaterial({ vertexShader, fragmentShader,
+  const material = sharedMaterial??new THREE.ShaderMaterial({ vertexShader, fragmentShader,
     depthTest: false, depthWrite: false, alphaToCoverage: multisampling, transparent: !multisampling,
     defines: { ...(packet.widths.length?{WIDTH_PROFILE:1}:{}),...(outlineUniforms?{OUTLINE_OWNERS:1}:{}),
       ...(visibilityUniforms?{GROUP_VISIBILITY:1}:{}),...(hydroUniforms?{RIVER_PALETTE:1}:{}) },

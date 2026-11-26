@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGlobeCamera } from '../../../src/rendering/globe-camera.js';
+import {createGlobeCamera, globeVector} from '../../../src/rendering/globe-camera.js';
 
 const viewport = { width: 900, height: 650 };
 const view = { center: [179, 25], zoom: 2, bearing: 18, pitch: 15, roll: 2 };
@@ -90,4 +90,23 @@ test('atlas compaction repacks live runs without mixing place and country pages'
   assert.deepEqual(plan[0].placements.map(row=>[row.x,row.y]),[[0,0],[40,0]]);
   assert.equal(plan[1].place,true);
   assert.equal(planGlobeAtlasPages([run(false,65,20)],64),null);
+});
+
+test('range culling preserves visible date-line and polar bounds and stroke padding', async () => {
+  const {createGlobeRangeCuller}=await import('../../../src/rendering/globe-spatial-partition.js');
+  const pointBounds=coordinate=>{const v=globeVector(coordinate);return [...v,...v];};
+  const viewport={width:800,height:600};
+  const dateLine=createGlobeCamera({center:[179.9,0],zoom:5},viewport);
+  const visible=createGlobeRangeCuller(dateLine.frame,800,600);
+  assert.equal(visible(pointBounds([-179.9,0])),true);
+  assert.equal(visible(pointBounds([0,0])),false);
+  const polar=createGlobeCamera({center:[0,89.9],zoom:5},viewport);
+  assert.equal(createGlobeRangeCuller(polar.frame,800,600)(pointBounds([180,89.9])),true);
+  const frame={eye:[2,0,0],right:[0,1,0],up:[0,0,1],forward:[-1,0,0],focal:100,center:[50,50]};
+  const edge=[1,.55,0,1,.55,0];
+  assert.equal(createGlobeRangeCuller(frame,100,100)(edge),false);
+  assert.equal(createGlobeRangeCuller(frame,100,100,6)(edge),true);
+  // A large triangle/chord can cross the viewport even when its vertices
+  // fall outside. The conservative bound must survive.
+  assert.equal(createGlobeRangeCuller(frame,100,100)([.8,-.8,-.1,1,.8,.1]),true);
 });

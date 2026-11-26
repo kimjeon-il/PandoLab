@@ -253,3 +253,22 @@ test('dated physical cache drops inactive contexts without releasing a shared ac
   assert.deepEqual(reads,['river','old','current','old']);
   assets.dispose();
 });
+
+test('spatial mesh and stroke ranges preserve every primitive and original owner order', async () => {
+  const {partitionGlobeMesh,partitionGlobeStrokes,globeStrokeRange,visibleGlobeMeshRanges}=await import('../../../src/rendering/globe-spatial-partition.js');
+  const options={minPrimitives:1,maxRanges:16,span:.1};
+  const country=(id,lon)=>({id,geometry:{id,version:1},vertices:Float64Array.of(lon,0,lon+.1,0,lon,.1),indices:Uint32Array.of(0,1,2)});
+  const mesh=decodeGlobeMesh(combineGlobeCountryMeshes([country('a',0),country('b',90),country('c',-90)]).buffer);
+  const ranges=partitionGlobeMesh(mesh,options);
+  assert.deepEqual(ranges.map(({first,end})=>[first,end]),[[0,1],[1,2],[2,3]]);
+  assert.deepEqual(visibleGlobeMeshRanges(ranges,()=>true),[{first:0,end:3}]);
+  assert.deepEqual(visibleGlobeMeshRanges(ranges,bounds=>bounds[1]<.5),[{first:0,end:1},{first:2,end:3}]);
+  const stroke=decodeGlobeStrokes(encodeGlobeStrokes([0,0,.1,0,90,0,90.1,0,-90,0,-89.9,0],null,[1,2,3],Uint16Array.of(4,5,6)));
+  const pieces=partitionGlobeStrokes(stroke,options).map(({first,end})=>globeStrokeRange(stroke,first,end));
+  assert.deepEqual(pieces.flatMap(piece=>[...piece.ownerGroups]),[4,5,6]);
+  assert.deepEqual(pieces.flatMap(piece=>[...piece.widths]),[1,2,3]);
+  for(const name of ['start','startLow','end','endLow']){
+    assert.deepEqual(pieces.flatMap(piece=>[...piece[name]]),[...stroke[name]]);
+    assert.ok(pieces.every(piece=>piece[name].buffer===stroke[name].buffer));
+  }
+});
