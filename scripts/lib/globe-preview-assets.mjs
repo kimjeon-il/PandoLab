@@ -436,7 +436,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const {buffer:outlineBuffer,owners:outlineOwners} = buildGlobeOutlineStrokes(features.map(feature=>feature.geometry));
   const outlines = emit(outlineBuffer,'outlines/');
   const readGeometry = async spec => JSON.parse(source(spec));
-  const physicalContexts=new Map(),landPackets=new Map(),waterParts=new Map(),hydroParts=new Map();
+  const physicalContexts=new Map(),waterParts=new Map(),hydroParts=new Map();
   let skeletonLandPath;
   const hydroSlots=new Map(),hydroObjects=[];
   function hydroSlot(feature){
@@ -457,16 +457,13 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   async function preparePhysical(target){
     const selected=resolvePhysicalWaterObjects(physical.waterObjects,target)
       .sort((a,b)=>timelineObjectKey(a.objectRef).localeCompare(timelineObjectKey(b.objectRef)));
-    if(selected.some(row=>row.assets.land.sha256!==selected[0].assets.land.sha256))throw Error('Globe physical contexts use different land surfaces');
-    const landSpec=selectPhysicalLandAsset(physical.asset,physical.modernCoast,selected[0]?.assets.land??physical.asset,target);
-    const identity=JSON.stringify([landSpec.sha256,physicalWaterContextKey(selected)]);
+    const identity=physicalWaterContextKey(selected);
     if(physicalContexts.has(identity))return physicalContexts.get(identity);
-    if(!landPackets.has(landSpec.sha256)){
+    if(target===month){
+      if(selected.some(row=>row.assets.land.sha256!==selected[0].assets.land.sha256))throw Error('Globe skeleton sources use different land surfaces');
+      const landSpec=selectPhysicalLandAsset(physical.asset,physical.modernCoast,selected[0]?.assets.land??physical.asset,target);
       const geometry=await loadPhysicalLandGeometry(landSpec,{loadGeometry:readGeometry,loadPatch:readGeometry});
-      if(target===month)skeletonLandPath=globeSkeletonLandPath(geometry,d3Source);
-      const mesh=physicalMesh(geometry,'physical-land');
-      const land = emitPackedMesh(encodeGlobeMesh({ coordinates: mesh.positions, indices: mesh.indices }));
-      landPackets.set(landSpec.sha256,land);
+      skeletonLandPath=globeSkeletonLandPath(geometry,d3Source);
     }
     const waters=[];
     for(const row of selected){
@@ -496,7 +493,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       });
       hydroParts.set(mask,{lakes,rivers:withStrokePickGrid(base,'',packGlobeStrokes(base)),riverDetail,riverMinZoom});
     }
-    const descriptor={identity,land:landPackets.get(landSpec.sha256),waters,...hydroParts.get(mask)};
+    const descriptor={identity,waters,...hydroParts.get(mask)};
     physicalContexts.set(identity,descriptor);
     return descriptor;
   }
@@ -507,8 +504,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const {buffer:borderBuffer,owners:borderOwners}=packBorders(baseGroups,true);
   const borders=emit(packGlobeStrokes(borderBuffer));
   const physicalRecords=physical.waterObjects.timelineRecords;
-  const coastDates=physical.modernCoast?[{validFrom:physical.modernCoast.validFrom,validTo:null}]:[];
-  for(const target of globeHistoryMonths(month,physicalRecords,{lifetimes:coastDates,geometryBindings:[]}))await preparePhysical(target);
+  for(const target of globeHistoryMonths(month,physicalRecords))await preparePhysical(target);
   const keys=rows=>rows.map(({owner,asset})=>globeTerritoryKey(owner,asset));
   const align=feature=>({...feature,boundaryGeometryRevision:feature.asset.contentSha256});
   const baseKeys=keys(baseRows),slotByKey=new Map(baseKeys.map((key,slot)=>[key,slot]));

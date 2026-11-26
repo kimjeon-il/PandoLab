@@ -155,7 +155,7 @@ test('Three globe draws prepared surfaces with no base uploads while dragging', 
   expect(assetRequests.filter(path => landSources.includes(path))).toEqual([]);
   expect(requests).toBe(await page.evaluate(() => {
    const { waters, lakes } = window.PANDOLAB_BUILD_META.globePreview.physical;
-   return 5 + waters.length + lakes.length;
+   return 4 + waters.length + lakes.length;
   }));
   expect(writes).toBeGreaterThan(0);
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
@@ -356,7 +356,7 @@ test('Three globe switches to changed historical meshes and reuses them on retur
  expect((await active()).count).toBeLessThan(earlier.count);
 });
 
-test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{
+test('Three globe uses territorial coastlines and preserves polar, date-line and microstate surfaces',async({page})=>{
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,backgrounds:{viewer:{graticule:false}}})));
  await page.goto('./?debug=1');
  await ready(page,'geographic samples startup');
@@ -380,6 +380,9 @@ test('Three globe preserves polar, date-line and microstate surfaces',async({pag
   return Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value)));
  }).toBeLessThanOrEqual(1);
  const ant=[20,-85],north=[0,89.9];
+ // Samples in the ocean just beyond the territory polygons on these coasts.
+ await go([166.32,-22.17],10);await paint([166.216213,-22.126016],'#ffffff');
+ await go([-73.86,-43.07],10);await paint([-74.209291,-42.942997],'#ffffff');
  await go(ant,5);await paint(ant,'#f1f1f1');
  await go(north,5);await paint(north,'#ffffff');
  await go([180,-16.86],12);
@@ -399,12 +402,12 @@ test('Three globe preserves polar, date-line and microstate surfaces',async({pag
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(row=>row.id))).toContain('VAT');
 });
 
-test('Three globe switches historical land and water in the same dated frame',async({page})=>{
+test('Three globe switches historical territories and water in the same dated frame',async({page})=>{
  await page.goto('./?debug=1');
  await ready(page,'dated physical startup');
  const state=()=>page.evaluate(()=>{
   const viewer=window.__PANDOLAB_VIEWER__,stats=viewer.rendererStats();
-  return {month:viewer.builtinMonth().month,land:stats.physicalLandSha256,water:stats.physicalWaterIds,territories:stats.countrySlotCount};
+  return {month:viewer.builtinMonth().month,water:stats.physicalWaterIds,territories:stats.countrySlotCount};
  });
  await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-58,-43,0]}}));
  const initialCamera=(await camera(page)).camera,before=await state();
@@ -412,7 +415,6 @@ test('Three globe switches historical land and water in the same dated frame',as
  await month(page,'1923-11');
  const dated=await state();
  expect(dated).toMatchObject({month:'1923-11',water:expect.arrayContaining(['waterbody:aral','waterbody:caspian'])});
- expect(dated.land).not.toBe(before.land);
  expect(dated.territories).toBeLessThan(before.territories);
  expect((await camera(page)).camera).toEqual(initialCamera);
  expect((await canvas.screenshot()).equals(modern)).toBe(false);

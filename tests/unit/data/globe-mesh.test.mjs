@@ -166,34 +166,29 @@ test('historical globe enumerates month-end changes including calendar era and u
     ['-999999-01','0001-01','1900-01','1900-02','2000-01','2020-02','2020-04','2026-11']);
 });
 
-test('dated physical contexts reuse unchanged land and river packets while changing water identity', async () => {
+test('dated physical contexts reuse unchanged river packets while changing water identity', async () => {
   const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const calls=[];
-  const load=async spec=>{calls.push(spec.url);return {bytes:spec.url,packet:{
-    positions:Float32Array.of(spec.url==='changed-land'?7:1,2,3,4,5,6),residuals:new Float32Array(6),
-  }};};
+  const load=async spec=>{calls.push(spec.url);return {bytes:spec.url};};
   const asset=(url,sha256=url)=>({url,sha256});
-  const context=(identity,water,land=asset('land'),rivers=asset('rivers'))=>({identity,land,rivers,
+  const context=(identity,water,rivers=asset('rivers'))=>({identity,rivers,
     waters:[{id:'waterbody:lake',spec:water}],lakes:[],riverDetail:[],riverMinZoom:2});
   const modern=asset('modern-water'),datedWater=asset('dated-water');
   const indexedWater={...modern,pickGrid:asset('water-pick')};
   const assets=createGlobePhysicalAssets([
     context('current',modern),
-    context('dated',datedWater,asset('land-alias','land'),asset('river-alias','rivers')),
-    context('reclaimed',modern,asset('changed-land')),
+    context('dated',datedWater,asset('river-alias','rivers')),
     context('indexed',indexedWater),
   ],{
     loadMesh:load,loadStroke:load,
   });
-  const [current,dated,reclaimed,indexed]=await Promise.all([
-    assets.prepare('current'),assets.prepare('dated'),assets.prepare('reclaimed'),assets.prepare('indexed'),
+  const [current,dated,indexed]=await Promise.all([
+    assets.prepare('current'),assets.prepare('dated'),assets.prepare('indexed'),
   ]);
-  for(const role of ['land','rivers'])assert.equal(current[role],dated[role]);
-  assert.equal(reclaimed.land.packet.positions[0],7);
-  assert.equal(current.land.packet.positions[0],1);
+  assert.equal(current.rivers,dated.rivers);
   assert.notEqual(current.waters[0].mesh,dated.waters[0].mesh);
   assert.notEqual(current.waters[0].mesh,indexed.waters[0].mesh);
   assert.equal(dated.waters[0].id,'waterbody:lake');
-  assert.deepEqual(calls.sort(),['changed-land','dated-water','land','modern-water','modern-water','rivers']);
+  assert.deepEqual(calls.sort(),['dated-water','modern-water','modern-water','rivers']);
   assert.equal(await assets.prepare('dated'),dated);
 });

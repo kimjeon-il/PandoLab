@@ -1,6 +1,5 @@
 import {timelineObjectKey} from '../document/timeline-records.js';
 import {mapProjectResourcePath} from '../data/map-project-manifest.js';
-import {selectPhysicalLandAsset} from '../data/physical-land-patch.js';
 import {resolvePhysicalWaterObjects,physicalWaterContextKey,physicalWaterReferenceView} from '../data/physical-water-model.js';
 
 // Runtime coordinator: the data layer owns source reads and the C++ owner
@@ -25,22 +24,16 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     const catalog=buildMeta.physicalWaterObjects;
     const rows=resolvePhysicalWaterObjects(catalog,date)
       .sort((a,b)=>timelineObjectKey(a.objectRef).localeCompare(timelineObjectKey(b.objectRef)));
-    if(rows.some(row=>row.assets.land.sha256!==rows[0].assets.land.sha256))throw new Error('Selected water objects require one coherent physical land derivative.');
-    const historicalLand=rows[0]?.assets.land??buildMeta.physicalLand;
-    const landAsset=selectPhysicalLandAsset(buildMeta.physicalLand,buildMeta.modernCoast,historicalLand,date);
-    return {catalog,date,rows,landAsset,key:physicalWaterContextKey(rows)};
+    return {catalog,date,rows,key:physicalWaterContextKey(rows)};
   }
   function selectedPhysicalWater() {
     if(activeSource!=='builtin')
-      return {catalog:null,date:null,rows:[],landAsset:buildMeta.physicalLand,key:'inactive-project-water'};
+      return {catalog:null,date:null,rows:[],key:physicalWaterContextKey([])};
     const catalog=buildMeta.physicalWaterObjects,date=dependencies.projectState.state.timelineCursor;
     if(!physicalSelection||physicalSelection.catalog!==catalog||physicalSelection.date!==date){
       physicalSelection=physicalSelectionFor(date);
     }
     return physicalSelection;
-  }
-  function physicalSourceIdentity({landAsset,rows}) {
-    return JSON.stringify([landAsset.sha256,physicalWaterContextKey(rows)]);
   }
   let builtinTimelineView=null;
   function hydroActivityView() {
@@ -172,8 +165,8 @@ export function createPhysicalResources({ buildMeta,capabilities = {builtinHydro
     connect,
     setProjectSource,
     initializeHydroService,
-    get physicalSourceIdentity() { return physicalSourceIdentity(selectedPhysicalWater()); },
-    physicalSourceIdentityAtMonth:month=>physicalSourceIdentity(physicalSelectionFor(month)),
+    get physicalSourceIdentity() { return selectedPhysicalWater().key; },
+    physicalSourceIdentityAtMonth:month=>physicalSelectionFor(month).key,
     get loadHydroData() { return loadHydroData; },
     builtinHydroSelectionReferences,
     hydroActivityView,

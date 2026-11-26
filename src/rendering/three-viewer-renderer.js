@@ -481,7 +481,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    generation,certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
    frameId:lastFrame?.frameId,drawCount,drawCalls:surface?.drawCalls()??0,performance:metrics.snapshot(),
    countrySlotCount:acceptedTerritories.slots.length,activeHistoricalTerritories:acceptedTerritoryParts?.countries.length??0,
-   physicalLandSha256:acceptedPhysical?.spec.land.sha256??null,physicalWaterIds:acceptedPhysical?.waters.map(row=>row.id)??[],
+   physicalWaterIds:acceptedPhysical?.waters.map(row=>row.id)??[],
    countryLabelCount:surface?.labels.visibleCount(false)??0,
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,errorMessage:error?.message??null,initialLoading}),
