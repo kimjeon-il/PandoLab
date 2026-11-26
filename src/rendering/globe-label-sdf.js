@@ -1,10 +1,18 @@
-// Keep the original two-pass chamfer distance transform, threshold and
-// Float32 rounding. Reuse scratch within a bounded batch, not across jobs.
+// Seed the two-pass chamfer transform with the raster coverage at the glyph edge.
+// Scratch arrays are shared within a bounded batch.
 export function createGlobeDistanceWorkspace() {
   let inside = new Float32Array(0), outside = new Float32Array(0);
   function distanceTo(alpha, width, height, range, foreground, values) {
     const count = width*height;
-    for (let i = 0; i<count; i++)values[i] = (alpha[i]>=128)===foreground?0:range+1;
+    for (let i = 0; i<count; i++) {
+      const coverage = alpha[i];
+      if (coverage===0)values[i] = foreground?range+1:0;
+      else if (coverage===255)values[i] = foreground?0:range+1;
+      else {
+        const edge = coverage/255-0.5;
+        values[i] = Math.max(0, foreground?-edge:edge);
+      }
+    }
     // Row loops avoid the modulo and row-boundary computation per pixel.
     for (const direction of [1, -1]) {
       const startY = direction===1?0:height-1, endY = direction===1?height:-1;
