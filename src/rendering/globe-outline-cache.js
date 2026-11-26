@@ -1,6 +1,7 @@
 import {createGlobeSpatialSelection} from './globe-spatial-partition.js';
 import {createThreeGlobeStrokes,createGlobeStrokePointTexture} from './three-globe-strokes.js';
 import {renderPacketBuffers} from './render-cache-budget.js';
+import {planGlobeCompactionUpdates,applyGlobeDrawWrites,useDirectGlobeStrokeAttributes} from './globe-draw-compaction.js';
 
 function indexOwners(owners){
   const groupsBySlot=new Map();
@@ -92,34 +93,39 @@ export function outlineInstanceCapacity(current,needed,limit){
 }
 const bytesOf=buffers=>[...buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);
 
-export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions,maxTextureSize,orderForChunk,onResidencyChange=()=>{}}){
+export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions,maxTextureSize,orderForChunk,residency,onResidencyChange=()=>{}}){
   const index=indexGlobeOutlineChunks(packet,owners),partitions=packet.spatialParts;
   const packetBuffers=renderPacketBuffers(packet);
   const outlineStyles=Array.from({length:5},()=>new THREE.Vector2());
   const strokeColor=new THREE.Color(strokeOptions.style.color);
   const options={...strokeOptions,order:6,outlineUniforms:{outlineStyles:{value:outlineStyles}}};
-  const chunks=new Map(),activeChunks=new Set();
+  const chunks=new Map(),activeChunks=new Set(),dirtyChunks=new Set(),baseKey={};
+  let baseDirty=true,ledgerActive=null;
+  function markChunk(chunk){dirtyChunks.add(chunk);onResidencyChange();}
   let previousGroups=new Map(),lastUsed=performance.now();
   let evictedChunks=0,createdChunks=0,shrunkBuffers=0,updatedChunks=0;
   function hideMesh(chunk){
-    if(chunk.gpu?.mesh.visible){chunk.gpu.mesh.visible=false;chunk.lastUsed=performance.now();onResidencyChange();}
+    if(chunk.gpu?.mesh.visible){chunk.gpu.mesh.visible=false;chunk.lastUsed=performance.now();markChunk(chunk);}
   }
   function disposeGpu(chunk,{keepTexture=false}={}){
     const gpu=chunk.gpu;
     if(!gpu)return;
-    scene.remove(gpu.mesh);gpu.mesh.geometry.dispose();gpu.mesh.material.dispose();if(!keepTexture)gpu.texture.texture.dispose();
-    chunk.gpu=null;onResidencyChange();
+    scene.remove(gpu.mesh);gpu.mesh.geometry.dispose();gpu.mesh.material.dispose();if(!keepTexture)gpu.texture?.texture.dispose();
+    chunk.gpu=null;markChunk(chunk);
   }
   function evictChunk(chunk){
     if(!chunk.gpu)return;
     disposeGpu(chunk);evictedChunks++;
     chunk.selection=null;chunk.selected=null;
     if(!chunk.roles.size)chunks.delete(chunk.id);
+    else residency?.set(chunk,{...chunkFootprint(chunk),lastUsed:chunk.lastUsed,protected:true,groups:['outline','outlineChunk']});
+    markChunk(chunk);
   }
   function clearInactive(chunk){
     hideMesh(chunk);activeChunks.delete(chunk);
     chunk.selection=null;chunk.selected=null;
     if(!chunk.gpu)chunks.delete(chunk.id);
+    markChunk(chunk);
   }
   function paint(roles,styles,color){
     for(let code=0;code<outlineStyles.length;code++){
@@ -145,10 +151,10 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
     for(const [chunk,membershipChanged] of touched){
       chunk.roleRevision++;
       if(membershipChanged)chunk.membershipRevision++;
-      if(chunk.roles.size)activeChunks.add(chunk);else clearInactive(chunk);
+      if(chunk.roles.size){activeChunks.add(chunk);markChunk(chunk);}else clearInactive(chunk);
     }
     previousGroups=groups;
-    if(touched.size){updatedChunks+=touched.size;lastUsed=performance.now();onResidencyChange();}
+    if(touched.size){updatedChunks+=touched.size;lastUsed=performance.now();baseDirty=true;onResidencyChange();}
     return activeChunks.size>0;
   }
   function hide(){
@@ -156,17 +162,21 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
     for(const chunk of [...activeChunks]){
       chunk.roles.clear();chunk.selectedCount=0;chunk.membershipRevision++;chunk.roleRevision++;clearInactive(chunk);
     }
-    previousGroups=new Map();lastUsed=performance.now();onResidencyChange();
+    previousGroups=new Map();lastUsed=performance.now();baseDirty=true;onResidencyChange();
   }
   function newGpu(chunk,subset,capacity,reuseTexture=null){
-    const output={count:capacity,endpointIndices:new Uint32Array(capacity*2),widths:new Float32Array(0),ownerGroups:new Uint16Array(capacity)};
-    const texture=reuseTexture??createGlobeStrokePointTexture(THREE,subset.points,maxTextureSize);
-    const mesh=createThreeGlobeStrokes(THREE,{...options,order:orderForChunk(chunk.id,partitions.length),packet:output,pointUniforms:texture.uniforms});
+    const direct=useDirectGlobeStrokeAttributes({count:capacity});
+    const output={count:capacity,widths:new Float32Array(0),ownerGroups:new Uint16Array(capacity)};
+    const names=direct?['start','startLow','end','endLow']:['endpointIndices'];
+    if(direct)for(const name of names)output[name]=new Float32Array(capacity*3);
+    else output.endpointIndices=new Uint32Array(capacity*2);
+    const texture=direct?null:reuseTexture??createGlobeStrokePointTexture(THREE,subset.points,maxTextureSize);
+    const mesh=createThreeGlobeStrokes(THREE,{...options,order:orderForChunk(chunk.id,partitions.length),packet:output,pointUniforms:texture?.uniforms});
     mesh.material.uniforms.strokeColor.value=strokeColor;
-    for(const name of ['endpointIndices','ownerGroup'])mesh.geometry.getAttribute(name).setUsage(THREE.DynamicDrawUsage);
+    for(const name of [...names,'ownerGroup'])mesh.geometry.getAttribute(name).setUsage(THREE.DynamicDrawUsage);
     mesh.geometry.instanceCount=0;mesh.visible=false;scene.add(mesh);
     createdChunks++;
-    return {mesh,texture,output,capacity,subset,sourceGroups:new Set(chunk.roles.keys()),membershipRevision:chunk.membershipRevision,roleRevision:-1,ranges:null};
+    return {mesh,texture,output,capacity,subset,direct,names,sourceGroups:new Set(chunk.roles.keys()),membershipRevision:chunk.membershipRevision,roleRevision:-1,ranges:null};
   }
   function ensureGpu(chunk,needed){
     let gpu=chunk.gpu;
@@ -180,9 +190,9 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
     if(!gpu||!same||capacity!==gpu.capacity){
       const subset=same?gpu.subset:buildGlobeOutlinePointSubset(part,[...chunk.roles.values()].flatMap(({row})=>row.ranges).sort((a,b)=>a[0]-b[0]));
       if(gpu&&capacity<gpu.capacity)shrunkBuffers++;
-      const reuseTexture=same?gpu.texture:null;
+      const reuseTexture=same&&!useDirectGlobeStrokeAttributes({count:capacity})?gpu.texture:null;
       disposeGpu(chunk,{keepTexture:Boolean(reuseTexture)});
-      chunk.gpu=gpu=newGpu(chunk,subset,capacity,reuseTexture);onResidencyChange();
+      chunk.gpu=gpu=newGpu(chunk,subset,capacity,reuseTexture);markChunk(chunk);
     }
     return gpu;
   }
@@ -194,32 +204,38 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
       if(!partition.index.rootBounds||!cull(partition.index.rootBounds)){hideMesh(chunk);continue;}
       chunk.selection??=createGlobeSpatialSelection(part,partition.index);
       const selected=chunk.selection.select(cull,chunk.membershipRevision,group=>chunk.roles.has(group));
-      if(chunk.selected?.ranges!==selected.ranges){chunk.selected=selected;onResidencyChange();}
+      if(chunk.selected?.ranges!==selected.ranges){chunk.selected=selected;markChunk(chunk);}
       stats.submittedSegments+=selected.count;stats.visibleRanges+=selected.leaves;
       if(!selected.count){hideMesh(chunk);continue;}
       const gpu=ensureGpu(chunk,selected.count),{mesh,output,subset}=gpu;
-      const rangesChanged=gpu.ranges!==selected.ranges;
-      if(rangesChanged||gpu.roleRevision!==chunk.roleRevision){
-        let offset=0;
-        for(let i=0;i<selected.ranges.length;i+=2){
-          const first=selected.ranges[i],end=selected.ranges[i+1];
-          for(let id=first;id<end;id++){
-            if(rangesChanged){
-              const at=subset.segmentOffsets[id]*2;
-              output.endpointIndices[offset*2]=subset.endpointIndices[at];
-              output.endpointIndices[offset*2+1]=subset.endpointIndices[at+1];
-            }
-            output.ownerGroups[offset]=chunk.roles.get(part.ownerGroups[id]).code;offset++;
+      const rangesChanged=gpu.ranges!==selected.ranges,rolesChanged=gpu.roleRevision!==chunk.roleRevision;
+      if(rangesChanged||rolesChanged){
+        const writes=planGlobeCompactionUpdates(selected.ranges,gpu.ranges??new Uint32Array());
+        for(const {first,end,offset} of writes){
+          let dst=offset;
+          for(let id=first;id<end;id++,dst++){
+            const at=subset.segmentOffsets[id]*2,a=subset.endpointIndices[at],b=subset.endpointIndices[at+1];
+            if(gpu.direct){
+              for(let axis=0;axis<3;axis++){
+                output.start[dst*3+axis]=subset.points[a*6+axis];output.startLow[dst*3+axis]=subset.points[a*6+axis+3];
+                output.end[dst*3+axis]=subset.points[b*6+axis];output.endLow[dst*3+axis]=subset.points[b*6+axis+3];
+              }
+            }else{output.endpointIndices[dst*2]=a;output.endpointIndices[dst*2+1]=b;}
+            output.ownerGroups[dst]=chunk.roles.get(part.ownerGroups[id]).code;
           }
         }
-        for(const name of rangesChanged?['endpointIndices','ownerGroup']:['ownerGroup']){
-          const attribute=mesh.geometry.getAttribute(name);
-          attribute.clearUpdateRanges();attribute.addUpdateRange(0,selected.count*attribute.itemSize);attribute.needsUpdate=true;
-        }
-        gpu.ranges=selected.ranges;gpu.roleRevision=chunk.roleRevision;
+        for(const name of gpu.names)stats.compactionUploadBytes+=applyGlobeDrawWrites(mesh.geometry.getAttribute(name),writes);
+        if(rolesChanged){
+          let offset=0;
+          for(let i=0;i<selected.ranges.length;i+=2)for(let id=selected.ranges[i];id<selected.ranges[i+1];id++)
+            output.ownerGroups[offset++]=chunk.roles.get(part.ownerGroups[id]).code;
+          stats.compactionUploadBytes+=applyGlobeDrawWrites(mesh.geometry.getAttribute('ownerGroup'),[{first:0,end:selected.count,offset:0}]);
+        }else stats.compactionUploadBytes+=applyGlobeDrawWrites(mesh.geometry.getAttribute('ownerGroup'),writes);
+        gpu.ranges=selected.ranges;gpu.roleRevision=chunk.roleRevision;markChunk(chunk);
       }
+      stats.strokeDrawCalls++;if(gpu.direct)stats.directStrokeSegments+=selected.count;
       mesh.geometry.instanceCount=selected.count;
-      if(!mesh.visible){mesh.visible=true;onResidencyChange();}
+      if(!mesh.visible){mesh.visible=true;markChunk(chunk);}
       chunk.lastUsed=lastUsed=performance.now();
     }
   }
@@ -232,7 +248,7 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
       for(const attribute of [...Object.values(geometry.attributes),geometry.index]){
         buffers.add(attribute.array.buffer);extraBytes+=attribute.array.byteLength;
       }
-      buffers.add(gpu.texture.texture.image.data.buffer);extraBytes+=gpu.texture.bytes;
+      if(gpu.texture){buffers.add(gpu.texture.texture.image.data.buffer);extraBytes+=gpu.texture.bytes;}
     }
     return {buffers,extraBytes};
   }
@@ -246,28 +262,32 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
     return {buffers,extraBytes};
   }
   function bytes(){const row=footprint();return bytesOf(row.buffers)+row.extraBytes;}
-  function standbyChunks(){
-    return [...chunks.values()].filter(chunk=>chunk.gpu&&!chunk.gpu.mesh.visible).map(chunk=>{
-      const row=chunkFootprint(chunk);return {...row,lastUsed:chunk.lastUsed,protected:false,bytes:bytesOf(row.buffers)+row.extraBytes,evict:()=>evictChunk(chunk)};
-    });
-  }
-  function memoryEntries({active,evict}){
-    if(!active)return [{...footprint(),lastUsed,protected:false,evict}];
-    const rows=[{buffers:packetBuffers,extraBytes:index.metadataBytes,lastUsed,protected:true}];
-    for(const chunk of chunks.values()){
-      const row=chunkFootprint(chunk);
-      rows.push({...row,lastUsed:chunk.lastUsed,protected:!chunk.gpu||chunk.gpu.mesh.visible,evict:()=>evictChunk(chunk)});
+  // Only altered chunk records enter the global ledger. An active base
+  // packet no longer forces its entire cache to be traversed on each hover.
+  function syncResidency({active,evict}){
+    if(baseDirty||ledgerActive!==active){
+      residency?.set(baseKey,{buffers:packetBuffers,extraBytes:index.metadataBytes,lastUsed,protected:active,
+       groups:['outline','outlinePacket'],evict});
+      baseDirty=false;ledgerActive=active;
     }
-    return rows;
+    for(const chunk of dirtyChunks){
+      if(chunks.get(chunk.id)!==chunk){residency?.remove(chunk);continue;}
+      const row=chunkFootprint(chunk);
+      residency?.set(chunk,{...row,lastUsed:chunk.lastUsed,protected:!chunk.gpu||chunk.gpu.mesh.visible,
+       groups:['outline','outlineChunk'],evict:()=>evictChunk(chunk)});
+    }
+    dirtyChunks.clear();
   }
   function dispose(){
-    for(const chunk of chunks.values())disposeGpu(chunk);
-    chunks.clear();activeChunks.clear();previousGroups.clear();
+    residency?.remove(baseKey);
+    for(const chunk of chunks.values()){disposeGpu(chunk);residency?.remove(chunk);}
+    for(const chunk of dirtyChunks)residency?.remove(chunk);
+    dirtyChunks.clear();chunks.clear();activeChunks.clear();previousGroups.clear();
   }
   function stats(){
     let resident=0,visible=0;
     for(const chunk of chunks.values())if(chunk.gpu){resident++;if(chunk.gpu.mesh.visible)visible++;}
     return {residentChunks:resident,visibleChunks:visible,activeChunks:activeChunks.size,evictedChunks,createdChunks,shrunkBuffers,updatedChunks};
   }
-  return {paint,hide,update,dispose,bytes,standbyChunks,memoryEntries,stats,get lastUsed(){return lastUsed;}};
+  return {paint,hide,update,dispose,bytes,syncResidency,stats,get lastUsed(){return lastUsed;}};
 }

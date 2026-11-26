@@ -200,7 +200,8 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   // for the rectangular copy and releases that reference immediately.
   const uploadSource=new THREE.DataTexture(null,1,1,THREE.RedFormat);
   const copyRegion=new THREE.Box2(new THREE.Vector2(),new THREE.Vector2()),copyPosition=new THREE.Vector2();
-  let candidates=[],spatial=createGlobeLabelSpatialIndex([]),placed=[],previous=new Set(),lastCamera=null,cacheDirty=true;
+  const candidateGroups=[{source:null,rows:[],index:createGlobeLabelSpatialIndex([])},{source:null,rows:[],index:createGlobeLabelSpatialIndex([])}];
+  let placed=[],previous=new Set(),lastCamera=null,cacheDirty=true;
   let activePages=new Set(),hitSnapshot=()=>null,layoutStats={};
   const counters={rasterizedRuns:0,textMeasurements:0,fullUploadBytes:0,partialUploadBytes:0,partialUploads:0,fullUploads:0,evictedPages:0,compactedPages:0,shrunkBatches:0};
 
@@ -367,19 +368,27 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     counters.compactedPages+=current.size-plan.length;cacheDirty=true;
     return renderRows.map(row=>({...row,...cache.get(row.atlasKey)}));
   }
-  function setCandidates(rows){
+  function setGroup(group,rows){
+    if(rows===group.source)return false;
     const ordered=orderGlobeLabels(rows);
-    if(ordered.length===candidates.length&&ordered.every((row,index)=>sameLabel(row,candidates[index])))return false;
-    const prior=new Map(candidates.map(row=>[row.key,row]));
-    candidates=ordered.map(row=>{
+    group.source=rows;
+    if(ordered.length===group.rows.length&&ordered.every((row,index)=>sameLabel(row,group.rows[index])))return false;
+    const prior=new Map(group.rows.map(row=>[row.key,row]));
+    group.rows=ordered.map(row=>{
       const old=prior.get(row.key);
+      if(sameLabel(row,old))return old;
       const vector=equalCoordinate(old?.coordinate,row.coordinate)?old?.vector:undefined;
       const valid=Array.isArray(row.coordinate)&&row.coordinate.length===2&&row.coordinate.every(Number.isFinite)&&Math.abs(row.coordinate[1])<=90;
       const point=valid?(vector??globeVector(row.coordinate)):null;
       return {...row,vector:point,bounds:point?[...point,...point]:null,atlasKey:JSON.stringify([Boolean(row.place),row.marker??'',row.lines])};
     });
-    spatial=createGlobeLabelSpatialIndex(candidates);lastCamera=null;cacheDirty=true;return true;
+    group.index=createGlobeLabelSpatialIndex(group.rows);lastCamera=null;cacheDirty=true;return true;
   }
+  function setCandidateGroups(countries,places){
+    const changedCountries=setGroup(candidateGroups[0],countries),changedPlaces=setGroup(candidateGroups[1],places);
+    return changedCountries||changedPlaces;
+  }
+  function setCandidates(rows){return setCandidateGroups(rows.filter(row=>!row.place),rows.filter(row=>row.place));}
   function trim(){
     if(!cacheDirty)return false;
     cacheDirty=false;
@@ -395,8 +404,8 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   function update(camera,width,height,cull=createGlobeRangeCuller(camera.frame,width,height)){
     if(camera===lastCamera)return;
     lastCamera=camera;
-    const visible=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?spatial.query(cull):[];
-    layoutStats={candidates:candidates.length,spatialCandidates:visible.length,projectedCandidates:0,collisionComparisons:0,duplicateCollisionSkips:0};
+    const visible=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?candidateGroups.flatMap(group=>group.index.query(cull)):[];
+    layoutStats={candidates:candidateGroups.reduce((sum,group)=>sum+group.rows.length,0),spatialCandidates:visible.length,projectedCandidates:0,collisionComparisons:0,duplicateCollisionSkips:0};
     hitSnapshot=()=>null;
     placed=placeGlobeLabels(visible,camera,{width,height},previous,(cells,columns,cellSize)=>{
       // Retain only immutable hit boxes, not atlas/mesh or raster resources.
@@ -428,13 +437,14 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     for(const page of pages){restoreTexture(page.upload);for(const batch of page.batches)restoreTexture(batch.upload);}
   }
   function memoryEntries(){
-    const rows=pages.map(page=>({...pageFootprint(page),lastUsed:page.lastUsed,protected:activePages.has(page),evict:()=>evictPage(page)}));
-    rows.push({protected:true,extraBytes:raster.width*raster.height*4+metricsCache.size*192+candidates.length*192+spatial.rows.length*160+placed.length*128});
+    const rows=pages.map(page=>({key:page,...pageFootprint(page),lastUsed:page.lastUsed,protected:activePages.has(page),evict:()=>evictPage(page)}));
+    rows.push({key:raster,protected:true,extraBytes:raster.width*raster.height*4+metricsCache.size*192+candidateGroups.reduce((sum,group)=>sum+group.rows.length*192+group.index.rows.length*160,0)+placed.length*128});
     return rows;
   }
   function dispose(){
     for(const page of pages)disposePage(page);
-    uploadSource.dispose();pages.length=0;cache.clear();metricsCache.clear();candidates=[];spatial=createGlobeLabelSpatialIndex([]);
+    uploadSource.dispose();pages.length=0;cache.clear();metricsCache.clear();
+    for(const group of candidateGroups){group.source=null;group.rows=[];group.index=createGlobeLabelSpatialIndex([]);}
     placed=[];previous.clear();activePages.clear();lastCamera=null;hitSnapshot=()=>null;
     raster.width=1;raster.height=1;
   }
@@ -443,6 +453,6 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       batchCapacity:pages.reduce((sum,page)=>sum+page.batches.reduce((n,batch)=>n+batch.capacity,0),0),
       measuredTexts:metricsCache.size,...counters,layout:{...layoutStats}};
   }
-  return Object.freeze({setCandidates,update,trim,dispose,restoreTextures,memoryEntries,hitSnapshot:()=>hitSnapshot,cacheStats,
+  return Object.freeze({setCandidates,setCandidateGroups,update,trim,dispose,restoreTextures,memoryEntries,hitSnapshot:()=>hitSnapshot,cacheStats,
     visibleCount:place=>placed.filter(row=>Boolean(row.place)===place).length,atlasEntryCount:()=>cache.size,hitTest:point=>hitSnapshot(point)});
 }

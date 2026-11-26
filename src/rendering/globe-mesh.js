@@ -177,28 +177,46 @@ export function encodeIndexedGlobeStrokes({count,points,endpointIndices,widths,o
  return buffer;
 }
 
-/** Merge only active same-style packets in their original segment order.
- * The point dictionary also deduplicates exact endpoints across packets.
- */
-export function combineGlobeStrokePackets(packets){
- const count=packets.reduce((sum,packet)=>sum+packet.count,0);
- const hasWidths=packets.some(packet=>packet.widths.length),hasOwners=packets.some(packet=>packet.ownerGroups.length);
- if(packets.some(packet=>(packet.count>0&&Boolean(packet.widths.length)!==hasWidths)||
-   (packet.count>0&&Boolean(packet.ownerGroups.length)!==hasOwners)))throw Error('Incompatible globe stroke packet attributes');
- const table=createGlobeStrokePointTable(packets.reduce((sum,packet)=>sum+packet.points.length/6,0));
- const endpointIndices=new Uint32Array(count*2),widths=new Float32Array(hasWidths?count:0),
-  ownerGroups=new Uint16Array(hasOwners?count:0);
- let first=0;
- for(const packet of packets){
+/** Incremental exact-bit merge. Keep the builder and at most one decoded
+ * input live; no retained raw group packet cache or cloned spatial trees. */
+export function createGlobeStrokeBatchBuilder(maxPoints){
+ const table=createGlobeStrokePointTable(maxPoints);
+ let count=0,capacity=0,hasWidths=null,hasOwners=null,finished=false;
+ let endpointIndices=new Uint32Array(),widths=new Float32Array(),ownerGroups=new Uint16Array();
+ function append(packet){
+  if(finished)throw Error('Globe stroke builder already finished');
+  if(!packet.count)return;
+  const useWidths=Boolean(packet.widths.length),useOwners=Boolean(packet.ownerGroups.length);
+  if(hasWidths!==null&&(useWidths!==hasWidths||useOwners!==hasOwners))throw Error('Incompatible globe stroke packet attributes');
+  hasWidths=useWidths;hasOwners=useOwners;
+  const needed=count+packet.count;
+  if(needed>capacity){
+   capacity=Math.max(needed,Math.ceil(capacity*1.5),32);
+   const next=new Uint32Array(capacity*2);next.set(endpointIndices);endpointIndices=next;
+   if(hasWidths){const next=new Float32Array(capacity);next.set(widths);widths=next;}
+   if(hasOwners){const next=new Uint16Array(capacity);next.set(ownerGroups);ownerGroups=next;}
+  }
   const words=new Uint32Array(packet.points.buffer,packet.points.byteOffset,packet.points.length);
   const remap=new Uint32Array(packet.points.length/6);
   for(let i=0;i<remap.length;i++)remap[i]=table.intern(words,i*6);
-  for(let i=0;i<packet.endpointIndices.length;i++)endpointIndices[first*2+i]=remap[packet.endpointIndices[i]];
-  if(hasWidths)widths.set(packet.widths,first);
-  if(hasOwners)ownerGroups.set(packet.ownerGroups,first);
-  first+=packet.count;
+  for(let i=0;i<packet.endpointIndices.length;i++)endpointIndices[count*2+i]=remap[packet.endpointIndices[i]];
+  if(hasWidths)widths.set(packet.widths,count);
+  if(hasOwners)ownerGroups.set(packet.ownerGroups,count);
+  count=needed;
  }
- return Object.freeze({count,points:table.finish(),endpointIndices,widths,ownerGroups});
+ function finish(){
+  if(finished)throw Error('Globe stroke builder already finished');
+  finished=true;
+  const result=Object.freeze({count,points:table.finish(),endpointIndices:endpointIndices.slice(0,count*2),
+   widths:widths.slice(0,hasWidths?count:0),ownerGroups:ownerGroups.slice(0,hasOwners?count:0)});
+  endpointIndices=widths=ownerGroups=null;return result;
+ }
+ return {append,finish};
+}
+export function combineGlobeStrokePackets(packets){
+ const builder=createGlobeStrokeBatchBuilder(packets.reduce((sum,packet)=>sum+packet.points.length/6,0));
+ for(const packet of packets)builder.append(packet);
+ return builder.finish();
 }
 
 export function compactGlobeStrokeRange(packet,first,end){

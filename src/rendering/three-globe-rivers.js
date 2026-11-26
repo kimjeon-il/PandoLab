@@ -64,7 +64,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
  }
  const activeEntries=()=>[...wanted].map(id=>entries.get(id)).filter(entry=>entry?.resource);
  function commit(active){const next=new Set(active.map(entry=>entry.row.id)),changed=next.size!==published.size||[...next].some(id=>!published.has(id));published=next;const before=residentBytes;trim();return changed||before!==residentBytes;}
- function memoryEntries(){return [...entries].filter(([,entry])=>entry.resource).map(([id,entry])=>({...entry.resource.footprint(),lastUsed:entry.lastUsed,protected:wanted.has(id)||published.has(id),evict:()=>discard(id,entry)}));}
+ function memoryEntries(){return [...entries].filter(([,entry])=>entry.resource).map(([id,entry])=>({key:entry,...entry.resource.footprint(),lastUsed:entry.lastUsed,protected:wanted.has(id)||published.has(id),evict:()=>discard(id,entry)}));}
  function stats(){
   const active=activeEntries();
   return {requestedChunks:wanted.size,visibleChunks:active.length,activeSegments:active.reduce((sum,row)=>sum+row.packet.count,0),residentBytes};

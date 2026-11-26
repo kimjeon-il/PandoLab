@@ -98,6 +98,66 @@ export function pickGlobeStrokeSlots(packet,index,camera,point,tolerance=5,{pred
  return [...hits].sort((a,b)=>a[1]-b[1]).map(([slot])=>slot);
 }
 
+/** A single budget spans all packets for one accepted-frame pick. Yield to
+ * the browser task queue, not a microtask, so new pointer events and
+ * cancellation can actually be delivered during a dense exact query. */
+export function createGlobePickBudget({signal,isCurrent=()=>true,sliceMs=3,quantum=128,
+ now=()=>performance.now(),yieldTask=()=>typeof globalThis.scheduler?.yield==='function'?globalThis.scheduler.yield():new Promise(resolve=>setTimeout(resolve,0))}={}){
+ let remaining=quantum,deadline=now()+sliceMs,yields=0;
+ function check(){
+  signal?.throwIfAborted();
+  if(!isCurrent())throw new DOMException('Picking frame superseded','AbortError');
+ }
+ function step(){
+  if(--remaining>0)return null;
+  remaining=quantum;check();
+  if(now()<deadline)return null;
+  yields++;
+  return Promise.resolve(yieldTask()).then(()=>{check();deadline=now()+sliceMs;});
+ }
+ check();
+ return {step,check,stats:()=>({yields})};
+}
+
+function* globePickCandidates(index,admit,ownerVisible=null){
+ const {nodes,bounds,owners,order}=index;
+ for(let node=0;node<owners.length;){
+  // Rejected nodes also count toward the time budget.
+  yield -1;
+  const at=node*3,escape=nodes[at+2],owner=owners[node];
+  if((ownerVisible&&owner>=0&&!ownerVisible(owner))||!admit(bounds,node*6)){node=escape;continue;}
+  if(escape===node+1)for(let i=nodes[at];i<nodes[at+1];i++)yield order[i];
+  node++;
+ }
+}
+
+export async function pickGlobeSlotsCooperative(mesh,index,ray,visible=()=>true,{firstHit=false,budget=createGlobePickBudget()}={}){
+ budget.check();if(!ray)return [];
+ const hits=new Set(),ownerVisible=owner=>owner<0||visible(owner);
+ for(const triangle of globePickCandidates(index,(bounds,at)=>globeRayIntersectsBounds(ray,bounds,at),ownerVisible)){
+  const pause=budget.step();if(pause)await pause;
+  if(triangle<0)continue;
+  const slot=globePrimitiveOwner(mesh,triangle),id=slot<0?0:slot;
+  if(hits.has(id)||!visible(id))continue;
+  if(intersects(mesh,triangle*3,ray)){hits.add(id);if(firstHit)break;}
+ }
+ budget.check();return [...hits].sort((a,b)=>b-a);
+}
+export async function pickGlobeStrokeSlotsCooperative(packet,index,camera,point,tolerance=5,
+ {predicate=globeStrokePickPredicate(camera,point,tolerance),budget=createGlobePickBudget()}={}){
+ budget.check();const hits=new Map();
+ for(const segment of globePickCandidates(index,predicate)){
+  const pause=budget.step();if(pause)await pause;
+  if(segment<0)continue;
+  const slot=packet.ownerGroups[segment];
+  const line=camera.projectStroke(globeStrokePoint(packet,segment,0),globeStrokePoint(packet,segment,1));
+  if(!line)continue;
+  const distance=pointSegmentDistance(point,line);
+  if(distance<=tolerance&&distance<(hits.get(slot)??Infinity))hits.set(slot,distance);
+ }
+ budget.check();return [...hits].sort((a,b)=>a[1]-b[1]).map(([slot])=>slot);
+}
+
 /** Broad phase across active packets. Median splitting on actual bound
  * centres keeps disjoint water/territory packets out of the query entirely. */
 export function createGlobePacketIndex(rows,boundsOf){
@@ -126,5 +186,16 @@ export function createGlobePacketIndex(rows,boundsOf){
   visit(root);
   return found.sort((a,b)=>a.order-b.order).map(item=>item.row);
  }
- return {query};
+ async function queryCooperative(predicate,budget){
+  const found=[],stack=root?[root]:[];
+  while(stack.length){
+   const pause=budget.step();if(pause)await pause;
+   const node=stack.pop();
+   if(!predicate(node.bounds))continue;
+   if(node.items){for(const item of node.items)if(predicate(item.bounds))found.push(item);}
+   else{stack.push(node.right,node.left);}
+  }
+  budget.check();return found.sort((a,b)=>a.order-b.order).map(item=>item.row);
+ }
+ return {query,queryCooperative};
 }

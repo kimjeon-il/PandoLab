@@ -19,7 +19,7 @@ export function createViewerRenderingDomain(options){
    if(pendingPlaceViewport!==task||disposed)return;
    pendingPlaceViewport=null;
    if(renderer.labelZoomVisibility().places){
-    renderer.invalidateLabelContent();
+    renderer.invalidateLabelContent({countries:false});
     invalidate('settled-place-viewport');
    }else if(renderer.isFramePreserved())invalidate('settled-place-viewport');
   },error=>{if(pendingPlaceViewport===task&&!disposed)renderer.failMapPreparation(error);});
@@ -44,7 +44,7 @@ export function createViewerRenderingDomain(options){
   invalidateViewport:reason=>{renderer.verifyLayout();return invalidate(reason,true);},
   invalidateProject:reason=>invalidate(reason,true),
   invalidateSelection:reason=>{selectionDirty=true;return invalidate(reason);},
-  invalidateLabels:reason=>{renderer.invalidateLabelContent();return invalidate(reason);},
+  invalidateLabels:reason=>{renderer.invalidateLabelContent({countries:reason!=='document-month-labels'&&reason!=='builtin-places-ready'});return invalidate(reason);},
   invalidateQuality:reason=>invalidate(reason),
   invalidateBaseScene:reason=>invalidate(reason,true),
   invalidateOverlayGeometry:(_domain,reason)=>invalidate(reason,true),

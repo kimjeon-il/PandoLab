@@ -427,3 +427,56 @@ test('outline chunks index owner memberships and retain only selected point word
   assert.equal(outlineInstanceCapacity(1024,400,8192),1024);
   assert.equal(outlineInstanceCapacity(1024,200,8192),256);
 });
+
+
+test('incremental stroke merge consumes packets in exact source order',async()=>{
+ const {createGlobeStrokeBatchBuilder}=await import('../../../src/rendering/globe-mesh.js');
+ const a=decodeGlobeStrokes(encodeGlobeStrokes([0,0,1,0],null,[1],Uint16Array.of(7)));
+ const b=decodeGlobeStrokes(encodeGlobeStrokes([1,0,2,0],null,[2],Uint16Array.of(8)));
+ const builder=createGlobeStrokeBatchBuilder(4);
+ builder.append(a);builder.append(b);
+ const batch=builder.finish();
+ assert.equal(batch.count,2);assert.equal(batch.points.length/6,3);
+ assert.deepEqual([...batch.endpointIndices],[0,1,1,2]);
+ assert.deepEqual([...batch.widths],[1,2]);assert.deepEqual([...batch.ownerGroups],[7,8]);
+});
+
+test('draw compaction writes only changed destination mappings and merges adjacent ranges',async()=>{
+ const {planGlobeCompactionUpdates,mergeGlobeDrawRanges}=await import('../../../src/rendering/globe-draw-compaction.js');
+ const old=Uint32Array.of(0,4,8,12),next=Uint32Array.of(0,4,9,12);
+ assert.deepEqual(planGlobeCompactionUpdates(next,old),[{first:9,end:12,offset:4}]);
+ assert.deepEqual(planGlobeCompactionUpdates(old,old),[]);
+ assert.deepEqual(planGlobeCompactionUpdates(Uint32Array.of(0,3),old),[]);
+ const merged=mergeGlobeDrawRanges([{ranges:Uint32Array.of(0,4),offset:0},{ranges:Uint32Array.of(0,2),offset:4}]);
+ assert.deepEqual([...merged.ranges],[0,6]);assert.equal(merged.count,6);
+});
+
+test('residency ledger refreshes only invalidated owners and evicts independent standby chunks',async()=>{
+ const {createRenderResidencyBudget}=await import('../../../src/rendering/render-cache-budget.js');
+ const ledger=createRenderResidencyBudget(40,{groups:{outlineChunk:{byteBudget:8,entryLimit:1,standbyOnly:true}}});
+ const shared=new ArrayBuffer(16),base={},chunk={};
+ let reads=0,evictions=0;
+ const refresh=ledger.register(()=>{reads++;return [{key:'base',buffers:new Set([shared]),protected:true}]});
+ ledger.set(base,{buffers:new Set([shared]),protected:true,extraBytes:4});
+ ledger.trim();ledger.trim();assert.equal(reads,1);
+ ledger.set(chunk,{buffers:new Set([new ArrayBuffer(12)]),protected:false,groups:['outlineChunk'],lastUsed:0,evict:()=>{evictions++;}});
+ assert.equal(ledger.trim().residentBytes,20);assert.equal(evictions,1);
+ refresh();ledger.trim();assert.equal(reads,2);ledger.dispose();
+});
+
+test('accepted temporal receipts resolve changed objects and dated labels without comparing unchanged rows',async()=>{
+ const {createGlobeTemporalPresentation}=await import('../../../src/rendering/globe-temporal-presentation.js');
+ const {rememberWorldViewChange}=await import('../../../src/document/world-view-change.js');
+ const row=(id,properties)=>({id,properties:{entityKind:'general',...properties}});
+ const parent=row('parent',{style:{color:'#123456'}});
+ const child=row('child',{parentId:'parent',metadata:{nativeNames:[{text:'new',validFrom:'1901-02'}]}});
+ const other=row('other',{}),first=[parent,child,other];
+ const index=createGlobeTemporalPresentation();index.advance(first,'1901-01');
+ const second=[row('parent',{style:{color:'#654321'}}),child,other];
+ rememberWorldViewChange(first,second,[0]);
+ const changed=index.advance(second,'1901-01');
+ assert.equal(changed.examined,1);
+ assert.deepEqual([...changed.dirtyIds].sort(),['child','parent']);
+ const dated=index.advance(second,'1901-02');
+ assert.equal(dated.examined,0);assert.deepEqual([...dated.dirtyIds],['child']);
+});

@@ -3,6 +3,7 @@ import {createMapInputPresentation} from "../map/map-input-presentation.js";
 import {workerAssetUrl} from "../runtime/worker-asset-url.js";
 import {createAtomicMapStateController} from "./map-state-transition.js";
 import {classifyTerritorialPropertyOnly,createTerritorialEntityStore} from "../document/territorial-entity-store.js";
+import {worldViewChange} from '../document/world-view-change.js';
 import {temporalContains,temporalMonthEnd} from "../document/temporal.js";
 import {createMapRenderingResources} from "../rendering/map-renderer-composition.js";
 import {createThreeViewerRenderer} from "../rendering/three-viewer-renderer.js";
@@ -226,7 +227,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
     await initialized;if(generation!==updateGeneration)return;
     // A dated source is admitted before publishing its frame.
     if(!await renderer.prepareTemporalCountrySource(territorialFeatures)||generation!==updateGeneration)return;
-    if(!await renderer.setTerritorialFeatures(territorialFeatures)||generation!==updateGeneration)return;
+    if(!await renderer.setTerritorialFeatures(territorialFeatures,{sourceRows:entities})||generation!==updateGeneration)return;
     presentedEntities=entities;
     const hydroChanged=presentedHydroEdits!==state.hydroEdits;
     presentedHydroEdits=state.hydroEdits;
@@ -237,7 +238,7 @@ export function createViewerMap({ runtimeContext,owners,element, projectDomain, 
       distributionChanged=[state.distributionLayers,state.distributionEntries].some(rows=>rows.some(row=>
         (row.validFrom||row.validTo)&&temporalContains(row,before)!==temporalContains(row,after)));
     }
-    const propertiesOnly=previous&&classifyTerritorialPropertyOnly(previous,entities);
+    const propertiesOnly=previous&&classifyTerritorialPropertyOnly(previous,entities,worldViewChange(previous,entities));
     const regionalPaint=propertiesOnly?.paintChangedIds.some(id=>repository.get(id)?.properties.entityKind==='regional');
     if(!previousMonth||distributionChanged||regionalPaint||previous!==entities&&!propertiesOnly)buildScene();
     else {

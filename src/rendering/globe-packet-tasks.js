@@ -32,12 +32,15 @@ export function createGlobePacketTasks({
   return scheduler.enqueue({jobKey:'packet-'+(++sequence),priority,signal,
    payload:{operation:'globe.decode-packet',transfer:[bytes],body:{kind,bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes},...parameters}}}).promise;
  }
- function combineStrokes(packets,{signal,priority=10}={}){
+ function combineStoredStrokes(inputs,{signal,priority=10}={}){
   signal?.throwIfAborted();
-  // Cached immutable packet buffers remain with their other consumers.
+  // Inputs are private verified stored-byte copies, not cached decoded
+  // packets. Transfer their backing stores exactly once.
+  const transfer=[...new Set(inputs.map(row=>row.bytes))];
+  const packets=inputs.map(({bytes,spec})=>({bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes}}));
   return scheduler.enqueue({jobKey:'stroke-batch-'+(++sequence),priority,signal,
-   payload:{operation:'globe.combine-strokes',body:{packets:packets.map(({count,points,endpointIndices,widths,ownerGroups})=>({count,points,endpointIndices,widths,ownerGroups}))},transfer:[]}}).promise;
+   payload:{operation:'globe.combine-stored-strokes',body:{packets},transfer}}).promise;
  }
  function dispose(){scheduler.close('globe-packet-disposed');rpc?.stop('globe-packet-disposed');rpc=null;}
- return Object.freeze({decode,combineStrokes,dispose,stats:scheduler.stats});
+ return Object.freeze({decode,combineStoredStrokes,dispose,stats:scheduler.stats});
 }

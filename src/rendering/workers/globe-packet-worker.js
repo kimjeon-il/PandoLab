@@ -1,6 +1,6 @@
 import '../../runtime/workers/worker-rpc-host.js';
 import {decodeStoredBuffer,validateAssetLength} from '../../data/asset-decompression.js';
-import {decodeGlobeMesh,decodeGlobeStrokes,combineGlobeStrokePackets} from '../globe-mesh.js';
+import {decodeGlobeMesh,decodeGlobeStrokes,createGlobeStrokeBatchBuilder} from '../globe-mesh.js';
 import {prepareGlobeSpatialPacket} from '../globe-spatial-partition.js';
 
 const rpc=self.PandoLabWorkerRpc;
@@ -16,11 +16,18 @@ function transfer(value){
  visit(value);return rpc.transferResult(value,[...buffers]);
 }
 rpc.install({handlers:{
- 'globe.combine-strokes':({packets},context)=>{
+ 'globe.combine-stored-strokes':async({packets},context)=>{
+  const maxPoints=packets.reduce((sum,row)=>sum+Math.floor(row.spec.decodedBytes/24),0);
+  const builder=createGlobeStrokeBatchBuilder(maxPoints);
+  for(let i=0;i<packets.length;i++){
+   context.throwIfCancelled();
+   const {bytes,spec}=packets[i];packets[i]=null;
+   const decoded=await decodeStoredBuffer(bytes,spec,'worker','border-batch','역사 국경선',context.signal);
+   validateAssetLength(decoded,spec,'역사 국경선');
+   builder.append(decodeGlobeStrokes(decoded.buffer));
+  }
   context.throwIfCancelled();
-  const value=prepareGlobeSpatialPacket(combineGlobeStrokePackets(packets));
-  context.throwIfCancelled();
-  return transfer(value);
+  return transfer(prepareGlobeSpatialPacket(builder.finish()));
  },
  'globe.decode-packet':async({kind,bytes,spec,ownerCount,identityCount,spatial=true},context)=>{
   context.throwIfCancelled();

@@ -59,33 +59,50 @@ export function touchRenderCache(entries,key){
 
 // Decoded packet LRU with independent consumers of the same in-flight read.
 // Last-consumer cancellation propagates through network and Worker restores.
-export function createRenderPacketCache({byteBudget,entryLimit=256,onEvict}){
- const entries=new Map();
- let retained=new Set(),disposed=false,cancelled=0;
- const trim=()=>{
-  const protectedKeys=new Set(retained);
-  for(const [key,entry] of entries)if(entry.pending||entry.users>0)protectedKeys.add(key);
-  return trimRenderCache(entries,protectedKeys,byteBudget,entry=>entry.bytes,onEvict,{entryLimit});
- };
+export function createRenderPacketCache({byteBudget,entryLimit=256,onEvict,residency=null}){
+ const entries=new Map(),standby=new Map();
+ let retained=new Set(),disposed=false,cancelled=0,residentBytes=0,pendingCount=0;
+ function protectedEntry(key,entry){return entry.pending||entry.users>0||retained.has(key);}
+ function sync(key,entry){
+  standby.delete(key);
+  if(entries.get(key)!==entry)return;
+  if(!protectedEntry(key,entry))standby.set(key,entry);
+  if(!entry.pending)residency?.set(entry,{buffers:entry.buffers,extraBytes:0,lastUsed:entry.lastUsed,
+   protected:protectedEntry(key,entry),evict:()=>remove(key,entry)});
+ }
+ function remove(key,entry,{abort=false,notify=true}={}){
+  if(entries.get(key)!==entry)return false;
+  entries.delete(key);standby.delete(key);residency?.remove(entry);
+  if(entry.pending){pendingCount--;if(abort)entry.controller.abort();}
+  else residentBytes-=entry.bytes;
+  if(notify)onEvict?.(key,entry);
+  return true;
+ }
+ function trim(){
+  // No scan or byte summation unless the standby budget is exceeded.
+  while((residentBytes>byteBudget||entries.size>entryLimit)&&standby.size){
+   const [key,entry]=standby.entries().next().value;
+   remove(key,entry);
+  }
+ }
  function abortUnused(key,entry){
-  // Give synchronous replacement callers an opportunity to attach to the
-  // same immutable flight before cancelling its last former consumer.
   queueMicrotask(()=>{
    if(entries.get(key)!==entry||!entry.pending||entry.users||entry.unscoped)return;
-   entries.delete(key);cancelled++;entry.controller.abort();
+   cancelled++;remove(key,entry,{abort:true,notify:false});
   });
  }
  function consume(key,entry,signal){
-  if(!signal){if(entry.pending)entry.unscoped=true;return entry.promise;}
-  entry.users++;
+  entry.lastUsed=performance.now();
+  if(!signal){if(entry.pending)entry.unscoped=true;sync(key,entry);return entry.promise;}
+  entry.users++;sync(key,entry);
   return new Promise((resolve,reject)=>{
    let settled=false;
    const finish=(callback,value)=>{
     if(settled)return;
     settled=true;signal.removeEventListener('abort',abort);entry.users--;
-    callback(value);
+    sync(key,entry);callback(value);
     if(entry.pending&&!entry.users&&!entry.unscoped)abortUnused(key,entry);
-     else if(!entry.pending&&!entry.users)trim();
+    else if(!entry.pending&&!entry.users)trim();
    };
    const abort=()=>finish(reject,signal.reason??new DOMException('Render packet cancelled','AbortError'));
    signal.addEventListener('abort',abort,{once:true});
@@ -95,59 +112,128 @@ export function createRenderPacketCache({byteBudget,entryLimit=256,onEvict}){
  }
  function read(key,load,signal=null){
   if(disposed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render packet cache disposed','AbortError'));
-  const existing=touchRenderCache(entries,key);
-  if(existing){existing.lastUsed=performance.now();return consume(key,existing,signal);}
+  const existing=entries.get(key);
+  if(existing)return consume(key,existing,signal);
   const entry={pending:true,bytes:0,promise:null,controller:new AbortController(),users:0,unscoped:false,lastUsed:performance.now(),buffers:null};
-  entries.set(key,entry);
+  entries.set(key,entry);pendingCount++;
   entry.promise=Promise.resolve().then(()=>{
    entry.controller.signal.throwIfAborted();return load(entry.controller.signal);
   }).then(value=>{
    entry.controller.signal.throwIfAborted();
-   if(entries.get(key)===entry){entry.pending=false;entry.buffers=renderPacketBuffers(value?.packet??value);entry.bytes=[...entry.buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);trim();}
+   if(entries.get(key)===entry){
+    entry.pending=false;pendingCount--;entry.buffers=renderPacketBuffers(value?.packet??value);
+    entry.bytes=[...entry.buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);
+    residentBytes+=entry.bytes;sync(key,entry);trim();
+   }
    return value;
-  }).catch(error=>{if(entries.get(key)===entry)entries.delete(key);entry.controller.abort();throw error;});
+  }).catch(error=>{remove(key,entry,{abort:true,notify:false});entry.controller.abort();throw error;});
   return consume(key,entry,signal);
  }
- function retain(keys){retained=new Set(keys);for(const key of retained){const entry=touchRenderCache(entries,key);if(entry)entry.lastUsed=performance.now();}trim();}
- function memoryEntries(){
-  return [...entries].filter(([,entry])=>!entry.pending).map(([key,entry])=>({buffers:entry.buffers,extraBytes:0,lastUsed:entry.lastUsed,
-   protected:retained.has(key)||entry.users>0,evict:()=>{if(entries.get(key)===entry){entries.delete(key);onEvict?.(key,entry);}}}));
+ function retain(keys){
+  const next=new Set(keys),changed=new Set();
+  for(const key of retained)if(!next.has(key))changed.add(key);
+  for(const key of next)if(!retained.has(key))changed.add(key);
+  retained=next;
+  for(const key of changed){const entry=entries.get(key);if(entry){entry.lastUsed=performance.now();sync(key,entry);}}
+  trim();
  }
- function stats(){return {entries:entries.size,residentBytes:[...entries.values()].reduce((sum,entry)=>sum+entry.bytes,0),pending:[...entries.values()].filter(entry=>entry.pending).length,cancelled};}
- function dispose(){disposed=true;for(const entry of entries.values())if(entry.pending)entry.controller.abort();entries.clear();retained.clear();}
+ function memoryEntries(){
+  return [...entries].filter(([,entry])=>!entry.pending).map(([key,entry])=>({key:entry,buffers:entry.buffers,extraBytes:0,lastUsed:entry.lastUsed,
+   protected:protectedEntry(key,entry),evict:()=>remove(key,entry)}));
+ }
+ function stats(){return {entries:entries.size,residentBytes,pending:pendingCount,cancelled};}
+ function dispose(){disposed=true;for(const [key,entry] of entries)remove(key,entry,{abort:true,notify:false});retained.clear();standby.clear();}
  return Object.freeze({read,retain,memoryEntries,has:key=>entries.has(key),stats,dispose});
 }
 
-// Count CPU backing stores once across packet caches and GPU owners, while
-// device allocations are separate. Pressure is relieved from old standby
-// resources only, after publication; visible/preparing resources may exceed.
-export function createRenderResidencyBudget(byteBudget){
- const owners=new Set();
- let latest={residentBytes:0,cpuBytes:0,deviceAndOtherBytes:0,evicted:0,byteBudget};
- function register(read){owners.add(read);return ()=>owners.delete(read);}
- function trim(){
-  const rows=[...owners].flatMap(read=>read()),refs=new Map();
-  let cpu=0,extra=0,evicted=0;
-  for(const row of rows){
-   extra+=row.extraBytes??0;
-   for(const buffer of row.buffers??[]){
-    if(!refs.has(buffer))cpu+=buffer.byteLength;
-    refs.set(buffer,(refs.get(buffer)??0)+1);
-   }
+// Incremental ledger: register immutable CPU backing buffers by identity,
+// update only changed resources, and search standby entries only under
+// pressure. A snapshot owner is refreshed explicitly, not every hover.
+export function createRenderResidencyBudget(byteBudget,{groups={}}={}){
+ const rows=new Map(),refs=new Map(),standby=new Map(),standbyGroups=new Map(),owners=new Set(),dirtyOwners=new Set(),totals=new Map();
+ let cpu=0,extra=0,evicted=0,updates=0,ownerRefreshes=0;
+ function groupDelta(row,sign){
+  for(const group of row.groups??[]){
+   const limit=groups[group];if(!limit||limit.standbyOnly&&row.protected)continue;
+   let total=totals.get(group);if(!total){total={bytes:0,count:0};totals.set(group,total);}
+   total.bytes+=sign*row.localBytes;total.count+=sign;
   }
-  const standby=rows.filter(row=>!row.protected&&typeof row.evict==='function').sort((a,b)=>a.lastUsed-b.lastUsed);
-  for(const row of standby){
-   if(cpu+extra<=byteBudget)break;
-   row.evict();evicted++;extra-=row.extraBytes??0;
-   for(const buffer of row.buffers??[]){
-    const count=refs.get(buffer)-1;
-    if(count===0){refs.delete(buffer);cpu-=buffer.byteLength;}else refs.set(buffer,count);
-   }
-  }
-  latest={residentBytes:cpu+extra,cpuBytes:cpu,deviceAndOtherBytes:extra,evicted:latest.evicted+evicted,byteBudget};
-  return latest;
  }
- return Object.freeze({register,trim,stats:()=>({...latest}),dispose:()=>owners.clear()});
+ function detach(key,row){
+  standby.delete(key);for(const group of row.groups??[])standbyGroups.get(group)?.delete(key);
+  extra-=row.extraBytes;groupDelta(row,-1);
+  for(const buffer of row.buffers){
+   const entry=refs.get(buffer);if(!entry)continue;
+   if(--entry.count===0){refs.delete(buffer);cpu-=entry.bytes;}
+  }
+ }
+ function set(key,source){
+  const old=rows.get(key);
+  const buffers=source.buffers instanceof Set?source.buffers:new Set(source.buffers??[]);
+  const row={...source,buffers,extraBytes:source.extraBytes??0,
+   localBytes:[...buffers].reduce((sum,buffer)=>sum+buffer.byteLength,source.extraBytes??0)};
+  if(old)detach(key,old);
+  rows.set(key,row);extra+=row.extraBytes;groupDelta(row,1);
+  for(const buffer of buffers){
+   let entry=refs.get(buffer);
+   if(!entry){entry={count:0,bytes:buffer.byteLength};refs.set(buffer,entry);cpu+=entry.bytes;}
+   entry.count++;
+  }
+  if(!row.protected&&typeof row.evict==='function'){
+   standby.set(key,row);
+   for(const group of row.groups??[]){let members=standbyGroups.get(group);if(!members){members=new Map();standbyGroups.set(group,members);}members.set(key,row);}
+  }
+  updates++;
+ }
+ function remove(key){
+  const row=rows.get(key);if(!row)return false;
+  rows.delete(key);detach(key,row);updates++;return true;
+ }
+ function register(read){
+  const owner={read,keys:new Map()};owners.add(owner);dirtyOwners.add(owner);
+  const invalidate=()=>{if(owners.has(owner))dirtyOwners.add(owner);};
+  invalidate.dispose=()=>{
+   owners.delete(owner);dirtyOwners.delete(owner);
+   for(const key of owner.keys.values())remove(key);owner.keys.clear();
+  };
+  return invalidate;
+ }
+ function refreshOwners(){
+  for(const owner of [...dirtyOwners]){
+   dirtyOwners.delete(owner);ownerRefreshes++;
+   const next=new Map();
+   owner.read().forEach((row,i)=>{
+    const id=row.key??i,key=owner.keys.get(id)??{};
+    next.set(id,key);
+    const evict=typeof row.evict==='function'?()=>{if(owner.keys.get(id)===key)owner.keys.delete(id);row.evict();}:undefined;
+    set(key,{...row,evict});
+   });
+   for(const [id,key] of owner.keys)if(!next.has(id))remove(key);
+   owner.keys=next;
+  }
+ }
+ function evictUntil(over,candidates){
+  if(!over()||!candidates?.size)return;
+  // Sort once per actual pressure event, never once per eviction.
+  const ordered=[...candidates].sort((a,b)=>(a[1].lastUsed??0)-(b[1].lastUsed??0));
+  for(const [key,row] of ordered){
+   if(!over())break;
+   if(standby.get(key)!==row)continue;
+   remove(key);evicted++;row.evict();
+  }
+ }
+ function trim(){
+  refreshOwners();
+  for(const [group,limit] of Object.entries(groups)){
+   const over=()=>{const total=totals.get(group);return total&&(total.bytes>(limit.byteBudget??Infinity)||total.count>(limit.entryLimit??Infinity));};
+   evictUntil(over,standbyGroups.get(group));
+  }
+  evictUntil(()=>cpu+extra>byteBudget,standby);
+  return stats();
+ }
+ function stats(){return {residentBytes:cpu+extra,cpuBytes:cpu,deviceAndOtherBytes:extra,evicted,byteBudget,entries:rows.size,standby:standby.size,updates,ownerRefreshes};}
+ function dispose(){owners.clear();dirtyOwners.clear();rows.clear();refs.clear();standby.clear();standbyGroups.clear();totals.clear();cpu=extra=0;}
+ return Object.freeze({register,set,remove,trim,stats,dispose});
 }
 
 // Admit a bounded number of downloads + Worker inputs, not only Worker calls.

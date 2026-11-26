@@ -29,17 +29,39 @@ export function resolvePlaceLabelRows(place, languages = DEFAULT_PLACE_LANGUAGES
   return rows;
 }
 
+// Normalized place records and their timelines are immutable. Cache the
+// effective naming interval, not every calendar month. Core still resolves
+// the exact spelling and historical-prefix policy on interval changes.
+const mapNameCache=new WeakMap();
+function mapNamingInterval(place,month,showNativeNames){
+ if(!place||!Object.isFrozen(place)||!Array.isArray(place.nameTimeline)||!Object.isFrozen(place.nameTimeline)||
+  place.nameTimeline.some(row=>!Object.isFrozen(row)))return null;
+ const value=String(month??'');
+ if(value.startsWith('-'))return 'bce:'+Number(showNativeNames);
+ if(!/^\d{4}-\d{2}$/.test(value))return 'reference:'+Number(showNativeNames);
+ if(!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value)||value.startsWith('0000'))return null;
+ const cutoff=String(new Date().getUTCFullYear()).padStart(4,'0')+'-01';
+ let reached=0;
+ for(const row of place.nameTimeline){
+  const boundary=row.fromDate?row.fromDate.slice(0,7):String(row.fromYear).padStart(4,'0')+'-01';
+  if(value<boundary)break;reached++;
+ }
+ return cutoff+':'+Number(value<cutoff)+':'+reached+':'+Number(showNativeNames);
+}
+
 /** Rows of a single map symbol, starting with the mandatory Korean name. */
 export function mapPlaceLabelRowsAtMonth(place, month, { showNativeNames = false } = {}) {
+  const key=mapNamingInterval(place,month,showNativeNames);
+  const cached=key!==null?mapNameCache.get(place):null;
+  if(cached?.key===key)return cached.rows;
   const rows = placeLabelRowsAtMonth(place, month, { ko: true });
-  if (!rows.length || !showNativeNames) return rows;
-
-  // Query native-only so that a native name identical to Korean never causes
-  // the second co-official name to take the primary native's place.
-  const primaryNative = placeLabelRowsAtMonth(place, month, { native: true })[0];
-  const normalized = text => String(text || '').replace(/^\(현\)/u, '')
-    .normalize('NFKC').toLocaleLowerCase();
-  const duplicate = rows.some(row => normalized(row.text) === normalized(primaryNative?.text));
-  if (primaryNative && !duplicate) rows.push(primaryNative);
+  if (rows.length&&showNativeNames) {
+    // Query native-only so identical Korean/native names do not promote a
+    // second co-official name to the primary native position.
+    const primaryNative=placeLabelRowsAtMonth(place,month,{native:true})[0];
+    const normalized=text=>String(text||'').replace(/^\(현\)/u,'').normalize('NFKC').toLocaleLowerCase();
+    if(primaryNative&&!rows.some(row=>normalized(row.text)===normalized(primaryNative.text)))rows.push(primaryNative);
+  }
+  if(key!==null){Object.freeze(rows);mapNameCache.set(place,{key,rows});}
   return rows;
 }

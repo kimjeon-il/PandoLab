@@ -5,7 +5,7 @@ import {createRenderPacketCache,renderCacheBudget,touchRenderCache} from './rend
  * Water polygons remain required, while lake tiers and rivers are optional.
  * Contexts share immutable decoded packets, not another copy of their arrays.
  */
-export function createGlobePhysicalAssets(descriptors,{loadMesh,loadStroke,byteBudget=renderCacheBudget().physicalCpuBytes}){
+export function createGlobePhysicalAssets(descriptors,{loadMesh,loadStroke,byteBudget=renderCacheBudget().physicalCpuBytes,residency=null}){
  const catalog=new Map(descriptors.map(row=>[row.identity,row]));
  const contexts=new Map(),pending=new Map();
  let retained=[],disposed=false;
@@ -20,7 +20,7 @@ export function createGlobePhysicalAssets(descriptors,{loadMesh,loadStroke,byteB
   const keys=[...spec.waters.map(row=>meshKey(row.spec)),...lakes.map(row=>meshKey(row.spec)),...(rivers?[lineKey(spec.rivers)]:[])];
   return {key,spec,lakes,rivers,keys};
  }
- const files=createRenderPacketCache({byteBudget,onEvict:key=>{
+ const files=createRenderPacketCache({byteBudget,residency,onEvict:key=>{
   for(const [identity,entry] of contexts)if(entry.plan.keys.includes(key))contexts.delete(identity);
  }});
  function refresh(){

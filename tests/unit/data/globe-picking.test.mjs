@@ -70,3 +70,14 @@ test('packet hierarchy excludes disjoint packet bounds and preserves exact ray h
   assert.equal(matches.length,1);assert.equal(matches[0].mesh,near);
   assert.deepEqual(pickGlobeSlots(near,nearIndex,ray),[0]);
 });
+
+
+test('cooperative picking yields to input and cancels a superseded query',async()=>{
+ const {createGlobePickBudget,pickGlobeSlotsCooperative}=await import('../../../src/rendering/globe-picking.js');
+ const row={id:'near',geometry:{id:'near',version:1},vertices:Float64Array.of(-1,-1,1,-1,0,1),indices:Uint32Array.of(0,1,2)};
+ const mesh=decodeGlobeMesh(combineGlobeCountryMeshes([row]).buffer),index=buildGlobeSpatialIndex(mesh);
+ const camera=createGlobeCamera({center:[0,0],zoom:5},{width:800,height:600}),ray=camera.worldRay([400,300]);
+ const controller=new AbortController();
+ const budget=createGlobePickBudget({signal:controller.signal,sliceMs:0,quantum:1,yieldTask:()=>{controller.abort();return Promise.resolve();}});
+ await assert.rejects(pickGlobeSlotsCooperative(mesh,index,ray,undefined,{budget}),{name:'AbortError'});
+});
