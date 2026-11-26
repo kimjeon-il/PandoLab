@@ -3,8 +3,7 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {gunzipSync} from 'node:zlib';
-import vm from 'node:vm';
-import {buildFrontendIndex,frontendAsset} from '../../scripts/lib/frontend-layout.mjs';
+import {decodeHydroIndex,decodeHydroMetadata,decodeHydroPack} from '../../src/data/hydro-pack.js';
 import {pythonRound} from './hydro-numeric.mjs';
 import {encodeHydroGzip} from './hydro-encoding-native.mjs';
 
@@ -135,18 +134,15 @@ export function verifyHydroRiverGroups(features){
   }
   return {systems:groups.size,fragments:features.length,terminals};
 }
-export function createHydroWorkerDecoder(manifest,{root=defaultRoot}={}){
-  const context=vm.createContext({TextDecoder,URL,performance,structuredClone,inputManifest:manifest});
-  context.self=context;context.onmessage=null;context.importScripts=()=>{};
-  const index=buildFrontendIndex(root);
-  const item=frontendAsset(root,'assets/js/workers/hydro-tile-worker.js',{index});
-  vm.runInContext(item.bytes.toString('utf8'),context,{filename:item.sourcePath});
-  vm.runInContext('manifest = inputManifest',context);
-  return vm.runInContext(`(() => {
-    const logicalPacks = new Map();
-    return {readGlobalIndex: bytes => readGlobalIndex(bytes, logicalPacks),
-      readFeatureMetadata,readPack,packSpecs,logicalPacks,featureMetadata};
-  })()`,context);
+export function createHydroPackDecoder({stages}){
+  const packSpecs=new Map(),logicalPacks=new Map(),featureMetadata=new Map();
+  return {packSpecs,logicalPacks,featureMetadata,
+    readGlobalIndex:bytes=>decodeHydroIndex(bytes,{packSpecs,logicalPacks}),
+    readFeatureMetadata:bytes=>{
+      for(const [key,row] of decodeHydroMetadata(bytes))featureMetadata.set(key,row);
+    },
+    readPack:(bytes,id)=>decodeHydroPack(bytes,id,{featureMetadata,stages}),
+  };
 }
 function prepareHydroPack({files,layout,stages},root){
   if(!(files instanceof Map)||!layout?.index||!layout.metadata?.core||!layout.metadata?.detail||
@@ -154,7 +150,7 @@ function prepareHydroPack({files,layout,stages},root){
   const sha=data=>createHash('sha256').update(data).digest('hex');
   function read(spec){const data=files.get(spec.sha256)??files.get(spec.url);
     if(!Buffer.isBuffer(data)||data.length!==spec.bytes||sha(data)!==spec.sha256)throw Error('Hydro pack asset hash differs: '+spec.url);return data;}
-  const decoder=createHydroWorkerDecoder({stages},{root});
+  const decoder=createHydroPackDecoder({stages});
   decoder.readGlobalIndex(gunzipSync(read(layout.index)));decoder.readFeatureMetadata(gunzipSync(read(layout.metadata.core)));
   const details=JSON.parse(gunzipSync(read(layout.metadata.detail)).toString('utf8'));
   if(details.version!==5||!Array.isArray(details.features))throw Error('Invalid Hydro detail metadata');

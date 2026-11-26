@@ -7,14 +7,7 @@ import {territorialRootId} from "../document/territorial-units.js";
 export function createTerritorialSceneRuntime({getDependencies}={}){
   if(typeof getDependencies!=='function')
     throw new TypeError('Territorial scene requires an admitted project read-port accessor');
-  let builtinRenderCache,countryProjection=null;
-  function countryFeatures(){
-    const entities=getDependencies().territorialObjectModel.territorialScope.displayEntities();
-    if(countryProjection?.entities===entities&&immutableCountryRows(entities))return countryProjection.features;
-    const features=entities.filter(entity=>entity.properties.entityKind==='general');
-    if(immutableCountryRows(entities))Object.freeze(features);
-    countryProjection={entities,features};return features;
-  }
+  let builtinRenderCache;
   const rootOffsets=new WeakMap();
   const isRoot=entity=>entity.properties.entityKind==='general'&&!entity.properties.parentId;
   function rootFeatures(entities,immutable){
@@ -83,12 +76,11 @@ export function createTerritorialSceneRuntime({getDependencies}={}){
     if (builtinPaletteKey === cache && builtinPaletteVisibility === visibility) return;
     builtinPaletteKey = cache;
     builtinPaletteVisibility = visibility;
-    // Share the accepted national projection with the document update.
-    dependencies.rendering.mapRenderer.syncBuiltinCountryPresentation(countryFeatures());
+    dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true }, 'builtin-subunit-presentation');
   }
 
   return Object.freeze({
-    builtinTerritorialScene,countryFeatures,
+    builtinTerritorialScene,
     territorialLabelFeatureById: id => builtinTerritorialScene().labelById.get(String(id)) || null,
     syncBuiltinPalette,
   });

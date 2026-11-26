@@ -1,7 +1,16 @@
+import {temporalContains} from '../document/temporal.js';
+
 export const physicalLandPatchSchema='pando-physical-land-replacements-v1';
 const hash=/^[a-f0-9]{64}$/;
 const fail=message=>{throw Error('Physical land replacement: '+message);};
 export const regionalLandLayout='regional-land-v1';
+
+export function selectPhysicalLandAsset(base,modernCoast,land,date){
+ const selected=land??base;
+ if(!modernCoast||!date||!temporalContains({validFrom:modernCoast.validFrom,validTo:null},date))return selected;
+ if(selected?.sha256!==base?.sha256)fail('modern coast requires the catalog base land derivative');
+ return modernCoast.asset;
+}
 
 const contentHash=async value=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value))))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
 

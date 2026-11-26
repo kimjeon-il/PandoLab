@@ -33,6 +33,12 @@ export function canonicalSharedBoundaryPath(sharedBoundaries) {
 
 // A display-only scoped correction retains its baseline derivation explicitly.
 // Evidence is verified by the archive producer; runtime receives hashes, never private report URLs.
+export const MINOR_OUTLYING_ISLAND_FEATURE_IDS=Object.freeze(['XBK','XHO','XJA','XJV','XKR','XMW','XNV','XPL','XWK']);
+export const INDEPENDENT_WORLD_RETIREMENT_IDS=Object.freeze({
+ 'cyprus-buffer-zone-retirement':'CNM',
+ 'southern-patagonia-icefield-retirement':'SPI',
+});
+
 export function validateScopedRetirementDerivation(derivation) {
   // Current canonical-only manifests carry counts but no preview/retirement marker.
   if(derivation?.preview===undefined&&derivation?.scopedRetirement===undefined
@@ -44,12 +50,14 @@ export function validateScopedRetirementDerivation(derivation) {
   }
   const proof=derivation?.scopedRetirement;
   const exact=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const split=exact(proof?.retiredIds,['UMI'])&&exact(proof?.recipientIds,MINOR_OUTLYING_ISLAND_FEATURE_IDS);
+  const independent=Object.values(INDEPENDENT_WORLD_RETIREMENT_IDS).some(id=>exact(proof?.retiredIds,[id]))&&exact(proof?.recipientIds,[]);
   if(derivation?.preview!=='scoped-retirement-patch'||proof?.schemaVersion!==1
     ||!exact(Object.keys(proof||{}).sort(),['baselinePreview','baselineWorldSha256','detachedCaches','layerPreimages','patchReceiptSha256','recipientIds','retiredIds','schemaVersion'])
-    ||proof.baselinePreview!=='canonical-topology-simplified'
+    ||proof.baselinePreview!==((split||independent)?'scoped-retirement-patch':'canonical-topology-simplified')
     ||!HEX_256.test(proof.baselineWorldSha256)||!HEX_256.test(proof.patchReceiptSha256)
-    ||!exact(proof.retiredIds,['KAB','BJN','SER','PGA'])
-    ||!exact(proof.recipientIds,['KAZ','COL','VNM','PHL','CHN','TWN'])
+    ||!(split||independent||exact(proof.retiredIds,['KAB','BJN','SER','PGA'])&&exact(proof.recipientIds,['KAZ','COL','VNM','PHL','CHN','TWN'])
+      ||exact(proof.retiredIds,['BJN','SER','PGA'])&&exact(proof.recipientIds,['COL']))
     ||!exact(proof.detachedCaches,['preparedCountryScene','sharedBoundaries'])
     ||!exact(Object.keys(proof.layerPreimages||{}).sort(),['currentworld','pcg','preview'])
     ||!Object.values(proof.layerPreimages).every(v=>HEX_256.test(v)))

@@ -1,4 +1,4 @@
-// One immutable snapshot of the native MapLibre camera and the displayed document.
+// One immutable snapshot of the active globe camera and the displayed document.
 const frozenPair = (pair, fallback) => Object.freeze(
   (Array.isArray(pair) ? pair : fallback).map(value => Number(value)),
 );
@@ -10,7 +10,7 @@ export function createMapVisualFrame({
   if (!viewState || viewState.projection !== 'globe')
     throw new TypeError('MapVisualFrame requires the globe projection.');
   if (typeof projectCoordinate !== 'function' || typeof projectVisibleCoordinate !== 'function')
-    throw new TypeError('MapVisualFrame requires the current MapLibre projection.');
+    throw new TypeError('MapVisualFrame requires the current renderer projection.');
 
   const width=Math.max(1,Number(viewState.size?.width ?? layoutSnapshot?.width ?? 1));
   const height=Math.max(1,Number(viewState.size?.height ?? layoutSnapshot?.height ?? 1));

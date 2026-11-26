@@ -8,6 +8,7 @@ import {readProjectGenerationContext} from './project-generation-context.mjs';
 import {encodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {territorialSourceLayout} from '../../src/data/territorial-source-format.js';
 import {readTerritorialSource,readTerritorialSourceDescriptors,readTerritorialLineages,entityFileName,territorialDataRoot,territorialSourceRoot} from '../data/territorial-entity-sources.mjs';
+import {indexedTerritorialWorldView} from '../data/territorial-current-world.mjs';
 import {parseTemporal} from "../../src/document/temporal.js";
 import {territorialIndexEntry} from "../gis/territorial-index-entry.js";
 import {fileURLToPath} from 'node:url';
@@ -39,6 +40,7 @@ if(retirementFile){
  if(projectId&&projectId!=='default-world')throw Error('Project-specific retirement requires a paired source retirement receipt');
  if(scope)throw Error('Publish the explicit retirement baseline before ordinary entity chunk updates');
  const retirement=JSON.parse(fs.readFileSync(retirementFile.slice('--retirement-manifest='.length)));
+ if(['existing-colombian-territories','split-us-minor-outlying-islands'].includes(retirement.kind))throw Error('Use --store-local-retirement for the paired archive transition');
  const previousIndex=JSON.parse(check?readRetirementReceipt(retirement.stagedIndex):fs.readFileSync(path.join(output,'index.json')));
  const index=buildTerritorialRetirementIndex({previousIndex,retirement,
   view:JSON.parse(fs.readFileSync(path.join(sourceRoot,'views/world.json'))),displayPolicy:planTerritorialRetirement(retirement,JSON.parse(readRetirementReceipt(retirement.previousIndex))).displayPolicy,
@@ -55,6 +57,9 @@ const priorIndex=fs.existsSync(existingIndexPath)?JSON.parse(fs.readFileSync(exi
 const previous=selected?priorIndex:null;
 if(selected&&!previous)throw new Error('Scoped chunk publication requires a prior index');
 const descriptors=readTerritorialSourceDescriptors(sourceRoot);
+const views=previous?.views||fs.readdirSync(path.join(sourceRoot,'views')).filter(file=>file.endsWith('.json')).sort()
+  .map(file=>JSON.parse(fs.readFileSync(path.join(sourceRoot,'views',file),'utf8')));
+indexedTerritorialWorldView({views,entities:descriptors});
 const indexedDescriptors=new Map(descriptors.map(entity=>[entity.entityId,entity]));
 const entities=selected?selected.map(id=>{
  const entity=indexedDescriptors.get(id);
@@ -86,8 +91,7 @@ const index={schemaVersion:2,lineages:previous?.lineages||readTerritorialLineage
  parseTemporal(snapshot.referenceDate,{nullable:false});
  if(snapshot.schemaVersion!==1 || new Set(snapshot.entityRefs).size!==snapshot.entityRefs.length || snapshot.entityRefs.some(id=>!entities.some(e=>e.entityId===id)))throw new Error(`Invalid territorial snapshot: ${file}`);
  return snapshot;
- }),views:previous?.views||fs.readdirSync(path.join(sourceRoot,'views')).filter(f=>f.endsWith('.json')).sort()
-   .map(file=>JSON.parse(fs.readFileSync(path.join(sourceRoot,'views',file),'utf8')))};
+ }),views};
 if(previous){const updates=new Map(index.entities.map(row=>[row.entityId,row]));index.entities=previous.entities.map(row=>updates.get(row.entityId)||row);}
 if(!selected)for(const file of fs.readdirSync(output)) if(!expectedFiles.has(file) && !process.env.PANDOLAB_LIBRARY_SOURCE_ROOT)throw new Error(`Obsolete territorial output must be explicitly removed: ${file}`);
 // Regenerate the full index when a source geometry version changes. The index

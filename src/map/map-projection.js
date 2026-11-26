@@ -8,8 +8,7 @@ export function createMapProjection({capabilities=resourceCapabilities('viewer')
   let dependencies;
   let mapLayoutMetricsSnapshot;
   let mapLayoutMetricsRefreshCount;
-  let graticule;
-  let mapLibreRenderer=null;
+  let renderer=null;
   function connect(ports) {
     if (dependencies) throw new Error('map-projection already connected');
     dependencies = ports;
@@ -22,7 +21,7 @@ export function createMapProjection({capabilities=resourceCapabilities('viewer')
     return [x / n, y / n];
   }
 
-  // A read adapter around the single MapLibre camera; no D3 globe fallback.
+  // A read adapter around the session's active globe camera.
   const mapProject = coordinate => projectVisibleCoordinate(coordinate);
   mapProject.invert = point => screenToGeo(point);
   mapProject.translate = () => [
@@ -96,7 +95,7 @@ export function createMapProjection({capabilities=resourceCapabilities('viewer')
   function projectVisibleCoordinate(coord, frameContext = null) {
     if (!coord) return null;
     if (typeof frameContext?.projectVisibleCoordinate === 'function') return frameContext.projectVisibleCoordinate(coord);
-    return mapLibreRenderer?.loaded ? mapLibreRenderer.projection.projectVisibleCoordinate(coord) : null;
+    return renderer?.loaded ? renderer.projection.projectVisibleCoordinate(coord) : null;
   }
 
   function isCoordVisible(coord) {
@@ -104,7 +103,7 @@ export function createMapProjection({capabilities=resourceCapabilities('viewer')
   }
 
   function screenToGeo(screenPoint) {
-    return mapLibreRenderer?.loaded ? mapLibreRenderer.projection.screenToGeo(screenPoint) : null;
+    return renderer?.loaded ? renderer.projection.screenToGeo(screenPoint) : null;
   }
 
   function initializeMapLayoutMetricsSnapshot() {
@@ -113,19 +112,12 @@ export function createMapProjection({capabilities=resourceCapabilities('viewer')
     (mapLayoutMetricsRefreshCount = 0);
   }
 
-  function initializeGraticule() {
-    if(capabilities.graticule)
-      graticule = dependencies.platform.d3.geo.graticule().minorExtent([[-180,-89.999999],[180,89.999999]]);
-  }
-
   return Object.freeze({
     connect,
-    installMapLibreRenderer(renderer){mapLibreRenderer=renderer;},
+    installRenderer(value){renderer=value;},
     initializeMapLayoutMetricsSnapshot,
-    initializeGraticule,
     get activeProjection() { return activeProjection; },
     get currentMapSafeInsets() { return currentMapSafeInsets; },
-    get graticule() { return graticule; },
     get isCoordVisible() { return isCoordVisible; },
     get mapLayoutMetricsRefreshCount() { return mapLayoutMetricsRefreshCount; },
     get mapLayoutMetricsSnapshot() { return mapLayoutMetricsSnapshot; },

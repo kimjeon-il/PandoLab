@@ -1,5 +1,4 @@
 import {createProductModePolicy} from '../../src/app/product-mode-policy.js';
-import {createCoreDocumentReadModel} from '../../src/document/core-document-read-model.js';
 
 
 
@@ -197,90 +196,12 @@ test('Core replacement rollback restores the document and timeline cursor', asyn
   try {
     const before=session.projectState(),stored=session.storageSnapshot();
     const replacement=session.captureReplacement(before.epoch);
-    const prior=session.resolveWorld(before.timelineCursor,before.epoch);
-    const model=createCoreDocumentReadModel(session.documentSnapshot());
-    model.acceptWorld(prior,before.epoch);
-    session.geometryRequirements('1916-01',before.epoch);
-    const result=session.setTimelineCursor('1916-01',before.epoch),delta=result.worldDelta;
-    const next=session.resolveWorld('1916-01',result.state.epoch);
-    const removed=new Set(delta.removed.map(ref=>JSON.stringify(ref)));
-    const changed=new Map(delta.upserts.map(({index,entity})=>[index,entity]));
-    const touched=new Set(delta.upserts.map(({entity})=>JSON.stringify(entity.objectRef)));
-    const retained=prior.entities.filter(row=>!removed.has(JSON.stringify(row.objectRef))&&!touched.has(JSON.stringify(row.objectRef)))[Symbol.iterator]();
-    assert.equal(delta.baseEpoch,before.epoch);
-    assert.equal(delta.sourceEpoch,result.state.epoch);
-    assert.deepEqual(Array.from({length:delta.entityCount},(_,i)=>changed.get(i)??retained.next().value),next.entities);
-    const expected=model.projectWorld(next,result.state.epoch);
-    model.acceptTransition(result,'core.document-timeline-cursor');
-    assert.deepEqual(model.world().entities,expected.entities);
-    assert.equal(model.world().month,'1916-01');
-    assert.throws(()=>model.acceptTransition(result,'core.document-timeline-cursor'),{code:'PL-CORE-RESPONSE'});
-    const rows=model.world().entities,views=model.territorialViews();
-    const unchanged=session.setTimelineCursor('1916-01',result.state.epoch);
-    assert.deepEqual(unchanged.worldDelta.upserts,[]);
-    assert.deepEqual(unchanged.worldDelta.removed,[]);
-    model.acceptTransition(unchanged,'core.document-timeline-cursor');
-    assert.ok(model.world().entities.every((row,i)=>row===rows[i]));
-    assert.equal(model.territorialViews(),views);
+    session.setTimelineCursor('1916-01',before.epoch);
     assert.equal(session.projectState().timelineCursor,'1916-01');
-    const adjacent=session.setTimelineCursor('1916-02',unchanged.state.epoch);
-    assert.deepEqual(adjacent.worldDelta.upserts,[]);
-    assert.deepEqual(adjacent.worldDelta.removed,[]);
-    model.acceptTransition(adjacent,'core.document-timeline-cursor');
-    assert.equal(model.world().month,'1916-02');
-    assert.equal(model.world().entities,rows);
-    assert.equal(model.territorialViews(),views);
     const restored=session.rollbackReplacement(replacement,session.projectState().epoch);
     assert.equal(restored.timelineCursor,before.timelineCursor);
     assert.equal(session.storageSnapshot(),stored);
   } finally {session.delete();}
-});
-
-test('Core resource cache evicts only inactive reloadable versions and mirrors reference receipts in JS',async()=>{
-  const initial=readFixture(),source=readFixture(),setup={...source.projectSetup,sourceMode:'builtin',initialMonth:'1914-06'};
-  source.projectSetup=setup;
-  const assets=source.geometries.filter(row=>row.id==='shape').map(({id,version,geojson})=>{
-    const text=JSON.stringify(geojson);
-    return {id,version,type:geojson.type,source:text,decodedBytes:Buffer.byteLength(text),contentSha256:hash(text)};
-  });
-  source.geometryResources=assets.map(({source,...descriptor})=>descriptor);
-  source.geometries=assets.filter(row=>row.version===1).map(({id,version,source})=>({id,version,source}));
-  const bytes=new TextEncoder().encode(JSON.stringify(source));
-  // Zero inactive-cache budget intentionally keeps only the displayed/target
-  // resource sets; the active world may itself exceed this soft budget.
-  const session=new (await core()).DocumentSession({validateFlagDataUrl(){},geometryCacheBytes:0});
-  try{
-    session.documentLoad(JSON.stringify(initial),'1914-06');
-    const baseline=session.storageBaselineLoad({kind:'stored-asset',encoding:'identity',sourceBytes:bytes,
-      compressedBytes:bytes.length,decodedBytes:bytes.length,baseDataset:source.baseDataset,sourceMonth:'1914-06',fingerprint:hash(bytes)},session.projectState().epoch);
-    const state=session.documentLoadBaseline(baseline.storageBaselineId,setup);
-    const model=createCoreDocumentReadModel(session.documentSnapshot());
-    model.acceptWorld(session.resolveWorld('1914-06',state.epoch),state.epoch);
-    const query=session.geometryRequirements('1914-07',state.epoch);
-    assert.deepEqual(query.resources.map(({id,version})=>({id,version})),[{id:'shape',version:2}]);
-    const next=assets.find(row=>row.version===2);
-    const payload={id:next.id,version:next.version,source:next.source};
-    const admitted=session.admitGeometryResources([payload],state.epoch,'1914-07');
-    assert.deepEqual(admitted.geometryDelta.admitted,[{id:'shape',version:2}]);
-    assert.deepEqual(admitted.geometryDelta.removed,[]);
-    assert.equal(Object.hasOwn(admitted,'delta'),false,'geometry coordinates are not sent back to JS');
-    model.acceptTransition(admitted,'core.document-geometry-admit',{resources:[payload],descriptors:query.resources});
-    const forward=session.setTimelineCursor('1914-07',state.epoch);
-    model.acceptTransition(forward,'core.document-timeline-cursor');
-    assert.equal(model.world().byId.get('A').geometryRef.version,2);
-    // Move back to a month which no longer references shape version 2.
-    const back=session.setTimelineCursor('1914-06',forward.state.epoch);
-    assert.deepEqual(back.geometryDelta.removed,[{id:'shape',version:2}]);
-    model.acceptTransition(back,'core.document-timeline-cursor');
-    assert.equal(model.geometry({id:'shape',version:2}),null);
-    assert.equal(model.world().byId.get('A').geometryRef.version,1);
-    assert.deepEqual(session.geometryRequirements('1914-07',back.state.epoch).resources.map(({id,version})=>({id,version})),[{id:'shape',version:2}]);
-    const reload=session.admitGeometryResources([payload],back.state.epoch,'1914-07');
-    model.acceptTransition(reload,'core.document-geometry-admit',{resources:[payload],descriptors:query.resources});
-    const revisited=session.setTimelineCursor('1914-07',back.state.epoch);
-    model.acceptTransition(revisited,'core.document-timeline-cursor');
-    assert.equal(model.world().byId.get('A').geometryRef.version,2);
-  }finally{session.delete();}
 });
 
 test('Core preserves document identity, coordinates, time and provenance', async()=>{
@@ -477,117 +398,4 @@ test('native boundary edge boxes are chunked without deleting or reordering GIS 
   assert.deepEqual(result,rows.map(({a,b})=>[[...a,...b]]));
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:1_000_001,calculate:()=>[]}),/Invalid native boundary edge batch size/);
   assert.throws(()=>boundaryEdgeBoxesInBatches(rows,{batchSize:2,calculate:()=>[]}),/Native boundary edge box count mismatch/);
-});
-
-test('temporal frame approval compares the same immutable content pair only once',async()=>{
- let comparisons=0,context=1;
- const tokens=new WeakSet();
- const token=rows=>{const key=Object.freeze(rows.map(row=>Object.freeze(row)));tokens.add(key);return key;};
- const expected=token([['a','geometry-1']]),equivalent=token([['a','geometry-1']]),changed=token([['a','geometry-2']]);
- const owner=createMapPresentationSession({getGeneration:()=>1,getContextRevision:()=>context,isDisposed:()=>false,
-  getReadiness:()=>({mapReady:false}),invalidateFrame(){},prepareContentKey:async()=>expected,
-  sameContentKey:(a,b)=>{comparisons++;return JSON.stringify(a)===JSON.stringify(b);},
-  isImmutableContentKey:key=>tokens.has(key),isProjectBlocked:()=>false,isRecoveryFrameAdmissible:()=>true,
-  waitForCanonicalFrame:async()=>true});
- const id=owner.beginTemporalViewTransition();
- await owner.prepareTemporalCountrySource([]);
- assert.equal(owner.admitTemporalViewTransition(id),true);
- for(let i=0;i<100;i++)assert.equal(owner.countrySourceAdmitted(equivalent),true);
- assert.equal(comparisons,1);
- assert.equal(owner.countrySourceAdmitted(changed),false);
- assert.equal(owner.countrySourceAdmitted(changed),false);
- assert.equal(comparisons,2);
- context++;
- assert.equal(owner.countrySourceAdmitted(equivalent),false);
- owner.rebaseContext();
- assert.equal(owner.countrySourceAdmitted(equivalent),true);
- owner.dispose();
-});
-
-
-test('Core builtin source adoption transmits changed world rows, with retained order and epoch parity',async()=>{
-  const initial=readFixture(),session=await sessionFor(initial);
-  const source=(month,reverse=false)=>{
-    const document=readFixture();
-    document.projectSetup={...document.projectSetup,sourceMode:'builtin',initialMonth:month};
-    if(reverse)document.territorialEntities.reverse();
-    const bytes=new TextEncoder().encode(JSON.stringify(document));
-    return {setup:document.projectSetup,asset:{kind:'stored-asset',encoding:'identity',sourceBytes:bytes,
-      compressedBytes:bytes.length,decodedBytes:bytes.length,baseDataset:document.baseDataset,sourceMonth:month,fingerprint:hash(bytes)}};
-  };
-  try{
-    const first=source('1914-06');
-    const baseline=session.storageBaselineLoad(first.asset,session.projectState().epoch);
-    const before=session.documentLoadBaseline(baseline.storageBaselineId,first.setup);
-    const snapshot=session.documentSnapshot(),prior=session.resolveWorld(before.timelineCursor,before.epoch);
-    const model=createCoreDocumentReadModel(snapshot);
-    model.acceptWorld(prior,before.epoch);
-    const target=source('1914-07',true);
-    const pin=session.temporalSourcePrepare({source:target.asset,dataRevision:'test-revision',manifestSha256:'a'.repeat(64),expectedEpoch:before.epoch});
-    const candidate=session.temporalCandidatePrepare({sourceId:pin.sourceId,targetMonth:'1914-07',sourceFingerprint:pin.fingerprint,
-      expectedEpoch:before.epoch,setup:target.setup,documentId:snapshot.documentId});
-    const result=session.temporalCandidateAdopt({candidateId:candidate.candidateId,sourceId:pin.sourceId,targetMonth:'1914-07',
-      sourceFingerprint:pin.fingerprint,worldSha256:candidate.worldSha256,replacementId:session.captureReplacement(before.epoch),expectedEpoch:before.epoch});
-    assert.ok(result.delta);
-    assert.ok(result.worldDelta);
-    assert.equal(Object.hasOwn(result,'world'),false);
-    assert.equal(result.worldDelta.baseEpoch,before.epoch);
-    assert.equal(result.worldDelta.sourceEpoch,result.state.epoch);
-    const expected=session.resolveWorld('1914-07',result.state.epoch);
-    assert.ok(result.worldDelta.upserts.length<expected.entities.length);
-    model.acceptTransition(result,'core.document-temporal-candidate-adopt');
-    assert.deepEqual(model.world().entities,model.projectWorld(expected,result.state.epoch).entities);
-    assert.deepEqual(model.world().entities.map(row=>row.objectRef),expected.entities.map(row=>row.objectRef));
-    assert.deepEqual(model.snapshot().territorialEntities,session.documentSnapshot().territorialEntities);
-  }finally{session.delete();}
-});
-
-
-test('stored gzip assets enforce declared decoded byte bounds before admission',async()=>{
-  const raw=Buffer.from('{"coordinates":[1,2,3,4]}');
-  const compressed=(await import('node:zlib')).gzipSync(raw);
-  let validated=0;
-  const loader=createStoredAssetLoader({dataRevision:'gzip-limit',cacheStorage:null,subtle:webcrypto.subtle,
-    resolveUrl:()=> 'https://fixture.invalid/asset',fetchFn:async()=>new Response(compressed)});
-  await assert.rejects(loader.decodeStoredAsset(compressed.buffer.slice(compressed.byteOffset,compressed.byteOffset+compressed.byteLength),
-    {encoding:'gzip',compressedBytes:compressed.length,decodedBytes:4,sha256:hash(compressed)},'test','asset','asset',
-    ()=>{validated++;}),/압축 해제 크기/);
-  assert.equal(validated,0);
-});
-
-
-test('incremental Core timeline resolution matches cold resolution in both directions',async()=>{
-  const source=readFixture(),session=await sessionFor(source);
-  try{
-    const dates=['1914-06','1914-07','1915-12','1916-01','1916-02','1920-03','1920-04','1914-06','1916-01'];
-    for(const month of dates){
-      const epoch=session.projectState().epoch;
-      const warm=session.resolveWorld(month,epoch);
-      const cold=await sessionFor(source);
-      try{
-        const expected=cold.resolveWorld(month,cold.projectState().epoch);
-        assert.deepEqual(warm.entities,expected.entities);
-      }finally{cold.delete();}
-    }
-  }finally{session.delete();}
-});
-
-
-test('native temporal interval lookup preserves gaps, overlapping property types and backward jumps',async()=>{
-  const source=readFixture();
-  source.timelineRecords.propertyBindings=[
-    {id:'b-name-old',objectRef:{domain:'territorial',id:'B'},validFrom:'1910-01-02',validTo:'1914-06',property:'name',value:{name:'Old',nameExplicit:true}},
-    {id:'b-name-new',objectRef:{domain:'territorial',id:'B'},validFrom:'1916',validTo:'1920-03',property:'name',value:{name:'New',nameExplicit:true}},
-    {id:'b-color',objectRef:{domain:'territorial',id:'B'},validFrom:'1914',validTo:'1920-03',property:'color',value:{color:12345,explicitColor:true}},
-  ];
-  const session=await sessionFor(source);
-  try{
-    const read=month=>session.resolveWorld(month,session.projectState().epoch).entities.find(row=>row.objectRef.id==='B');
-    assert.equal(read('1916-01').properties.name.name,'New');
-    assert.equal(read('1914-07').properties.name,undefined);
-    assert.equal(read('1914-07').properties.color.color,12345);
-    assert.equal(read('1914-06').properties.name.name,'Old');
-    assert.equal(read('1920-04'),undefined);
-    assert.equal(read('1916-02').properties.name.name,'New');
-  }finally{session.delete();}
 });

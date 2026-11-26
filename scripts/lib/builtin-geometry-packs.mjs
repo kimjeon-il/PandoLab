@@ -1,10 +1,33 @@
 import {createHash} from 'node:crypto';
+import {gunzipSync} from 'node:zlib';
 import {dirname,posix} from 'node:path';
 import {resolveBuiltinWorldGeometry} from '../../src/data/builtin-world-loader.js';
 import {validateBuiltinReadIndex} from '../../src/data/builtin-country-files.js';
 import {BUILTIN_GEOMETRY_PACK_COUNT,BUILTIN_GEOMETRY_PACK_MEMBER_LIMIT,builtinGeometryPackPath} from '../../src/data/builtin-geometry-pack-receipt.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest();
+
+export function readResolvedBuiltinGeometry({index,month,readGeometryAssets,reuse=[]}){
+ const rows=resolveBuiltinWorldGeometry(index,validateBuiltinReadIndex(index),month).sort((a,b)=>a.owner.localeCompare(b.owner));
+ return readBuiltinGeometryRows(rows,readGeometryAssets,reuse);
+}
+
+export function readBuiltinGeometryRows(rows,readGeometryAssets,reuse=[]){
+ const decodedByHash=new Map(reuse.map(({asset,geometry})=>[asset.sha256,geometry]));
+ const inputs=readGeometryAssets([...new Set(rows.filter(({asset})=>!decodedByHash.has(asset.sha256)).map(({asset})=>asset.file))]);
+ return rows.map(({owner,asset})=>{
+  if(!decodedByHash.has(asset.sha256)){
+   const bytes=inputs.get(asset.file);
+   if(!Buffer.isBuffer(bytes)||bytes.length!==asset.compressedBytes||digest(bytes).toString('hex')!==asset.sha256)
+    throw Error('Pinned geometry bytes differ from catalog: '+asset.file);
+   const decoded=gunzipSync(bytes,{maxOutputLength:asset.decodedBytes});
+   if(decoded.length!==asset.decodedBytes||digest(decoded).toString('hex')!==asset.contentSha256)
+    throw Error('Pinned geometry content differs from catalog: '+asset.file);
+   decodedByHash.set(asset.sha256,JSON.parse(decoded));
+  }
+  return {id:owner,geometry:decodedByHash.get(asset.sha256),asset};
+ });
+}
 
 export function buildBuiltinGeometryPacks({index,month,catalogSha256,readGeometryAssets}){
  const read=validateBuiltinReadIndex(index);

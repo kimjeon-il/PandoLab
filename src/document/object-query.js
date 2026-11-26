@@ -121,7 +121,8 @@ export function createObjectQuery(dependencies) {
         return true;
       }
     }
-    if (!feature?.geometry && feature?.type !== 'FeatureCollection') return false;
+    if (!feature?.geometry && feature?.type !== 'FeatureCollection' &&
+      !(ref.domain==='hydro'&&feature?.__awBounds?.length===4&&feature.__awBounds.every(Number.isFinite))) return false;
     const countryScope = ref.domain === 'territorial' && (dependencies.territorialModel.entityRepository.get(ref?.id)?.properties.entityKind === 'general' && !dependencies.territorialModel.entityRepository.get(ref?.id)?.properties.parentId)
       ? dependencies.territorialObjectModel.territorialScope.scope(ref.id) : null;
     if (countryScope?.members.length) feature = countryScope.extent;

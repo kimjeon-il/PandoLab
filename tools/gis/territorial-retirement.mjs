@@ -5,10 +5,12 @@ import {isDeepStrictEqual} from 'node:util';
 import '../../assets/js-vendor/polygon-clipping.min.js';
 import {readBuiltinCountry,encodeBuiltinCountries} from '../data/builtin-country-bytes.mjs';
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
+import {selectTerritorialChunkBytes} from '../data/territorial-chunk-compression.mjs';
 import {territorialIndexEntry} from './territorial-index-entry.js';
 import {validateBuiltinDisplayPolicy} from './builtin-display-policy.mjs';
 import {builtinSubunitId} from '../../src/document/territorial-display-identity.js';
 import {compileBuiltinReadIndex,builtinGeometryAssets} from '../../src/data/builtin-country-files.js';
+import {INDEPENDENT_WORLD_RETIREMENT_IDS} from '../../src/data/world-bundle-manifest.js';
 
 const base='assets/data/territorial-entities';
 export const retirementDisplayPath='assets/data/builtin-world/display-policy-v1.json';
@@ -36,6 +38,51 @@ const pairingBefore='KAZ is original NE KAZ+KAB union minus remade KAB; therefor
 const pairingAfter='Kazakhstan display now includes the former separate Baikonur lease subdivision; the previous lease outline was OSM-derived. Kazakhstan sovereignty, lease facts and source attribution are retained.';
 const referenceKey=r=>JSON.stringify([r.id,r.version]);
 const polygonCoordinates=g=>g?.type==='MultiPolygon'?g.coordinates:g?.type==='Polygon'?[g.coordinates]:fail('polygon geometry required');
+
+// Keep every existing ring byte-for-byte. The absorbed components must be
+// disjoint or already covered at this layer's own resolution.
+export function retainAbsorbedTerritory(geometry, absorbed){
+ const original=polygonCoordinates(geometry),coordinates=[...original],clipping=globalThis.polygonClipping;
+ for(const source of absorbed)for(const component of polygonCoordinates(source)){
+  if(!clipping.difference([component],coordinates).length)continue;
+  if(clipping.intersection([component],coordinates).length)fail('partially overlapping absorbed component');
+  coordinates.push(component);
+ }
+ return coordinates.length===original.length?geometry:{type:'MultiPolygon',coordinates};
+}
+
+function prepareColombianRetirement(plan,readRecovery){
+ const {manifest,retiredSources,recoveryReceipts,previousIndex}=plan;
+ const recover=receipt=>readRetirementReceipt(receipt,readRecovery);
+ const recipient=manifest.recipient;
+ if(recipient?.entityId!=='state:COL')fail('missing Colombian recipient receipts');
+ const entry=previousIndex.entities.find(row=>row.entityId===recipient.entityId);
+ if(!entry||!Array.isArray(recipient.geometryResources))fail('missing Colombian source preimage');
+ const source=decodeTerritorialSource(JSON.parse(recover(recipient.source)),(file,resource)=>{
+  const receipt=recipient.geometryResources.find(r=>r.file===file)?.receipt;
+  if(receipt?.sha256!==resource.sha256)fail('Colombian source geometry preimage differs');
+  recoveryReceipts.set(base+'/source/'+file,receipt);
+  return recover(receipt);
+ });
+ const chunkBytes=recover(recipient.chunk),decoded=gunzipSync(chunkBytes),chunk=JSON.parse(decoded);
+ if(source.entityId!==recipient.entityId||chunk.entityId!==recipient.entityId||sha(chunkBytes)!==entry.sha256
+  ||chunkBytes.length!==entry.compressedBytes||decoded.length!==entry.decodedBytes)
+  fail('Colombian source/chunk identity mismatch');
+ equal(territorialIndexEntry(chunk,entry),entry,'Colombian chunk and index differ');
+ const world=previousIndex.views[0],selection=world.selections.find(row=>row.entityId===recipient.entityId);
+ const raw=source.geometryVersions.find(v=>v.versionId===selection?.geometryVersionId);
+ const version=chunk.geometryVersions.find(v=>v.versionId===selection?.geometryVersionId);
+ if(!raw||!version||raw.validTo!==null||version.validTo!==null)fail('Colombian current version required');
+ const absorbed=['state:BJN','state:SER'].map(id=>retiredSources.get(id).geometryVersions[0].geometry);
+ if(retainAbsorbedTerritory(raw.geometry,absorbed)!==raw.geometry)fail('Colombian original does not already cover both territories');
+ version.geometry=retainAbsorbedTerritory(version.geometry,absorbed);
+ const bytes=Buffer.from(JSON.stringify(chunk,null,2)+'\n');
+ const {stored}=selectTerritorialChunkBytes(bytes,chunkBytes);
+ const nextEntry=territorialIndexEntry(chunk,{...entry,sha256:sha(stored),compressedBytes:stored.length,decodedBytes:bytes.length});
+ recoveryReceipts.set(base+'/source/countries/state-COL.json',recipient.source);
+ recoveryReceipts.set(base+'/generated/v2/'+entry.file,recipient.chunk);
+ return {nextEntry,stored,geometry:version.geometry};
+}
 function metadataOnlyEdits(before,edits,entityId){
  if(!Array.isArray(edits)||new Set(edits.map(e=>e.pointer)).size!==edits.length)fail('unique exact metadata edits required');const next=structuredClone(before);
  for(const e of edits){if(typeof e.pointer!=='string'||!e.pointer.startsWith('/'))fail('metadata pointer required');const parts=e.pointer.slice(1).split('/');if(parts.some(k=>['__proto__','constructor','prototype'].includes(k)||k.includes('~')))fail('unsafe metadata pointer');let target=next;for(const k of parts.slice(0,-1)){if(!target||!Object.hasOwn(target,k))fail('metadata pointer absent');target=target[k];}const key=parts.at(-1);equal(target?.[key],e.before,'metadata preimage differs');let expected;
@@ -73,12 +120,18 @@ export function verifiedMixedRuntimeCountries(plan,{readRecovery=readFileSync}={
  * payload other than the explicitly retired identities is read or traversed. */
 export function planTerritorialRetirement(manifest,previousIndex,{readRecovery=readFileSync}={}){
  const mixed=manifest?.kind==='mixed-current-identity-retirement';
- if(manifest?.schemaVersion!==1||!['invalid-current-identity','mixed-current-identity-retirement'].includes(manifest.kind)||!Array.isArray(manifest.sources)||!manifest.sources.length)fail('explicit invalid-current-identity manifest required');
- if(mixed){equal(manifest.sources.map(r=>r.entityId).sort(),['state:BJN','state:KAB','state:PGA','state:SER'],'exact four-object retirement scope required');for(const r of manifest.sources){const recipient=r.entityId==='state:KAB'?'KAZ':'COL';if(r.entityId==='state:PGA'){if(r.mode!=='invalid-current-identity'||r.recipientEntityId!==undefined||r.recipientFeatureId!==undefined)fail('PGA invalid identity cannot transfer ownership');}else if(r.mode!=='absorbed-source'||r.recipientEntityId!=='state:'+recipient||r.recipientFeatureId!==recipient)fail('explicit absorbed-source recipient mismatch');}}
+ const existingColombia=manifest?.kind==='existing-colombian-territories';
+ const splitOutlyingIslands=manifest?.kind==='split-us-minor-outlying-islands';
+ const independentId=Object.hasOwn(INDEPENDENT_WORLD_RETIREMENT_IDS,manifest?.kind)?INDEPENDENT_WORLD_RETIREMENT_IDS[manifest.kind]:null;
+ if(manifest?.schemaVersion!==1||(!independentId&&!['invalid-current-identity','mixed-current-identity-retirement','existing-colombian-territories','split-us-minor-outlying-islands'].includes(manifest.kind))||!Array.isArray(manifest.sources)||!manifest.sources.length)fail('explicit invalid-current-identity manifest required');
+ if(independentId)equal(manifest.sources.map(r=>[r.entityId,r.mode]),[['state:'+independentId,'remove-independent-source']],'exact independent source scope required');
+ if(splitOutlyingIslands)equal(manifest.sources.map(r=>[r.entityId,r.mode]),[['state:UMI','replaced-aggregate']],'exact outlying-island aggregate required');
+ if(mixed||existingColombia){equal(manifest.sources.map(r=>r.entityId).sort(),mixed?['state:BJN','state:KAB','state:PGA','state:SER']:['state:BJN','state:PGA','state:SER'],mixed?'exact four-object retirement scope required':'exact three-object retirement scope required');for(const r of manifest.sources){const recipient=r.entityId==='state:KAB'?'KAZ':'COL';if(r.entityId==='state:PGA'){if(r.mode!=='invalid-current-identity'||r.recipientEntityId!==undefined||r.recipientFeatureId!==undefined)fail('PGA invalid identity cannot transfer ownership');}else if(r.mode!=='absorbed-source'||r.recipientEntityId!=='state:'+recipient||r.recipientFeatureId!==recipient)fail('explicit absorbed-source recipient mismatch');}}
 
  const recover=receipt=>readRetirementReceipt(receipt,readRecovery);
  equal(JSON.parse(recover(manifest.previousIndex)),previousIndex,'stale previous index');
  const stagedIndex=JSON.parse(recover(manifest.stagedIndex));
+ if(splitOutlyingIslands||independentId)equal(stagedIndex,previousIndex,'retirement must use the exact pinned catalog');
  equal({...stagedIndex,entities:[]},{...previousIndex,entities:[]},'staged catalog metadata differs from pinned baseline');
  equal(stagedIndex.entities.map(row=>row.entityId),previousIndex.entities.map(row=>row.entityId),'staged catalog membership differs');
  const entities=unique(previousIndex.entities,'entityId'),lineages=unique(previousIndex.lineages,'lineageId');
@@ -108,8 +161,17 @@ export function planTerritorialRetirement(manifest,previousIndex,{readRecovery=r
   retiredSources.set(row.entityId,source);
   const chunk=recover(row.chunk),decoded=gunzipSync(chunk);
   if(source.entityId!==row.entityId||sha(chunk)!==entry.sha256||chunk.length!==entry.compressedBytes||decoded.length!==entry.decodedBytes)fail('old source/chunk identity mismatch: '+row.entityId);
-  equal(JSON.parse(decoded),source,'recovery source differs from indexed chunk');
-  equal(territorialIndexEntry(source,entry),entry,'old source/index metadata mismatch');
+  const indexedSource=JSON.parse(decoded);
+  if(independentId){
+   for(const record of [source,indexedSource]){
+    equal([record.entityId,record.parentEntityId,record.instantiation?.mode,record.geometryVersions.map(v=>v.versionId)],
+     ['state:'+independentId,'','independent',source.geometryVersions.map(v=>v.versionId)],'independent source and chunk identity differ');
+   }
+  }else if(splitOutlyingIslands){
+   equal([indexedSource.entityId,indexedSource.parentEntityId,indexedSource.geometryVersions.map(v=>v.versionId)],
+    [source.entityId,'state:USA',source.geometryVersions.map(v=>v.versionId)],'aggregate source and active chunk identity differ');
+  }else equal(indexedSource,source,'recovery source differs from indexed chunk');
+  equal(territorialIndexEntry(indexedSource,entry),entry,'old source/index metadata mismatch');
   const selections=world.selections.filter(s=>s.entityId===row.entityId);
   if(source.geometryVersions.length!==1||selections.length!==1||selections[0].geometryVersionId!==source.geometryVersions[0].versionId)fail('retirement is limited to a single current selected version');
   const lineage=JSON.parse(recover(row.lineage));
@@ -119,9 +181,13 @@ export function planTerritorialRetirement(manifest,previousIndex,{readRecovery=r
   equal(lineage.relations,[],'retirement cannot remove lineage relations');
   const featureId=source.sourceInfo?.featureId;
   if(typeof featureId!=='string'||!featureId||featureIds.has(featureId))fail('unique current feature identity required');
-  if(mixed&&featureId!==row.entityId.slice(6))fail('registered retired feature identity differs');
+  if((mixed||existingColombia)&&featureId!==row.entityId.slice(6))fail('registered retired feature identity differs');
   const subunits=display.subunits.filter(s=>s.sourceCountryId===featureId),merges=display.territoryMerges.filter(s=>s.sourceId===featureId);
-  if(mixed&&row.mode==='absorbed-source'){if(!entities.has(row.recipientEntityId)||manifest.sources.some(r=>r.entityId===row.recipientEntityId)||subunits.length+merges.length!==1||(subunits[0]?.parentId??merges[0]?.controller)!==row.recipientFeatureId)fail('absorbed recipient must match actual existing display relationship');}else if(subunits.length!==1||merges.length)fail('one paired display subunit required');
+  if(splitOutlyingIslands)equal([featureId,subunits[0]?.parentId],['UMI','USA'],'unexpected outlying-island relationship');
+  if(independentId){
+   if(featureId!==independentId||subunits.length||merges.length||row.recipientEntityId!==undefined||row.recipientFeatureId!==undefined)
+    fail('independent object cannot transfer territory');
+  }else if((mixed||existingColombia)&&row.mode==='absorbed-source'){if(!entities.has(row.recipientEntityId)||manifest.sources.some(r=>r.entityId===row.recipientEntityId)||subunits.length+merges.length!==1||(subunits[0]?.parentId??merges[0]?.controller)!==row.recipientFeatureId)fail('absorbed recipient must match actual existing display relationship');}else if(subunits.length!==1||merges.length)fail('one paired display subunit required');
 
   sourceIds.add(row.entityId);featureIds.add(featureId);lineageIds.add(lineage.lineageId);
   const paths=[`${base}/source/countries/${row.entityId.replace(':','-')}.json`,`${base}/generated/v2/${entry.file}`,`${base}/source/lineages/${lineage.lineageId}.json`];
@@ -133,10 +199,16 @@ export function planTerritorialRetirement(manifest,previousIndex,{readRecovery=r
    const nextEntry=territorialIndexEntry(afterChunk,{sha256:sha(afterChunkBytes),compressedBytes:afterChunkBytes.length,decodedBytes:gunzipSync(afterChunkBytes).length,...(entry.storageLayout?{storageLayout:entry.storageLayout}:{})});equal(stagedIndex.entities.find(e=>e.entityId===row.entityId),nextEntry,'staged survivor index not paired to metadata-only chunk');metadataUpdates.set(row.entityId,{...row,beforeDescriptorReceipt:row.beforeDescriptor,afterDescriptorReceipt:row.afterDescriptor,beforeChunkReceipt:row.beforeChunk,afterChunkReceipt:row.afterChunk,beforeDescriptor,afterDescriptor,beforeChunk,afterChunk,nextEntry});recoveryReceipts.set(`${base}/source/countries/${row.entityId.replace(':','-')}.json`,row.beforeDescriptor);recoveryReceipts.set(`${base}/generated/v2/${entry.file}`,row.beforeChunk);
   }for(const row of stagedIndex.entities)if(!metadataUpdates.has(row.entityId))equal(row,entities.get(row.entityId),'unselected staged survivor changed');
  }
- const index={...structuredClone(stagedIndex),entities:stagedIndex.entities.filter(row=>!sourceIds.has(row.entityId)),
+ let colombianChunk=null;
+ if(existingColombia){
+  equal(stagedIndex,previousIndex,'existing-territory retirement must use the exact pinned catalog');
+  colombianChunk=prepareColombianRetirement({manifest,retiredSources,recoveryReceipts,previousIndex},readRecovery);
+ }
+ const index={...structuredClone(stagedIndex),entities:stagedIndex.entities.filter(row=>!sourceIds.has(row.entityId))
+  .map(row=>existingColombia&&row.entityId==='state:COL'?colombianChunk.nextEntry:row),
   lineages:previousIndex.lineages.filter(row=>!lineageIds.has(row.lineageId)),
   views:[{...world,selections:world.selections.filter(row=>!sourceIds.has(row.entityId))}]};
- const displayPolicy={...display,subunits:display.subunits.filter(row=>!featureIds.has(row.sourceCountryId)),...(mixed?{territoryMerges:display.territoryMerges.filter(row=>!featureIds.has(row.sourceId))}:{})};
+ const displayPolicy={...display,subunits:display.subunits.filter(row=>!featureIds.has(row.sourceCountryId)),...(mixed||existingColombia?{territoryMerges:display.territoryMerges.filter(row=>!featureIds.has(row.sourceId))}:{})};
  let sourceCensusPaths=null;
  if(mixed){const census=JSON.parse(recover(manifest.sourceCensus));if(census.schemaVersion!==1||!Array.isArray(census.countries))fail('full source metadata census required');equal(census.countries.map(r=>r.entityId).sort(),[...entities.keys()].sort(),'source metadata census membership differs');sourceCensusPaths=[];for(const row of census.countries){const expected=`${base}/source/countries/${row.entityId.replace(':','-')}.json`;if(row.path!==expected)fail('source census path mismatch');const d=JSON.parse(recover(row.source));if(d.entityId!==row.entityId)fail('source census descriptor identity differs');recoveryReceipts.set(row.path,row.source);sourceCensusReceipts.set(row.path,row.source);sourceCensusPaths.push(row.path);const update=metadataUpdates.get(row.entityId);if(update)equal(row.source,update.beforeDescriptorReceipt||manifest.sourceMetadataUpdates.find(x=>x.entityId===row.entityId).beforeDescriptor,'metadata source census preimage differs');if(!sourceIds.has(row.entityId))assertNoRetiredReferences(update?update.afterDescriptor:d,new Set([...sourceIds,...featureIds,...lineageIds]));}}
 
@@ -146,13 +218,13 @@ export function planTerritorialRetirement(manifest,previousIndex,{readRecovery=r
   const decode=d=>decodeTerritorialSource(d,(file,resource)=>{const receipt=geometryReceipts.get(file);if(!receipt||receipt.sha256!==resource.sha256)fail('metadata geometry resource binding differs');return recover(receipt);}),rawSSR=decode(ssr.beforeDescriptor),rawKAZ=decode(kaz.beforeDescriptor),current=rawKAZ.geometryVersions.filter(v=>v.validTo===null);if(rawSSR.geometryVersions.length!==1||current.length!==1)fail('historical recipe source version ambiguous');equal(rawSSR.geometryVersions[0].geometry,current[0].geometry,'historical recipe currently materialized source differs from fixed KAZ resource');const generatedSSR=ssr.beforeChunk.geometryVersions;if(generatedSSR.length!==1||!kaz.beforeChunk.geometryVersions.some(v=>isDeepStrictEqual(v.geometry,generatedSSR[0].geometry)))fail('historical generated recipe has no preserved KAZ binding');const kab=retiredSources.get('state:KAB').geometryVersions[0].geometry;for(const g of [rawSSR.geometryVersions[0].geometry,generatedSSR[0].geometry])if(globalThis.polygonClipping.difference(polygonCoordinates(kab),polygonCoordinates(g)).length)fail('historical KAZ does not already cover removed recipe member');
  }
  assertNoRetiredReferences(index,new Set([...sourceIds,...lineageIds]));assertNoRetiredReferences(displayPolicy,featureIds);
- return {index,stagedIndex,displayPolicy,previousDisplayPolicy:display,sourceIds,featureIds,lineageIds,removePaths,recoveryReceipts,mixed,sourceCensusPaths,sourceCensusReceipts,metadataUpdates,manifest,
+ return {index,stagedIndex,displayPolicy,previousDisplayPolicy:display,sourceIds,featureIds,lineageIds,removePaths,recoveryReceipts,mixed,existingColombia,splitOutlyingIslands,independentId,colombianChunk,sourceCensusPaths,sourceCensusReceipts,metadataUpdates,manifest,
   previousBuiltinIndex:JSON.parse(recover(manifest.previousBuiltinIndex)),previousCoverage:JSON.parse(recover(manifest.previousCoverage))};
 }
 
 export function assertTerritorialRetirement({manifest,previousIndex,index,displayPolicy,readRecovery}){
  const plan=planTerritorialRetirement(manifest,previousIndex,{readRecovery});
- if(plan.mixed)equal(index.entities,plan.index.entities,'mixed source catalog metadata must equal verified plan');
+ if(plan.mixed||plan.existingColombia||plan.independentId)equal(index.entities,plan.index.entities,'retirement source catalog metadata must equal verified plan');
  const before=new Set(previousIndex.entities.map(row=>row.entityId)),next=unique(index.entities,'entityId');
  equal(new Set([...before].filter(id=>!next.has(id))),plan.sourceIds,'extra or incomplete source removal');
  equal(new Set(next.keys()),new Set([...before].filter(id=>!plan.sourceIds.has(id))),'unrelated source membership changed');
@@ -178,7 +250,7 @@ export function verifiedMixedCurrentWorld(plan,{readRecovery=readFileSync}={}){
 }
 
 export function mixedRetirementIdentityPlan(plan){
- if(!plan.mixed)fail('mixed identity plan required');const identities=[],retired=new Set(),seen=new Set();
+ if(!plan.mixed&&!plan.existingColombia)fail('absorbed identity plan required');const identities=[],retired=new Set(),seen=new Set();
  for(const row of plan.previousBuiltinIndex.sourceIdentities){const removed=row.sourceEntityIds.filter(id=>plan.sourceIds.has(id));if(!removed.length){identities.push(row);continue;}
   for(const id of removed){if(seen.has(id))fail('retired source has multiple runtime owners');seen.add(id);if(plan.previousBuiltinIndex.inputHashes.sourceRevisions[id]!==plan.stagedIndex.entities.find(e=>e.entityId===id)?.sha256)fail('retired runtime source revision differs from indexed source preimage');const source=plan.manifest.sources.find(r=>r.entityId===id);if(source.mode==='absorbed-source'&&row.sourceEntityIds.length>1){if(row.projectEntityId!==source.recipientFeatureId||!row.sourceEntityIds.includes(source.recipientEntityId))fail('composite runtime recipient mismatch');}else if(row.sourceEntityIds.length!==1||row.projectEntityId!==builtinSubunitId(id.slice(6)))fail('invalid standalone runtime retirement');}
   const next={...row,sourceEntityIds:row.sourceEntityIds.filter(id=>!plan.sourceIds.has(id)),sourceFeatureIds:row.sourceFeatureIds.filter(id=>!plan.featureIds.has(id))};if(!next.sourceEntityIds.length){if(next.sourceFeatureIds.length)fail('unpaired retired feature identity');retired.add(row.projectEntityId);}else{if(next.sourceEntityIds.length!==1||next.sourceEntityIds[0]!=='state:COL'||next.sourceFeatureIds.length!==1||next.sourceFeatureIds[0]!=='COL')fail('unexpected absorbed composite survivor');identities.push(next);}
@@ -186,6 +258,23 @@ export function mixedRetirementIdentityPlan(plan){
 }
 export function mixedRetirementPublicationPlan(plan,{readRecovery=readFileSync}={}){
  const {identities,retired}=mixedRetirementIdentityPlan(plan),{countries,previous}=verifiedMixedRuntimeCountries(plan,{readRecovery}),index=structuredClone(plan.previousBuiltinIndex),coverage=structuredClone(plan.previousCoverage),files=new Map();index.entities=index.entities.filter(e=>!retired.has(e.entityId));index.sourceIdentities=identities;coverage.entities=coverage.entities.filter(e=>!retired.has(e.entityId));encodeBuiltinCountries(index,[...countries.values()],files);plan.verifiedRuntimeCountries=countries;plan.previousRuntimeCountries=previous;plan.verifiedRuntimeFiles=new Map(files);return {index,coverage,files,retired};
+}
+
+export function existingColombiaRetirementPublicationPlan(plan,{readRecovery=readFileSync}={}){
+ if(!plan.existingColombia)fail('existing Colombian territory plan required');
+ const {identities,retired}=mixedRetirementIdentityPlan(plan);
+ const index=structuredClone(plan.previousBuiltinIndex),coverage=structuredClone(plan.previousCoverage);
+ const entry=index.entities.find(row=>row.entityId==='COL'),receipt=plan.manifest.recipient.builtinDescriptor;
+ const stored=readRetirementReceipt(receipt,readRecovery);
+ if(sha(stored)!==entry?.sha256||stored.length!==entry.compressedBytes)fail('Colombian builtin descriptor preimage differs');
+ const before=JSON.parse(gunzipSync(stored)),pointer='/identity/properties/metadata/historicalTimeline/sourceEntityIds';
+ if(before.schemaVersion!==3||before.entityId!=='COL')fail('Colombian builtin descriptor required');
+ const next=metadataOnlyEdits(before,[{pointer,before:['state:BJN','state:COL','state:SER'],after:['state:COL']}],'COL');
+ index.entities=index.entities.filter(row=>!retired.has(row.entityId));
+ index.sourceIdentities=identities;
+ coverage.entities=coverage.entities.filter(row=>!retired.has(row.entityId));
+ const files=encodeBuiltinCountries(index,[next],new Map());
+ return {index,coverage,files,retired};
 }
 
 /** Both the metadata producer and archive owner enforce the same paired cleanup.
@@ -197,12 +286,13 @@ export function assertBuiltinRetirement({plan,previousSourceIndex,sourceIndex,pr
  equal(previousCoverage,plan.previousCoverage,'stale previous coverage');
  if(previousIndex.inputHashes.view!==sha(JSON.stringify(previousSourceIndex.views[0]))
   ||previousIndex.inputHashes.policy!==sha(JSON.stringify(policy)))fail('stale compiled view or policy');
- const mixedPlan=plan.mixed?mixedRetirementPublicationPlan(plan,{readRecovery}):null;
+ const mixedPlan=plan.mixed?mixedRetirementPublicationPlan(plan,{readRecovery})
+  :plan.existingColombia?existingColombiaRetirementPublicationPlan(plan,{readRecovery}):null;
  const retired=mixedPlan?mixedPlan.retired:new Set();
  if(!mixedPlan)for(const id of plan.sourceIds){
   const rows=previousIndex.sourceIdentities.filter(row=>row.sourceEntityIds.includes(id));
   if(rows.length!==1||rows[0].sourceEntityIds.length!==1||rows[0].sourceFeatureIds.length!==1||!plan.featureIds.has(rows[0].sourceFeatureIds[0])
-   ||rows[0].projectEntityId!==builtinSubunitId(rows[0].sourceFeatureIds[0])
+   ||rows[0].projectEntityId!==(plan.independentId??builtinSubunitId(rows[0].sourceFeatureIds[0]))
    ||previousIndex.inputHashes.sourceRevisions[id]!==previousSourceIndex.entities.find(row=>row.entityId===id).sha256)fail('stale or shared compiled source identity');
   retired.add(rows[0].projectEntityId);
  }
@@ -213,6 +303,7 @@ export function assertBuiltinRetirement({plan,previousSourceIndex,sourceIndex,pr
  if(mixedPlan){equal(index.entities,mixedPlan.index.entities,'runtime output differs from verified minimal candidates');equal(index.geometryAssets,mixedPlan.index.geometryAssets,'runtime geometry assets differ from verified candidates');equal(coverage,mixedPlan.coverage,'mixed retirement coverage changed beyond removal');}
  equal(new Set(coverage.entities.map(row=>row.entityId)),new Set(next.keys()),'unpaired coverage membership');
  const prior=new Map(previousIndex.entities.map(row=>[row.entityId,row])),sources=new Map(sourceIndex.entities.map(row=>[row.entityId,row]));
+ if(plan.independentId)equal(index.entities,previousIndex.entities.filter(row=>!retired.has(row.entityId)),'independent retirement changed a surviving Viewer object');
  equal({...index,entities:[],sourceIdentities:[],inputHashes:{},readIndex:null,geometryAssets:null},{...previousIndex,entities:[],sourceIdentities:[],inputHashes:{},readIndex:null,geometryAssets:null},'unrelated compiled index metadata changed');
  const key=ref=>JSON.stringify([ref.id,ref.version]),requiredGeometry=new Set(index.entities.flatMap(row=>row.geometryRefs.map(key)));
  const priorGeometry=new Map(builtinGeometryAssets(previousIndex).map(asset=>[key(asset),asset]));
@@ -229,6 +320,7 @@ export function assertBuiltinRetirement({plan,previousSourceIndex,sourceIndex,pr
   else if(hash!==sources.get(id)?.sha256||!index.sourceIdentities.some(row=>row.sourceEntityIds.includes(id)&&next.get(row.projectEntityId)?.sha256!==prior.get(row.projectEntityId)?.sha256))fail('changed source revision lacks its regenerated country: '+id);
  }
  if(plan.mixed)for(const [id,row]of plan.metadataUpdates)if(index.inputHashes.sourceRevisions[id]!==row.nextEntry.sha256)fail('metadata-only chunk revision not paired');
+ if(plan.existingColombia&&index.inputHashes.sourceRevisions['state:COL']!==plan.colombianChunk.nextEntry.sha256)fail('Colombian chunk revision not paired');
  const references=new Set([...plan.sourceIds,...plan.featureIds,...retired]);
  assertNoRetiredReferences(policy,references);assertNoRetiredReferences(previousCoverage.adjustments,references);
  const changed=index.entities.filter(row=>prior.get(row.entityId)?.sha256!==row.sha256);

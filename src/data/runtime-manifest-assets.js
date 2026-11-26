@@ -75,6 +75,7 @@ export function collectRuntimeDataAssets({availablePaths,readManifest,entryPaths
       for(const item of Object.values(manifest.shards))dataAsset(item.url,base,item);
     }else if(role==='physicalLand'){
       dataAsset(manifest.asset.url,base,manifest.asset);
+      if(manifest.modernCoast)dataAsset(manifest.modernCoast.asset.url,base,manifest.modernCoast.asset);
       for(const context of manifest.waterObjects?.geometries||[])
         for(const item of [context.land,context.asset])dataAsset(item.url,'assets/data/',item);
     }

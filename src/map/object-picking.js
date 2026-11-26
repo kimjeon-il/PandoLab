@@ -72,7 +72,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       if (objectRefSelectable(normalized) && !candidates.some(candidate => candidate.key === normalized.key)) candidates.push(normalized);
     };
     seedRefs.forEach(add);
-    dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint,{includeHydro,includeLabels}).forEach(ref=>{
+    (await dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint,{includeHydro,includeLabels})).forEach(ref=>{
       if((includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))add(ref);
     });
     return candidates.sort(compareVisualOrder);
@@ -82,12 +82,14 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     if (cancelPending) objectPickRevision += 1;
     objectChooserPresentationRevision += 1;
     objectChooserIntentMode = 'replace';
+    const hadCandidates=chooserCandidates.length>0&&!chooserSelection;
     chooserSelection=null;
+    chooserCandidates=[];
+    if(hadCandidates)dependencies.rendering.invalidateChooserHighlight?.();
     const chooser = (0, dependencies.platform.$)('objectChooser');
     if (!chooser) return;
     chooser.classList.add('hidden');
     chooser.removeAttribute('style');
-    chooserCandidates=[];
     if (restoreFocus) (0, dependencies.platform.$)('map')?.focus();
   }
 
@@ -119,6 +121,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       return button;
     }));
     chooser.classList.remove('hidden');
+    if(!chooserSelection)dependencies.rendering.invalidateChooserHighlight?.();
     const presentationRevision = ++objectChooserPresentationRevision;
     if ((0, dependencies.surfaces.isMobile)()) {
       chooser.removeAttribute('style');
@@ -261,6 +264,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
     get closeObjectChooser() { return closeObjectChooser; },
     get chooseObjectCandidate() { return chooseObjectCandidate; },
     selectableObjectsAt,
+    highlightCandidates:()=>chooserSelection?[]:chooserCandidates.slice(),
     bindChooser,
     get geometryHitsScreenPoint() { return geometryHitsScreenPoint; },
     get handleMapClick() { return handleMapClick; },

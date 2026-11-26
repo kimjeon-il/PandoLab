@@ -1,8 +1,26 @@
-import { fetchWithRetry, isRetryableHttpStatus } from "../runtime/reliability-core.js";
+import { fetchWithRetry, isRetryableHttpStatus, withRetry } from "../runtime/reliability-core.js";
 import { createExternalRuntimeDataFetch } from './external-runtime-data.js';
 import {maintainStoredContent,touchStoredContent} from './stored-content-cache.js';
+
+const immutableFlightsByStorage = new WeakMap();
+const HASH = /^[a-f0-9]{64}$/;
+
+function waitForConsumer(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, {once:true});
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 // Shared stored-byte cache, integrity and decoding owner for packed world and catalog assets.
 export function createStoredAssetLoader({dataRevision, resolveUrl, report = () => {}, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches, cachePolicy = 'revision',subtle=globalThis.crypto?.subtle}) {
+ const flightScope = cacheStorage ?? fetchFn;
+ if (cachePolicy === 'immutable' && !immutableFlightsByStorage.has(flightScope))
+   immutableFlightsByStorage.set(flightScope, new Map());
+ const storedFlights = immutableFlightsByStorage.get(flightScope);
  fetchFn = createExternalRuntimeDataFetch({meta:globalThis.PANDOLAB_BUILD_META,fetchFn});
  const DATA_CACHE_PREFIX = 'pandolab-data-';
  const DATA_CACHE_NAME = DATA_CACHE_PREFIX + dataRevision;
@@ -12,9 +30,8 @@ export function createStoredAssetLoader({dataRevision, resolveUrl, report = () =
  const LEGACY_CORE_CACHE_PREFIX = 'pandolab-core-';
  let dataCachePromise = null;
  let oldCacheCleanupPromise = null;
- const storedFlights=new Map();
  function storedKey(spec,url){
-   if(cachePolicy!=='immutable'||! /^[a-f0-9]{64}$/.test(spec.sha256||''))return url;
+   if(cachePolicy!=='immutable'||!HASH.test(spec.sha256||''))return url;
    try{return new URL('/.pandolab-cache/content/'+spec.sha256,url).href;}
    catch{return url;}
  }
@@ -143,9 +160,13 @@ async function decodeStoredBuffer(storedBuffer, spec, phase, key, label, signal 
 
 function resolveAssetUrl(spec) { return resolveUrl(spec); }
 
-async function validateStoredAsset(storedBuffer, spec, label) {
+function validateStoredSize(storedBuffer, spec, label) {
   const expectedBytes = Number(spec.compressedBytes || 0);
   if (expectedBytes > 0 && storedBuffer.byteLength !== expectedBytes) throw new Error(`${label} 저장 크기가 올바르지 않습니다.`);
+}
+
+async function validateStoredAsset(storedBuffer, spec, label) {
+  validateStoredSize(storedBuffer, spec, label);
   const expectedHash = String(spec.sha256 || '').toLowerCase();
   if (!expectedHash) return;
   if (!subtle) throw new Error(`${label} 무결성을 확인할 수 없습니다.`);
@@ -164,39 +185,121 @@ function validateAssetLength(result, spec, label) {
   throw new Error(`${label} 압축 해제 크기가 올바르지 않습니다.`);
 }
 
-async function downloadStoredAsset({url,spec,phase,key,label,signal,attempt,cacheKey}) {
-  const download=async()=>{
-    let responseHeaders;
-    const read=await fetchWithRetry(url,{cache:attempt===1?'default':'reload',signal},{
-      fetchFn,maxAttempts:1,timeoutMs:30000,
-      consume:(response,{touch,signal:requestSignal})=>{
-        if(!response.ok)throw Object.assign(new Error(`${label} 요청에 실패했습니다. (${response.status})`),{httpStatus:response.status});
-        responseHeaders=response.headers;
-        return consumeStoredResponse(response,spec,phase,key,label,'network',touch,requestSignal);
-      },
-    });
-    await validateStoredAsset(read.storedBuffer,spec,label);
-    return {read,responseHeaders};
-  };
-  // Only non-cancellable immutable reads share a flight. Each consumer
-  // still verifies its own declared length/encoding and format.
-  const share=cachePolicy==='immutable'&&!signal&&/^[a-f0-9]{64}$/.test(spec.sha256||'');
-  const flightKey=String(cacheKey);
-  let flight=share?storedFlights.get(flightKey):null;
-  const joined=!!flight;
-  if(!flight){
-    flight=download();
-    if(share){storedFlights.set(flightKey,flight);const clear=()=>{if(storedFlights.get(flightKey)===flight)storedFlights.delete(flightKey);};flight.then(clear,clear);}
-  }
-  const received=await flight;
-  const read=joined?{...received.read,storedBuffer:received.read.storedBuffer.slice(0),transferredBytes:0}:received.read;
-  const responseHeaders=received.responseHeaders;
-  if(joined)await validateStoredAsset(read.storedBuffer,spec,label);
+async function downloadStoredAsset({url,spec,phase,key,label,signal,attempt}) {
+  let responseHeaders;
+  const read=await fetchWithRetry(url,{cache:attempt===1?'default':'reload',signal},{
+    fetchFn,maxAttempts:1,timeoutMs:30000,
+    consume:(response,{touch,signal:requestSignal})=>{
+      if(!response.ok)throw Object.assign(new Error(`${label} 요청에 실패했습니다. (${response.status})`),{httpStatus:response.status});
+      responseHeaders=response.headers;
+      return consumeStoredResponse(response,spec,phase,key,label,'network',touch,requestSignal);
+    },
+  });
+  signal?.throwIfAborted();
+  await validateStoredAsset(read.storedBuffer,spec,label);
   return {read,responseHeaders};
+}
+
+function persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label) {
+  const started=performance.now();
+  report(phase,`${key}-cache-write`,`${label}: 다운로드한 데이터를 저장하는 중입니다.`,0,1);
+  return cacheStoredBuffer(cache,cacheKey,read.storedBuffer,responseHeaders).then(cached=>{
+    const cacheWriteMs=performance.now()-started;
+    report(phase,`${key}-cache-write`,`${label}: 저장을 마쳤습니다.`,1,1,true,{cached});
+    return {cached,cacheWriteMs};
+  });
+}
+
+async function readImmutableCache(cache,spec,url,phase,key,label,signal) {
+  signal.throwIfAborted();
+  const match=await findStored(cache,spec,url);
+  if (!match) return null;
+  try {
+    signal.throwIfAborted();
+    const read=await consumeStoredResponse(match.response,spec,phase,key,label,'cache',undefined,signal);
+    await validateStoredAsset(read.storedBuffer,spec,label);
+    signal.throwIfAborted();
+    touchStoredContent(cache,match.key);
+    return read;
+  } catch (error) {
+    if (signal.aborted || error?.name==='AbortError') throw error;
+    await cache.delete(match.key).catch(()=>false);
+    report(phase,`${key}-cache-repair`,`${label}: 손상된 저장 데이터를 지웠습니다.`,1,1,true,{source:'cache',recovered:true});
+    return null;
+  }
+}
+
+async function loadImmutable(spec,phase,key,label,validate,signal,representation,cachedOnly) {
+  const url=resolveAssetUrl(spec),cacheKey=storedKey(spec,url);
+  let flight=storedFlights.get(cacheKey);
+  if (!flight) {
+    const controller=new AbortController(),cache=openDataCache();
+    flight={controller,cache,users:0,network:null,writing:null,transferClaimed:false,
+      cached:cache.then(opened=>readImmutableCache(opened,spec,url,phase,key,label,controller.signal))};
+    storedFlights.set(cacheKey,flight);
+  }
+  const release=()=>{
+    if (flight.users===0 && storedFlights.get(cacheKey)===flight) storedFlights.delete(cacheKey);
+  };
+  flight.users++;
+  try {
+    let read=await waitForConsumer(flight.cached,signal);
+    signal?.throwIfAborted();
+    let attempt=0;
+    if (!read) {
+      if (cachedOnly) return null;
+      flight.network??=withRetry(async({attempt:current,signal:flightSignal})=>{
+        const {read,responseHeaders}=await downloadStoredAsset({url,spec,phase,key,label,signal:flightSignal,attempt:current});
+        flightSignal.throwIfAborted();
+        const cache=await flight.cache;
+        flightSignal.throwIfAborted();
+        flight.writing=persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label);
+        return {read,attempt:current};
+      },{
+        signal:flight.controller.signal,maxAttempts:3,baseDelay:500,maxDelay:1000,jitter:0,
+        shouldRetry:error=>!Number.isFinite(error?.httpStatus)||isRetryableHttpStatus(error.httpStatus),
+        onRetry:current=>report(phase,`${key}-retry`,`${label} 준비를 다시 시도합니다. (${current+1}/3)`,1,1,false,{attempt:current}),
+      });
+      ({read,attempt}=await waitForConsumer(flight.network,signal));
+    }
+    signal?.throwIfAborted();
+    validateStoredSize(read.storedBuffer,spec,label);
+    const decoding=(async()=>{
+      // Raw buffers may be mutated or transferred by a consumer.
+      const input=representation==='stored'||spec.encoding!=='gzip'?read.storedBuffer.slice(0):read.storedBuffer;
+      const decoded=representation==='decoded'?await decodeStoredBuffer(input,spec,phase,key,label,signal):
+        {buffer:input,decodedBytes:input.byteLength,decompressMs:0};
+      if (representation==='decoded') validateAssetLength(decoded,spec,label);
+      return {...decoded,value:await validate(decoded.buffer,label)};
+    })();
+    const [decoded,{cached,cacheWriteMs}]=await waitForConsumer(
+      Promise.all([decoding,read.source==='cache'?{cached:true,cacheWriteMs:0}:flight.writing]),signal);
+    signal?.throwIfAborted();
+    const cacheHit=read.source==='cache';
+    const transferredBytes=flight.transferClaimed?0:read.transferredBytes;
+    if (transferredBytes) flight.transferClaimed=true;
+    report(phase,key,`${label}: ${cacheHit?'저장된 데이터를 확인했습니다.':'다운로드를 완료했습니다.'}`,
+      read.storedBytes,read.storedBytes,true,{source:read.source,cached,attempt});
+    return {...read,...decoded,get storedBuffer(){return read.storedBuffer.slice(0);},transferredBytes,
+      cacheWriteMs,milliseconds:read.readMs+cacheWriteMs+decoded.decompressMs,cacheHit};
+  } catch (error) {
+    if (!cachedOnly || signal?.aborted || error?.name==='AbortError') throw error;
+    return null;
+  } finally {
+    if (--flight.users===0) {
+      if (flight.writing) flight.writing.then(release,release);
+      else {
+        release();
+        flight.controller.abort();
+      }
+    }
+  }
 }
 
 async function loadRepresentation(spec, phase, key, label, validate, signal, representation, cachedOnly=false) {
   signal?.throwIfAborted();
+  if (cachePolicy==='immutable' && HASH.test(spec.sha256||''))
+    return loadImmutable(spec,phase,key,label,validate,signal,representation,cachedOnly);
   const decode=buffer=>representation==='decoded' ? decodeStoredBuffer(buffer,spec,phase,key,label,signal):Promise.resolve({buffer,decodedBytes:buffer.byteLength,decompressMs:0});
   const url = resolveAssetUrl(spec);
   const cache = await openDataCache(),cacheKey=storedKey(spec,url);
@@ -234,17 +337,11 @@ async function loadRepresentation(spec, phase, key, label, validate, signal, rep
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const {read,responseHeaders}=await downloadStoredAsset({url,spec,phase,key,label,signal,attempt,cacheKey});
+      const {read,responseHeaders}=await downloadStoredAsset({url,spec,phase,key,label,signal,attempt});
       signal?.throwIfAborted();
-      const cacheWriteStartedAt = performance.now();
-      report(phase, `${key}-cache-write`, `${label}: 다운로드한 데이터를 저장하는 중입니다.`, 0, 1);
       // Verified stored bytes can be persisted while independent decoding
       // proceeds. Settle both operations before retry/delete, even on failure.
-      const writing=cacheStoredBuffer(cache,cacheKey,read.storedBuffer,responseHeaders).then(cached=>{
-        const cacheWriteMs=performance.now()-cacheWriteStartedAt;
-        report(phase,`${key}-cache-write`,`${label}: 저장을 마쳤습니다.`,1,1,true,{cached});
-        return {cached,cacheWriteMs};
-      });
+      const writing=persistDownload(cache,cacheKey,read,responseHeaders,phase,key,label);
       // Format validation (including independent content digest) can also
       // run before persistent-cache I/O finishes. Await both on failure.
       const decoding=decode(read.storedBuffer).then(async decoded=>{

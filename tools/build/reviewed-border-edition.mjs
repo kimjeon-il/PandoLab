@@ -6,7 +6,7 @@ import {decodeTerritorialSource,encodeTerritorialSource} from '../data/territori
 import {selectTerritorialChunkBytes} from '../data/territorial-chunk-compression.mjs';
 import {assertIndexedTerritorialChunk} from '../data/territorial-metadata-projection.mjs';
 import {encodeBuiltinCountries,finalizeBuiltinWorldFiles,readBuiltinCountry} from '../data/builtin-country-bytes.mjs';
-import {assertHistoricalDisplayChanges,assertHistoricalSourceStorageChanges} from '../gis/historical-display-review.mjs';
+import {assertHistoricalCompiledChanges,assertHistoricalDisplayChanges,assertHistoricalSourceStorageChanges,readWorldPolygonsPartition,worldPolygonsCompositionGeometry,worldPolygonsDisplayEvidencePath,worldPolygonsReviewedGeometry,worldPolygonsViewerGeometry} from '../gis/historical-display-review.mjs';
 import {assertHistoricalStorageChanges} from '../gis/historical-display-storage.mjs';
 import {assertOriginalAuthoringSourceStorageChanges} from '../data/territorial-original-authoring.mjs';
 import {historicalWorldClipper as clip} from '../gis/historical-world-territories.mjs';
@@ -386,7 +386,7 @@ export function reviewedDisplayPeriod(bindings,versions,{displayValidFrom,previo
  }
  const start=parseTemporal(displayValidFrom),end=parseTemporal(previousDisplayThrough);
  if(start?.precision!=='date'||end?.precision!=='date'||start.canonical!==displayValidFrom||end.canonical!==previousDisplayThrough
-   ||!equal(temporalFollowingDay(end.endKey),start.startKey)||bindings.some(row=>compareTemporal(row.validFrom,start)>0))
+  ||!equal(temporalFollowingDay(end.endKey),start.startKey)||bindings.some(row=>row.validFrom&&compareTemporal(row.validFrom,start)>0))
   fail('the display period must begin within both current bindings and immediately follow the retained period');
  return {validFrom:displayValidFrom,validTo:null,previousDisplayThrough};
 }
@@ -403,6 +403,166 @@ export function replaceReviewedDisplayBinding(rows,before,geometryRef,binding,pr
  });
  if(replaced!==1)fail('a unique current display binding is required');
  return next;
+}
+
+function findWorldPolygonsTimelineBinding(country,binding){
+ const rows=country.timelineRecords.geometryBindings.filter(row=>equal(row.geometryRef,binding.geometryRef)
+  &&row.validTo===binding.validTo);
+ const exact=rows.find(row=>row.validFrom===binding.validFrom);
+ if(exact)return {row:exact};
+ if(rows.length!==1||binding.validTo!==null||!binding.validFrom
+  ||(rows[0].validFrom&&compareTemporal(rows[0].validFrom,binding.validFrom)>=0))return null;
+ const start=parseTemporal(binding.validFrom).startKey;
+ const previous=country.sourceBindings.find(row=>row.validTo&&equal(row.geometryRef,binding.geometryRef)
+  &&equal(temporalFollowingDay(parseTemporal(row.validTo).endKey),start));
+ return previous?{row:rows[0],previousDisplayThrough:previous.validTo}:null;
+}
+
+export function applyWorldPolygonsDisplay(country,replacements,source,cutover){
+ const next=structuredClone(country);
+ const timeline=next.identity.properties.metadata.historicalTimeline;
+ for(const {binding,geometry,featureId,featureIds,sourceMemberEntityId} of replacements){
+  const before=next.geometries.find(g=>equal({id:g.id,version:g.version},binding.geometryRef));
+  const version=timeline.geometryVersions.find(v=>v.versionId===binding.sourceVersionId);
+  if(!before||!version||!['Polygon','MultiPolygon'].includes(geometry?.type)||!parts(geometry).length)
+   fail('invalid World Polygons binding '+country.entityId);
+  if(geometryDigest(before.geojson)===geometryDigest(geometry))continue;
+  const ref={id:'historical-world:'+coordinateDigest(geometry),version:1};
+  const {previousDisplayThrough,validFrom,validTo}=cutover?reviewedDisplayPeriod([binding],[version],cutover):binding;
+  const dates={validFrom,validTo};
+  const scheduled=findWorldPolygonsTimelineBinding(next,binding);
+  if(!scheduled)fail('invalid World Polygons timeline binding '+country.entityId);
+  next.sourceBindings=replaceReviewedDisplayBinding(next.sourceBindings,binding,ref,dates,previousDisplayThrough);
+  next.timelineRecords.geometryBindings=replaceReviewedDisplayBinding(next.timelineRecords.geometryBindings,
+   scheduled.row,ref,dates,previousDisplayThrough??scheduled.previousDisplayThrough);
+  if(!next.geometries.some(g=>g.id===ref.id&&g.version===ref.version))next.geometries.push({...ref,geojson:geometry});
+  const provenance=version.historicalProvenance??={};
+  const previousReviews=(provenance.worldPolygonsDisplay??[]).filter(row=>row.validFrom!==dates.validFrom||row.validTo!==dates.validTo);
+  provenance.worldPolygonsDisplay=[...previousReviews,{...dates,...(featureIds?{featureIds}:{featureId}),source,
+   ...(sourceMemberEntityId?{sourceMemberEntityId}:{}),
+   previousGeometrySha256:geometryDigest(before.geojson),geometrySha256:geometryDigest(geometry)}];
+ }
+ const retained=[...next.sourceBindings,...next.timelineRecords.geometryBindings];
+ next.geometries=next.geometries.filter(g=>retained.some(r=>r.geometryRef.id===g.id&&r.geometryRef.version===g.version));
+ return next;
+}
+
+export function buildWorldPolygonsDisplayEdition({baseline,readBaseline,indexPath,sourcePath,sourceBytes}){
+ const publication=JSON.parse(gunzipSync(sourceBytes));
+ const source={reference:sourcePath,sha256:digest(sourceBytes)};
+ if(publication.sourceLayer!=='DoS_WP_11_4_G99_5'||publication.sourceCrs!=='EPSG:4326')
+  fail('expected World Polygons 11.4 99.5% geometry');
+ const composition=sourcePath===worldPolygonsDisplayEvidencePath(source.sha256,'compositions');
+ const mapped=composition&&publication.current.some(row=>row.method==='confirmed-original-features');
+ const reviewed=sourcePath===worldPolygonsDisplayEvidencePath(source.sha256,'reviewed');
+ const partition=sourcePath===worldPolygonsDisplayEvidencePath(source.sha256,'partitions');
+ if(composition&&!mapped&&(publication.current.length!==1||publication.current[0].entityId!=='state:PSX'
+  ||publication.historical.length))fail('composition is limited to current Palestine');
+ if((reviewed||mapped)&&(publication.baseline!==baseline||!publication.current.length||publication.historical.length
+  ||new Set(publication.current.map(row=>row.entityId)).size!==publication.current.length
+  ||publication.current.some(row=>row.outcome!=='candidate')))fail('exact current reviewed scope required');
+ if(mapped&&(typeof publication.displayValidFrom!=='string'||typeof publication.previousDisplayThrough!=='string'
+  ||publication.current.some(row=>row.method!=='confirmed-original-features')))fail('current original feature mapping requires an explicit display cutover');
+ const index=JSON.parse(readBaseline(indexPath));
+ const root=indexPath.slice(0,indexPath.lastIndexOf('/')+1);
+ const owners=new Map(index.sourceIdentities.flatMap(row=>row.sourceEntityIds.map(id=>[id,row])));
+ const countries=new Map();
+ const readCountry=id=>{
+  if(!countries.has(id)){
+   const entry=index.entities.find(row=>row.entityId===id);
+   if(!entry)fail('missing display owner '+id);
+   countries.set(id,readBuiltinCountry(entry,index,file=>readBaseline(root+file)));
+  }
+  return countries.get(id);
+ };
+ const replacements=new Map(),current=new Map(),skipped=[];
+ let originalWorld;
+ const cutover=partition||mapped?{displayValidFrom:publication.displayValidFrom,previousDisplayThrough:publication.previousDisplayThrough}:undefined;
+ const bind=(row,historical)=>{
+  const owner=owners.get(row.entityId);
+  if(!owner||!reviewed&&owner.sourceEntityIds.length!==1)return 'composite or missing Viewer identity';
+  const country=readCountry(owner.projectEntityId);
+  const ownerSourceEntityId=country.identity.properties.metadata.historicalTimeline.entityId;
+  const member=reviewed&&row.entityId!==ownerSourceEntityId;
+  if(reviewed&&row.ownerSourceEntityId!==ownerSourceEntityId)return 'reviewed Viewer identity differs';
+  if(member){
+   originalWorld??=JSON.parse(gunzipSync(readBaseline(worldPolygonsDisplayEvidencePath())));
+   const original=originalWorld.current.find(feature=>feature.entityId===ownerSourceEntityId&&feature.outcome==='candidate');
+   if(owner.sourceEntityIds.length!==2||originalWorld.sourcePackageSha256!==publication.sourcePackageSha256
+    ||!equal(original?.candidateIds,[row.ownerFeatureId])||!originalWorld.geometries[row.ownerFeatureId]
+    ||!equal(originalWorld.geometries[row.ownerFeatureId],publication.geometries[row.ownerFeatureId]))
+    return 'paired original owner feature required';
+  }else if(reviewed&&owner.sourceEntityIds.length!==1)return 'explicit composite member required';
+  const bindings=country.sourceBindings.filter(b=>b.sourceVersionId===row.versionId&&(historical?b.validTo!==null:b.validTo===null));
+  if(!bindings.length)return 'no matching Viewer interval';
+  const donor=historical?current.get(row.donor):null;
+  if(historical&&!donor)return 'no paired current Viewer donor';
+  const featureId=row.candidateIds?.[0],donorGeometry=publication.geometries[featureId];
+  if(!composition&&(row.candidateIds?.length!==1||!donorGeometry))return 'no unique polygon';
+  if(reviewed&&(!publication.sourceFeatures?.[featureId]?.genc||!shaPattern.test(publication.sourceFeatures[featureId].wkbSha256)))
+   return 'verified original source feature required';
+  if(!bindings.every(binding=>{
+   if(historical&&!equal(binding.geometryRef,donor.before.geometryRef))return false;
+   return Boolean(findWorldPolygonsTimelineBinding(country,binding));
+  }))return 'Viewer geometry or interval differs from the reviewed scope';
+  if(!replacements.has(country.entityId))replacements.set(country.entityId,[]);
+  const selected=replacements.get(country.entityId);
+  const geometry=composition?worldPolygonsCompositionGeometry(publication,row)
+   :reviewed?worldPolygonsReviewedGeometry(donorGeometry,row,publication.geometries[row.ownerFeatureId]):worldPolygonsViewerGeometry(donorGeometry,row);
+  for(const binding of bindings)
+   selected.push({binding,geometry,...(composition?{featureIds:row.candidateIds}:{featureId}),...(member?{sourceMemberEntityId:row.entityId}:{})});
+  if(!historical)current.set(row.entityId,{before:bindings[0]});
+  return null;
+ };
+ if(partition){
+  if(publication.baseline!==baseline||typeof cutover.displayValidFrom!=='string'||typeof cutover.previousDisplayThrough!=='string'
+   ||!Array.isArray(publication.partitions)||!publication.partitions.length)
+   fail('exact current partition scope required');
+  for(const row of publication.partitions){
+   const {owner,member}=readWorldPolygonsPartition(publication,row,readBaseline);
+   for(const [sourceId,geometry] of [[row.ownerEntityId,owner],[row.memberEntityId,member]]){
+    const target=owners.get(sourceId);
+    if(target?.sourceEntityIds.length!==1||replacements.has(target.projectEntityId))
+     fail('partition requires distinct existing Viewer objects '+sourceId);
+    const country=readCountry(target.projectEntityId);
+    const bindings=country.sourceBindings.filter(b=>b.validTo===null);
+    if(bindings.length!==1||!findWorldPolygonsTimelineBinding(country,bindings[0]))
+     fail('partition requires a unique current display binding '+sourceId);
+    replacements.set(country.entityId,[{binding:bindings[0],geometry,featureId:row.featureId}]);
+    current.set(sourceId,{before:bindings[0]});
+   }
+  }
+ }else{
+  for(const [historical,rows] of [[false,publication.current],[true,publication.historical]])
+   for(const row of rows)if(row.outcome==='candidate'){
+    const reason=bind(row,historical);
+    if(reason)skipped.push({entityId:row.entityId,versionId:row.versionId,historical,reason});
+   }
+ }
+ const nextIndex=structuredClone(index), changed=[];
+ for(const [id,rows] of replacements){
+  const before=readCountry(id),country=applyWorldPolygonsDisplay(before,rows,source,cutover);
+  const verified=assertHistoricalCompiledChanges(country,before,{readDisplayEvidence:p=>p===sourcePath?sourceBytes:partition?readBaseline(p):null});
+  if(partition&&verified!==1)fail('missing changed partition side '+id);
+  if(!equal(country,before))changed.push(country);
+ }
+ if(!changed.length)fail('no World Polygons display replacements');
+ if((reviewed||mapped)&&(skipped.length||current.size!==publication.current.length))
+  fail('incomplete reviewed replacements '+JSON.stringify(skipped));
+ const encoded=encodeBuiltinCountries(nextIndex,changed,new Map());
+ finalizeBuiltinWorldFiles(nextIndex,encoded,{previousIndex:index});
+ const files=new Map([...encoded].map(([file,bytes])=>[root+file,bytes]));
+ files.set(sourcePath,sourceBytes);
+ const changedIds=new Set(changed.map(row=>row.entityId));
+ for(const field of ['lifetimes','parentRelations','propertyBindings'])
+  if(!equal(index.readIndex.records[field],nextIndex.readIndex.records[field]))fail('World Polygons changed '+field);
+ if(!equal(index.entities.filter(row=>!changedIds.has(row.entityId)),nextIndex.entities.filter(row=>!changedIds.has(row.entityId))))
+  fail('World Polygons changed an unselected Viewer object');
+ return issue({baseline,files,reports:{},plan:{
+  current:[...current.keys()],historical:(publication.historical??[]).filter(row=>row.outcome==='candidate'
+   &&!skipped.some(s=>s.entityId===row.entityId&&s.versionId===row.versionId)).map(row=>({entityId:row.entityId,versionId:row.versionId})),
+  skipped,changed:changed.map(row=>row.entityId),
+ }});
 }
 
 export function buildReviewedBorderBatch({entityIds,receipts,readBaseline,...options}){
