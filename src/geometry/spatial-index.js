@@ -86,10 +86,6 @@ export function createSpatialIndex() {
     return true;
   }
 
-  function noteTerritorialChange(entities, {propertyOnly = false} = {}) {
-    if (!propertyOnly || !retainTerritorialSpatialIndex(entities)) mapObjectGeometryRevisions.territorial += 1;
-  }
-
   function visibleMapObjectCandidates(domains) {
     rebuildMapObjectSpatialIndex();
     const started = performance.now();
@@ -190,6 +186,14 @@ export function createSpatialIndex() {
     return mapObjectDistributionRowCache.get(String(id)) || null;
   }
 
+  function rebuildSpatialIndex(features = dependencies.territorialModel.entityRepository.list({ kind: 'general', parentId: '' })) {
+    dependencies.projectState.state.spatialIndex = (features || []).map(feature => ({
+      id: String(feature?.id || ''),
+      feature,
+      bounds: geometryBounds(feature.geometry),
+    }));
+  }
+
   function initializeGeometryBoundsCache() {
     (geometryBoundsCache = new WeakMap());
   }
@@ -225,9 +229,11 @@ export function createSpatialIndex() {
     get geometryMayIntersectViewport() { return geometryMayIntersectViewport; },
     get indexedDistributionRow() { return indexedDistributionRow; },
     get indexedMapObjectCandidates() { return indexedMapObjectCandidates; },
+    get mapObjectGeometryRevisions() { return mapObjectGeometryRevisions; },
     get mapObjectSpatialIndex() { return mapObjectSpatialIndex; },
     get rebuildMapObjectSpatialIndex() { return rebuildMapObjectSpatialIndex; },
-    noteTerritorialChange,
+    get retainTerritorialSpatialIndex() { return retainTerritorialSpatialIndex; },
+    get rebuildSpatialIndex() { return rebuildSpatialIndex; },
     get scheduleMapObjectSpatialIndexRebuild() { return scheduleMapObjectSpatialIndexRebuild; },
     get viewportCullingMetrics() { return viewportCullingMetrics; },
     get visibleMapObjectCandidates() { return visibleMapObjectCandidates; },

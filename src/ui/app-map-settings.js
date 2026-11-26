@@ -25,6 +25,7 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (!result) throw new Error('Layer visibility command rejected: ' + key);
     ports.objectDisplay.invalidateObjectPresentation();
     ports.domains.objectSearchController?.render();
+    if (key === 'distributions') ports.distributionPresentation.bumpVisibilityRevision();
     if (key === 'objects') ports.rendering.mapRenderer.invalidateCountryPalette({base:true, emphasis:true},'country-layer-visibility');
     if (key === 'rivers' || key === 'lakes') ports.rendering.mapRenderer.invalidateHydroVisibility();
     if (key === 'labels' || key === 'objectNames')
@@ -58,18 +59,23 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
   async function setNativeNameOverlay(enabled) {
     const current = ports.preferences.userPreferences;
     if (current.labels.place.showNativeNames === enabled) return false;
-    ports.preferences.apply({...current, labels:{
+    const next = ports.preferences.saveUserPreferences({...current, labels:{
       ...current.labels, place:{...current.labels.place, showNativeNames:enabled},
-    }}, {reason: 'native-name-visibility'});
+    }});
+    ports.preferences.setUserPreferences(next);
+    ports.domains.renderingDomain.invalidateLabels('native-name-visibility');
     return true;
   }
   async function setBackgroundSetting(key, visible) {
     if (key !== 'graticule') throw new TypeError('Unsupported background setting: ' + key);
     if (state().backgroundSettings?.[key] === visible) return false;
+    state().backgroundSettings[key] = visible;
     const current = ports.preferences.userPreferences;
-    ports.preferences.apply({...current, backgrounds:{
+    const next = ports.preferences.saveUserPreferences({...current, backgrounds:{
       ...current.backgrounds, viewer:{...current.backgrounds.viewer, [key]:visible},
-    }}, {reason: 'background-preference'});
+    }});
+    ports.preferences.setUserPreferences(next);
+    ports.domains.renderingDomain.invalidateProject('background-preference');
     return true;
   }
   async function setDistributionControl(action, value) {
@@ -80,6 +86,7 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (current[property] === value) return false;
     const result = await viewPresentation.applyPresentation({action, value});
     if (!result) throw new Error('Distribution setting command rejected: ' + action);
+    if (action === 'distributionActiveLayer') ports.distributionPresentation.bumpVisibilityRevision();
     ports.domains.renderingDomain.invalidateOverlayStyle('distribution-setting');
     return true;
   }

@@ -1,13 +1,12 @@
 import { loadUserPreferences, saveUserPreferences, effectiveTheme } from './user-preferences.js';
 import { resolveMapAccent } from './app-accent.js';
 import { resolveMapInteractionStyle } from '../map/map-interaction-style.js';
-import { freezeStructuredValue } from '../runtime/structured-value.js';
 
 const FONT_STACKS = Object.freeze({default:'var(--ui-font-family)', gothic:'"Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif', serif:'"Noto Serif KR", "Nanum Myeongjo", "AppleMyungjo", serif'});
 
 /** Owns Viewer preference state and its DOM projection. */
 export function createPreferencePresentation({document, window, onChange = () => {}}) {
-  let current = freezeStructuredValue(loadUserPreferences()), accent, interactionStyle;
+  let current = loadUserPreferences(), accent, interactionStyle;
   const systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
   let systemTheme = systemThemeQuery.matches?'dark':'light';
   function render() {
@@ -28,7 +27,7 @@ export function createPreferencePresentation({document, window, onChange = () =>
   }
   function apply(next, {persist = true, rerender = true, reason = 'user-preferences'} = {}) {
     const previousCountryNames = current.appearance.showFormalCountryNames;
-    current = freezeStructuredValue(persist ? saveUserPreferences(next) : next === current ? current : structuredClone(next));
+    current = persist?saveUserPreferences(next):next;
     render();
     onChange({reason, rerender, interactionStyle, countryNamesChanged:previousCountryNames!==current.appearance.showFormalCountryNames});
     return current;
@@ -51,6 +50,6 @@ export function createPreferencePresentation({document, window, onChange = () =>
     window.removeEventListener('pageshow', refreshSystemAccent);
     document.removeEventListener('visibilitychange', refreshSystemAccent);
   },
-    get current() {return current;}, get accent() {return accent;}, get interactionStyle() {return interactionStyle;},
+    get current() {return current;}, set current(value) {current = value;}, get accent() {return accent;}, get interactionStyle() {return interactionStyle;},
     get systemTheme() {return systemTheme;}, systemThemeQuery});
 }

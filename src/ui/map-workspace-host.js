@@ -29,6 +29,7 @@ export function createMapHost() {
       projectCoordinate:renderer().projection.projectCoordinate, projectVisibleCoordinate:renderer().projection.projectVisibleCoordinate});
     return lastFrame;
   }
+  function syncMapHostFromState() {renderer().syncCameraFromState(); return dependencies.domains.renderingDomain.invalidateView('host-camera');}
   function attachMapOutput() {
     renderer().attach(element());
     // Preserve the browser inspection API without a second surface lifecycle.
@@ -39,9 +40,8 @@ export function createMapHost() {
       getViewState:projectionViewSnapshot,
       setViewState(view) {
         viewerPolicy.assertProjection(view?.projection);
-        if (view?.view) renderer().syncCameraFromState(structuredClone(view.view));
-        dependencies.domains.renderingDomain.invalidateView('host-camera');
-        return true;
+        if (view?.view)dependencies.projectState.state.view = structuredClone(view.view);
+        syncMapHostFromState(); return true;
       },
       getViewportSize:() => ({...dependencies.projectState.state.size, dpr:renderer().getRenderPixelRatio()}),
       project:coordinate => renderer().projection.projectVisibleCoordinate(coordinate),
@@ -58,16 +58,13 @@ export function createMapHost() {
   }
   function queueMapResize(reason = 'layout') {
     if (resizeFrame)return;
-    resizeFrame = requestAnimationFrame(() => {
-      resizeFrame = 0;
-      dependencies.projectionView.refreshMapLayoutMetrics(reason);
-      dependencies.domains.renderingDomain.invalidateViewport('resize');
-    });
+    resizeFrame = requestAnimationFrame(() => {resizeFrame = 0; const layout = dependencies.projectionView.refreshMapLayoutMetrics(reason);
+      dependencies.projectState.state.size = {width:layout.width, height:layout.height}; renderer().verifyLayout(); dependencies.domains.renderingDomain.invalidateViewport('resize');});
   }
   function watchResolution() {resolution?.removeEventListener('change', watchResolution); resolution = window.matchMedia?.('(resolution: '+(window.devicePixelRatio||1)+'dppx)'); resolution?.addEventListener('change', watchResolution, {once:true}); queueMapResize('resolution');}
   const viewportResize = () => {dependencies.workspaceUi.refreshMapSheetMetrics(); queueMapResize('visual-viewport');};
   function startMapResizeObserver() {observer = new ResizeObserver(() => queueMapResize('resize-observer')); observer.observe(element()); window.visualViewport?.addEventListener('resize', viewportResize); watchResolution();}
   function stopMapResizeObserver() {observer?.disconnect(); resolution?.removeEventListener('change', watchResolution); window.visualViewport?.removeEventListener('resize', viewportResize); if (resizeFrame)cancelAnimationFrame(resizeFrame); ready = false;}
-  return Object.freeze({connect, attachMapOutput, initializeMapHost, prepareVisualFrame, projectionViewSnapshot, syncViewRevision,
+  return Object.freeze({connect, attachMapOutput, initializeMapHost, prepareVisualFrame, projectionViewSnapshot, syncViewRevision, syncMapHostFromState,
     queueMapResize, startMapResizeObserver, stopMapResizeObserver, get mapHost() {return host;}, get viewRevision() {return viewRevision;}});
 }
