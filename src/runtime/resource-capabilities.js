@@ -7,5 +7,5 @@ export function resourceCapabilities(productMode,platform=null,{projection='glob
   return Object.freeze({globe:true,graticule:true,globeShadow:true,
     builtinHydro:resources?.builtinHydro??true,
     builtinPlaces:resources?.builtinPlaces??true,
-    eagerBuiltinHydro:productMode==='viewer',eagerBuiltinPlaces:productMode==='viewer'});
+    eagerBuiltinHydro:true,eagerBuiltinPlaces:true});
 }

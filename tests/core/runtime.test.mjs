@@ -437,3 +437,15 @@ test('distribution hierarchy normalization shares the compiled Core reference gr
  assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','a')]),/a의 상위 분포 레이어 관계가 순환/);
  assert.throws(()=>normalizeDistributionLayers([layer('a','b'),layer('b','missing')]),/b의 상위 분포 레이어가 존재하지 않거나/);
 });
+
+test('read-only Viewer rejects an editor geometry context and requests eager built-in resources',async()=>{
+ const {createPlatformPorts,assertPlatformPorts}=await import('../../src/runtime/platform-ports.js');
+ const {resourceCapabilities}=await import('../../src/runtime/resource-capabilities.js');
+ const platform=createPlatformPorts({kind:'browser'});
+ assert.equal(assertPlatformPorts(platform,{productMode:'viewer'}),platform);
+ const resources=resourceCapabilities('viewer',platform);
+ assert.equal(resources.eagerBuiltinHydro,true);
+ assert.equal(resources.eagerBuiltinPlaces,true);
+ assert.throws(()=>assertPlatformPorts(createPlatformPorts({kind:'browser',library:{geometryContext:{}}}),{productMode:'viewer'}),/Viewer platform cannot install a library geometry context/);
+ assert.throws(()=>resourceCapabilities('editor',platform),/Viewer product mode/);
+});

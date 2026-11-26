@@ -508,9 +508,10 @@ export async function composeViewer({ productMode, meta }) {
       const [,accepted]=await Promise.all([rendererReady,projectClock.initialize()]);
       return accepted;
     },
-    onReady:async()=>{
+    onReady:({isActive})=>{
       preferencesDialog.sync();
-      await inspectorController?.openAfterStartup();
+      // The optional inspector must not hold the accepted Viewer ready event.
+      void Promise.resolve().then(()=>isActive()&&inspectorController?.openAfterStartup()).catch(report);
     },
     shouldRetryCompose:(error,index)=>index===0&&isRecoverableLoadError(error),
     shouldRetryStartup:isRecoverableLoadError,

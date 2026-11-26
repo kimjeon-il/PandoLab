@@ -30,7 +30,7 @@ export function createProductModePolicy(productMode, {readOnly = true, projectio
         throw Object.assign(new Error(`The ${productMode} supports only the ${projection} projection.`), { code: 'PL-PRODUCT-PROJECTION', productMode, projection: requested });
     },
     assertOperation(operation) {
-      if (readOnly && !viewerOperations.has(operation))
+      if (!viewerOperations.has(operation))
         throw Object.assign(new Error('This operation is unavailable in the read-only viewer.'),
           { code: 'PL-PRODUCT-READONLY', productMode, operation });
     },

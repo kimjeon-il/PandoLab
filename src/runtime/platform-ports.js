@@ -14,12 +14,6 @@ function optionalFunction(value, label) {
   if (value !== null && value !== undefined && typeof value !== 'function') throw new TypeError(`${label} must be a function or null.`);
   return value ?? null;
 }
-function validateGeometryContext(context) {
-  if (context == null) return null;
-  requireRecord(context, 'Platform library geometry context');
-  for (const name of ['prepare', 'attachRuntime', 'save']) if (typeof context[name] !== 'function') throw new TypeError(`Platform library geometry context requires ${name}.`);
-  return context;
-}
 function validateBuiltinLoader(loader) {
   if (loader == null) return null;
   requireRecord(loader, 'Platform builtin world loader');
@@ -76,8 +70,7 @@ export function assertPlatformPorts(platform, { productMode } = {}) {
       || !STARTUP_MESHES.has(platform.resources.startupMesh)) throw new TypeError('Runtime platform resource ports are invalid.');
   if (platform.storage.namespace !== null && (typeof platform.storage.namespace !== 'string' || !platform.storage.namespace.trim())) throw new TypeError('Runtime platform storage namespace is invalid.');
   optionalFunction(platform.library.getRepository, 'Runtime platform library repository provider');
-  const geometryContext = validateGeometryContext(platform.library.geometryContext);
+  if (platform.library.geometryContext != null) throw new TypeError('Viewer platform cannot install a library geometry context.');
   validateBuiltinLoader(platform.world.builtinLoader);
-  if (geometryContext) throw new TypeError('Viewer platform cannot install a library geometry context.');
   return platform;
 }

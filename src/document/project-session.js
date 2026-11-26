@@ -51,7 +51,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     }));
 
     const prefs = loadUserPreferences();
-    const background = prefs.backgrounds[productMode] || prefs.backgrounds.viewer;
+    const background = prefs.backgrounds.viewer;
     (state = {
       ...createEmptyTerritorialState(),
       countryVisualPhase: 'pending',
@@ -146,7 +146,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
         if(typeof value.boundaryVisible==='boolean')patch.distributionSettings.boundaryVisible=value.boundaryVisible;
         if(value.activeLayerId===''||state.distributionLayers.some(layer=>layer.id===value.activeLayerId))patch.distributionSettings.activeLayerId=value.activeLayerId;
       }
-      if(readOnly&&stored.layerPresentation)patch.layerPresentation=dependencies.modelValidation.normalizeLayerPresentation(stored.layerPresentation);
+      if(stored.layerPresentation)patch.layerPresentation=dependencies.modelValidation.normalizeLayerPresentation(stored.layerPresentation);
       setViewingPresentation(patch);
     }
     return true;
@@ -187,7 +187,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     if(notify&&onViewingChange)onViewingChange();
     return { ok: true, changed: true };
   }
-  const captureViewingPresentation=()=>structuredClone(Object.fromEntries(Object.entries(viewingPresentation || {}).filter(([key])=>key!=='physicalSettings'&&(readOnly||key!=='layerPresentation'))));
+  const captureViewingPresentation=()=>structuredClone(Object.fromEntries(Object.entries(viewingPresentation || {}).filter(([key])=>key!=='physicalSettings')));
 
   // A detached, empty startup input. C++ validates and owns it before any
   // source geometry or editable UI is admitted.
@@ -219,7 +219,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     setViewingPresentation({}, {reset:true});
     // Accepted C++ hydro lists are immutable. Reuse the hidden-source mask
     // across repeated visibility reads; invalidate only on a new list identity
-    // (date change, project adoption, editing or history).
+    // (date change or project adoption).
     let maskedHydroRows=null,maskedHydroSources=null;
     const effectiveItemVisibility=()=>{
       const rows=documentModel.list('hydro');
@@ -233,7 +233,7 @@ export function createProjectSession({productMode='viewer',readOnly=true,project
     };
     const properties=Object.fromEntries(['documentId','projectSetup','sourceInfo','labels','labelSettings','genericFeatures','hydroEdits','distributionLayers',
       'distributionEntries','distributionSettings','physicalSettings','layerVisibility','itemVisibility','layerPresentation','timelineRecords']
-      .map(name => [name,{ enumerable: true,get: () => name==='hydroEdits'?documentModel.list('hydro'):name==='itemVisibility'?effectiveItemVisibility():viewingFields.has(name)&&(readOnly||name!=='layerPresentation')?viewingPresentation[name]:documentModel.snapshot()[name] }]));
+      .map(name => [name,{ enumerable: true,get: () => name==='hydroEdits'?documentModel.list('hydro'):name==='itemVisibility'?effectiveItemVisibility():viewingFields.has(name)?viewingPresentation[name]:documentModel.snapshot()[name] }]));
     Object.assign(properties,{ territorialEntities: { enumerable: true,get: entityStore.snapshot },geometries: { enumerable: true,get: () => geometries },
       stateRevision: { enumerable: true,get: () => coreState().stateRevision },timelineCursor: { enumerable: true,get: () => coreState().timelineCursor },
       historyDirtyEntityIds: { enumerable: true,get: historyDirtyEntityIds } });
