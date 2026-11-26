@@ -24,17 +24,16 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const archivePath = url => url.startsWith('assets/data/') ? url : 'assets/data/' + url;
 const toBuffer = value => value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
 
-export function globeSkeletonLandPath(land, d3Source) {
+export function buildGlobeSkeleton(land, d3Source) {
   const context = {};
   runInNewContext(String(d3Source), context);
   const geo = context.d3.geo;
+  const size = 768, radius = size / 2;
   const projection = geo.orthographic().rotate([-15, -12]).clipAngle(90)
-    .translate([128, 128]).scale(128).precision(1);
-  const coordinates = land.coordinates.flatMap(([exterior]) => {
-    const area = geo.area({type: 'Polygon', coordinates: [exterior]});
-    if (Math.min(area, 4 * Math.PI - area) < 0.0003) return [];
-    return [[area > 2 * Math.PI ? exterior.slice().reverse() : exterior]];
-  });
+    .translate([radius, radius]).scale(radius).precision(0.25);
+  const coordinates = land.coordinates.map(rings =>
+    geo.area({type: 'Polygon', coordinates: [rings[0]]}) > 2 * Math.PI
+      ? rings.map(ring => ring.slice().reverse()) : rings);
   let ring = [];
   const paths = [];
   const drawing = {
@@ -43,14 +42,27 @@ export function globeSkeletonLandPath(land, d3Source) {
     },
     lineTo(x, y) {
       const point = [Math.round(x), Math.round(y)], previous = ring.at(-1);
-      if ((point[0] - previous[0]) ** 2 + (point[1] - previous[1]) ** 2 >= 9) ring.push(point);
+      if (point[0] === previous[0] && point[1] === previous[1]) return;
+      // Preserve shared edges. Only collapse a point on the same straight segment.
+      const start = ring.at(-2);
+      if (start) {
+        const dx = previous[0] - start[0], dy = previous[1] - start[1];
+        const nextX = point[0] - previous[0], nextY = point[1] - previous[1];
+        if (dx * nextY === dy * nextX && dx * nextX + dy * nextY > 0) {
+          ring[ring.length - 1] = point;
+          return;
+        }
+      }
+      ring.push(point);
     },
     closePath() {
-      if (ring.length >= 3) paths.push('M' + ring.join('L') + 'Z');
+      if (ring.length < 3) return;
+      const offsets = ring.slice(1).map(([x, y], index) => [x - ring[index][0], y - ring[index][1]].join(','));
+      paths.push(`M${ring[0]}l${offsets.join(' ')}Z`);
     },
   };
   geo.path().projection(projection).context(drawing)({type: 'MultiPolygon', coordinates});
-  return paths.join('');
+  return {size,path:paths.join('')};
 }
 
 function writePosition(high, low, offset, longitude, latitude) {
@@ -437,7 +449,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const outlines = emit(outlineBuffer,'outlines/');
   const readGeometry = async spec => JSON.parse(source(spec));
   const physicalContexts=new Map(),waterParts=new Map(),hydroParts=new Map();
-  let skeletonLandPath;
+  let skeleton;
   const hydroSlots=new Map(),hydroObjects=[];
   function hydroSlot(feature){
     const id=String(feature.id),bounds=feature.__awBounds;
@@ -463,7 +475,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       if(selected.some(row=>row.assets.land.sha256!==selected[0].assets.land.sha256))throw Error('Globe skeleton sources use different land surfaces');
       const landSpec=selectPhysicalLandAsset(physical.asset,physical.modernCoast,selected[0]?.assets.land??physical.asset,target);
       const geometry=await loadPhysicalLandGeometry(landSpec,{loadGeometry:readGeometry,loadPatch:readGeometry});
-      skeletonLandPath=globeSkeletonLandPath(geometry,d3Source);
+      skeleton=buildGlobeSkeleton(geometry,d3Source);
     }
     const waters=[];
     for(const row of selected){
@@ -561,7 +573,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       hiddenBorders:baseGroups.flatMap(({key},slot)=>activeBase.has(key)?[]:[slot]),borders:activeHistory});
   }
   const hydroMetadata=emit(Buffer.from(JSON.stringify(hydroObjects)),'hydro-pick/');
-  return {assets,skeletonLandPath,preview:{countries,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
+  return {assets,skeleton,preview:{countries,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:basePhysical,physicalContexts:[...physicalContexts.values()].filter(row=>row!==basePhysical),physicalMonth:month,
     historicalCountries,historicalBorders,historicalViews}};
 }

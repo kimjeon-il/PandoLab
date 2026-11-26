@@ -68,6 +68,21 @@ test('Viewer shows the land skeleton while the first globe frame is loading', as
   await expect(canvas).toBeHidden({timeout:3000});
   await expect(skeleton).toBeVisible();
   await expect(skeleton.locator('path')).toHaveAttribute('d',/^M.+Z$/);
+  // This inland sample used to fall through a crack between simplified rings.
+  const landAlpha=await skeleton.evaluate(async element=>{
+   const svg=element.cloneNode(true);
+   svg.setAttribute('xmlns','http://www.w3.org/2000/svg');
+   svg.setAttribute('width','768');svg.setAttribute('height','768');
+   const url=URL.createObjectURL(new Blob([svg.outerHTML],{type:'image/svg+xml'}));
+   try{
+    const image=new Image();image.src=url;await image.decode();
+    const context=new OffscreenCanvas(768,768).getContext('2d');
+    context.drawImage(image,0,0);
+    return context.getImageData(356,453,1,1).data[3];
+   }finally{URL.revokeObjectURL(url);}
+  });
+  expect(landAlpha).toBe(255);
+  await expect(skeleton).toHaveCSS('fill','rgb(241, 241, 241)');
  }finally{release();}
  await ready(page,'globe reveal');
  await expect(canvas).toBeVisible();
