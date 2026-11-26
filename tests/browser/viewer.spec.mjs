@@ -449,7 +449,7 @@ test('Three globe switches historical territories and water in the same dated fr
   return page.evaluate(async ({encoded,x,y})=>{
    const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
    const pixel=new OffscreenCanvas(1,1).getContext('2d');
-   pixel.drawImage(image,Math.round(x*devicePixelRatio),Math.round(y*devicePixelRatio),1,1,0,0,1,1);
+   pixel.drawImage(image,Math.round(x*window.devicePixelRatio),Math.round(y*window.devicePixelRatio),1,1,0,0,1,1);
    image.close();
    return [...pixel.getImageData(0,0,1,1).data].slice(0,3);
   },{encoded:(await canvas.screenshot()).toString('base64'),x,y});

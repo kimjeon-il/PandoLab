@@ -1,4 +1,5 @@
 import { createStoredAssetLoader } from './stored-asset-loader.js';
+import { createBuiltinProjectSetup } from '../document/project-setup.js';
 import { normalizeTemporalInterval } from '../document/temporal.js';
 import { builtinGeometryKey as geometryKey, queryMonthEnd, resolveBuiltinWorldGeometry,
   selectBuiltinCountries, assembleBuiltinWorld } from './builtin-world-catalog.js';
