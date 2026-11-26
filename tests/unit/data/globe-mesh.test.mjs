@@ -480,3 +480,68 @@ test('accepted temporal receipts resolve changed objects and dated labels withou
  const dated=index.advance(second,'1901-02');
  assert.equal(dated.examined,0);assert.deepEqual([...dated.dirtyIds],['child']);
 });
+
+
+test('view mesh chunks preserve all primitive coordinate bits, owners and source order',async()=>{
+ const {globeMeshChunks}=await import('../../../scripts/lib/globe-preview-assets.mjs');
+ const {selectGlobeMeshChunks,globeChunkSetContains}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+ const rows=[0,180].map((lon,i)=>({id:String(i),geometry:{id:String(i),version:1},
+  vertices:Float64Array.of(lon,0,lon+.1,0,lon,.1),indices:Uint32Array.of(0,1,2)}));
+ const source=combineGlobeCountryMeshes(rows).buffer;
+ const chunks=[...globeMeshChunks(source,{minTriangles:1,maxTriangles:1})];
+ assert.equal(chunks.length,2);
+ const bits=mesh=>{
+  const high=new Uint32Array(mesh.positions.buffer,mesh.positions.byteOffset,mesh.positions.length);
+  const low=new Uint32Array(mesh.residuals.buffer,mesh.residuals.byteOffset,mesh.residuals.length);
+  return [...mesh.indices].map(id=>[...high.subarray(id*3,id*3+3),...low.subarray(id*3,id*3+3),mesh.slots[id]]);
+ };
+ assert.deepEqual(chunks.flatMap(row=>bits(decodeGlobeMesh(row.buffer))),bits(decodeGlobeMesh(source)));
+ assert.deepEqual(chunks.map(row=>row.slots),[[0],[1]]);
+ const descriptors=chunks.map((row,index)=>({...row,key:String(index)}));
+ assert.deepEqual(selectGlobeMeshChunks(descriptors,bounds=>bounds[3]>0,new Set([0])).map(row=>row.key),['0']);
+ assert.equal(globeChunkSetContains(descriptors,[descriptors[0]]),true);
+ assert.equal(globeChunkSetContains([descriptors[0]],descriptors),false);
+});
+
+test('history prefetch neighbors use ordered transition dates rather than unique view ordering',async()=>{
+ const {encodeGlobeHistoricalViews,createGlobeHistoryIndex,globeHistoryMonthKey}=await import('../../../src/rendering/globe-history-index.js');
+ const history=encodeGlobeHistoricalViews([{slots:[1],hiddenBorders:[],borders:[]},{slots:[2],hiddenBorders:[],borders:[]}]);
+ const index=createGlobeHistoryIndex(history,1,{physicalIdentities:['modern','old'],timeline:[
+  ['-0001-12',0,1],['0001-01',1,1],['1801-01',0,0],['2026-11',-1,0],
+ ]});
+ assert.equal(globeHistoryMonthKey('0001-01')-globeHistoryMonthKey('-0001-12'),1);
+ const neighbors=index.neighbors('1900-01',-1);
+ assert.deepEqual(neighbors.map(row=>[row.month,row.territories.key,row.physicalIdentity]),[
+  ['0001-01','history:1','old'],['2026-11','base','modern'],
+ ]);
+});
+
+test('physical view plans only read visible exact water chunks',async()=>{
+ const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+ const reads=[],load=async row=>{reads.push(row.sha256);return {positions:new Float32Array(1)};};
+ const assets=createGlobePhysicalAssets([{identity:'world',waters:[{id:'sea',chunks:[
+  {spec:{sha256:'near'},bounds:[.8,0,0,1,.1,.1]},{spec:{sha256:'far'},bounds:[-1,0,0,-.8,.1,.1]},
+ ]}],rivers:{sha256:'river'},riverMinZoom:8,lakes:[]}],{loadMesh:load,loadStroke:load});
+ const near=assets.plan('world',{zoom:2,cull:box=>box[3]>0});
+ assets.retain([near]);const prepared=await assets.prepare(near);
+ assert.deepEqual(reads,['near']);assert.equal(prepared.waters[0].id,'sea');
+ const far=assets.plan('world',{zoom:2,cull:box=>box[0]<0});
+ assert.equal(assets.coversWaters(near,far),false);
+ assets.dispose();
+});
+
+test('packet worker count and speculative gate preserve foreground capacity',async()=>{
+ const {globePacketWorkerCount}=await import('../../../src/rendering/globe-packet-tasks.js');
+ const {createRenderLoadGate}=await import('../../../src/rendering/render-cache-budget.js');
+ assert.equal(globePacketWorkerCount({deviceMemory:2,hardwareConcurrency:8}),1);
+ assert.equal(globePacketWorkerCount({deviceMemory:4,hardwareConcurrency:4}),2);
+ assert.equal(globePacketWorkerCount({deviceMemory:8,hardwareConcurrency:8}),3);
+ const gate=createRenderLoadGate({concurrency:2,byteBudget:100});
+ const running=Promise.withResolvers(),order=[];
+ const foreground=gate.run({priority:20,bytes:20},()=>running.promise);
+ const speculative=gate.run({priority:-20,bytes:20},()=>{order.push('warm');});
+ const next=gate.run({priority:20,bytes:20},()=>{order.push('visible');});
+ await next;assert.deepEqual(order,['visible']);
+ running.resolve();await foreground;await speculative;
+ assert.deepEqual(order,['visible','warm']);gate.dispose();
+});

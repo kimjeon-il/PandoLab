@@ -140,3 +140,20 @@ test('label dirty rectangles merge adjacent updates and dynamic batches shrink w
   assert.equal(labelInstanceCapacity(1024,200,2048),256);
   assert.equal(labelInstanceCapacity(0,1500,1500),1500);
 });
+
+
+test('SDF transform consumes a single-channel mask and preserves signed distances',async()=>{
+ const {distanceMask}=await import('../../../src/rendering/globe-label-sdf.js');
+ const mask=Uint8Array.of(0,0,0,0,255,0,0,0,0);
+ const field=distanceMask(mask,3,3,7);
+ assert.equal(field.length,9);
+ assert.ok(field[4]>127);assert.ok(field[0]<127);
+ assert.equal(field[1],field[3]);assert.equal(field[5],field[7]);
+});
+
+test('single-channel hydro upload rectangles merge only compatible changed slots',async()=>{
+ const {globeHydroTextureRects}=await import('../../../src/rendering/three-globe-surface.js');
+ assert.deepEqual(globeHydroTextureRects(new Set([1,2,5,6,11]),4),[
+  {x:1,y:0,width:2,height:2},{x:3,y:2,width:1,height:1},
+ ]);
+});

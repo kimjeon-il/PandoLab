@@ -4,6 +4,8 @@ import {territorialLabelPixelSize} from './label-layout.js';
 import {renderCacheBudget,renderPacketBuffers} from './render-cache-budget.js';
 import {createGlobePacketIndex} from './globe-picking.js';
 import {createGlobeRangeCuller} from './globe-spatial-partition.js';
+import {distanceMask} from './globe-label-sdf.js';
+import {createGlobeLabelSdfTasks} from './globe-label-sdf-tasks.js';
 
 export const COUNTRY_LABEL_MIN_ZOOM=3;
 const fontSize=56, outlineRange=7, padding=outlineRange+2, atlasSize=2048;
@@ -106,33 +108,6 @@ const fragmentShader=`
   }
 `;
 
-// Two raster passes approximate the signed Euclidean distance on the glyph mask.
-function distanceMask(alpha,width,height){
-  const distanceTo=(foreground)=>{
-    const values=new Float32Array(width*height);
-    for(let i=0;i<values.length;i++)values[i]=(alpha[i*4+3]>=128)===foreground?0:outlineRange+1;
-    const pass=(direction)=>{
-      for(let step=0;step<values.length;step++){
-        const i=direction===1?step:values.length-1-step;
-        const x=i%width, row=i-direction*width, side=i-direction;
-        let distance=values[i];
-        if(x-direction>=0&&x-direction<width)distance=Math.min(distance,values[side]+1);
-        if(row<0||row>=values.length){values[i]=distance;continue;}
-        distance=Math.min(distance,values[row]+1);
-        if(x>0)distance=Math.min(distance,values[row-1]+Math.SQRT2);
-        if(x<width-1)distance=Math.min(distance,values[row+1]+Math.SQRT2);
-        values[i]=distance;
-      }
-    };
-    pass(1);pass(-1);return values;
-  };
-  const inside=distanceTo(true),outside=distanceTo(false);
-  return Uint8Array.from(inside,(distance,i)=>{
-    const signed=outside[i]-distance;
-    return Math.round(127.5+127.5*Math.max(-1,Math.min(1,signed/outlineRange)));
-  });
-}
-
 export function orderGlobeLabels(rows){
   return [...rows].sort((a,b)=>Number(Boolean(a.place))-Number(Boolean(b.place))||
     (a.place?Number(Boolean(b.selected))-Number(Boolean(a.selected))||b.priority-a.priority:b.area-a.area)||a.key.localeCompare(b.key));
@@ -190,7 +165,7 @@ const sameLabel=(a,b)=>a&&b&&labelFields.every(key=>a[key]===b[key])&&a.ref?.key
   equalCoordinate(a.coordinate,b.coordinate)&&a.lines.length===b.lines.length&&a.lines.every((line,i)=>line===b.lines[i]);
 const sumBuffers=buffers=>[...buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);
 
-export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,viewport,maxTextureSize=2048,byteBudget=renderCacheBudget().labelAtlasBytes}){
+export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,viewport,maxTextureSize=2048,byteBudget=renderCacheBudget().labelAtlasBytes,onReady=()=>{},onError=()=>{},createSdfTasks=createGlobeLabelSdfTasks}){
   const raster=new OffscreenCanvas(1,1),context=raster.getContext('2d',{willReadFrequently:true});
   const size=Math.min(atlasSize,maxTextureSize),maxRows=Math.max(1,Math.min(maxTextureSize,capacity));
   const pages=[],cache=new Map(),metricsCache=new Map();
@@ -201,7 +176,9 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   const uploadSource=new THREE.DataTexture(null,1,1,THREE.RedFormat);
   const copyRegion=new THREE.Box2(new THREE.Vector2(),new THREE.Vector2()),copyPosition=new THREE.Vector2();
   const candidateGroups=[{source:null,rows:[],index:createGlobeLabelSpatialIndex([])},{source:null,rows:[],index:createGlobeLabelSpatialIndex([])}];
-  let placed=[],previous=new Set(),lastCamera=null,cacheDirty=true;
+  const sdfTasks=createSdfTasks();
+  let placed=[],previous=new Set(),lastCamera=null,cacheDirty=true,lastComplete=true,lastStrict=false,disposed=false;
+  let pendingSdf=null,desiredKeys=new Set(),sdfFallback=false,pendingMaskBytes=0;
   let activePages=new Set(),hitSnapshot=()=>null,layoutStats={};
   const counters={rasterizedRuns:0,textMeasurements:0,fullUploadBytes:0,partialUploadBytes:0,partialUploads:0,fullUploads:0,evictedPages:0,compactedPages:0,shrunkBatches:0};
 
@@ -263,21 +240,30 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     while(metricsCache.size>metricsLimit)metricsCache.delete(metricsCache.keys().next().value);
     return measured;
   }
-  function prepareText(label){
-    const key=label.atlasKey,cached=cache.get(key);
-    if(cached&&!cached.page.retired)return cached;
-    if(cached)cache.delete(key);
+  function cachedRun(key){
+    const run=cache.get(key);return run&&!run.page.retired?run:null;
+  }
+  function rasterMask(label){
     const {width,height,font,lineHeight,markerWidth,textX,anchorX,anchorY}=label;
-    const metrics={width,height,font,lineHeight,markerWidth,textX,anchorX,anchorY};
     const place=Boolean(label.place),marker=label.marker??'';
-    let page=pages.findLast(row=>row.place===place&&!row.retired)??addPage(place);
-    if(page.x+width>size){page.y+=page.rowHeight;page.x=0;page.rowHeight=0;}
-    if(page.y+height>size)page=addPage(place);
     raster.width=width;raster.height=height;
     context.font=font;context.textAlign=place?'left':'center';context.textBaseline='middle';context.fillStyle='#fff';
     label.lines.forEach((line,index)=>context.fillText(line,textX,padding+lineHeight*(index+.5),width-padding*2-markerWidth));
     if(marker){context.beginPath();context.arc(anchorX,anchorY,marker==='capital'?13:10,0,Math.PI*2);context.fill();}
-    const field=distanceMask(context.getImageData(0,0,width,height).data,width,height);
+    const rgba=context.getImageData(0,0,width,height).data,mask=new Uint8Array(width*height);
+    for(let i=0;i<mask.length;i++)mask[i]=rgba[i*4+3];
+    return {key:label.atlasKey,width,height,mask,outlineRange};
+  }
+  function installText(label,field){
+    const key=label.atlasKey,existing=cachedRun(key);
+    if(existing)return existing;
+    const {width,height,font,lineHeight,markerWidth,textX,anchorX,anchorY}=label;
+    const metrics={width,height,font,lineHeight,markerWidth,textX,anchorX,anchorY};
+    if(!(field instanceof Uint8Array)||field.length!==width*height)throw Error('Invalid SDF worker result');
+    const place=Boolean(label.place);
+    let page=pages.findLast(row=>row.place===place&&!row.retired)??addPage(place);
+    if(page.x+width>size){page.y+=page.rowHeight;page.x=0;page.rowHeight=0;}
+    if(page.y+height>size)page=addPage(place);
     for(let y=0;y<height;y++)page.pixels.set(field.subarray(y*width,(y+1)*width),(page.y+y)*size+page.x);
     const uv=[page.x/size,page.y/size,(page.x+width)/size,(page.y+height)/size];
     const run={page,width,height,uv,metrics,atlasKey:key};
@@ -285,6 +271,55 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     page.x+=width;page.rowHeight=Math.max(page.rowHeight,height);
     counters.rasterizedRuns++;cacheDirty=true;
     return run;
+  }
+  function cancelSdf(){
+    if(!pendingSdf)return;
+    const old=pendingSdf;pendingSdf=null;pendingMaskBytes=0;
+    old.controller.abort();cacheDirty=true;
+  }
+  function prepareMissing(layout){
+    desiredKeys=new Set(layout.map(row=>row.atlasKey));
+    if(pendingSdf&&![...pendingSdf.labels.keys()].some(key=>desiredKeys.has(key)))cancelSdf();
+    const missing=new Map();
+    for(const row of layout)if(!cachedRun(row.atlasKey))missing.set(row.atlasKey,row);
+    if(!missing.size)return true;
+    if(sdfFallback){
+      for(const label of missing.values()){
+        const row=rasterMask(label);
+        installText(label,distanceMask(row.mask,row.width,row.height,row.outlineRange));
+      }
+      return true;
+    }
+    if(pendingSdf)return false;
+    const rows=[],labels=new Map();
+    let bytes=0;
+    for(const label of missing.values()){
+      const estimate=label.width*label.height;
+      // Bound main-thread mask work and temporary worker input.
+      if(rows.length&&(rows.length>=24||bytes+estimate>512*1024))break;
+      const row=rasterMask(label);rows.push(row);labels.set(row.key,label);bytes+=estimate;
+    }
+    const controller=new AbortController(),job={controller,labels};
+    pendingSdf=job;pendingMaskBytes=bytes;cacheDirty=true;
+    sdfTasks.run(rows,controller.signal).then(result=>{
+      if(disposed||pendingSdf!==job||controller.signal.aborted)return;
+      if(!Array.isArray(result)||result.length!==labels.size||new Set(result.map(row=>row.key)).size!==labels.size)
+        throw Error('Incomplete label SDF response');
+      for(const row of result){
+        const label=labels.get(row.key);
+        if(!label||label.width!==row.width||label.height!==row.height)throw Error('Unexpected SDF response');
+        if(desiredKeys.has(row.key))installText(label,row.pixels);
+      }
+    }).catch(error=>{
+      if(disposed||pendingSdf!==job||controller.signal.aborted)return;
+      // The exact same transform is available as a last-resort local
+      // path if Worker creation or execution is unsupported.
+      sdfFallback=true;onError(error);
+    }).finally(()=>{
+      if(disposed||pendingSdf!==job)return;
+      pendingSdf=null;pendingMaskBytes=0;lastCamera=null;cacheDirty=true;onReady();
+    });
+    return false;
   }
   function disposeBatch(batch){
     scene.remove(batch.mesh);batch.mesh.geometry.dispose();batch.mesh.material.dispose();batch.boxes.dispose();
@@ -401,20 +436,31 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     }
     return true;
   }
-  function update(camera,width,height,cull=createGlobeRangeCuller(camera.frame,width,height)){
-    if(camera===lastCamera)return;
-    lastCamera=camera;
+  function update(camera,width,height,cull=createGlobeRangeCuller(camera.frame,width,height),requireComplete=false){
+    if(camera===lastCamera&&lastStrict===requireComplete)return lastComplete;
+    lastCamera=camera;lastStrict=requireComplete;
     const visible=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?candidateGroups.flatMap(group=>group.index.query(cull)):[];
     layoutStats={candidates:candidateGroups.reduce((sum,group)=>sum+group.rows.length,0),spatialCandidates:visible.length,projectedCandidates:0,collisionComparisons:0,duplicateCollisionSkips:0};
-    hitSnapshot=()=>null;
-    placed=placeGlobeLabels(visible,camera,{width,height},previous,(cells,columns,cellSize)=>{
-      // Retain only immutable hit boxes, not atlas/mesh or raster resources.
-      const hitCells=new Map();
-      for(const [key,rows] of cells)hitCells.set(key,rows.map(({ref,left,right,top,bottom})=>({ref,left,right,top,bottom})));
-      hitSnapshot=([x,y])=>x<0||y<0||x>width||y>height?null:(hitCells.get(Math.floor(y/cellSize)*columns+Math.floor(x/cellSize))??[]).find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null;
-    },measureLabel,layoutStats);
+    let hitGrid=null;
+    const layout=placeGlobeLabels(visible,camera,{width,height},previous,(cells,columns,cellSize)=>{hitGrid={cells,columns,cellSize};},measureLabel,layoutStats);
+    lastComplete=prepareMissing(layout);
+    layoutStats.pending=layout.filter(row=>!cachedRun(row.atlasKey)).length;
+    // Initial/temporal frames retain the previous label buffers until the
+    // entire exact placement has a ready SDF. Moving frames may display
+    // only ready runs; missing rows are not exposed to picking.
+    if(requireComplete&&!lastComplete)return false;
+    placed=layout.filter(row=>cachedRun(row.atlasKey));
     previous=new Set(placed.map(row=>row.key));
-    const renderRows=compactActivePages(placed.map(row=>({...row,...prepareText(row)})));
+    const readyKeys=new Set(placed.map(row=>row.key)),hitCells=new Map();
+    if(hitGrid){
+      const {cells,columns,cellSize}=hitGrid;
+      for(const [key,rows] of cells){
+        const hits=rows.filter(row=>readyKeys.has(row.key)).map(({ref,left,right,top,bottom})=>({ref,left,right,top,bottom}));
+        if(hits.length)hitCells.set(key,hits);
+      }
+      hitSnapshot=([x,y])=>x<0||y<0||x>width||y>height?null:(hitCells.get(Math.floor(y/cellSize)*columns+Math.floor(x/cellSize))??[]).find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null;
+    }else hitSnapshot=()=>null;
+    const renderRows=compactActivePages(placed.map(row=>({...row,...cachedRun(row.atlasKey)})));
     const byPage=new Map();
     for(const row of renderRows){
       let rows=byPage.get(row.page);if(!rows){rows=[];byPage.set(row.page,rows);}rows.push(row);
@@ -432,16 +478,19 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       hideBatches(page,batchIndex);flush(page.upload);
     }
     activePages=new Set(byPage.keys());layoutStats.placed=placed.length;
+    return lastComplete;
   }
+  function cancelPending(){desiredKeys.clear();cancelSdf();lastCamera=null;}
   function restoreTextures(){
     for(const page of pages){restoreTexture(page.upload);for(const batch of page.batches)restoreTexture(batch.upload);}
   }
   function memoryEntries(){
     const rows=pages.map(page=>({key:page,...pageFootprint(page),lastUsed:page.lastUsed,protected:activePages.has(page),evict:()=>evictPage(page)}));
-    rows.push({key:raster,protected:true,extraBytes:raster.width*raster.height*4+metricsCache.size*192+candidateGroups.reduce((sum,group)=>sum+group.rows.length*192+group.index.rows.length*160,0)+placed.length*128});
+    rows.push({key:raster,protected:true,extraBytes:raster.width*raster.height*4+pendingMaskBytes*10+metricsCache.size*192+candidateGroups.reduce((sum,group)=>sum+group.rows.length*192+group.index.rows.length*160,0)+placed.length*128});
     return rows;
   }
   function dispose(){
+    disposed=true;cancelSdf();sdfTasks.dispose();desiredKeys.clear();
     for(const page of pages)disposePage(page);
     uploadSource.dispose();pages.length=0;cache.clear();metricsCache.clear();
     for(const group of candidateGroups){group.source=null;group.rows=[];group.index=createGlobeLabelSpatialIndex([]);}
@@ -451,8 +500,8 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   function cacheStats(){
     return {pages:pages.length,visiblePages:activePages.size,residentBytes:pages.reduce((sum,page)=>sum+pageBytes(page),0),
       batchCapacity:pages.reduce((sum,page)=>sum+page.batches.reduce((n,batch)=>n+batch.capacity,0),0),
-      measuredTexts:metricsCache.size,...counters,layout:{...layoutStats}};
+      measuredTexts:metricsCache.size,...counters,sdfWorker:{...sdfTasks.stats(),fallback:sdfFallback,pendingMaskBytes},layout:{...layoutStats}};
   }
-  return Object.freeze({setCandidates,setCandidateGroups,update,trim,dispose,restoreTextures,memoryEntries,hitSnapshot:()=>hitSnapshot,cacheStats,
+  return Object.freeze({setCandidates,setCandidateGroups,update,trim,dispose,cancelPending,restoreTextures,memoryEntries,hitSnapshot:()=>hitSnapshot,cacheStats,
     visibleCount:place=>placed.filter(row=>Boolean(row.place)===place).length,atlasEntryCount:()=>cache.size,hitTest:point=>hitSnapshot(point)});
 }

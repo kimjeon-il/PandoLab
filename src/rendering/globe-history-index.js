@@ -65,12 +65,27 @@ export function encodeGlobeHistoricalViews(views,{stride=CHECKPOINT_STRIDE}={}){
  });
  return {version:1,stride,rows};
 }
-export function createGlobeHistoryIndex(history,baseCount,{decodedLimit=DECODED_LIMIT}={}){
+// Signed calendar months have no year zero. Keep the order exactly as
+// produced by Core and use numeric keys for neighbour lookup.
+export function globeHistoryMonthKey(month){
+ const match=/^([+-]?\d+)-(\d{2})$/.exec(String(month));
+ if(!match)throw Error('Invalid globe history month');
+ const year=Number(match[1]),m=Number(match[2]);
+ if(!Number.isSafeInteger(year)||year===0||m<1||m>12)throw Error('Invalid globe history month');
+ return (year>0?year-1:year)*12+m-1;
+}
+export function createGlobeHistoryIndex(history,baseCount,{decodedLimit=DECODED_LIMIT,timeline=[],physicalIdentities=[]}={}){
  if(history?.version!==1||!Array.isArray(history.rows)||!Number.isSafeInteger(history.stride)||history.stride<1)
   throw Error('Invalid globe historical view catalog');
  const {rows,stride}=history,byKey=new Map(),decoded=new Map();
  const base=Object.freeze({view:null,slots:Object.freeze(Array.from({length:baseCount},(_,slot)=>slot)),key:'base'});
  const baseKey=globeHistorySlotKey(base.slots);
+ const moments=timeline.map(([month,view,physical],index)=>{
+  const key=globeHistoryMonthKey(month),physicalIdentity=typeof physical==='string'?physical:physicalIdentities[physical];
+  if(!Number.isInteger(view)||view< -1||view>=rows.length||typeof physicalIdentity!=='string'||
+   index&&key<=globeHistoryMonthKey(timeline[index-1][0]))throw Error('Invalid globe history timeline');
+  return {month,key,view,physicalIdentity};
+ });
  rows.forEach((row,index)=>{
   if(!Array.isArray(row)||row.length!==4||typeof row[0]!=='string')throw Error('Invalid globe historical view row');
   let bucket=byKey.get(row[0]);
@@ -106,5 +121,15 @@ export function createGlobeHistoryIndex(history,baseCount,{decodedLimit=DECODED_
   }
   return null;
  }
- return Object.freeze({base,find,stats:()=>({views:rows.length,decodedViews:decoded.size,checkpointStride:stride})});
+ function neighbors(month,direction=0){
+  if(!moments.length)return [];
+  const key=globeHistoryMonthKey(month);
+  let lo=0,hi=moments.length;
+  while(lo<hi){const mid=(lo+hi)>>1;if(moments[mid].key<=key)lo=mid+1;else hi=mid;}
+  const current=Math.max(0,lo-1),before=moments[current-1],after=moments[current+1];
+  return (direction<0?[before,after]:[after,before]).filter(Boolean).map(row=>({
+   month:row.month,physicalIdentity:row.physicalIdentity,territories:row.view===-1?base:get(row.view),
+  }));
+ }
+ return Object.freeze({base,find,neighbors,stats:()=>({views:rows.length,decodedViews:decoded.size,checkpointStride:stride,timelineMoments:moments.length})});
 }

@@ -239,26 +239,38 @@ export function createRenderResidencyBudget(byteBudget,{groups={}}={}){
 // Admit a bounded number of downloads + Worker inputs, not only Worker calls.
 // A required oversize packet runs alone. Queued work never acquires bytes.
 export function createRenderLoadGate({concurrency,byteBudget}){
- let active=0,bytes=0,sequence=0,closed=false,peakBytes=0,peakActive=0;
+ let active=0,foreground=0,speculative=0,bytes=0,sequence=0,closed=false,peakBytes=0,peakActive=0,bypasses=0;
  const queue=[];
  function pump(){
   if(closed)return;
   queue.sort((a,b)=>b.priority-a.priority||a.sequence-b.sequence);
   while(queue.length&&active<concurrency){
-   const row=queue[0];
-   if(active>0&&bytes+row.bytes>byteBudget)break;
-   queue.shift();row.signal?.removeEventListener('abort',row.abort);
+   const head=queue[0];
+   if(head.priority<0&&(foreground||speculative))break;
+   let at=0;
+   if(active>0&&bytes+head.bytes>byteBudget){
+    // Fill idle capacity with small jobs of equal priority, but only
+    // twice before reserving the next free working set for the head.
+    if(head.bypassed>=2||head.priority<0)break;
+    at=queue.findIndex((row,i)=>i>0&&row.priority===head.priority&&bytes+row.bytes<=byteBudget);
+    if(at<0)break;
+    head.bypassed++;bypasses++;
+   }
+   const [row]=queue.splice(at,1);row.signal?.removeEventListener('abort',row.abort);
    if(row.signal?.aborted){row.reject(row.signal.reason);continue;}
-   active++;bytes+=row.bytes;peakActive=Math.max(peakActive,active);peakBytes=Math.max(peakBytes,bytes);
+   const isSpeculative=row.priority<0;
+   active++;if(isSpeculative)speculative++;else foreground++;
+   bytes+=row.bytes;peakActive=Math.max(peakActive,active);peakBytes=Math.max(peakBytes,bytes);
    Promise.resolve().then(()=>{row.signal?.throwIfAborted();return row.task();}).then(row.resolve,row.reject).finally(()=>{
-    active--;bytes-=row.bytes;pump();
+    active--;if(isSpeculative)speculative--;else foreground--;
+    bytes-=row.bytes;pump();
    });
   }
  }
  function run({bytes:estimate=0,priority=0,signal},task){
   if(closed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render load gate closed','AbortError'));
   return new Promise((resolve,reject)=>{
-   const row={bytes:Math.max(1,Number(estimate)||1),priority,signal,task,resolve,reject,sequence:++sequence};
+   const row={bytes:Math.max(1,Number(estimate)||1),priority,signal,task,resolve,reject,sequence:++sequence,bypassed:0};
    row.abort=()=>{const i=queue.indexOf(row);if(i>=0){queue.splice(i,1);reject(signal.reason);pump();}};
    queue.push(row);signal?.addEventListener('abort',row.abort,{once:true});pump();
   });
@@ -267,5 +279,5 @@ export function createRenderLoadGate({concurrency,byteBudget}){
   closed=true;
   for(const row of queue.splice(0)){row.signal?.removeEventListener('abort',row.abort);row.reject(new DOMException('Render load gate closed','AbortError'));}
  }
- return Object.freeze({run,dispose,stats:()=>({active,queued:queue.length,reservedBytes:bytes,peakBytes,peakActive,byteBudget,concurrency})});
+ return Object.freeze({run,dispose,stats:()=>({active,foreground,speculative,queued:queue.length,reservedBytes:bytes,peakBytes,peakActive,bypasses,byteBudget,concurrency})});
 }

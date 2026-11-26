@@ -118,6 +118,57 @@ export function combineGlobeCountryMeshes(rows,{slotOffset=0}={}) {
   return { countrySlots, buffer: encodeGlobeMesh({ coordinates: vertices, indices, slots }) };
 }
 
+/** Source-contiguous mesh chunks. Each primitive retains its original order
+ * and exact Float32 high/low words. Compact only the vertices referenced by
+ * the chunk. Conservative chord AABBs permit selective initial loading. */
+export function* globeMeshChunks(buffer,{minTriangles=null,maxTriangles=null,span=.45}={}){
+  const mesh=decodeGlobeMesh(buffer),{positions,residuals,indices,slots}=mesh;
+  minTriangles??=Math.max(16_384,Math.ceil(indices.length/3/48));
+  maxTriangles??=Math.max(65_536,minTriangles*4);
+  const empty=()=>[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+  const primitive=empty();
+  function include(box,vertex){
+    for(let axis=0;axis<3;axis++){
+      const at=vertex*3+axis,value=positions[at]+residuals[at];
+      box[axis]=Math.min(box[axis],value);box[axis+3]=Math.max(box[axis+3],value);
+    }
+  }
+  function* chunk(first,end,bounds){
+    const remap=new Map(),vertices=[],local=new Uint32Array(end-first);
+    for(let i=first;i<end;i++){
+      const old=indices[i];let id=remap.get(old);
+      if(id===undefined){id=vertices.length;remap.set(old,id);vertices.push(old);}
+      local[i-first]=id;
+    }
+    const count=vertices.length,slotCount=slots.length?count:0;
+    const result=new ArrayBuffer(GLOBE_MESH_HEADER_BYTES+count*24+local.byteLength+slotCount*2);
+    const header=new DataView(result);
+    [GLOBE_MESH_MAGIC,count,local.length,slotCount].forEach((value,i)=>header.setUint32(i*4,value,true));
+    const high=new Uint32Array(result,GLOBE_MESH_HEADER_BYTES,count*3),low=new Uint32Array(result,GLOBE_MESH_HEADER_BYTES+count*12,count*3);
+    const oldHigh=new Uint32Array(positions.buffer,positions.byteOffset,positions.length),oldLow=new Uint32Array(residuals.buffer,residuals.byteOffset,residuals.length);
+    const localSlots=new Uint16Array(result,GLOBE_MESH_HEADER_BYTES+count*24+local.byteLength,slotCount),owners=new Set();
+    for(let i=0;i<count;i++){
+      const vertex=vertices[i];
+      for(let axis=0;axis<3;axis++){high[i*3+axis]=oldHigh[vertex*3+axis];low[i*3+axis]=oldLow[vertex*3+axis];}
+      if(slotCount){localSlots[i]=slots[vertex];owners.add(slots[vertex]);}
+    }
+    new Uint32Array(result,GLOBE_MESH_HEADER_BYTES+count*24,local.length).set(local);
+    yield {buffer:result,bounds,first:first/3,end:end/3,slots:[...owners].sort((a,b)=>a-b)};
+  }
+  let first=0,bounds=empty();
+  for(let i=0;i<indices.length;i+=3){
+    for(let axis=0;axis<3;axis++){primitive[axis]=Infinity;primitive[axis+3]=-Infinity;}
+    for(let j=i;j<i+3;j++)include(primitive,indices[j]);
+    const count=(i-first)/3;
+    let extent=0;for(let axis=0;axis<3;axis++)extent=Math.max(extent,Math.max(bounds[axis+3],primitive[axis+3])-Math.min(bounds[axis],primitive[axis]));
+    if(count>=maxTriangles||(count>=minTriangles&&extent>span)){
+      yield* chunk(first,i,bounds);first=i;bounds=empty();
+    }
+    for(let axis=0;axis<3;axis++){bounds[axis]=Math.min(bounds[axis],primitive[axis]);bounds[axis+3]=Math.max(bounds[axis+3],primitive[axis+3]);}
+  }
+  if(first<indices.length)yield* chunk(first,indices.length,bounds);
+}
+
 export function globeHistoryMonths(current,...recordSets){
   const months=new Set(['-999999-01',current]);
   const add=([year,month])=>{
@@ -361,6 +412,11 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     return decodePolygonMesh(packet, { algorithmVersion: prepared.algorithmVersion, includeStrokeEndpoints: false });
   }
   const emitPackedMesh = (buffer, dir) => emit(packGlobeMesh(buffer), dir, 7);
+  const emitMeshChunks=(buffer,dir='')=>{
+    const rows=[];
+    for(const {buffer:part,...row} of globeMeshChunks(buffer))rows.push({...row,spec:emitPackedMesh(part,dir)});
+    return rows;
+  };
 
 
   await import('../../src/rendering/workers/polygon-mesh-core.js');
@@ -386,7 +442,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const baseMeshSpecs = readCountryMeshInputs(features);
   const preparedCountries = combineGlobeCountryMeshes(features.map((feature,index)=>countryMeshRow(feature,baseMeshSpecs[index])));
   const {countrySlots} = preparedCountries;
-  const countries = emitPackedMesh(preparedCountries.buffer, '');
+  const countryChunks=emitMeshChunks(preparedCountries.buffer,'countries/');
   const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors,features);
   const {buffer:outlineBuffer,owners:outlineOwners} = buildGlobeOutlineStrokes(features.map(feature=>feature.geometry));
   const outlines = emit(outlineBuffer,'outlines/');
@@ -425,11 +481,11 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       const asset=row.assets.asset,id=row.objectRef.id;
       if(!waterParts.has(asset.sha256)){
         const geometry=await readGeometry(asset),{positions,indices}=physicalMesh(geometry,id);
-        waterParts.set(asset.sha256,{spec:emit(encodeGlobeMesh({coordinates:positions,indices})),bounds:coordinateBounds(geometry.coordinates)});
+        waterParts.set(asset.sha256,{chunks:emitMeshChunks(encodeGlobeMesh({coordinates:positions,indices}),'waters/'),bounds:coordinateBounds(geometry.coordinates)});
       }
-      const {spec,bounds}=waterParts.get(asset.sha256);
+      const {chunks,bounds}=waterParts.get(asset.sha256);
       const {entityKind:category,layerId:layer_id,name,source,sourceId}=row.identity;
-      waters.push({id,spec,feature:{id,__awBounds:bounds,properties:{pandolab_id:id,category,layer_id,name,source,source_id:sourceId||id,physical_water:true}}});
+      waters.push({id,chunks,feature:{id,__awBounds:bounds,properties:{pandolab_id:id,category,layer_id,name,source,source_id:sourceId||id,physical_water:true}}});
     }
     const visibility=physicalWaterReferenceView(physical.waterObjects,selected,true);
     const mask=JSON.stringify(waterIds.map(id=>visibility.isActive(id)));
@@ -439,7 +495,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       for(const [minZoom,features] of lakesByZoom){
         const mesh=engine.buildPolygonMeshFeatures(features,{validate:true});
         const objectSlots=features.map(hydroSlot),slots=Uint16Array.from(mesh.countryIndices,slot=>objectSlots[slot]);
-        const spec=emit(encodeGlobeMesh({coordinates:mesh.positions,indices:mesh.triangleIndices,slots,units:1e-6}));
+        const spec=emitPackedMesh(encodeGlobeMesh({coordinates:mesh.positions,indices:mesh.triangleIndices,slots,units:1e-6}),'lakes/');
         lakes.push({spec,minZoom});
       }
       const riverDetail=detail.map(({buffer,...row})=>{
@@ -463,9 +519,12 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const keys=rows=>rows.map(({owner,asset})=>globeTerritoryKey(owner,asset));
   const align=feature=>({...feature,boundaryGeometryRevision:feature.asset.contentSha256});
   const baseKeys=keys(baseRows),slotByKey=new Map(baseKeys.map((key,slot)=>[key,slot]));
-  const baseSignature=baseKeys.join('\n'),worlds=new Map(),versions=new Map();
-  for(const target of globeHistoryMonths(month,read.records)){
+  const baseSignature=baseKeys.join('\n'),worlds=new Map(),versions=new Map(),timeline=[];
+  for(const target of globeHistoryMonths(month,read.records,physicalRecords)){
     const rows=target===month?baseRows:resolve(target),versionKeys=keys(rows),signature=versionKeys.join('\n');
+    const physicalIdentity=(await preparePhysical(target)).identity;
+    const prior=timeline.at(-1);
+    if(!prior||prior.signature!==signature||prior.physicalIdentity!==physicalIdentity)timeline.push({month:target,signature,physicalIdentity});
     if(worlds.has(signature))continue;
     worlds.set(signature,{month:target,keys:versionKeys});
     rows.forEach((row,index)=>{
@@ -489,7 +548,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   // Advance the same incremental boundary preparation as the Viewer worker.
   // The partition output only re-encodes owner groups touched by changed shapes.
   const topology=createCountrySharedBoundaryState(),output=createCountryBoundaryOutput();
-  const partitionInputs=new Map(),partitionSlots=new Map(),historicalBorders=[],historicalViews=[];
+  const partitionInputs=new Map(),partitionSlots=new Map(),historicalBorders=[],historicalViews=[],viewBySignature=new Map([[baseSignature,-1]]);
   const baseHashes=new Map(baseGroups.map(group=>[group.key,group.hash]));
   for(const [signature,world] of worlds){
     const orderedSlots=world.keys.map(key=>slotByKey.get(key));
@@ -512,11 +571,14 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       const row=partitionSlots.get(id);
       if(row.base)activeBase.add(id);else activeHistory.push(row.historical);
     }
+    viewBySignature.set(signature,historicalViews.length);
     historicalViews.push({slots:orderedSlots.sort((a,b)=>a-b),
       hiddenBorders:baseGroups.flatMap(({key},slot)=>activeBase.has(key)?[]:[slot]),borders:activeHistory});
   }
   const hydroMetadata=emit(Buffer.from(JSON.stringify(hydroObjects)),'hydro-pick/');
-  return {assets,skeleton,preview:{countries,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
-    physical:basePhysical,physicalContexts:[...physicalContexts.values()].filter(row=>row!==basePhysical),physicalMonth:month,
-    historicalCountries,historicalBorders,history:encodeGlobeHistoricalViews(historicalViews)}};
+  const otherPhysical=[...physicalContexts.values()].filter(row=>row!==basePhysical);
+  const physicalIndex=new Map([basePhysical,...otherPhysical].map((row,index)=>[row.identity,index]));
+  return {assets,skeleton,preview:{countryChunks,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
+    physical:basePhysical,physicalContexts:otherPhysical,physicalMonth:month,
+    historicalCountries,historicalBorders,history:encodeGlobeHistoricalViews(historicalViews),historyTimeline:timeline.map(row=>[row.month,viewBySignature.get(row.signature),physicalIndex.get(row.physicalIdentity)])}};
 }
