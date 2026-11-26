@@ -36,7 +36,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   let historyIndex = createGlobeHistoryIndex({version:1, stride:32, rows:[]}, baseSlots.length);
   let historyLoaded = false, historyCatalogBytes = 0;
   const historyCatalogKey = {};
-  const countryCount = baseSlots.length+(spec.historySlotCount??spec.historicalCountries?.length??0);
+  if (!Number.isSafeInteger(spec.historySlotCount)||spec.historySlotCount<0||!spec.historyCatalog)throw Error('Missing Three.js history catalog');
+  const countryCount = baseSlots.length+spec.historySlotCount;
   const baseTerritories = historyIndex.base;
   const cacheBudget = renderCacheBudget();
   const residency = createRenderResidencyBudget(cacheBudget.totalRenderBytes, {groups:{
@@ -170,15 +171,14 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   });
   const {load, loadTerritorialStroke} = assetReader;
   const loadMesh = async(row, signal, priority = 20) => ({packet:await load(row,'mesh', {signal, priority})});
-  const asChunks = (chunks, legacy) => chunks??(legacy?[{spec:legacy}]:[]);
   function territorialDescriptors(catalog = null) {
     if (!catalog)return [
-      ...asChunks(spec.countryChunks, spec.countries).map((row, i) => ({...row, role:'country', key:'base-country:'+i+':'+row.spec.sha256})),
-      ...asChunks(spec.borderChunks, spec.borders).map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),
+      ...spec.countryChunks.map((row, i) => ({...row, role:'country', key:'base-country:'+i+':'+row.spec.sha256})),
+      ...spec.borderChunks.map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),
     ];
     return [
-      ...catalog.historicalCountries.flatMap((country, i) => asChunks(country.countryChunks, country.countries).map((row, j) => ({...row, role:'country', historySlot:baseSlots.length+i, key:'history-country:'+i+':'+j+':'+row.spec.sha256}))),
-      ...catalog.historicalBorders.flatMap((border, i) => asChunks(border.chunks, border.sha256?border:null).map((row, j) => ({...row, role:'border', kind:'stroke', historyBorder:i, key:'history-border:'+i+':'+j+':'+row.spec.sha256}))),
+      ...catalog.historicalCountries.flatMap((country, i) => country.countryChunks.map((row, j) => ({...row, role:'country', historySlot:baseSlots.length+i, key:'history-country:'+i+':'+j+':'+row.spec.sha256}))),
+      ...catalog.historicalBorders.flatMap((border, i) => border.chunks.map((row, j) => ({...row, role:'border', kind:'stroke', historyBorder:i, key:'history-border:'+i+':'+j+':'+row.spec.sha256}))),
     ];
   }
   const territorialAssets = createGlobeChunkAssets(territorialDescriptors(), {loadMesh, loadStroke:loadTerritorialStroke, residency, byteBudget:cacheBudget.historicalCpuBytes});
@@ -187,7 +187,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const groups = new Map(), result = [];
     for (const row of rows) {
       if (row.role!=='border'||row.baseBorder) {result.push(row); continue;}
-      const cell = row.cell??'legacy';
+      const cell = row.cell;
       let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}group.push(row);
     }
     for (const group of groups.values()) {
@@ -197,8 +197,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         else if (sources.length) {
           const key = 'border-batch:'+sources.map(row => row.key).join(',');
           const compressedBytes = sources.reduce((sum, row) => sum+(Number(row.spec.compressedBytes)||0), 0);
-          const bounds = sources.every(row => row.bounds)?[Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]:null;
-          if (bounds)for (const row of sources)for (let axis = 0; axis<3; axis++) {
+          const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+          for (const row of sources)for (let axis = 0; axis<3; axis++) {
             bounds[axis] = Math.min(bounds[axis], row.bounds[axis]); bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
           }
           result.push({role:'border', kind:'stroke', key, sources, bounds, spec:{sha256:key, decodedBytes, compressedBytes, estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
@@ -215,10 +215,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     return result;
   }
   function addOutlineDescriptors(row, slot) {
-    const chunks = row.outlineChunks??(row.outlines?[{spec:row.outlines, owners:row.outlineOwners, ownerSlots:[...new Set(row.outlineOwners.flat())]}]:[]);
+    const chunks = row.outlineChunks;
     for (let order = 0; order<chunks.length; order++) {
       const chunk = chunks[order], descriptor = {...chunk, key:'outline:'+(slot??'base')+':'+order+':'+chunk.spec.sha256, slot, order, count:chunks.length};
-      for (const owner of chunk.ownerSlots??[]) {
+      for (const owner of chunk.ownerSlots) {
         let rows = outlineBySlot.get(owner); if (!rows) {rows = []; outlineBySlot.set(owner, rows);}rows.push(descriptor);
       }
     }
@@ -286,9 +286,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }
   function installHistoryCatalog(catalog) {
     if (historyLoaded)return;
-    if (!Array.isArray(catalog.historicalCountries)||catalog.historicalCountries.length!==countryCount-baseSlots.length)
+    if (catalog?.version!==1||!Array.isArray(catalog.historicalCountries)||catalog.historicalCountries.length!==countryCount-baseSlots.length
+      ||!Array.isArray(catalog.historicalBorders)||!Array.isArray(catalog.physicalContexts)||!Array.isArray(catalog.historyTimeline))
       throw Error('Three.js history slot count mismatch');
-    const index = createGlobeHistoryIndex(catalog.history, baseSlots.length, {timeline:catalog.historyTimeline??[],
+    const index = createGlobeHistoryIndex(catalog.history, baseSlots.length, {timeline:catalog.historyTimeline,
       physicalIdentities:[spec.physical, ...catalog.physicalContexts].map(row => row.identity)});
     const descriptors = territorialDescriptors(catalog);
     const keys = new Set(slotByKey.keys()), identities = catalog.historicalCountries.map(row => {
@@ -303,11 +304,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }
     clearViewPlans();
     historyIndex = index; historyLoaded = true;
-    historyCatalogBytes = (Number(spec.historyCatalog?.decodedBytes)||0)*3;
+    historyCatalogBytes = spec.historyCatalog.decodedBytes*3;
     residency.set(historyCatalogKey, {protected:true, extraBytes:historyCatalogBytes}); residencyDirty = true;
   }
-  if (!spec.historyCatalog)installHistoryCatalog({historicalCountries:spec.historicalCountries??[], historicalBorders:spec.historicalBorders??[],
-    physicalContexts:spec.physicalContexts??[], history:spec.history??{version:1, stride:32, rows:[]}, historyTimeline:spec.historyTimeline??[]});
   async function ensureHistoryCatalog(signal = lifetime.signal, priority = 20) {
     if (historyLoaded)return true;
     await historyCatalogCache.read('history-catalog', async(readSignal, readPriority) => {
@@ -750,7 +749,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const showRivers = state.layerVisibility.rivers!==false;
     if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical) {
       riverCamera = camera; riverVisible = showRivers; riverContext = physical;
-      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom, strokeCull:viewCull(strokePadding()), geographicBounds:camera.geographicBounds()}):[])) {refreshRiverLedger(); residencyDirty = true;}
+      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom, strokeCull:viewCull(strokePadding())}):[])) {refreshRiverLedger(); residencyDirty = true;}
     }
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height));
     if (!submitted)return {...base, deferred:true};

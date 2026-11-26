@@ -40,10 +40,7 @@ export function createStoredAssetLoader({dataRevision, resolveUrl, report = () =
    if (!cache)return null;
    const key = storedKey(spec, url);
    const response = await cache.match(key).catch (() => null);
-   if (response)return {key, response};
-   if (String(key)===String(url))return null;
-   const legacy = await cache.match(url).catch (() => null);
-   return legacy?{key:url, response:legacy}:null;
+   return response?{key, response}:null;
  }
  async function hasStoredAsset(spec) {
    const match = await findStored(await openDataCache(), spec, resolveAssetUrl(spec));

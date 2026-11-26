@@ -43,6 +43,74 @@ function checkOwnership({root,evidence,expectedCommit}){
   return {head,pin,files,source,toolchain};
 }
 
+// Verify the published spatial-chunk contract, including the separately
+// compressed history catalog. Packet bytes remain bound to staging receipts.
+export function verifyGlobePreviewIdentity(globe,files,bytesFor){
+  const invalid=reason=>fail('ARTIFACT_DEPLOY_DATA_PIN',reason);
+  const seenPackets=new Set();
+  const packet=spec=>{
+    if(!spec||!HASH.test(spec.sha256||'')||spec.encoding!=='gzip'
+      ||typeof spec.url!=='string'||!spec.url.startsWith('assets/data/globe-preview/')
+      ||!spec.url.endsWith('/sha256-'+spec.sha256+'.bin.gz')
+      ||!Number.isSafeInteger(spec.compressedBytes)||spec.compressedBytes<=0
+      ||!Number.isSafeInteger(spec.decodedBytes)||spec.decodedBytes<=0
+      ||files.get(spec.url)?.sha256!==spec.sha256||files.get(spec.url)?.bytes!==spec.compressedBytes)
+      invalid('Three.js asset differs from its transfer receipt');
+    seenPackets.add(spec.url);
+  };
+  const rows=(value,label)=>{
+    if(!Array.isArray(value))invalid('Missing Three.js '+label+' catalog');
+    return value;
+  };
+  const chunks=(value,label)=>{
+    for(const row of rows(value,label)){
+      if(!Array.isArray(row?.bounds)||row.bounds.length!==6||!row.bounds.every(Number.isFinite)
+        ||row.bounds.slice(0,3).some((min,axis)=>min>row.bounds[axis+3]))
+        invalid('Invalid Three.js '+label+' spatial bounds');
+      packet(row.spec);
+    }
+  };
+  const physical=context=>{
+    if(!context||typeof context.identity!=='string')invalid('Missing Three.js physical context');
+    for(const row of rows(context.waters,'water'))chunks(row?.chunks,'water');
+    for(const row of rows(context.lakes,'lake'))chunks(row?.chunks,'lake');
+    chunks(context.riverChunks,'river');
+    chunks(context.riverDetail,'river detail');
+  };
+  if(!globe||!Array.isArray(globe.countrySlots)||!Number.isSafeInteger(globe.historySlotCount)
+    ||globe.historySlotCount<0)invalid('Missing Three.js map asset manifest');
+  chunks(globe.countryChunks,'country');
+  chunks(globe.borderChunks,'border');
+  chunks(globe.outlineChunks,'outline');
+  packet(globe.graticule);
+  packet(globe.hydroMetadata);
+  physical(globe.physical);
+  packet(globe.historyCatalog);
+  const spec=globe.historyCatalog;
+  let history;
+  try{
+    const compressed=bytesFor(spec.url);
+    if(compressed.length!==spec.compressedBytes||digest(compressed)!==spec.sha256)
+      invalid('Three.js history catalog differs from its transfer receipt');
+    const decoded=gunzipSync(compressed,{maxOutputLength:spec.decodedBytes});
+    if(decoded.length!==spec.decodedBytes)invalid('Three.js history catalog size mismatch');
+    history=JSON.parse(decoded);
+  }catch(error){
+    if(error?.code?.startsWith('ARTIFACT_DEPLOY_'))throw error;
+    invalid('Invalid Three.js history catalog: '+error.message);
+  }
+  if(history?.version!==1||!Array.isArray(history.historicalCountries)
+    ||history.historicalCountries.length!==globe.historySlotCount||!Array.isArray(history.historyTimeline)
+    ||!history.history)invalid('Three.js history catalog version or slot count mismatch');
+  for(const row of history.historicalCountries){
+    chunks(row?.countryChunks,'historical country');
+    chunks(row?.outlineChunks,'historical outline');
+  }
+  for(const row of rows(history.historicalBorders,'historical border'))chunks(row?.chunks,'historical border');
+  for(const context of rows(history.physicalContexts,'historical physical'))physical(context);
+  return seenPackets.size;
+}
+
 export function verifyStagedPagesIdentity({root,stage,evidence,expectedCommit=null}={}){
   root=resolve(root);stage=resolve(stage);
   const {head,pin,files,source,toolchain}=checkOwnership({root,evidence,expectedCommit});
@@ -112,18 +180,7 @@ export function verifyStagedPagesIdentity({root,stage,evidence,expectedCommit=nu
     if(!anchors||JSON.stringify(anchors)!==JSON.stringify(boundary.labelAnchors)||Object.values(anchors).some(row=>!row||!/^[a-f0-9]+:[a-f0-9]+$/.test(row.signature)||!Array.isArray(row.coordinates)||row.coordinates.length!==2||!row.coordinates.every(Number.isFinite)||Math.abs(row.coordinates[0])>180||Math.abs(row.coordinates[1])>90))
       fail('ARTIFACT_DEPLOY_DATA_PIN','Label anchors differ from the verified geometry derivative');
   }
-  const globe=meta.globePreview;
-  if(!globe?.countries||!globe.graticule||!globe.physical||!Array.isArray(globe.historicalCountries))
-    fail('ARTIFACT_DEPLOY_DATA_PIN','Missing Three.js map asset manifest');
-  const physicalPackets=[globe.physical,...globe.physicalContexts].flatMap(row=>
-    [row.rivers,...[...row.waters,...row.lakes,...row.riverDetail].map(part=>part.spec)]);
-  const globePackets=[globe.countries,globe.outlines,globe.borders,globe.graticule,globe.hydroMetadata,
-    ...physicalPackets,...globe.historicalBorders,...globe.historicalCountries.flatMap(row=>[row.countries,row.outlines])];
-  for(const spec of new Set(globePackets.flatMap(packet=>[packet,...packet.pickGrid?[packet.pickGrid]:[]]))) {
-    if(!HASH.test(spec.sha256||'')||!spec.url?.startsWith('assets/data/globe-preview/')||
-      files.get(spec.url)?.sha256!==spec.sha256||files.get(spec.url)?.bytes!==spec.compressedBytes)
-      fail('ARTIFACT_DEPLOY_DATA_PIN','Three.js asset differs from its transfer receipt');
-  }
+  verifyGlobePreviewIdentity(meta.globePreview,files,bytesFor);
   if(meta.projectCatalogs.rivers.version!==coherence.hydroVersion
     ||meta.projectCatalogs.lakes.version!==coherence.hydroVersion
     ||meta.projectCatalogs.preparedMeshes.current!==coherence.preparedMeshesCurrent)

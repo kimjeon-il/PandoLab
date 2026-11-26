@@ -429,13 +429,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (activePhysical===parts)return;
     residencyDirty = true;
     const previous = new Set(Object.values(physicalLayers??{}).flat());
-    const {spec} = parts;
     const waterGroups = registerGpuGroups(parts.waters,'water', row => row.id, packet => register(null, packet, palette.ocean, 2));
     const lakeGroups = registerGpuGroups(parts.lakes,'lake', row => String(row.minZoom), (packet, row) => register(null, packet, palette.ocean, 2, row.minZoom,'lake'));
     physicalLayers = {
       waters:waterGroups.map(({resource}, i) => {resource.setOrder(1.6+.3*i/Math.max(1,waterGroups.length));return resource;}),
       lakes:lakeGroups.map(({resource}, i) => {resource.setOrder(2+.9*i/Math.max(1,lakeGroups.length));return resource;}),
-      rivers:(parts.riverChunks??(parts.rivers?[{key:spec.rivers.sha256, packet:parts.rivers, minZoom:spec.riverMinZoom}]:[])).map((row, i, rows) => {
+      rivers:parts.riverChunks.map((row, i, rows) => {
         const resource = useMesh('river', row.key, () => riverMesh(row.packet, row.minZoom)); resource.setOrder(3+.9*i/Math.max(1,rows.length));return resource;
       }),
     };

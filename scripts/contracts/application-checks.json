@@ -16,6 +16,7 @@
         "tests/unit/data/core-timeline-preparation.test.mjs",
         "tests/unit/data/globe-camera.test.mjs",
         "tests/unit/data/globe-mesh.test.mjs",
+        "tests/unit/data/globe-preview-identity.test.mjs",
         "tests/unit/data/globe-picking.test.mjs",
         "tests/unit/app/map-color-visibility.test.mjs",
         "tests/unit/app/map-owner-ports.test.mjs",

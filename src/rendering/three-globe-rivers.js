@@ -1,14 +1,3 @@
-function intersects([west, south, east, north], [left, bottom, right, top]) {
-  if (north<bottom||south>top)return false;
-  if (east-west>=360||right-left>=360)return true;
-  const shift = 360*Math.round((west+east-left-right)/720);
-  return left+shift<=east&&right+shift>=west;
-}
-
-export function selectGlobeRiverChunks(chunks, bounds, zoom) {
-  return chunks.filter(row => zoom>=row.minZoom&&intersects(row.bounds, bounds));
-}
-
 /** Retain prepared line buffers for the accepted viewport and recent visits. */
 export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, onError}) {
   const entries = new Map(), failed = new Map();

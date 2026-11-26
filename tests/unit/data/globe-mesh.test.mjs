@@ -107,22 +107,25 @@ test('outlines store the shared border once with both country slots and retain h
 });
 
 test('river derivation keeps the basic stage global and admits detail across the date line once', async () => {
-  const {selectGlobeRiverChunks}=await import('../../../src/rendering/three-globe-rivers.js');
+  const {createGlobeChunkCatalog}=await import('../../../src/rendering/globe-view-mesh-assets.js');
   const river=(stage,coordinates)=>({geometry:{type:'LineString',coordinates},properties:{stage,stroke_width:1,stroke_widths:[[1,2]]}});
   const output=globeAssets.buildGlobeRiverPackets([
     river(0,[[5,1],[6,1]]),river(1,[[179.9,2],[-179.9,2]]),river(1,[[30,2],[31,2]]),river(2,[[179.91,3],[-179.91,3]]),
   ],[{id:0,minZoom:2},{id:1,minZoom:3},{id:2,minZoom:4}]);
   assert.equal(decodeGlobeStrokes(output.base).count,1);
-  const chunks=output.detail;
-  const bounds=[-180.125,1.5,-179.75,3.5];
-  assert.equal(selectGlobeRiverChunks(chunks,bounds,2.99).length,0);
-  const selected=selectGlobeRiverChunks(chunks,bounds,3);
+  const chunks=output.detail.flatMap(({buffer,...row})=>[...globeAssets.globeStrokeChunks(buffer)].map((chunk,index)=>({...row,...chunk,spec:{sha256:row.id+':'+index}})));
+  const catalog=createGlobeChunkCatalog(chunks);
+  const direction=globeVector([180,2]),axis=direction.map(Math.abs).indexOf(Math.max(...direction.map(Math.abs)));
+  const cull=box=>direction[axis]>0?box[axis+3]>0:box[axis]<0;
+  const select=zoom=>catalog.select(cull,row=>zoom>=row.minZoom);
+  assert.equal(select(2.99).length,0);
+  const selected=select(3);
   assert.equal(selected.length,1);
   const stroke=decodeGlobeStrokes(selected[0].buffer);
   assert.equal(stroke.count,1);
   assert.equal(stroke.widths[0],1.5);
   assert.deepEqual([...stroke.points.subarray(0,3)],globeVector([179.9,2]).map(Math.fround));
-  assert.equal(selectGlobeRiverChunks(chunks,bounds,4).length,2);
+  assert.equal(select(4).length,2);
 });
 
 test('detail view replaces stale loads and reuses a recently uploaded river chunk', async () => {
@@ -177,8 +180,9 @@ test('dated physical contexts reuse unchanged river packets while changing water
   const calls=[];
   const load=async spec=>{calls.push(spec.url);return {bytes:spec.url};};
   const asset=(url,sha256=url)=>({url,sha256});
-  const context=(identity,water,rivers=asset('rivers'))=>({identity,rivers,
-    waters:[{id:'waterbody:lake',spec:water}],lakes:[],riverDetail:[],riverMinZoom:2});
+  const chunk=spec=>({spec,bounds:[-1,-1,-1,1,1,1]});
+  const context=(identity,water,rivers=asset('rivers'))=>({identity,riverChunks:[chunk(rivers)],
+    waters:[{id:'waterbody:lake',chunks:[chunk(water)]}],lakes:[],riverDetail:[],riverMinZoom:2});
   const modern=asset('modern-water'),datedWater=asset('dated-water');
   const indexedWater=asset('modern-water-alias',modern.sha256);
   const assets=createGlobePhysicalAssets([
@@ -191,7 +195,7 @@ test('dated physical contexts reuse unchanged river packets while changing water
   const [current,dated,indexed]=await Promise.all([
     assets.prepare(assets.plan('current')),assets.prepare(assets.plan('dated')),assets.prepare(assets.plan('indexed')),
   ]);
-  assert.equal(current.rivers,dated.rivers);
+  assert.equal(current.riverChunks[0].packet,dated.riverChunks[0].packet);
   assert.notEqual(current.waters[0].mesh,dated.waters[0].mesh);
   assert.equal(current.waters[0].mesh,indexed.waters[0].mesh);
   assert.equal(dated.waters[0].id,'waterbody:lake');
@@ -244,19 +248,20 @@ test('dated physical cache drops inactive contexts without releasing a shared ac
   const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const reads=[];
   const load=async spec=>{reads.push(spec.sha256);return {positions:new Float32Array(2)};};
-  const context=identity=>({identity,rivers:{sha256:'river'},waters:[{id:'water',spec:{sha256:identity}}],lakes:[],riverMinZoom:2});
+  const chunk=sha256=>({spec:{sha256},bounds:[-1,-1,-1,1,1,1]});
+  const context=identity=>({identity,riverChunks:[chunk('river')],waters:[{id:'water',chunks:[chunk(identity)]}],lakes:[],riverDetail:[],riverMinZoom:2});
   const assets=createGlobePhysicalAssets([context('old'),context('current')],{loadMesh:load,loadStroke:load,byteBudget:16});
   assets.retain([assets.plan('old')]);
   const old=await assets.prepare(assets.plan('old'));
   assets.retain([assets.plan('current')]);
   const current=await assets.prepare(assets.plan('current'));
-  assert.equal(old.rivers,current.rivers);
+  assert.equal(old.riverChunks[0].packet,current.riverChunks[0].packet);
   assert.equal(assets.stats().contexts,1);
   assets.retain([assets.plan('old')]);
   const restored=await assets.prepare(assets.plan('old'));
-  assert.equal(restored.rivers,current.rivers);
+  assert.equal(restored.riverChunks[0].packet,current.riverChunks[0].packet);
   assert.notEqual(restored.waters[0].mesh,old.waters[0].mesh);
-  assert.deepEqual(reads,['river','old','current','old']);
+  assert.deepEqual(reads,['old','river','current','old']);
   assets.dispose();
 });
 
@@ -308,19 +313,20 @@ test('obsolete packet consumers cancel only their own reads until the final wait
 test('physical plans defer hidden and higher-zoom lake and river packets',async()=>{
   const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const reads=[],load=async spec=>{reads.push(spec.sha256);return {positions:new Float32Array(2)};};
-  const assets=createGlobePhysicalAssets([{identity:'world',rivers:{sha256:'river'},riverMinZoom:3,
-    waters:[{id:'sea',spec:{sha256:'sea'}}],
-    lakes:[{minZoom:2,spec:{sha256:'large'}},{minZoom:5,spec:{sha256:'small'}}],
+  const chunk=sha256=>({spec:{sha256},bounds:[-1,-1,-1,1,1,1]});
+  const assets=createGlobePhysicalAssets([{identity:'world',riverChunks:[chunk('river')],riverMinZoom:3,
+    waters:[{id:'sea',chunks:[chunk('sea')]}],
+    lakes:[{minZoom:2,chunks:[chunk('large')]},{minZoom:5,chunks:[chunk('small')]}],riverDetail:[],
   }],{loadMesh:load,loadStroke:load});
   const low=assets.plan('world',{zoom:1});
   assets.retain([low]);
   const first=await assets.prepare(low);
-  assert.deepEqual(reads,['sea']);assert.equal(first.rivers,null);assert.equal(first.lakes.length,0);
+  assert.deepEqual(reads,['sea']);assert.equal(first.riverChunks.length,0);assert.equal(first.lakes.length,0);
   const high=assets.plan('world',{zoom:4});
   assets.retain([low,high]);
   const next=await assets.prepare(high);
   assert.equal(next.waters[0].mesh,first.waters[0].mesh);
-  assert.deepEqual(reads,['sea','river','large']);assert.equal(next.lakes.length,1);
+  assert.deepEqual(reads,['sea','large','river']);assert.equal(next.lakes.length,1);
   const hidden=assets.plan('world',{zoom:8,lakesVisible:false,riversVisible:false});
   assert.equal(hidden.key,low.key);assets.dispose();
 });
@@ -521,7 +527,7 @@ test('physical view plans only read visible exact water chunks',async()=>{
  const reads=[],load=async row=>{reads.push(row.sha256);return {positions:new Float32Array(1)};};
  const assets=createGlobePhysicalAssets([{identity:'world',waters:[{id:'sea',chunks:[
   {spec:{sha256:'near'},bounds:[.8,0,0,1,.1,.1]},{spec:{sha256:'far'},bounds:[-1,0,0,-.8,.1,.1]},
- ]}],rivers:{sha256:'river'},riverMinZoom:8,lakes:[]}],{loadMesh:load,loadStroke:load});
+ ]}],riverChunks:[{spec:{sha256:'river'},bounds:[-1,-1,-1,1,1,1]}],riverMinZoom:8,lakes:[],riverDetail:[]}],{loadMesh:load,loadStroke:load});
  const near=assets.plan('world',{zoom:2,cull:box=>box[3]>0});
  assets.retain([near]);const prepared=await assets.prepare(near);
  assert.deepEqual(reads,['near']);assert.equal(prepared.waters[0].id,'sea');
@@ -578,6 +584,7 @@ test('optional spatial preparation failure cannot blacklist required coverage',a
   {key:'near',bounds:[.9,0,0,1,.1,.1],spec:{sha256:'b'}},
  ]);
  assert.deepEqual(index.select(box=>box[0]>0).map(row=>row.key),['near']);
+ assert.throws(()=>createGlobeChunkCatalog([{spec:{sha256:'unbounded'}}]),/Cartesian globe chunk bounds/);
 });
 
 test('shared pending packet consumer promotes queued priority before speculative cancellation',async()=>{

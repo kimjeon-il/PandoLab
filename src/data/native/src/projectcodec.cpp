@@ -76,7 +76,7 @@ std::string pointer(const std::string& base,const std::string& key) {
     for (char c:key) { if (c=='~') escaped+="~0"; else if (c=='/') escaped+="~1"; else escaped+=c; }
     return base+"/"+escaped;
 }
-void unknown(ProjectDocument& d,int schema,const V& v,const std::string& path,std::initializer_list<const char*> known) {
+void unknown(ProjectDocument& d,const V& v,const std::string& path,std::initializer_list<const char*> known) {
     require(v.kind==V::Object,"INVALID_JSON: expected object");
     std::set<std::string> names; for (auto k:known) names.insert(k);
     for (const auto& [key,value]:v.object) if (!names.count(key)) throw std::invalid_argument("UNSUPPORTED_FIELD: "+pointer(path,key));
@@ -93,23 +93,23 @@ ObjectRef ref(const V& v,ProjectDocument& d,const std::string& path) {
     ObjectRef r{str(field(v,"domain")),str(field(v,"id"))};
     const std::set<std::string> domains={"territorial","distributionLayer","distributionEntry","label","hydro","generic"};
     require(domains.count(r.domain),"INVALID_JSON: invalid ObjectRef domain");
-    unknown(d,10,v,path,{"domain","id"}); return r;
+    unknown(d,v,path,{"domain","id"}); return r;
 }
 V refValue(const ObjectRef& r) { return object({{"domain",V::str(r.domain)},{"id",V::str(r.id)}}); }
 GeometryRef geometryRef(const V& v,ProjectDocument& d,const std::string& path) {
     GeometryRef r{str(field(v,"id")),integer(field(v,"version"))};
-    unknown(d,10,v,path,{"id","version"}); return r;
+    unknown(d,v,path,{"id","version"}); return r;
 }
 V geometryRefValue(const GeometryRef& r) { return object({{"id",V::str(r.id)},{"version",V::num(r.version)}}); }
 std::optional<std::string> endpoint(const V& v,ProjectDocument& d,const std::string& path) {
     if (v.kind==V::Null) return {};
     auto text=str(field(v,"text")); auto temporal=parseTemporal(text);
     require(str(field(v,"precision"))==temporal.precision,"INVALID_DATE: precision does not match text");
-    unknown(d,10,v,path,{"text","precision"}); return text;
+    unknown(d,v,path,{"text","precision"}); return text;
 }
 Validity validity(const V& v,ProjectDocument& d,const std::string& path) {
     Validity r{endpoint(field(v,"from"),d,path+"/from"),endpoint(field(v,"to"),d,path+"/to")};
-    unknown(d,10,v,path,{"from","to"}); temporalBounds(r); return r;
+    unknown(d,v,path,{"from","to"}); temporalBounds(r); return r;
 }
 V endpointValue(const std::optional<std::string>& s) {
     if (!s) return {};
@@ -128,7 +128,7 @@ LibraryOrigin libraryOrigin(const V& v,ProjectDocument& d,const std::string& pat
     origin.partial=boolean(field(v,"partial"));
     for(const auto& ref:array(field(v,"missingLibraryRefs")))
         origin.missingLibraryRefs.push_back(str(ref));
-    unknown(d,10,v,path,
+    unknown(d,v,path,
             {"libraryId","geometryVersionId","referenceDate","sourceId","sourceVersion",
              "certainty","partial","missingLibraryRefs"});
     return origin;
@@ -139,7 +139,7 @@ Point point(const V& v) {
 }
 Ring line(const V& v) { Ring r; for (const auto& p:array(v)) r.push_back(point(p)); return r; }
 Polygon polygon(const V& v) { Polygon p; for (const auto& r:array(v)) p.push_back(line(r)); return p; }
-Geometry geometry(const V& v,ProjectDocument& d,int schema,const std::string& path) {
+Geometry geometry(const V& v,ProjectDocument& d,const std::string& path) {
     Geometry g; g.type=str(field(v,"type")); const auto& c=field(v,"coordinates");
     if (g.type=="Point") g.points.push_back(point(c));
     else if (g.type=="MultiPoint") g.points=line(c);
@@ -148,7 +148,7 @@ Geometry geometry(const V& v,ProjectDocument& d,int schema,const std::string& pa
     else if (g.type=="Polygon") g.polygons.push_back(polygon(c));
     else if (g.type=="MultiPolygon") for (const auto& p:array(c)) g.polygons.push_back(polygon(p));
     else require(false,"INVALID_GEOMETRY: unsupported GeoJSON kind");
-    unknown(d,schema,v,path,{"type","coordinates"}); return g;
+    unknown(d,v,path,{"type","coordinates"}); return g;
 }
 V pointValue(Point p) { V v=V::arr(); v.array={V::num(p.x),V::num(p.y)}; return v; }
 V lineValue(const Ring& l) { V v=V::arr(); for (auto p:l) v.array.push_back(pointValue(p)); return v; }
@@ -197,14 +197,14 @@ void validateProvenanceDigests(const ProjectDocument& d,bool wireIds) {
     }
 }
 void readGeometryProvenance(const V& value,ProjectDocument& d) {
-    unknown(d,10,value,"/geometryProvenance",{"schemaVersion","originalArchive","inlineAllocations","opaqueBaseline","opaqueUncertain"});
+    unknown(d,value,"/geometryProvenance",{"schemaVersion","originalArchive","inlineAllocations","opaqueBaseline","opaqueUncertain"});
     require(integer(field(value,"schemaVersion"))==1,"INVALID_GEOMETRY_PROVENANCE: unsupported schema version");
     auto& provenance=d.geometryProvenance;
     for(const auto& row:array(field(value,"originalArchive")))
         require(provenance.originalArchive.insert(geometryRef(row,d,"/geometryProvenance/originalArchive")).second,
                 "INVALID_GEOMETRY_PROVENANCE: duplicate original ref");
     for(const auto& row:array(field(value,"inlineAllocations"))) {
-        unknown(d,10,row,"/geometryProvenance/inlineAllocations",{"ref","createdFor","geometrySha256","promoted"});
+        unknown(d,row,"/geometryProvenance/inlineAllocations",{"ref","createdFor","geometrySha256","promoted"});
         const auto geometry=geometryRef(field(row,"ref"),d,"/geometryProvenance/inlineAllocations/ref");
         InlineGeometryAllocation allocation{ref(field(row,"createdFor"),d,"/geometryProvenance/inlineAllocations/createdFor"),
                                             str(field(row,"geometrySha256")),boolean(field(row,"promoted"))};
@@ -212,7 +212,7 @@ void readGeometryProvenance(const V& value,ProjectDocument& d) {
                 "INVALID_GEOMETRY_PROVENANCE: duplicate allocation ref");
     }
     for(const auto& row:array(field(value,"opaqueBaseline"))) {
-        unknown(d,10,row,"/geometryProvenance/opaqueBaseline",{"path","sha256"});
+        unknown(d,row,"/geometryProvenance/opaqueBaseline",{"path","sha256"});
         require(provenance.opaqueBaseline.emplace(str(field(row,"path")),str(field(row,"sha256"))).second,
                 "INVALID_GEOMETRY_PROVENANCE: duplicate opaque slot");
     }
@@ -232,12 +232,12 @@ Validity recordInterval(const V& v,bool timelineOwned=false) {
 }
 TimelineRecords timelineRecords(const V& value,ProjectDocument& d) {
     TimelineRecords result;result.schemaVersion=integer(field(value,"schemaVersion"));
-    unknown(d,10,value,"/timelineRecords",{"schemaVersion","lifetimes","geometryBindings","parentRelations","propertyBindings"});
-    for(const auto& row:array(field(value,"lifetimes"))){unknown(d,10,row,"/timelineRecords/lifetimes",{"id","objectRef","validFrom","validTo"});result.lifetimes.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true)});}
-    for(const auto& row:array(field(value,"geometryBindings"))){unknown(d,10,row,"/timelineRecords/geometryBindings",{"id","objectRef","validFrom","validTo","geometryRef","rendering"});result.geometryBindings.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true),geometryRef(field(row,"geometryRef"),d,"/timelineRecords/geometryBindings/geometryRef"),row.object.count("rendering")?field(row,"rendering").encode():"{}"});}
-    for(const auto& row:array(field(value,"parentRelations"))){unknown(d,10,row,"/timelineRecords/parentRelations",{"id","objectRef","validFrom","validTo","parentId","coverageMode"});result.parentRelations.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true),str(field(row,"parentId")),str(field(row,"coverageMode"))});}
+    unknown(d,value,"/timelineRecords",{"schemaVersion","lifetimes","geometryBindings","parentRelations","propertyBindings"});
+    for(const auto& row:array(field(value,"lifetimes"))){unknown(d,row,"/timelineRecords/lifetimes",{"id","objectRef","validFrom","validTo"});result.lifetimes.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true)});}
+    for(const auto& row:array(field(value,"geometryBindings"))){unknown(d,row,"/timelineRecords/geometryBindings",{"id","objectRef","validFrom","validTo","geometryRef","rendering"});result.geometryBindings.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true),geometryRef(field(row,"geometryRef"),d,"/timelineRecords/geometryBindings/geometryRef"),row.object.count("rendering")?field(row,"rendering").encode():"{}"});}
+    for(const auto& row:array(field(value,"parentRelations"))){unknown(d,row,"/timelineRecords/parentRelations",{"id","objectRef","validFrom","validTo","parentId","coverageMode"});result.parentRelations.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true),str(field(row,"parentId")),str(field(row,"coverageMode"))});}
     for(const auto& row:array(field(value,"propertyBindings"))) {
-        unknown(d,ProjectVersion,row,"/timelineRecords/propertyBindings",{"id","objectRef","validFrom","validTo","property","value"});
+        unknown(d,row,"/timelineRecords/propertyBindings",{"id","objectRef","validFrom","validTo","property","value"});
         result.propertyBindings.push_back({str(field(row,"id")),ref(field(row,"objectRef"),d,"/timelineRecords/objectRef"),recordInterval(row,true),str(field(row,"property")),field(row,"value").encode()});
     }
     return result;
@@ -256,7 +256,7 @@ void restoreArchive(const V& root,ProjectDocument& d,bool builtinSource) {
         const GeometryRef ref{str(field(row,"id")),integer(field(row,"version"))};
         Geometry shape;
         if(resources){require(row.object.size()==3&&candidate.resources.count(ref),"INVALID_GEOMETRY_RESOURCE: payload owner");shape=decodeGeometryResource(candidate.resources.at(ref),str(field(row,"source")));}
-        else {unknown(d,10,row,"/geometries",{"id","version","geojson"});shape=geometry(field(row,"geojson"),d,10,"/geometries/geojson");}
+        else {unknown(d,row,"/geometries",{"id","version","geojson"});shape=geometry(field(row,"geojson"),d,"/geometries/geojson");}
         candidate.geometries.push_back({ref,std::make_shared<const Geometry>(std::move(shape))});
     }
     auto restored=restoreTimelineStorage(candidate,timelineEntityCatalog(d));d.timelineRecords=std::move(restored.records);d.geometries=std::move(restored.geometries);
@@ -269,65 +269,62 @@ V webAnnotation(const std::string& bytes) {
     auto value=codecjson::parse(bytes);
     require(value.kind==V::Object||value.kind==V::Array,"INVALID_CONTENT: expected JSON object or array");return value;
 }
-void readPresentation(const V& value,ProjectDocument& d) {const unsigned schema=10;
-        const auto& p=value;
-        const auto& styles=field(p,"objectStyles"); require(styles.kind==V::Object,"INVALID_JSON: objectStyles");
-        for (const auto& [domain,items]:styles.object) {
-            auto path=pointer("/presentation/objectStyles",domain);
-            require(std::set<std::string>{"territorial","label","hydro","generic","distributionEntry"}.count(domain),"INVALID_STYLE_DOMAIN");
-            require(items.kind==V::Object,"INVALID_JSON: domain styles");
-            for (const auto& [id,v]:items.object) {
-                const bool automatic=schema>=4 && field(v,"color").kind==V::Null;
-                d.presentation.objectStyles.emplace(ObjectRef{domain,id},ObjectStyle{automatic?0:color(field(v,"color")),!automatic});
-                unknown(d,10,v,pointer(path,id),{"color"});
-            }
+void readPresentation(const V& value,ProjectDocument& d) {
+    const auto& p=value;
+    const auto& styles=field(p,"objectStyles"); require(styles.kind==V::Object,"INVALID_JSON: objectStyles");
+    for (const auto& [domain,items]:styles.object) {
+        auto path=pointer("/presentation/objectStyles",domain);
+        require(std::set<std::string>{"territorial","label","hydro","generic","distributionEntry"}.count(domain),"INVALID_STYLE_DOMAIN");
+        require(items.kind==V::Object,"INVALID_JSON: domain styles");
+        for (const auto& [id,v]:items.object) {
+            const bool automatic=field(v,"color").kind==V::Null;
+            d.presentation.objectStyles.emplace(ObjectRef{domain,id},ObjectStyle{automatic?0:color(field(v,"color")),!automatic});
+            unknown(d,v,pointer(path,id),{"color"});
         }
-        if(schema>=5) {
-            const auto& w=field(p,"webPresentation");auto& out=d.presentation.webPresentation;
-            for(const auto* key:{"visibility","hiddenItems"})require(!w.object.count(key),"PL-SCHEMA-FIELD: viewing state is device-only");
-            auto readStyles=[&](const char* name,auto& target){
-                const auto& values=field(w,name);require(values.kind==V::Object,"INVALID_JSON: presentation styles");
-                for(const auto& [key,value]:values.object){
-                    const bool supported=std::string(name)=="styles"?(presentationGroup(key)):key.rfind("territorial:entity:",0)==0;
-                    require(supported,"UNSUPPORTED_PRESENTATION_KEY");
-                    PresentationStyle s;require(value.kind==V::Object,"INVALID_JSON: presentation style");
-                    if(value.object.count("boundaryVisible"))s.boundaryVisible=boolean(field(value,"boundaryVisible"));
-                    if(value.object.count("colorVisible"))s.colorVisible=boolean(field(value,"colorVisible"));
-                    if(value.object.count("labelsVisible"))s.labelsVisible=boolean(field(value,"labelsVisible"));
-                    if(value.object.count("boundaryWidth"))s.boundaryWidth=number(field(value,"boundaryWidth"));
-                    if(value.object.count("blendMode"))s.blendMode=str(field(value,"blendMode"));
-                    target[key]=s;unknown(d,5,value,pointer(std::string("/presentation/webPresentation/")+name,key),{"colorVisible","boundaryVisible","labelsVisible","boundaryWidth","blendMode"});
-                }
-            };
-            readStyles("styles",out.styles);readStyles("objectStyles",out.objectStyles);
-            std::set<std::string> overlays;
-            out.overlayOrderPresent=w.object.count("overlayOrder");
-            if(out.overlayOrderPresent)for(const auto& key:array(field(w,"overlayOrder"))){const auto text=str(key);require((text=="genericFeatures"||text=="distributions"||text=="objects")&&overlays.insert(text).second,"UNSUPPORTED_OVERLAY_ORDER");out.overlayOrder.push_back(text);}
-            for(const auto& key:array(field(w,"objectOrder"))){const auto text=str(key);require(text.rfind("territorial:entity:",0)==0,"INVALID_PRESENTATION_ORDER");out.objectOrder.push_back(text);}
-            if(schema>=6 && w.object.count("labelSettings")) for(const auto& value:array(field(w,"labelSettings"))) {
-                auto path="/presentation/webPresentation/labelSettings/"+std::to_string(out.labelSettings.size());
-                const auto owner=ref(field(value,"ref"),d,path+"/ref");LabelSettings s;
-                if(value.object.count("priority"))s.priority=number(field(value,"priority"));
-                if(value.object.count("minZoom"))s.minZoom=number(field(value,"minZoom"));
-                if(value.object.count("maxZoom"))s.maxZoom=number(field(value,"maxZoom"));
-                if(value.object.count("manualPosition")){const auto& a=array(field(value,"manualPosition"));require(a.size()==2,"INVALID_LABEL_SETTINGS");s.manualPosition=Point{number(a[0]),number(a[1])};}
-                s.pinned=value.object.count("pinned")&&boolean(field(value,"pinned"));
-                if(value.object.count("collisionGroup"))s.collisionGroup=str(field(value,"collisionGroup"));
-                require(out.labelSettings.emplace(owner,std::move(s)).second,"DUPLICATE_ID: label settings");
-                unknown(d,6,value,path,{"ref","priority","minZoom","maxZoom","manualPosition","pinned","collisionGroup"});
-            }
-            if(schema>=6 && w.object.count("distributionSettings")) {
-                const auto& value=field(w,"distributionSettings");const auto mode=str(field(value,"renderMode"));
-                require(mode=="overlap"||mode=="single","INVALID_DISTRIBUTION_SETTINGS");
-                out.distributionSettings.renderMode=mode=="single"?DistributionRenderMode::Single:DistributionRenderMode::Overlap;
-                if(schema>=8)out.distributionSettings.activeLayerId=str(field(value,"activeLayerId"));
-                out.distributionSettings.boundaryVisible=boolean(field(value,"boundaryVisible"));
-                unknown(d,10,value,"/presentation/webPresentation/distributionSettings",{"renderMode","activeLayerId","boundaryVisible"});
-            }
-            unknown(d,5,w,"/presentation/webPresentation",{"styles","objectStyles","objectOrder","overlayOrder","labelSettings","distributionSettings"});
-
+    }
+    const auto& w=field(p,"webPresentation");auto& out=d.presentation.webPresentation;
+    for(const auto* key:{"visibility","hiddenItems"})require(!w.object.count(key),"PL-SCHEMA-FIELD: viewing state is device-only");
+    auto readStyles=[&](const char* name,auto& target){
+        const auto& values=field(w,name);require(values.kind==V::Object,"INVALID_JSON: presentation styles");
+        for(const auto& [key,value]:values.object){
+            const bool supported=std::string(name)=="styles"?(presentationGroup(key)):key.rfind("territorial:entity:",0)==0;
+            require(supported,"UNSUPPORTED_PRESENTATION_KEY");
+            PresentationStyle s;require(value.kind==V::Object,"INVALID_JSON: presentation style");
+            if(value.object.count("boundaryVisible"))s.boundaryVisible=boolean(field(value,"boundaryVisible"));
+            if(value.object.count("colorVisible"))s.colorVisible=boolean(field(value,"colorVisible"));
+            if(value.object.count("labelsVisible"))s.labelsVisible=boolean(field(value,"labelsVisible"));
+            if(value.object.count("boundaryWidth"))s.boundaryWidth=number(field(value,"boundaryWidth"));
+            if(value.object.count("blendMode"))s.blendMode=str(field(value,"blendMode"));
+            target[key]=s;unknown(d,value,pointer(std::string("/presentation/webPresentation/")+name,key),{"colorVisible","boundaryVisible","labelsVisible","boundaryWidth","blendMode"});
         }
-        unknown(d,10,p,"/presentation",{"objectStyles","webPresentation"});
+    };
+    readStyles("styles",out.styles);readStyles("objectStyles",out.objectStyles);
+    std::set<std::string> overlays;
+    out.overlayOrderPresent=w.object.count("overlayOrder");
+    if(out.overlayOrderPresent)for(const auto& key:array(field(w,"overlayOrder"))){const auto text=str(key);require((text=="genericFeatures"||text=="distributions"||text=="objects")&&overlays.insert(text).second,"UNSUPPORTED_OVERLAY_ORDER");out.overlayOrder.push_back(text);}
+    for(const auto& key:array(field(w,"objectOrder"))){const auto text=str(key);require(text.rfind("territorial:entity:",0)==0,"INVALID_PRESENTATION_ORDER");out.objectOrder.push_back(text);}
+    if(w.object.count("labelSettings")) for(const auto& value:array(field(w,"labelSettings"))) {
+        auto path="/presentation/webPresentation/labelSettings/"+std::to_string(out.labelSettings.size());
+        const auto owner=ref(field(value,"ref"),d,path+"/ref");LabelSettings s;
+        if(value.object.count("priority"))s.priority=number(field(value,"priority"));
+        if(value.object.count("minZoom"))s.minZoom=number(field(value,"minZoom"));
+        if(value.object.count("maxZoom"))s.maxZoom=number(field(value,"maxZoom"));
+        if(value.object.count("manualPosition")){const auto& a=array(field(value,"manualPosition"));require(a.size()==2,"INVALID_LABEL_SETTINGS");s.manualPosition=Point{number(a[0]),number(a[1])};}
+        s.pinned=value.object.count("pinned")&&boolean(field(value,"pinned"));
+        if(value.object.count("collisionGroup"))s.collisionGroup=str(field(value,"collisionGroup"));
+        require(out.labelSettings.emplace(owner,std::move(s)).second,"DUPLICATE_ID: label settings");
+        unknown(d,value,path,{"ref","priority","minZoom","maxZoom","manualPosition","pinned","collisionGroup"});
+    }
+    if(w.object.count("distributionSettings")) {
+        const auto& value=field(w,"distributionSettings");const auto mode=str(field(value,"renderMode"));
+        require(mode=="overlap"||mode=="single","INVALID_DISTRIBUTION_SETTINGS");
+        out.distributionSettings.renderMode=mode=="single"?DistributionRenderMode::Single:DistributionRenderMode::Overlap;
+        out.distributionSettings.activeLayerId=str(field(value,"activeLayerId"));
+        out.distributionSettings.boundaryVisible=boolean(field(value,"boundaryVisible"));
+        unknown(d,value,"/presentation/webPresentation/distributionSettings",{"renderMode","activeLayerId","boundaryVisible"});
+    }
+    unknown(d,w,"/presentation/webPresentation",{"styles","objectStyles","objectOrder","overlayOrder","labelSettings","distributionSettings"});
+    unknown(d,p,"/presentation",{"objectStyles","webPresentation"});
 
 }
 
@@ -391,22 +388,22 @@ void validateHeader(const V& header,const ProjectDocument&) {
                 revision.substr(5).find_first_not_of("0123456789abcdef")==std::string::npos,
                 "INVALID_MAP_PROJECT_IDENTITY: data revision");
     }
-    ProjectDocument checks;unknown(checks,9,header,"/exchangeMetadata",{"version","savedAt","baseDataset","sourceInfo","physicalSourceInfo","mapProjectIdentity","landObjectModel","territorialModel","distributionModel","projectSetup"});
+    ProjectDocument checks;unknown(checks,header,"/exchangeMetadata",{"version","savedAt","baseDataset","sourceInfo","physicalSourceInfo","mapProjectIdentity","landObjectModel","territorialModel","distributionModel","projectSetup"});
     validateProjectSetup(field(header,"projectSetup"));
 }
 void validateExchangeMetadata(const ProjectDocument& d) {
     auto header=currentWebHeader();for(const auto& [key,value]:jsonObject(d.exchangeMetadata).object)header.object[key]=value;validateHeader(header,d);
 }
 SourceProvenance webSource(const V& value,ProjectDocument& d) {
-    unknown(d,10,value,"/source",{"schemaVersion","kind","dataset","version","sourceId","sourceFormat","sourceType","importedAt","details"});
+    unknown(d,value,"/source",{"schemaVersion","kind","dataset","version","sourceId","sourceFormat","sourceType","importedAt","details"});
     require(integer(field(value,"schemaVersion"))==1,"UNSUPPORTED_SOURCE_VERSION");
     SourceProvenance result;result.kind=str(field(value,"kind"));
     result.dataset=optionalText(value,"dataset");result.version=optionalText(value,"version");result.sourceId=optionalText(value,"sourceId");result.sourceFormat=optionalText(value,"sourceFormat");result.sourceType=optionalText(value,"sourceType");result.importedAt=optionalText(value,"importedAt");
     if(value.object.count("details")&&field(value,"details").kind!=V::Null)result.details=jsonObject(field(value,"details").encode()).encode();return result;
 }
 void readWebTerritorialIdentity(const V& row,ProjectDocument& d,const PlatformPorts& ports) {
-        unknown(d,10,row,"/territorialEntities",{"id","type","properties","geometry"});require(str(field(row,"type"))=="Feature"&&field(row,"geometry").kind==V::Null,"INVALID_TERRITORIAL_FEATURE");
-        const auto& p=field(row,"properties");unknown(d,10,p,"/territorialEntities/properties",{"schemaVersion","entityKind","name","notes","style","locked","metadata","sourceFolderId","sourceEntityId","sourceGeometryVersion"});require(integer(field(p,"schemaVersion"))==TerritorialIdentityVersion,"UNSUPPORTED_ENTITY_VERSION");
+        unknown(d,row,"/territorialEntities",{"id","type","properties","geometry"});require(str(field(row,"type"))=="Feature"&&field(row,"geometry").kind==V::Null,"INVALID_TERRITORIAL_FEATURE");
+        const auto& p=field(row,"properties");unknown(d,p,"/territorialEntities/properties",{"schemaVersion","entityKind","name","notes","style","locked","metadata","sourceFolderId","sourceEntityId","sourceGeometryVersion"});require(integer(field(p,"schemaVersion"))==TerritorialIdentityVersion,"UNSUPPORTED_ENTITY_VERSION");
         TerritorialUnit u;u.id=str(field(row,"id"));const auto kind=str(field(p,"entityKind"));require(kind=="general"||kind=="regional","INVALID_ENTITY_KIND");u.kind=kind=="general"?UnitKind::General:UnitKind::Regional;u.name=str(field(p,"name"));u.notes=str(field(p,"notes"));u.locked=boolean(field(p,"locked"));
         u.sourceFolderId=str(field(p,"sourceFolderId"));u.sourceEntityId=str(field(p,"sourceEntityId"));u.sourceGeometryVersion=str(field(p,"sourceGeometryVersion"));
         auto metadata=jsonObject(field(p,"metadata").encode());for(const auto* key:{"sovereignId","sovereign","sovereignty","politicalRelations"})require(!metadata.object.count(key),"UNSUPPORTED_POLITICAL_RELATION");const auto owner=territorialRef(u.id);
@@ -421,9 +418,9 @@ void readWebTerritorialIdentity(const V& row,ProjectDocument& d,const PlatformPo
                 metadata.object.erase("flagDataUrl");
             }
         }
-        if(metadata.object.count("nameSource")){const auto& state=field(metadata,"nameSource");unknown(d,10,state,"/metadata/nameSource",{"baseName","nameExplicit"});u.baseName=str(field(state,"baseName"));u.nameExplicit=boolean(field(state,"nameExplicit"));metadata.object.erase("nameSource");}
+        if(metadata.object.count("nameSource")){const auto& state=field(metadata,"nameSource");unknown(d,state,"/metadata/nameSource",{"baseName","nameExplicit"});u.baseName=str(field(state,"baseName"));u.nameExplicit=boolean(field(state,"nameExplicit"));metadata.object.erase("nameSource");}
         if(metadata.object.count("libraryOrigin")){u.libraryOrigin=libraryOrigin(field(metadata,"libraryOrigin"),d,"/metadata/libraryOrigin");metadata.object.erase("libraryOrigin");}
-        u.metadata=metadata.encode();const auto& style=field(p,"style");unknown(d,10,style,"/entity/style",{"color"});ObjectStyle nativeStyle{0,false};if(style.object.count("color")){nativeStyle.color=color(field(style,"color"));nativeStyle.explicitColor=true;}require(d.presentation.objectStyles.emplace(owner,nativeStyle).second,"DUPLICATE_ENTITY_ID");d.units.push_back(std::move(u));
+        u.metadata=metadata.encode();const auto& style=field(p,"style");unknown(d,style,"/entity/style",{"color"});ObjectStyle nativeStyle{0,false};if(style.object.count("color")){nativeStyle.color=color(field(style,"color"));nativeStyle.explicitColor=true;}require(d.presentation.objectStyles.emplace(owner,nativeStyle).second,"DUPLICATE_ENTITY_ID");d.units.push_back(std::move(u));
 }
 const char* webContentGeometryDomain(const std::string& domain) {
     if(domain=="label")return "label";
@@ -438,7 +435,7 @@ ContentValue readWebContentRow(ProjectDocument& d,const ObjectRef& target,const 
     const auto id=str(field(row,"id"));require(id==target.id,"INVALID_WEB_CONTENT_ID");
     require(!trimWebText(id).empty(),"INVALID_WEB_CONTENT_ID");
     if(target.domain=="label") {
-        unknown(d,10,row,"/labels",{"id","name","kind","notes","coordinates","territorialUnitId","source","sourcePlaceId","metadata"});
+        unknown(d,row,"/labels",{"id","name","kind","notes","coordinates","territorialUnitId","source","sourcePlaceId","metadata"});
         PlaceLabel label;label.id=id;label.name=str(field(row,"name"));label.kind=str(field(row,"kind"));label.notes=optionalText(row,"notes");
         label.geometry=readGeometry(wireDomain,id,object({{"type",V::str("Point")},{"coordinates",field(row,"coordinates")}}));
         const auto parent=optionalText(row,"territorialUnitId");if(!parent.empty())label.territory=territorialRef(parent);
@@ -449,10 +446,10 @@ ContentValue readWebContentRow(ProjectDocument& d,const ObjectRef& target,const 
         return label;
     }
     if(target.domain=="hydro"||target.domain=="generic") {
-        unknown(d,10,row,"/"+wireDomain,{"type","id","properties","geometry"});require(str(field(row,"type"))=="Feature","INVALID_FEATURE");
+        unknown(d,row,"/"+wireDomain,{"type","id","properties","geometry"});require(str(field(row,"type"))=="Feature","INVALID_FEATURE");
         const auto& p=field(row,"properties");const auto geo=readGeometry(wireDomain,id,field(row,"geometry"));
         if(target.domain=="generic") {
-            unknown(d,10,p,"/genericFeatures/properties",{"schemaVersion","name","notes","color","locked","source"});
+            unknown(d,p,"/genericFeatures/properties",{"schemaVersion","name","notes","color","locked","source"});
             require(integer(field(p,"schemaVersion"))==2,"UNSUPPORTED_GENERIC_VERSION");
             GenericFeature value;value.id=id;value.name=str(field(p,"name"));value.notes=str(field(p,"notes"));value.geometry=geo;
             value.explicitColor=!str(field(p,"color")).empty();value.color=value.explicitColor?color(field(p,"color")):0x8c68d8;
@@ -472,7 +469,7 @@ ContentValue readWebContentRow(ProjectDocument& d,const ObjectRef& target,const 
         value.annotations=annotations.encode();return value;
     }
     if(target.domain=="distributionLayer") {
-        unknown(d,10,row,"/distributionLayers",{"id","schemaVersion","name","unit","valueScale","color","locked","parentId","groups","validFrom","validTo","metadata"});
+        unknown(d,row,"/distributionLayers",{"id","schemaVersion","name","unit","valueScale","color","locked","parentId","groups","validFrom","validTo","metadata"});
         require(integer(field(row,"schemaVersion"))==3,"UNSUPPORTED_DISTRIBUTION_VERSION");
         DistributionLayer value;value.id=id;value.name=str(field(row,"name"));value.unit=str(field(row,"unit"));value.explicitColor=!str(field(row,"color")).empty();
         value.color=value.explicitColor?color(field(row,"color")):0x8c68d8;value.locked=boolean(field(row,"locked"));
@@ -480,9 +477,9 @@ ContentValue readWebContentRow(ProjectDocument& d,const ObjectRef& target,const 
         for(const auto& group:array(field(row,"groups")))value.groups.push_back(str(group));
         value.validity=recordInterval(row);value.metadata=webAnnotation(field(row,"metadata").encode()).encode();
         const auto& scale=field(row,"valueScale");const auto mode=str(field(scale,"mode"));require(mode=="auto"||mode=="manual","INVALID_VALUE_SCALE");
-        unknown(d,10,scale,"/valueScale",{"mode","min","max"});if(mode=="manual")value.valueScale={true,number(field(scale,"min")),number(field(scale,"max"))};return value;
+        unknown(d,scale,"/valueScale",{"mode","min","max"});if(mode=="manual")value.valueScale={true,number(field(scale,"min")),number(field(scale,"max"))};return value;
     }
-    unknown(d,10,row,"/distributionEntries",{"id","schemaVersion","layerId","mode","territorialUnitId","geometry","value","certainty","validFrom","validTo","metadata"});
+    unknown(d,row,"/distributionEntries",{"id","schemaVersion","layerId","mode","territorialUnitId","geometry","value","certainty","validFrom","validTo","metadata"});
     require(integer(field(row,"schemaVersion"))==3,"UNSUPPORTED_DISTRIBUTION_VERSION");
     DistributionEntry value;value.id=id;value.layerId=str(field(row,"layerId"));value.value=number(field(row,"value"));value.certainty=str(field(row,"certainty"));
     value.validity=recordInterval(row);value.metadata=webAnnotation(field(row,"metadata").encode()).encode();
@@ -522,11 +519,11 @@ GeometryRef inlineShape(ProjectDocument& d,const std::string& domain,const std::
     return ref;
 }
 GeometryRef inlineGeometry(ProjectDocument& d,const std::string& domain,const std::string& id,const V& value) {
-    return inlineShape(d,domain,id,std::make_shared<const Geometry>(geometry(value,d,9,"/"+domain+"/geometry")));
+    return inlineShape(d,domain,id,std::make_shared<const Geometry>(geometry(value,d,"/"+domain+"/geometry")));
 }
 void readWebPresentation(const V& root,ProjectDocument& d,bool preserveAnnotations) {
     const auto& layer=field(root,"layerPresentation");require(integer(field(layer,"schemaVersion"))==5,"UNSUPPORTED_PRESENTATION_VERSION");
-    unknown(d,10,layer,"/layerPresentation",{"schemaVersion","styles","objectStyles","objectOrder","overlayOrder"});
+    unknown(d,layer,"/layerPresentation",{"schemaVersion","styles","objectStyles","objectOrder","overlayOrder"});
     V labels=V::arr();const auto& settings=field(root,"labelSettings");require(settings.kind==V::Object,"INVALID_LABEL_SETTINGS");
     for(const auto& [key,value]:settings.object){const auto colon=key.find(':');require(colon!=std::string::npos,"INVALID_LABEL_KEY");const auto domain=key.substr(0,colon);require(domain=="territorial"||domain=="label","UNSUPPORTED_LABEL_KEY");auto row=value;require(row.kind==V::Object,"INVALID_LABEL_SETTINGS");
         if(preserveAnnotations){static const std::set<std::string> fields={"priority","minZoom","maxZoom","manualPosition","pinned","collisionGroup"};for(auto it=row.object.begin();it!=row.object.end();)if(!fields.count(it->first))it=row.object.erase(it);else ++it;}
@@ -551,7 +548,7 @@ std::string geometrySha256(const Geometry& shape) { return sha256Bytes(geometryV
 bool isWebContentId(const std::string& id) { return webObjectId(id); }
 std::uint32_t readWebColor(const V& value) {return color(value);}
 V webColorValue(std::uint32_t value) {return colorValue(value);}
-Geometry readWebGeometry(const V& value) {ProjectDocument checks;return geometry(value,checks,10,"/geometry");}
+Geometry readWebGeometry(const V& value) {ProjectDocument checks;return geometry(value,checks,"/geometry");}
 WebTerritorialFeature readWebTerritorialIdentityFeature(const V& row,const PlatformPorts& ports) {
     const auto& properties=field(row,"properties");
     auto identity=row;identity.object["geometry"]=V{};
@@ -597,7 +594,7 @@ ProjectDocument readWebDocumentValue(const V& root,const PlatformPorts& ports,bo
     require(integer(field(root,"schemaVersion"))==ProjectVersion,"UNSUPPORTED_VERSION: expected web v14");
     const auto format=str(field(root,"format"));require(format!="pandolab-autosave-delta","BASE_DATA_REQUIRED: web delta requires its matching baseline");require(format=="pandolab-project-state"||format=="pandolab-autosave-full","UNSUPPORTED_FORMAT");
     for(const auto* key:{"defaultView","layerVisibility","itemVisibility"})require(!root.object.count(key),"PL-SCHEMA-FIELD: viewing state is device-only");
-    unknown(d,10,root,"",{"format","schemaVersion","version","savedAt","baseDataset","landObjectModel","territorialModel","distributionModel","sourceInfo","physicalSourceInfo","documentId","territorialEntities","timelineRecords","geometries","geometryResources","labels","hydroEdits","genericFeatures","distributionLayers","distributionEntries","labelSettings","distributionSettings","layerPresentation","projectSetup","mapProjectIdentity"});
+    unknown(d,root,"",{"format","schemaVersion","version","savedAt","baseDataset","landObjectModel","territorialModel","distributionModel","sourceInfo","physicalSourceInfo","documentId","territorialEntities","timelineRecords","geometries","geometryResources","labels","hydroEdits","genericFeatures","distributionLayers","distributionEntries","labelSettings","distributionSettings","layerPresentation","projectSetup","mapProjectIdentity"});
     auto header=V::obj();for(const auto& [key,value]:currentWebHeader().object){
         if(key=="mapProjectIdentity"&&!root.object.count(key))header.object[key]=V{};
         else header.object[key]=field(root,key);
@@ -619,7 +616,7 @@ ProjectDocument readWebDocumentValue(const V& root,const PlatformPorts& ports,bo
         if(domain=="hydroEdits"){require(value.kind==V::Null,"INVALID_HYDRO_IDENTITY: stored geometry belongs to timeline");auto found=std::find_if(d.timelineRecords.geometryBindings.begin(),d.timelineRecords.geometryBindings.end(),[&](const auto& row){return row.objectRef==ObjectRef{"hydro",id};});require(found!=d.timelineRecords.geometryBindings.end(),"TIMELINE_GEOMETRY: missing water binding");return found->geometryRef;}
         return inlineGeometry(d,domain,id,value);};
     for(const auto& row:array(field(root,"labels"))) {
-        if(!ports.preserveWebAnnotations)unknown(d,10,row,"/labels",{"id","name","kind","notes","coordinates","territorialUnitId","source","sourcePlaceId"});
+        if(!ports.preserveWebAnnotations)unknown(d,row,"/labels",{"id","name","kind","notes","coordinates","territorialUnitId","source","sourcePlaceId"});
         d.labels.push_back(std::get<PlaceLabel>(readWebContentRow(d,{"label",str(field(row,"id"))},row,readGeometry)));
     }
     for(const auto* domain:{"hydroEdits","genericFeatures"})for(const auto& row:array(field(root,domain))) {
@@ -627,7 +624,7 @@ ProjectDocument readWebDocumentValue(const V& root,const PlatformPorts& ports,bo
         if(!generic)continue;
         if(!generic&&!ports.preserveWebAnnotations) {
             const auto& properties=field(row,"properties");
-            unknown(d,10,properties,"/hydroEdits/properties",{"name","notes","category","locked","editorColor","source","pandolab_schema_version","pandolab_domain","pandolab_id","sourceFeatureId"});
+            unknown(d,properties,"/hydroEdits/properties",{"name","notes","category","locked","editorColor","source","pandolab_schema_version","pandolab_domain","pandolab_id","sourceFeatureId"});
             boolean(field(properties,"locked"));
         }
         auto content=readWebContentRow(d,{generic?"generic":"hydro",str(field(row,"id"))},row,readGeometry);
@@ -668,7 +665,7 @@ ProjectDocument decodeWebValue(const V& root,const PlatformPorts& ports){return 
 ProjectDocument decodeBuiltinSourceValue(const V& root,const PlatformPorts& ports){return readWebDocumentValue(root,ports,true,true);}
 Geometry decodeGeometryResource(const GeometryResource& resource,const std::string& source) {
     require(source.size()==resource.decodedBytes&&sha256Bytes(source)==resource.contentSha256,"INVALID_GEOMETRY_RESOURCE: content integrity");
-    ProjectDocument owner;auto shape=geometry(codecjson::parse(source),owner,10,"/geometryResource");
+    ProjectDocument owner;auto shape=geometry(codecjson::parse(source),owner,"/geometryResource");
     require(shape.type==resource.type,"INVALID_GEOMETRY_RESOURCE: type mismatch");return shape;
 }
 ProjectDocument decodeWeb(const std::string& bytes,const PlatformPorts& ports){return readWebDocumentValue(codecjson::parse(bytes,ports.parsedTextPolicy),ports,true);}

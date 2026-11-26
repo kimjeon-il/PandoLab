@@ -119,11 +119,9 @@ export function createProjectSourceRuntime({
   // Initial document admission is the sole builtin candidate path.
   // Date changes inside an admitted document use setTimelineCursor instead.
   async function prepareProjectCandidate(month = deviceCurrentMonth(), options = {}) {
-    const dependencies = getDependencies();
-    if (Object.hasOwn(options,'setup'))
-      throw new TypeError('Builtin project setup is derived from the requested month.');
-    if (options.transition)throw new TypeError('Builtin date transitions must use the C++ timeline cursor.');
+    if (Object.keys(options).some(key => key!=='isCurrent'))throw new TypeError('Unsupported builtin project preparation option.');
     const {isCurrent = () => true} = options;
+    const dependencies = getDependencies();
     const domain = dependencies.domains.projectDomain;
     const prepared = await prepareProjectSource(month, {isCurrent});
     // This prepared value remains private to this attempt. The Worker can

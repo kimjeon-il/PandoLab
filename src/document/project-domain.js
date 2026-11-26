@@ -143,7 +143,7 @@ export function createProjectDomain({
   // command queue but do not mutate the active document or generation.
   // No baseline admission occurs until the existing replacement transaction
   // has captured a reversible Core capsule.
-  const prepareTemporalBuiltin = (facts, setup, {dataRevision, manifestSha256, transition = false, transferSource = false,
+  const prepareTemporalBuiltin = (facts, setup, {dataRevision, manifestSha256, transferSource = false,
     expectedGeneration = generation, isCurrent = () => true} = {}) => {
     const operation = commandQueue.then(async() => {
       assertActive();
@@ -151,11 +151,6 @@ export function createProjectDomain({
       const stale = () => Object.assign(new Error('Temporal candidate belongs to an older project request.'),
         {code:'PL-CORE-STALE', name:'AbortError', cancelled:true});
       if (!current())throw stale();
-      // A date change never rebuilds or re-identifies the accepted project.
-      // Legacy transition requests must use the common C++ cursor instead.
-      if (transition)throw Object.assign(
-        new TypeError('Project date changes must reuse the accepted C++ timeline cursor.'),
-        {code:'PL-TIMELINE-REPLACE-RETIRED'});
       if (typeof commandOwner?.temporalSourcePrepare!=='function'
         ||typeof commandOwner?.temporalCandidatePrepare!=='function')
         throw new TypeError('Core temporal source/candidate owner is required.');

@@ -1,15 +1,13 @@
 import { createRenderPacketCache, renderCacheBudget, touchRenderCache } from './render-cache-budget.js';
 import { createGlobeChunkCatalog, globeChunkSetContains } from './globe-view-mesh-assets.js';
-import { selectGlobeRiverChunks } from './three-globe-rivers.js';
 
-// The same immutable Cartesian descriptor index is used for land, water,
-// lakes and all river tiers. Legacy descriptors remain conservatively
-// admitted; old detailed river cells retain their geographic selector.
+// The same immutable Cartesian descriptor index is used for water, lakes
+// and all river tiers.
 export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, byteBudget = renderCacheBudget().physicalCpuBytes, residency = null}) {
   const catalog = new Map(), contexts = new Map(), pending = new Map();
   let retained = [], disposed = false;
   function chunks(list, role) {
-    return list.flatMap((row, i) => (row.chunks??[{spec:row.spec}]).map((chunk, j) => ({
+    return list.flatMap((row, i) => row.chunks.map((chunk, j) => ({
       ...row, ...chunk, chunks:undefined, role, kind:role==='river'?'stroke':'mesh',
       key:role+':'+(row.id??i)+':'+j+':'+chunk.spec.sha256,
     })));
@@ -18,13 +16,11 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
     for (const spec of rows) {
       if (catalog.has(spec.identity))continue;
       const waters = chunks(spec.waters,'water'), lakes = chunks(spec.lakes,'lake');
-      const rivers = (spec.riverChunks??(spec.rivers?[{spec:spec.rivers}]:[])).map((row, i) => ({...row, role:'river', kind:'stroke',
+      const rivers = spec.riverChunks.map((row, i) => ({...row, role:'river', kind:'stroke',
         minZoom:spec.riverMinZoom, key:'river:'+i+':'+row.spec.sha256}));
-      const details = (spec.riverDetail??[]).map(row => ({...row, role:'detail', kind:'stroke',
-        key:'detail:'+row.id, legacy:!row.bounds||row.bounds.length!==6}));
+      const details = spec.riverDetail.map(row => ({...row, role:'detail', kind:'stroke', key:'detail:'+row.id}));
       catalog.set(spec.identity, {spec, meshes:createGlobeChunkCatalog([...waters, ...lakes]),
-        strokes:createGlobeChunkCatalog(rivers), detail:createGlobeChunkCatalog(details.filter(row => !row.legacy)),
-        legacyDetails:details.filter(row => row.legacy)});
+        strokes:createGlobeChunkCatalog(rivers), detail:createGlobeChunkCatalog(details)});
     }
   }
   addDescriptors(descriptors);
@@ -67,9 +63,7 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
       ]);
       signal?.throwIfAborted(); if (disposed)throw new DOMException('Physical cache disposed','AbortError');
       const concurrent = touchRenderCache(contexts, target.key); if (concurrent)return concurrent;
-      // Keep the legacy single-river accessor for existing consumers/fixtures.
-      const result = Object.freeze({spec:target.spec, plan:target, waters, lakes, riverChunks,
-        rivers:target.spec.riverChunks?null:riverChunks[0]?.packet??null});
+      const result = Object.freeze({spec:target.spec, plan:target, waters, lakes, riverChunks});
       contexts.set(target.key, result); return result;
     }finally {
       if (--pendingEntry.users===0&&pending.get(target.key)===pendingEntry)pending.delete(target.key);
@@ -82,10 +76,9 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
   async function warm(target, {signal, priority = -20, claim, holdBytes = 0}) {
     for (const row of target.rows) {signal?.throwIfAborted(); if (files.has(keyOf(row))) {if (holdBytes)files.holdWarm(keyOf(row), holdBytes); continue;}if (!claim(row.spec, row.kind))continue; await read(row, signal, priority); if (holdBytes)files.holdWarm(keyOf(row), holdBytes);}
   }
-  function detailPlan(identity, {zoom, strokeCull = () => true, geographicBounds}) {
+  function detailPlan(identity, {zoom, strokeCull = () => true}) {
     const source = catalog.get(identity); if (!source)return [];
-    return [...source.detail.select(strokeCull, row => zoom>=row.minZoom),
-      ...(geographicBounds?selectGlobeRiverChunks(source.legacyDetails, geographicBounds, zoom):[])];
+    return source.detail.select(strokeCull, row => zoom>=row.minZoom);
   }
   function retain(plans) {retained = plans.filter(Boolean); refresh();}
   function dispose() {disposed = true; contexts.clear(); pending.clear(); catalog.clear(); retained = []; files.dispose();}

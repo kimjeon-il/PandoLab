@@ -17,14 +17,16 @@ export function globeChunkSetContains(have, needed) {
 }
 export const globeChunkPlanKey = rows => rows.map(row => row.key).join('|');
 
-// Build the descriptor hierarchy once, not on every camera change. Unbounded
-// legacy packets are admitted conservatively. Preserve descriptor order.
+// Build the descriptor hierarchy once, not on every camera change. All
+// published chunks have Cartesian bounds; preserve descriptor order.
 export function createGlobeChunkCatalog(descriptors) {
   const rows = descriptors.map((row, index) => ({...row, key:row.key??index+':'+row.spec.sha256, order:row.order??index, catalogOrder:index}));
-  const fallback = rows.filter(row => !row.bounds);
-  const index = createGlobePacketIndex(rows.filter(row => row.bounds), row => row.bounds);
+  if (rows.some(row => !Array.isArray(row.bounds)||row.bounds.length!==6||!row.bounds.every(Number.isFinite)
+      ||row.bounds.slice(0,3).some((value, axis) => value>row.bounds[axis+3])))
+    throw Error('Invalid Cartesian globe chunk bounds');
+  const index = createGlobePacketIndex(rows, row => row.bounds);
   function select(cull = all, accept = all) {
-    return [...index.query(cull), ...fallback].filter(accept).sort((a, b) => a.catalogOrder-b.catalogOrder);
+    return index.query(cull).filter(accept);
   }
   return {rows, select};
 }
