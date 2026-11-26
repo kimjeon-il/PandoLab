@@ -86,12 +86,14 @@ export async function storeWorldPolygonsDisplay({root=defaultRoot,sourceBytes,re
   return {...stored,plan};
 }
 
-export async function storeLsibDisplay({root=defaultRoot,sourceBytes,displayValidFrom,historical=false,includeSameSource=false}){
+export async function storeLsibDisplay({root=defaultRoot,sourceBytes,displayValidFrom,historical=false,includeSameSource=false,publicationBaseline}){
   const {buildHistoricalLsibDisplayEdition,buildLsibDisplayEdition,assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
-  const baselineRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  validateExpectedLibraryRevision(publicationBaseline);
+  const appRevision=libraryConfig(root).revision,baselineRevision=publicationBaseline??appRevision;
+  const sourceRevision=git(root,['rev-parse','HEAD']);
   let plan;
-  const stored=storeLocalViewerEdition({root,baselineRevision,sourceRevision,kind:historical?'historical LSIB 11.4 display':'LSIB 11.4 display',
-    advanceWorkBranch:true,prepare:readBaseline=>{
+  const stored=storeLocalViewerEdition({root,baselineRevision,appRevision,sourceRevision,kind:historical?'historical LSIB 11.4 display':'LSIB 11.4 display',
+    advanceWorkBranch:publicationBaseline===undefined,prepare:readBaseline=>{
       const inputs={baseline:baselineRevision,readBaseline,indexPath:'assets/data/builtin-world/generated/v1/index.json',sourceBytes};
       const edition=historical?buildHistoricalLsibDisplayEdition({...inputs,includeSameSource})
         :buildLsibDisplayEdition({...inputs,expectedDisplayValidFrom:displayValidFrom});
@@ -247,7 +249,7 @@ function storeLocalViewerEdition({root,baselineRevision,appRevision=baselineRevi
       const removedDirect=[...removalReceipts.keys()].filter(path=>baseline.files[path].stored===path&&!protectedPaths.has(path));
       const removals=removedDirect.map(path=>`0 ${'0'.repeat(40)}\t${path}\0`);
       run(['update-index','-z','--index-info'],removals.concat([...objects].map(([p,oid])=>`100644 ${oid}\t${p}\0`)).join(''));
-      const tree=run(['write-tree']);
+      const tree=run(advanceWorkBranch?['write-tree']:['write-tree','--missing-ok']);
       const revision=run([...ident,'commit-tree',tree,'-p',baselineRevision,'-m','Store '+kind+' Viewer edition']);
       for(const [p,bytes] of files)if(!decodeArchiveEntry(shared,archived.files[p],revision).equals(bytes))throw Error('Edition readback differs: '+p);
       for(const [p,entry] of Object.entries(baseline.files))if(!selected.has(p)&&!isDeepStrictEqual(entry,archived.files[p]))
@@ -315,12 +317,13 @@ function verifyRemoteRuntimeResources(input){
  execFileSync(process.execPath,['--input-type=module','-e',script],{input:JSON.stringify(input),stdio:['pipe','inherit','inherit']});
 }
 
-export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,updateAppPin=true,verifyRemote=verifyRemoteRuntimeResources}={}){
+export function publishLibraryRuntime({root=defaultRoot,prefixes,expectedRemote,sourceRevision,updateAppPin=true,verifyRemote=verifyRemoteRuntimeResources}={}){
+ validateExpectedLibraryRevision(sourceRevision);
  if(!/^[a-f0-9]{40}$/.test(expectedRemote||'')||!Array.isArray(prefixes)||!prefixes.length
    ||prefixes.some(path=>!/^assets\/data\/[A-Za-z0-9._/-]+$/.test(path)||path.split('/').some(part=>!part||part==='.'||part==='..')))
   throw Error('Runtime publication requires explicit data prefixes and expected remote main');
  return withLibraryLock(root,()=>{
-  const shared=librarySharedCheckout(root),config=libraryConfig(root),source=config.revision,head=git(shared,['rev-parse','HEAD']);
+  const shared=librarySharedCheckout(root),config=libraryConfig(root),source=sourceRevision??config.revision,head=git(shared,['rev-parse','HEAD']);
   if(git(shared,['branch','--show-current'])!=='main'||git(shared,['status','--porcelain','--untracked-files=no']))throw Error('Preserve library source work before runtime publication');
   if(libraryWriteLeases(shared).some(lease=>lease.alive&&lease.prefixes.some(a=>prefixes.some(b=>scopesOverlap(a,b)))))throw Error('Runtime publication overlaps an active writer');
   const included=path=>prefixes.some(prefix=>path===prefix||path.startsWith(prefix+'/'));

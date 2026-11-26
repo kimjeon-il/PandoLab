@@ -501,9 +501,13 @@ export function buildLsibDisplayEdition({baseline,readBaseline,indexPath,sourceB
   fail('LSIB display evidence does not match the pinned Viewer edition');
  const lsib=JSON.parse(readBaseline('tools/historical-library/sources/lsib-11.4/provenance.json'));
  const wp=JSON.parse(gunzipSync(readBaseline(worldPolygonsDisplayEvidencePath())));
+ const sourceLayer=[
+  ['DoS_WP_11_4','DoS_WP_Shoreline'],
+  ['DoS_WP_11_4_G65','DoS_WP_Shoreline_G65'],
+ ].some(([polygon,shore])=>evidence.source?.polygonLayer===polygon&&evidence.source?.shorelineLayer===shore);
  if(evidence.source?.lsibVersion!=='11.4'||evidence.source.boundarySha256!==lsib.masterSha256
   ||evidence.source.worldPolygonsSha256!==wp.sourcePackageSha256
-  ||evidence.source.shorelineLayer!=='DoS_WP_Shoreline'||evidence.source.polygonLayer!=='DoS_WP_11_4'
+  ||!sourceLayer
   ||!Number.isFinite(evidence.toleranceDegrees)||evidence.toleranceDegrees<=0||evidence.toleranceDegrees>=1)
   fail('LSIB display evidence uses an unverified GIS source or tolerance');
  const sha256=digest(sourceBytes),reference=lsibDisplayEvidencePath(sha256);
