@@ -18,6 +18,7 @@
         "tests/unit/data/globe-mesh.test.mjs",
         "tests/unit/data/globe-picking.test.mjs",
         "tests/unit/app/map-color-visibility.test.mjs",
+        "tests/unit/app/map-owner-ports.test.mjs",
         "tests/unit/app/user-preferences.test.mjs",
         "tests/unit/ui/object-details-panel.test.mjs",
         "tests/unit/data/place-viewport.test.mjs",
