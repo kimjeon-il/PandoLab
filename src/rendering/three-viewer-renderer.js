@@ -293,7 +293,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const lines=territorialNativeLabelRows(row,state.timelineCursor,{
     enabled:deps.preferences.userPreferences.labels.place.showNativeNames===true,primaryName,
    }).map(label=>label.text);
-   return lines.length?[{ref,key:ref.key,area:metadata.area,
+   return lines.length?[{ref,key:ref.key,area:metadata.area,shortSide:metadata.shortSide,
     coordinate:settings.pinned&&settings.manualPosition?settings.manualPosition:metadata.coordinate,
     minZoom:settings.minZoom,maxZoom:settings.maxZoom,lines,visible:namesVisible&&deps.objectRefVisible(ref)
       &&deps.layerPresentation.isLayerItemVisible('objectLabels',ref.id),

@@ -1,5 +1,6 @@
 import {referenceZoomPixelsPerDegree} from '../map/map-display-zoom.js';
 import {globeVector} from './globe-camera.js';
+import {territorialLabelPixelSize} from './label-layout.js';
 
 export const COUNTRY_LABEL_MIN_ZOOM=3;
 const fontSize=56, outlineRange=7, padding=outlineRange+2, atlasSize=2048;
@@ -19,7 +20,7 @@ export function placeGlobeLabels(candidates,camera,viewport,previous) {
     const diameter=label.place?0:Math.sqrt(label.area)*scale;
     if(!label.place&&diameter<(retained?5:7))continue;
     const pixelSize=label.place?Math.min(20,12+Math.max(0,camera.view.zoom-4)*1.25)
-      :Math.min(48,Math.max(11,9+3.2*Math.sqrt(diameter)));
+      :territorialLabelPixelSize(label.shortSide,camera.view.zoom);
     const size=pixelSize/fontSize;
     const [x,y]=point, left=x-(label.anchorX??label.width/2)*size, top=y-(label.anchorY??label.height/2)*size;
     const right=left+label.width*size,bottom=top+label.height*size;

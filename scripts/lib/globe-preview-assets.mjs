@@ -16,6 +16,8 @@ import { resolveBuiltinWorldGeometry } from '../../src/data/builtin-world-loader
 import { compareTemporalKeys, parseTemporal, temporalFollowingDay } from '../../src/document/temporal.js';
 import { buildGlobePickGrid, buildGlobeStrokePickGrid } from './globe-pick-grid.mjs';
 import { coordinateBounds } from '../../src/geometry/coordinate-bounds.js';
+import { multiCoordinates } from '../../src/geometry/polygon-geometry-utils.js';
+import { territorialLabelShortSide } from '../../src/rendering/label-layout.js';
 import { buildRenderableBoundarySegments, densifyBoundarySegmentsForProjection, normalizeLongitudeNear } from '../../src/geometry/geographic-boundary.js';
 import { createCountrySharedBoundaryState } from '../../src/rendering/country-shared-boundary-state.js';
 import { createCountryBoundaryOutput } from '../../src/rendering/country-boundary-output.js';
@@ -276,8 +278,9 @@ function packBorders(groups,withOwners=false){
   return {buffer:encodeGlobeStrokes(coordinates,null,[],slots),owners};
 }
 
-function countryLabelMetadata(mesh, slots, anchors) {
+function countryLabelMetadata(mesh, slots, anchors, features) {
   const {positions,residuals,indices}=mesh;
+  const geometries=new Map(features.map(feature=>[feature.id,feature.geometry]));
   const point=index=>[0,1,2].map(axis=>positions[index*3+axis]+residuals[index*3+axis]);
   const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
   return Object.fromEntries(slots.flatMap(({id,first,count})=>{
@@ -289,7 +292,8 @@ function countryLabelMetadata(mesh, slots, anchors) {
       const cross=[b[1]*c[2]-b[2]*c[1],b[2]*c[0]-b[0]*c[2],b[0]*c[1]-b[1]*c[0]];
       area+=2*Math.atan2(Math.abs(dot(a,cross)),1+dot(a,b)+dot(b,c)+dot(c,a));
     }
-    return [[id,{coordinate,area}]];
+    const components=multiCoordinates(geometries.get(id)).map(([exterior])=>coordinateBounds(exterior));
+    return [[id,{coordinate,area,shortSide:territorialLabelShortSide(components,coordinate)}]];
   }));
 }
 
@@ -444,7 +448,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const preparedCountries = combineGlobeCountryMeshes(features.map((feature,index)=>countryMeshRow(feature,baseMeshSpecs[index])));
   const {countrySlots} = preparedCountries;
   const countries = withPickGrid(preparedCountries.buffer, '', emitPackedMesh);
-  const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors);
+  const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors,features);
   const {buffer:outlineBuffer,owners:outlineOwners} = buildGlobeOutlineStrokes(features.map(feature=>feature.geometry));
   const outlines = emit(outlineBuffer,'outlines/');
   const readGeometry = async spec => JSON.parse(source(spec));
@@ -540,7 +544,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     const packet=combineGlobeCountryMeshes([countryMeshRow(feature,historicalMeshSpecs[index])],{slotOffset:slot});
     const extraOutlines=buildGlobeOutlineStrokes([feature.geometry],slot);
     const anchors={[feature.id]:{coordinates:computeLabelAnchor(feature)}};
-    return {...packet.countrySlots[0],label:countryLabelMetadata(decodeGlobeMesh(packet.buffer),packet.countrySlots,anchors)[feature.id]??null,
+    return {...packet.countrySlots[0],label:countryLabelMetadata(decodeGlobeMesh(packet.buffer),packet.countrySlots,anchors,[feature])[feature.id]??null,
       countries:withPickGrid(packet.buffer,historyDirectory,emitPackedMesh),outlines:emit(extraOutlines.buffer,historyDirectory+'outlines/'),outlineOwners:extraOutlines.owners};
   });
   // Advance the same incremental boundary preparation as the Viewer worker.
