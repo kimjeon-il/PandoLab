@@ -186,7 +186,7 @@ export async function composeViewer({ meta }) {
   disposables.push(objectDetailsPanel);
   const resetView = get('resetViewBtn');
   const syncResetView = () => resetView.classList.toggle('is-world-view', map.renderer.isAtWorldView());
-  map = createViewerMap({owners, runtimeContext, projectDomain, documentSession:activeSession, isMobile:() => surfaces.isMobile(), diagnostics, getInteractionStyle:() => preferencePresentation.interactionStyle, onStatus:notifications.setActionStatus, getPreferences:() => preferencePresentation.current, onPlacesSettled:action => {if (action==='cancel')searchController.cancelSearch(); else searchController.render();}, onError:report,
+  map = createViewerMap({owners, runtimeContext, projectDomain, documentSession:activeSession, diagnostics, getInteractionStyle:() => preferencePresentation.interactionStyle, onStatus:notifications.setActionStatus, getPreferences:() => preferencePresentation.current, onPlacesSettled:action => {if (action==='cancel')searchController.cancelSearch(); else searchController.render();}, onError:report,
     initialCamera:readSavedCamera(), onWorldFitChange:syncResetView,
     onMapPreparationStatus:(presentation, generation) => {initialPresentation.observe(presentation, generation); mapSkeleton.reconsider();}});
   map.renderer.setInitialMapLoading(true);

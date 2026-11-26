@@ -2,25 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {connectMapOwner, mergeMapPorts} from '../../../src/app/map-owner-ports.js';
 
-test('owner wiring exposes only declared groups and preserves live getters',()=>{
- let live=1,connected;
- const common={domains:{get value(){return live;},retained:true},applicationConstants:{},modelValidation:{},physicalConfig:{},mapFactories:{},
-  get unrelated(){throw Error('unrelated capability should not be materialized');}};
- const override={domains:{retained:false,added:3}};
- const owner={connect(ports){connected=ports;}};
- assert.equal(connectMapOwner('projectSession',owner,common,override),owner);
- assert.deepEqual(Object.keys(connected),['domains','applicationConstants','modelValidation','physicalConfig','mapFactories']);
- assert.equal(connected.runtimeConfiguration,undefined);
- assert.equal(connected.domains.retained,false);
- assert.equal(connected.domains.added,3);
- assert.equal(connected.domains.value,1);
- live=2;assert.equal(connected.domains.value,2);
- assert.equal(Object.isFrozen(connected),true);
- assert.throws(()=>connectMapOwner('projectSession',owner,{domains:{}},{}),/requires applicationConstants/);
- assert.throws(()=>connectMapOwner('notAnOwner',owner,{}),/Unknown map owner/);
+test('owner wiring selects only declared groups and reuses their live shared references', () => {
+  let live = 1, connected, qualityPorts;
+  const common = mergeMapPorts({
+    domains: {get value() {return live;}, retained: true},
+    applicationConstants: {}, modelValidation: {}, physicalConfig: {}, mapFactories: {},
+    preferences: {}, projectState: {}, rendering: {},
+  }, {domains: {retained: false, added: 3}});
+  const registry = {...common, get unrelated() {throw Error('unrelated capability should not be materialized');}};
+  const owner = {connect(ports) {connected = ports;}};
+  const quality = {connect(ports) {qualityPorts = ports;}};
+  assert.equal(connectMapOwner('projectSession', owner, registry), owner);
+  connectMapOwner('renderQuality', quality, registry);
+  assert.deepEqual(Object.keys(connected), ['domains', 'applicationConstants', 'modelValidation', 'physicalConfig', 'mapFactories']);
+  assert.equal(connected.runtimeConfiguration, undefined);
+  assert.equal(connected.domains, common.domains);
+  assert.equal(qualityPorts.domains, connected.domains);
+  assert.equal(qualityPorts.mapFactories, connected.mapFactories);
+  assert.equal(connected.domains.retained, false);
+  assert.equal(connected.domains.added, 3);
+  assert.equal(connected.domains.value, 1);
+  live = 2;
+  assert.equal(connected.domains.value, 2);
+  assert.equal(Object.isFrozen(connected), true);
+  assert.throws(() => connectMapOwner('projectSession', owner, {domains: {}}), /requires applicationConstants/);
+  assert.throws(() => connectMapOwner('notAnOwner', owner, {}), /Unknown map owner/);
 });
 
-test('map port merging retains live accessors and applies only local overrides',()=>{
+test('map port merging retains live accessors and combines shared definitions',()=>{
  let live=1;
  const common={group:{get value(){return live;},retained:true}};
  const merged=mergeMapPorts(common,{group:{extra:true,retained:false}});

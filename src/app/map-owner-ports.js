@@ -1,36 +1,37 @@
 // One dependency contract for the common owners; no project state is stored here.
 // Each owner declares its capability groups once. '?' marks an optional port.
 const MAP_OWNER_PORT_CONTRACTS = Object.freeze({
-  projectSession:Object.freeze(["domains","applicationConstants","modelValidation","physicalConfig","runtimeConfiguration?","mapFactories"]),
-  renderQuality:Object.freeze(["domains","mapFactories","preferences","projectState","rendering"]),
-  pointerTargets:Object.freeze(["domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectPicking","physicalResources","physicalServices","platform","projectState","rendering","surfaces"]),
-  cameraNavigation:Object.freeze(["countries","domains","feedback?","mapView","objectLookup","physicalData","platform","projectState","rendering","surfaces"]),
-  countryIndex:Object.freeze(["countries","domains","geometryModel?","objectDisplay","mapView","platform","projectState","spatialQuery?"]),
-  spatialIndex:Object.freeze(["geometryBounds","domains","mapView","projectState","rendering","spatialFactories","surfaces","territorialModel"]),
-  mapProjection:Object.freeze(["mapLayout","platform","projectState","surfaces"]),
-  objectPresentation:Object.freeze(["colorModel","domains","objectDefinitions","objectPresentation","preferences","projectState","territorialModel","countries?","geometryBounds?","platform?","spatialQuery?","projectSession?","hydroModel?","labelPresentation?","hydroPresentation?","distributionPresentation?","distributionServices?","selectionServices?","objectLookup?","layerPresentation?"]),
-  hydroSettings:Object.freeze(["physicalResources","colorModel?","hydroPresentation","layerPresentation","mapLayout","objectPresentation","physicalConfig","platform","preferences","projectState","surfaces?"]),
-  objectCatalog:Object.freeze(["projectSession","colorModel","countries?","distributionPresentation","domains","hydroPresentation","labelPresentation","layerPresentation","objectDefinitions","objectPresentation","platform?","projectState","rendering?","territorialModel","preferences?","hydroModel?","distributionServices?","selectionServices?","objectLookup?"]),
-  territorialLabels:Object.freeze(["territorialObjectModel","countries","domains","feedback","labelPresentation","layerPresentation","mapHostView","objectPresentation","platform","preferences","projectState","renderScene","rendering","spatialQuery","territorialModel"]),
-  physicalResources:Object.freeze(["geometryBounds","domains","feedback","hydroPresentation","layerPresentation","operationFeedback","physicalConfig","physicalServices","platform","projectState","rendering"]),
-  mapHost:Object.freeze(["domains","mapLayout","mapView","platform","projectState","projectionView","renderFactories","rendering","workspaceUi"]),
-  objectPicking:Object.freeze(["countries","territorialObjectModel","domains","feedback","hydroPresentation","landRelations","layerPresentation","mapLayout","mapView","objectOperations","physicalServices","platform","projectState","renderScene","rendering","selectionServices","surfaces","territorialModel"]),
+  projectSession: Object.freeze(['domains', 'applicationConstants', 'modelValidation', 'physicalConfig', 'runtimeConfiguration?', 'mapFactories']),
+  renderQuality: Object.freeze(['domains', 'mapFactories', 'preferences', 'projectState', 'rendering']),
+  pointerTargets: Object.freeze(['domains', 'feedback', 'mapLayout', 'objectPicking', 'platform', 'projectState', 'rendering']),
+  cameraNavigation: Object.freeze(['countries', 'domains', 'feedback', 'mapView', 'objectLookup', 'physicalData', 'projectState', 'rendering']),
+  countryIndex: Object.freeze(['countries', 'domains', 'objectDisplay', 'mapView', 'platform', 'projectState', 'spatialQuery']),
+  spatialIndex: Object.freeze(['geometryBounds', 'domains', 'mapView', 'projectState', 'rendering', 'spatialFactories', 'surfaces', 'territorialModel']),
+  mapProjection: Object.freeze(['mapLayout', 'platform', 'projectState', 'surfaces']),
+  objectPresentation: Object.freeze(['colorModel', 'objectDefinitions', 'preferences', 'territorialModel', 'platform']),
+  hydroSettings: Object.freeze(['physicalResources', 'hydroPresentation', 'layerPresentation', 'mapLayout', 'platform', 'preferences', 'projectState', 'surfaces']),
+  objectCatalog: Object.freeze(['projectSession', 'colorModel', 'countries', 'distributionPresentation', 'domains', 'hydroPresentation', 'labelPresentation', 'layerPresentation', 'objectPresentation', 'projectState', 'territorialModel']),
+  territorialLabels: Object.freeze(['domains', 'feedback', 'labelPresentation', 'mapHostView', 'platform', 'preferences', 'projectState', 'renderScene', 'rendering']),
+  physicalResources: Object.freeze(['domains', 'feedback', 'hydroPresentation', 'layerPresentation', 'operationFeedback', 'physicalConfig', 'physicalServices', 'projectState', 'rendering']),
+  mapHost: Object.freeze(['domains', 'mapLayout', 'mapView', 'platform', 'projectState', 'projectionView', 'renderFactories', 'rendering', 'workspaceUi']),
+  objectPicking: Object.freeze(['countries', 'domains', 'feedback', 'landRelations', 'layerPresentation', 'mapLayout', 'mapView', 'objectOperations', 'platform', 'projectState', 'renderScene', 'rendering', 'selectionServices', 'surfaces', 'territorialModel']),
 });
-export function connectMapOwner(name, owner, commonPorts, overrides = {}) {
+
+export function connectMapOwner(name, owner, commonPorts) {
   const contract = MAP_OWNER_PORT_CONTRACTS[name];
-  if (!contract || typeof owner?.connect !== 'function')throw new TypeError('Unknown map owner: '+name);
-  const allowed = new Set(contract.map(entry => entry.endsWith('?') ? entry.slice(0, -1) : entry));
-  const ports = mergePorts([commonPorts, overrides], allowed);
+  if (!contract || typeof owner?.connect !== 'function')throw new TypeError('Unknown map owner: ' + name);
+  const ports = {};
   for (const entry of contract) {
-    if (entry.endsWith('?'))continue;
-    const descriptor = Object.getOwnPropertyDescriptor(ports, entry);
-    if (!descriptor || (!descriptor.get && descriptor.value == null))throw new TypeError(name+' requires '+entry);
+    const optional = entry.endsWith('?');
+    const group = optional ? entry.slice(0, -1) : entry;
+    const value = Object.hasOwn(commonPorts, group) ? commonPorts[group] : null;
+    if (value == null) {
+      if (!optional)throw new TypeError(name + ' requires ' + entry);
+      continue;
+    }
+    ports[group] = value;
   }
-  if (name==='objectPicking') {
-    const scope = Object.getOwnPropertyDescriptor(ports.territorialObjectModel,'territorialScope');
-    if (!scope || (!scope.get && typeof scope.value?.displayFeature!=='function'))throw new TypeError('objectPicking requires the canonical territorialScope');
-  }
-  owner.connect(ports);
+  owner.connect(Object.freeze(ports));
   return owner;
 }
 
@@ -41,15 +42,21 @@ const MAP_READ_PORT_SPECS = Object.freeze({
   countries:Object.freeze([["builtinTerritorialScene","territorialSceneRuntime"], ["territorialLabelFeatureById","territorialSceneRuntime"], ["countryLandRevision","countryIndex"], ["scheduleCountryLabelAnchors","countryIndex"], ["validLabelAnchor","countryIndex"]]),
   countryLabelModel:Object.freeze([["builtinPlaces","territorialLabels"], ["builtinPlaceSelectionReferences","territorialLabels"], ["preparePlaces","territorialLabels"], ["disposePlaces","territorialLabels"], ["labelById","territorialLabels"], ["placeLabelCandidates","territorialLabels"]]),
   distributionPresentation:Object.freeze([["distributionColor","objectPresentation"]]),
+  hydroModel:Object.freeze([["hydroFeatureById","hydroSettings"]]),
   hydroPresentation:Object.freeze([["allBuiltInHydroFeatures","hydroSettings"], ["hydroCategoryKey","objectPresentation"], ["hydroCategoryLabel","objectPresentation"], ["hydroDisplayColor","hydroSettings"], ["projectHydroById","hydroSettings"], ["hydroDisplayName","objectPresentation"], ["hydroFallbackName","objectPresentation"], ["hydroLayerVisible","hydroSettings"], ["hydroLineParts","hydroSettings"]]),
   labelPresentation:Object.freeze([["labelById","territorialLabels"], ["builtinPlaces","territorialLabels"], ["countryLabelAnchors","countryIndex"], ["pendingCountryLabelAnchors","countryIndex"]]),
   layerPresentation:Object.freeze([["isCountryVisibleById","objectCatalog"], ["isLayerItemVisible","objectCatalog"], ["LAYER_GROUP_KEYS","objectPresentation"], ["layerGroupNames","objectPresentation"], ["invalidateObjectPresentation","objectCatalog"]]),
   layerResources:Object.freeze([["loadHydroData","physicalResources"], ["preparePlaces","territorialLabels"]]),
+  mapHostView:Object.freeze([["projectionViewSnapshot","mapHost"]]),
   mapLayout:Object.freeze([["mapLayoutMetricsSnapshot","mapProjection"], ["projectVisibleCoordinate","mapProjection"], ["viewRevision","mapHost"]]),
   mapView:Object.freeze([["activeProjection","mapProjection"], ["isCoordVisible","mapProjection"], ["projectionLayoutMetrics","mapProjection"], ["ringRepresentativePoint","mapProjection"], ["screenToGeo","mapProjection"], ["syncMapHostFromState","mapHost"], ]),
+  navigation:Object.freeze([["focusCoordinate","cameraNavigation"], ["fitMapToFeature","cameraNavigation"]]),
+  objectPicking:Object.freeze([["selectableObjectsAt","objectPicking"], ["closeObjectChooser","objectPicking"], ["handleObjectSelectionAt","objectPicking"]]),
+  pointerInteraction:Object.freeze([["cancelCountryHoverPick","pointerTargets"], ["mapClickBlocked","pointerTargets"], ["queueCountryHoverPick","pointerTargets"]]),
   objectDisplay:Object.freeze([["invalidateObjectPresentation","objectCatalog"]]),
   territorialObjectModel:Object.freeze([["territorialScope","objectPresentation"], ["territorialStyleColor","objectPresentation"]]),
   objectPresentation:Object.freeze([["genericFeatureName","objectPresentation"], ["genericFeatureRoleLabel","objectPresentation"], ["territorialEntitySearchText","objectPresentation"], ["territorialEntityName","objectPresentation"]]),
+  physicalData:Object.freeze([["loadHydroData","physicalResources"]]),
   physicalResources:Object.freeze([["isHydroObjectActive","physicalResources"], ["admitHydroFeatures","physicalResources"], ["builtinHydroSelectionReferences","physicalResources"]]),
   physicalServices:Object.freeze([["isHydroFeatureVisible","hydroSettings"]]),
   projectState:Object.freeze([["mapWorkScheduler","projectSession"], ["state","projectSession"]]),
@@ -58,6 +65,7 @@ const MAP_READ_PORT_SPECS = Object.freeze({
   renderScene:Object.freeze([["currentRenderQuality","renderQuality"]]),
   spatialQuery:Object.freeze([["geometryBounds","spatialIndex"], ["mapObjectGeometryRevisions","spatialIndex"], ["rebuildSpatialIndex","spatialIndex"], ["viewportCullingMetrics","spatialIndex"], ["visibleMapObjectCandidates","spatialIndex"]]),
   surfaces:Object.freeze([["isMobile","workspaceSurfaces"], ["layoutMode","workspaceSurfaces"], ["uid","workspaceSurfaces"]]),
+  workspaceUi:Object.freeze([["refreshMapSheetMetrics","workspaceSurfaces"]]),
 });
 
 export function createMapReadPorts(owners) {
@@ -69,11 +77,10 @@ export function createMapReadPorts(owners) {
   })));
 }
 
-function mergePorts(registries, allowed = null) {
+export function mergeMapPorts(common, additions) {
   const descriptorsByPort = new Map();
-  for (const registry of registries) {
+  for (const registry of [common, additions]) {
     for (const portName of Object.keys(registry)) {
-      if (allowed&&!allowed.has(portName))continue;
       const descriptors = descriptorsByPort.get(portName) || {};
       Object.assign(descriptors, Object.getOwnPropertyDescriptors(registry[portName]));
       descriptorsByPort.set(portName, descriptors);
@@ -85,6 +92,3 @@ function mergePorts(registries, allowed = null) {
   ])));
 }
 
-export function mergeMapPorts(common, overrides) {
-  return mergePorts([common, overrides]);
-}
