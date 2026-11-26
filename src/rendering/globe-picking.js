@@ -1,3 +1,4 @@
+import {globeStrokePoint} from './globe-mesh.js';
 export const GLOBE_PICK_GRID_MAGIC = 0x31494750;
 export const GLOBE_PICK_GRID_SIDE = 32;
 const side = GLOBE_PICK_GRID_SIDE;
@@ -57,8 +58,8 @@ function visitPickCells(ray,visitor){
  */
 export function globePickCellBounds(...vectors){
   const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
-  for(const [positions,residuals] of vectors){
-    for(let i=0;i<positions.length;i+=3)for(let axis=0;axis<3;axis++){
+  for(const [positions,residuals,stride=3] of vectors){
+    for(let i=0;i+2<residuals.length;i+=stride)for(let axis=0;axis<3;axis++){
       const coordinate=positions[i+axis]+residuals[i+axis];
       if(coordinate<low[axis])low[axis]=coordinate;
       if(coordinate>high[axis])high[axis]=coordinate;
@@ -125,9 +126,7 @@ export function pickGlobeStrokeSlots(packet,grid,camera,point,tolerance=5,cells=
     const segment=grid.triangles[i],slot=packet.ownerGroups[segment];
     if(seen.has(segment))continue;
     seen.add(segment);
-    const offset=segment*3;
-    const start=[0,1,2].map(axis=>packet.start[offset+axis]+packet.startLow[offset+axis]);
-    const end=[0,1,2].map(axis=>packet.end[offset+axis]+packet.endLow[offset+axis]);
+    const start=globeStrokePoint(packet,segment,0),end=globeStrokePoint(packet,segment,1);
     const line=camera.projectStroke(start,end);
     if(!line)continue;
     const distance=pointSegmentDistance(point,line);

@@ -16,7 +16,7 @@ export function createGlobePacketTasks({
    const owner=rpc??=createWorkerRpcClient({createWorker,defaultTimeoutMs:120_000});
    running={entry,owner};
    try{
-    const {result}=await owner.request('globe.decode-packet',entry.payload,{transfer:[entry.payload.bytes]});
+    const {result}=await owner.request(entry.payload.operation,entry.payload.body,{transfer:entry.payload.transfer});
     return result;
    }finally{if(running?.entry===entry)running=null;}
   },
@@ -30,8 +30,14 @@ export function createGlobePacketTasks({
  function decode(kind,bytes,spec,{signal,priority=0,...parameters}={}){
   signal?.throwIfAborted();
   return scheduler.enqueue({jobKey:'packet-'+(++sequence),priority,signal,
-   payload:{kind,bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes},...parameters}}).promise;
+   payload:{operation:'globe.decode-packet',transfer:[bytes],body:{kind,bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes},...parameters}}}).promise;
+ }
+ function combineStrokes(packets,{signal,priority=10}={}){
+  signal?.throwIfAborted();
+  // Cached immutable packet buffers remain with their other consumers.
+  return scheduler.enqueue({jobKey:'stroke-batch-'+(++sequence),priority,signal,
+   payload:{operation:'globe.combine-strokes',body:{packets},transfer:[]}}).promise;
  }
  function dispose(){scheduler.close('globe-packet-disposed');rpc?.stop('globe-packet-disposed');rpc=null;}
- return Object.freeze({decode,dispose,stats:scheduler.stats});
+ return Object.freeze({decode,combineStrokes,dispose,stats:scheduler.stats});
 }

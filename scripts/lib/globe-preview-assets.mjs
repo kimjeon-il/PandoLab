@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { globeVector } from '../../src/rendering/globe-camera.js';
+import {encodeGlobeHistoricalViews} from '../../src/rendering/globe-history-index.js';
 import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes, GLOBE_MESH_HEADER_BYTES, GLOBE_MESH_MAGIC,
-  GLOBE_STROKE_HEADER_BYTES, GLOBE_STROKE_MAGIC, INDEXED_GLOBE_STROKE_HEADER_BYTES, INDEXED_GLOBE_STROKE_MAGIC,
-  globeTerritoryKey } from '../../src/rendering/globe-mesh.js';
+  createGlobeStrokePointTable, encodeIndexedGlobeStrokes, globeTerritoryKey } from '../../src/rendering/globe-mesh.js';
 import { decodePolygonMesh } from '../../src/rendering/polygon-mesh-codec.js';
 import { applyPreparedMeshDelta, preparedMeshDeltaLayout } from '../../src/data/prepared-mesh-delta.js';
 import { loadPhysicalLandGeometry, selectPhysicalLandAsset } from '../../src/data/physical-land-patch.js';
@@ -134,73 +134,18 @@ export function globeHistoryMonths(current,...recordSets){
 }
 
 export function encodeGlobeStrokes(coordinates, indices, widths = [], ownerGroups = new Uint16Array(0)) {
-  const count = indices ? indices.length / 2 : coordinates.length / 4;
-  if (!Number.isInteger(count) || (widths.length && widths.length !== count) ||
-    (ownerGroups.length && ownerGroups.length !== count)) throw new Error('Invalid globe stroke count');
-  const buffer = new ArrayBuffer(GLOBE_STROKE_HEADER_BYTES + count * 48 + widths.length * 4 + ownerGroups.byteLength);
-  const header = new DataView(buffer);
-  header.setUint32(0, GLOBE_STROKE_MAGIC, true);
-  header.setUint32(4, count, true);
-  header.setUint32(8, widths.length, true);
-  header.setUint32(12, ownerGroups.length, true);
-  const { start, startLow, end, endLow, widths: outputWidths, ownerGroups: outputOwners } = decodeGlobeStrokes(buffer);
-  outputWidths.set(widths);
-  outputOwners.set(ownerGroups);
-  for (let index = 0; index < count; index++) {
-    const a = (indices ? indices[index * 2] : index * 2) * 2;
-    const b = (indices ? indices[index * 2 + 1] : index * 2 + 1) * 2;
-    writePosition(start, startLow, index * 3, coordinates[a], coordinates[a + 1]);
-    writePosition(end, endLow, index * 3, coordinates[b], coordinates[b + 1]);
+  const count=indices?indices.length/2:coordinates.length/4;
+  if(!Number.isInteger(count)||(widths.length&&widths.length!==count)||(ownerGroups.length&&ownerGroups.length!==count))
+    throw Error('Invalid globe stroke count');
+  const table=createGlobeStrokePointTable(count*2),endpointIndices=new Uint32Array(count*2);
+  const scratch=new Float32Array(6),words=new Uint32Array(scratch.buffer),high=scratch.subarray(0,3),low=scratch.subarray(3);
+  for(let i=0;i<endpointIndices.length;i++){
+    const at=(indices?indices[i]:i)*2;
+    writePosition(high,low,0,coordinates[at],coordinates[at+1]);
+    endpointIndices[i]=table.intern(words);
   }
-  return buffer;
-}
-
-/** Index equal high/low endpoint bits without changing line order or attributes. */
-export function packGlobeStrokes(buffer) {
-  const { count, start } = decodeGlobeStrokes(buffer);
-  if (start.buffer !== buffer) throw new Error('Expected unpacked globe strokes');
-  const vectorWords = count * 3;
-  const endpoints = new Uint32Array(buffer, GLOBE_STROKE_HEADER_BYTES, count * 12);
-  const points = new Uint32Array(endpoints.length), indices = new Uint32Array(count * 2);
-  let capacity = 1;
-  while (capacity < count * 3) capacity *= 2;
-  // An open-addressed table avoids retaining a string per endpoint while building.
-  const table = new Uint32Array(capacity), mask = capacity - 1;
-  let pointCount = 0;
-  for (let segment = 0; segment < count; segment++) {
-    for (let side = 0; side < 2; side++) {
-      const high = segment * 3 + side * vectorWords * 2, low = high + vectorWords;
-      const x = endpoints[high], y = endpoints[high + 1], z = endpoints[high + 2];
-      const lx = endpoints[low], ly = endpoints[low + 1], lz = endpoints[low + 2];
-      let bucket = (Math.imul(x, 2654435761) ^ Math.imul(y, 2246822519) ^ Math.imul(z, 3266489917) ^
-        Math.imul(lx, 668265263) ^ Math.imul(ly, 374761393) ^ lz) & mask;
-      while (table[bucket]) {
-        const point = (table[bucket] - 1) * 6;
-        if (points[point] === x && points[point + 1] === y && points[point + 2] === z &&
-            points[point + 3] === lx && points[point + 4] === ly && points[point + 5] === lz) break;
-        bucket = (bucket + 1) & mask;
-      }
-      if (!table[bucket]) {
-        const point = pointCount * 6;
-        points[point] = x; points[point + 1] = y; points[point + 2] = z;
-        points[point + 3] = lx; points[point + 4] = ly; points[point + 5] = lz;
-        table[bucket] = ++pointCount;
-      }
-      indices[segment * 2 + side] = table[bucket] - 1;
-    }
-  }
-  const tail = new Uint8Array(buffer, GLOBE_STROKE_HEADER_BYTES + count * 48);
-  const pointOffset = INDEXED_GLOBE_STROKE_HEADER_BYTES, indexOffset = pointOffset + pointCount * 24;
-  const tailOffset = indexOffset + indices.byteLength;
-  const packed = new ArrayBuffer(tailOffset + tail.byteLength);
-  new Uint8Array(packed, 0, GLOBE_STROKE_HEADER_BYTES).set(new Uint8Array(buffer, 0, GLOBE_STROKE_HEADER_BYTES));
-  const header = new DataView(packed);
-  header.setUint32(0, INDEXED_GLOBE_STROKE_MAGIC, true);
-  header.setUint32(16, pointCount, true);
-  new Uint32Array(packed, pointOffset, pointCount * 6).set(points.subarray(0, pointCount * 6));
-  new Uint32Array(packed, indexOffset, indices.length).set(indices);
-  new Uint8Array(packed, tailOffset).set(tail);
-  return packed;
+  return encodeIndexedGlobeStrokes({count,points:table.finish(),endpointIndices,
+    widths:Float32Array.from(widths),ownerGroups});
 }
 
 function buildGraticule(){
@@ -421,7 +366,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     ...emitMesh(buffer, dir),
     pickGrid: emit(buildGlobePickGrid(decodeGlobeMesh(buffer)), dir + 'pick/'),
   });
-  const withStrokePickGrid=(buffer,dir='',stored=buffer)=>({...emit(stored,dir),
+  const withStrokePickGrid=(buffer,dir='')=>({...emit(buffer,dir),
     pickGrid:emit(buildGlobeStrokePickGrid(decodeGlobeStrokes(buffer)),'hydro-pick/')});
 
   await import('../../src/rendering/workers/polygon-mesh-core.js');
@@ -507,7 +452,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
         const spec=withStrokePickGrid(buffer,'river-detail/');
         return {...row,id:row.id+':'+spec.sha256,spec};
       });
-      hydroParts.set(mask,{lakes,rivers:withStrokePickGrid(base,'',packGlobeStrokes(base)),riverDetail,riverMinZoom});
+      hydroParts.set(mask,{lakes,rivers:withStrokePickGrid(base),riverDetail,riverMinZoom});
     }
     const descriptor={identity,waters,...hydroParts.get(mask)};
     physicalContexts.set(identity,descriptor);
@@ -518,7 +463,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const {segments:sharedBoundaries}=JSON.parse(gunzipSync(boundarySeed.bytes,{maxOutputLength:boundarySeed.spec.decodedBytes}));
   const baseGroups=borderGroups(sharedBoundaries);
   const {buffer:borderBuffer,owners:borderOwners}=packBorders(baseGroups,true);
-  const borders=emit(packGlobeStrokes(borderBuffer));
+  const borders=emit(borderBuffer);
   const physicalRecords=physical.waterObjects.timelineRecords;
   for(const target of globeHistoryMonths(month,physicalRecords))await preparePhysical(target);
   const keys=rows=>rows.map(({owner,asset})=>globeTerritoryKey(owner,asset));
@@ -579,5 +524,5 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const hydroMetadata=emit(Buffer.from(JSON.stringify(hydroObjects)),'hydro-pick/');
   return {assets,skeleton,preview:{countries,countrySlots,countryLabels,outlines,outlineOwners,borders,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:basePhysical,physicalContexts:[...physicalContexts.values()].filter(row=>row!==basePhysical),physicalMonth:month,
-    historicalCountries,historicalBorders,historicalViews}};
+    historicalCountries,historicalBorders,history:encodeGlobeHistoricalViews(historicalViews)}};
 }

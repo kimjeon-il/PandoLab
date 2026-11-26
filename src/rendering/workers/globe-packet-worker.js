@@ -1,10 +1,16 @@
 import '../../runtime/workers/worker-rpc-host.js';
 import {decodeStoredBuffer,validateAssetLength} from '../../data/asset-decompression.js';
-import {decodeGlobeMesh,decodeGlobeStrokes} from '../globe-mesh.js';
+import {decodeGlobeMesh,decodeGlobeStrokes,combineGlobeStrokePackets} from '../globe-mesh.js';
 import {decodeGlobePickGrid} from '../globe-picking.js';
 
 const rpc=self.PandoLabWorkerRpc;
 rpc.install({handlers:{
+ 'globe.combine-strokes':({packets},context)=>{
+  context.throwIfCancelled();
+  const value=combineGlobeStrokePackets(packets);
+  context.throwIfCancelled();
+  return rpc.transferResult(value,[...new Set(Object.values(value).filter(ArrayBuffer.isView).map(array=>array.buffer))]);
+ },
  'globe.decode-packet':async({kind,bytes,spec,primitiveCount,ownerCount,identityCount},context)=>{
   context.throwIfCancelled();
   const decoded=await decodeStoredBuffer(bytes,spec,'worker','globe','지도 패킷',context.signal);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes } from '../../../src/rendering/globe-mesh.js';
+import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes, globeStrokePoint, combineGlobeStrokePackets, compactGlobeStrokeRange } from '../../../src/rendering/globe-mesh.js';
 import { combineGlobeCountryMeshes, encodeGlobeMesh, encodeGlobeStrokes } from '../../../scripts/lib/globe-preview-assets.mjs';
 import { globeVector } from '../../../src/rendering/globe-camera.js';
 import * as globeAssets from '../../../scripts/lib/globe-preview-assets.mjs';
@@ -68,18 +68,24 @@ test('stroke endpoints reuse surface vertex precision and expose one instance pe
   const buffer = encodeGlobeStrokes(coordinates, Uint32Array.of(0, 1, 1, 2));
   const strokes = decodeGlobeStrokes(buffer);
   assert.equal(strokes.count, 2);
-  assert.deepEqual(strokes.start.subarray(0, 3), mesh.positions.subarray(0, 3));
-  assert.deepEqual(strokes.endLow.subarray(0, 3), mesh.residuals.subarray(3, 6));
-  assert.deepEqual(strokes.end.subarray(0, 3), strokes.start.subarray(3, 6));
+  assert.deepEqual(strokes.points.subarray(0,3),mesh.positions.subarray(0,3));
+  assert.deepEqual(strokes.points.subarray(9,12),mesh.residuals.subarray(3,6));
+  assert.deepEqual(strokes.endpointIndices,Uint32Array.of(0,1,1,2));
+  assert.equal(strokes.points.length/6,3);
+  assert.equal(strokes.points.buffer,buffer);
+  assert.equal(strokes.endpointIndices.buffer,buffer);
   assert.throws(() => decodeGlobeStrokes(buffer.slice(0, -1)), /Invalid globe stroke/);
 });
 
 test('indexed strokes restore endpoints, widths and owner order and reject invalid references', () => {
   const coordinates = [179.999997,89.999923,-179.999991,89.999923,179.999997,89.999957];
-  const raw = encodeGlobeStrokes(coordinates, Uint32Array.of(0,1,1,2,2,0), [1.25,2,1.5], Uint16Array.of(1,230,513));
-  const packed = globeAssets.packGlobeStrokes(raw);
+  const packed=encodeGlobeStrokes(coordinates,Uint32Array.of(0,1,1,2,2,0),[1.25,2,1.5],Uint16Array.of(1,230,513));
   assert.equal(new DataView(packed).getUint32(16,true),3);
-  assert.deepEqual(decodeGlobeStrokes(packed).start.buffer,raw);
+  const decoded=decodeGlobeStrokes(packed);
+  assert.equal(decoded.points.buffer,packed);
+  assert.deepEqual([...decoded.endpointIndices],[0,1,1,2,2,0]);
+  assert.deepEqual([...decoded.widths],[1.25,2,1.5]);
+  assert.deepEqual([...decoded.ownerGroups],[1,230,513]);
   assert.throws(()=>decodeGlobeStrokes(packed.slice(0,-1)),/Invalid globe stroke/);
   new DataView(packed).setUint32(20+3*24,3,true);
   assert.throws(()=>decodeGlobeStrokes(packed),/Invalid globe stroke/);
@@ -115,7 +121,7 @@ test('river derivation keeps the basic stage global and admits detail across the
   const stroke=decodeGlobeStrokes(selected[0].buffer);
   assert.equal(stroke.count,1);
   assert.equal(stroke.widths[0],1.5);
-  assert.deepEqual([...stroke.start],globeVector([179.9,2]).map(Math.fround));
+  assert.deepEqual([...stroke.points.subarray(0,3)],globeVector([179.9,2]).map(Math.fround));
   assert.equal(selectGlobeRiverChunks(chunks,bounds,4).length,2);
 });
 
@@ -125,7 +131,7 @@ test('detail view replaces stale loads and reuses a recently uploaded river chun
   const chunk=id=>({id,spec:{decodedBytes:10}});
   const detail=createGlobeRiverDetail({byteBudget:20,
     load(row,signal){return new Promise(resolve=>pending.set(row.id,{signal,resolve}));},
-    attach(row){uploads.push(row.id);return {setVisible(){},dispose(){evicted.push(row.id);}};},
+    attach(row){uploads.push(row.id);return {residentBytes:10,setVisible(){},dispose(){evicted.push(row.id);}};},
     invalidate(){},onError:assert.fail,
   });
   detail.update([chunk('a'),chunk('stale')]);
@@ -267,10 +273,8 @@ test('spatial mesh and stroke ranges preserve every primitive and original owner
   const pieces=partitionGlobeStrokes(stroke,options).map(({first,end})=>globeStrokeRange(stroke,first,end));
   assert.deepEqual(pieces.flatMap(piece=>[...piece.ownerGroups]),[4,5,6]);
   assert.deepEqual(pieces.flatMap(piece=>[...piece.widths]),[1,2,3]);
-  for(const name of ['start','startLow','end','endLow']){
-    assert.deepEqual(pieces.flatMap(piece=>[...piece[name]]),[...stroke[name]]);
-    assert.ok(pieces.every(piece=>piece[name].buffer===stroke[name].buffer));
-  }
+  assert.deepEqual(pieces.flatMap(piece=>[...piece.endpointIndices]),[...stroke.endpointIndices]);
+  assert.ok(pieces.every(piece=>piece.points===stroke.points&&piece.endpointIndices.buffer===stroke.endpointIndices.buffer));
 });
 
 test('obsolete packet consumers cancel only their own reads until the final waiter leaves',async()=>{
@@ -313,4 +317,59 @@ test('physical plans defer hidden and higher-zoom lake and river packets',async(
   assert.deepEqual(reads,['sea','river','large']);assert.equal(next.lakes.length,1);
   const hidden=assets.plan('world',{zoom:8,lakesVisible:false,riversVisible:false});
   assert.equal(hidden.key,low.key);assets.dispose();
+});
+
+test('historical stroke batches deduplicate point words without changing primitive and owner order',()=>{
+  const a=decodeGlobeStrokes(encodeGlobeStrokes([0,0,1,0,1,0,2,0],null,[1,2],Uint16Array.of(7,8)));
+  const b=decodeGlobeStrokes(encodeGlobeStrokes([2,0,1,0,1,0,3,0],null,[3,4],Uint16Array.of(9,10)));
+  const batch=combineGlobeStrokePackets([a,b]);
+  assert.equal(batch.points.length/6,4);
+  assert.equal(batch.count,4);
+  assert.deepEqual([...batch.endpointIndices],[0,1,1,2,2,1,1,3]);
+  assert.deepEqual([...batch.widths],[1,2,3,4]);
+  assert.deepEqual([...batch.ownerGroups],[7,8,9,10]);
+  const source=[a,b].flatMap(packet=>Array.from({length:packet.count},(_,i)=>[globeStrokePoint(packet,i,0),globeStrokePoint(packet,i,1)]));
+  const endpoints=packet=>Array.from({length:packet.count},(_,i)=>[globeStrokePoint(packet,i,0),globeStrokePoint(packet,i,1)]);
+  assert.deepEqual(endpoints(batch),source);
+  const compact=compactGlobeStrokeRange(batch,2,4);
+  assert.deepEqual(endpoints(compact),source.slice(2));
+  assert.deepEqual([...compact.ownerGroups],[9,10]);
+  assert.equal(compact.points.length/6,3);
+});
+
+test('historical view metadata restores exact ordered lists from bounded checkpoints',async()=>{
+  const {encodeGlobeHistoricalViews,createGlobeHistoryIndex,encodeGlobeHistoryList,decodeGlobeHistoryList}=await import('../../../src/rendering/globe-history-index.js');
+  const baseCount=80;
+  const views=Array.from({length:70},(_,index)=>({
+    slots:[...Array.from({length:79},(_,i)=>i),80+index],
+    hiddenBorders:[index,index+1],borders:[100+index,5,8],
+  }));
+  const history=encodeGlobeHistoricalViews(views);
+  assert.equal(history.stride,32);
+  assert.equal(history.rows[0][1][0],0);
+  assert.equal(history.rows[1][1][0],1);
+  assert.equal(history.rows[32][1][0],0);
+  assert.ok(JSON.stringify(history).length<JSON.stringify(views).length);
+  const index=createGlobeHistoryIndex(history,baseCount);
+  assert.equal(index.find(Array.from({length:80},(_,i)=>i)).view,null);
+  for(const i of [69,32,1,60,33,0,48,22,51,41,5]){
+    const found=index.find(views[i].slots);
+    assert.deepEqual(found.slots,views[i].slots);
+    assert.deepEqual(found.view.hiddenBorders,views[i].hiddenBorders);
+    assert.deepEqual(found.view.borders,views[i].borders);
+    assert.equal(found.key,'history:'+i);
+  }
+  assert.equal(index.find([999]),null);
+  assert.ok(index.stats().decodedViews<=8);
+  assert.deepEqual(decodeGlobeHistoryList([1,2,3],encodeGlobeHistoryList([1,2,3],[3,1,2])),[3,1,2]);
+});
+
+test('indexed point texture keeps six coordinate words per point and pads only the last row',async()=>{
+  const {createGlobeStrokePointTexture}=await import('../../../src/rendering/three-globe-strokes.js');
+  class DataTexture{constructor(data,width,height){this.image={data,width,height};}}
+  const points=Float32Array.of(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18);
+  const resource=createGlobeStrokePointTexture({DataTexture,RGBAFormat:1,FloatType:2,NearestFilter:3},points,16);
+  assert.deepEqual([...resource.texture.image.data.subarray(0,points.length)],[...points]);
+  assert.equal(resource.uniforms.pointTextureWidth.value,resource.texture.image.width);
+  assert.equal(resource.bytes,resource.texture.image.data.byteLength);
 });

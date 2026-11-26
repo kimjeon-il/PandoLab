@@ -10,6 +10,7 @@ import {createGlobeCamera} from './globe-camera.js';
 import {COUNTRY_LABEL_MIN_ZOOM} from './three-globe-labels.js';
 import {automaticLabelSettings, labelKey} from './label-layout.js';
 import {globeMeshResourceKey,globeTerritoryKey} from './globe-mesh.js';
+import {createGlobeHistoryIndex} from './globe-history-index.js';
 import {createGlobePacketTasks} from './globe-packet-tasks.js';
 import {globePickCellBounds,globePickRayCells,globePickStrokeCells,pickCellsIntersectBounds,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
@@ -30,10 +31,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  const slotByKey=new Map(slots.map(({id,geometry},slot)=>[globeTerritoryKey(id,geometry),slot]));
  const labelsBySlot=[...baseSlots.map(row=>spec.countryLabels[row.id]),...spec.historicalCountries.map(row=>row.label)];
  const refs=slots.map(({id})=>normalizeObjectRef({domain:'territorial',type:'entity',id}));
- const baseTerritories={view:null,slots:baseSlots.map((_,slot)=>slot)};
- const datedTerritories=new Map([baseTerritories,...spec.historicalViews.map(view=>({view,slots:view.slots}))].map(row=>{
-  const key=row.slots.join(',');return [key,{...row,key}];
- }));
+ const historyIndex=createGlobeHistoryIndex(spec.history,baseSlots.length);
+ const baseTerritories=historyIndex.base;
  const cacheBudget=renderCacheBudget();
  const historicalCache=createRenderPacketCache({byteBudget:cacheBudget.historicalCpuBytes});
  const pendingOutlines=new Map(),requestScopes=new Map();
@@ -174,7 +173,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  function packetBounds(packet){
   if(!pickBounds.has(packet)){
    const bounds=packet.positions?globePickCellBounds([packet.positions,packet.residuals]):
-    globePickCellBounds([packet.start,packet.startLow],[packet.end,packet.endLow]);
+    globePickCellBounds([packet.points,packet.points.subarray(3),6]);
    pickBounds.set(packet,bounds);
   }
   return pickBounds.get(packet);
@@ -220,7 +219,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
     countries:assets.countries.packet,borders:assets.borders,borderGroupCount:spec.borderOwners.length,graticule:assets.graticule,
    }});
    // Each resident detail packet has a CPU copy and one GPU copy of its arrays.
-   riverDetail=createGlobeRiverDetail({byteBudget:cacheBudget.hydroBytes/2,
+   riverDetail=createGlobeRiverDetail({byteBudget:cacheBudget.hydroBytes,
     load:(row,signal)=>load(row.spec,'stroke',{phase:'background',label:'Three.js 상세 하천',signal}),
     attach:surface.attachRiverDetail,invalidate:()=>invalidate('three-river-detail'),
     onError:cause=>deps.feedback.reportOperationError(cause,'상세 하천을 불러오지 못했습니다.','PL-THREE-RIVER-001'),
@@ -294,7 +293,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    if(slot===undefined||(reference.contentSha256!==undefined&&reference.contentSha256!==slots[slot].geometry.contentSha256))break;
    active.push(slot);
   }
-  const match=active.length===references.size?datedTerritories.get(active.sort((a,b)=>a-b).join(',')):null;
+  const match=active.length===references.size?historyIndex.find(active.sort((a,b)=>a-b)):null;
   if(!match)throw Object.assign(Error(`${month}에 준비된 Three.js 영토 형상이 없습니다.`),{code:'PL-THREE-IDENTITY'});
   return match;
  }
@@ -308,11 +307,18 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }
  const countryCacheKey=row=>'country:'+globeMeshResourceKey(row);
  const borderCacheKey=row=>'border:'+row.sha256;
+ function borderBatchKey(view){
+  if(!view?.borders.length)return null;
+  if(view.borders.length===1)return borderCacheKey(spec.historicalBorders[view.borders[0]]);
+  // Exact ordered group identity. Different dates with the same combination
+  // share one prepared batch; raw group packets remain independently reusable.
+  return 'border-batch:'+view.borders.join(',');
+ }
  function historicalKeys(view){
   if(!view)return [];
+  const key=borderBatchKey(view);
   return [...view.slots.filter(slot=>slot>=baseSlots.length).map(slot=>
-   countryCacheKey(spec.historicalCountries[slot-baseSlots.length].countries)),
-   ...view.borders.map(index=>borderCacheKey(spec.historicalBorders[index]))];
+   countryCacheKey(spec.historicalCountries[slot-baseSlots.length].countries)),...(key?[key]:[])];
  }
  function retainCpuResources(){
   if(disposed)return;
@@ -320,20 +326,32 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   historicalCache.retain([...views].flatMap(historicalKeys));
   physicalAssets.retain([prefetchPhysical,visiblePhysicalPlan,physical?.plan,publishedPhysical?.plan]);
  }
+ function readBorder(index,signal){
+  const row=spec.historicalBorders[index];
+  return historicalCache.read(borderCacheKey(row),readSignal=>load(row,'stroke',{signal:readSignal}),signal);
+ }
+ async function loadBorderBatch(view,signal){
+  const key=borderBatchKey(view);
+  if(!key)return null;
+  const packet=view.borders.length===1?await readBorder(view.borders[0],signal):
+   await historicalCache.read(key,async readSignal=>{
+    const packets=await Promise.all(view.borders.map(index=>readBorder(index,readSignal)));
+    readSignal.throwIfAborted();
+    return metrics.track('three.combine-borders',()=>packetTasks.combineStrokes(packets,{signal:readSignal}));
+   },signal);
+  return {key,packet};
+ }
  async function loadHistoricalAssets(view,signal){
   if(!view)return null;
-  const [countries,borders]=await Promise.all([
+  const [countries,borderBatch]=await Promise.all([
    Promise.all(view.slots.filter(slot=>slot>=baseSlots.length).map(async slot=>{
     const row=spec.historicalCountries[slot-baseSlots.length].countries;
     const key=globeMeshResourceKey(row);
     return {slot,key,mesh:await historicalCache.read(countryCacheKey(row),readSignal=>loadMesh(row,readSignal),signal)};
    })),
-   Promise.all(view.borders.map(async index=>{
-    const row=spec.historicalBorders[index];
-    return {key:row.sha256,packet:await historicalCache.read(borderCacheKey(row),readSignal=>load(row,'stroke',{signal:readSignal}),signal)};
-   })),
+   loadBorderBatch(view,signal),
   ]);
-  return {countries,borders};
+  return {countries,borderBatch};
  }
  async function prepareDatedTerritories(month,references,{isCurrent=()=>true}={}){
   const prepared=requireTerritorialGeometry(month,references);
@@ -664,7 +682,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    countryLabelCount:surface?.labels.visibleCount(false)??0,
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
-   historicalCache:historicalCache.stats(),physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
+   historicalCache:historicalCache.stats(),historicalMetadata:historyIndex.stats(),physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
    labelAtlas:surface?.labels.cacheStats()??null,packetWorker:packetTasks.stats(),errorMessage:error?.message??null,initialLoading}),
   dispose(){disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historicalCache.dispose();physicalAssets.dispose();riverDetail?.dispose();packetTasks.dispose();surface?.dispose();canvas?.remove();},
  });

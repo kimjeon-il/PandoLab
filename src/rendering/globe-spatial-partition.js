@@ -21,17 +21,17 @@ function combinedSpan(a,b){
  for(let axis=0;axis<3;axis++)span=Math.max(span,Math.max(a[axis+3],b[axis+3])-Math.min(a[axis],b[axis]));
  return span;
 }
-function partition(count,read,{maxRanges=96,minPrimitives=128,span=.28}={}){
+function partition(count,read,{maxRanges=96,minPrimitives=128,span=.28,maxPrimitives=Infinity}={}){
  if(!count)return [];
  // Limit the number of render submissions even on fragmented source order.
  // Split contiguous primitive ranges whenever their spatial extent grows.
  const minCount=Math.max(minPrimitives,Math.ceil(count/maxRanges));
- const maxCount=minCount*4,ranges=[];
+ const maxCount=Math.min(minCount*4,maxPrimitives),ranges=[];
  let first=0,bounds=emptyBounds(),primitive=emptyBounds();
  for(let i=0;i<count;i++){
   for(let axis=0;axis<3;axis++){primitive[axis]=Infinity;primitive[axis+3]=-Infinity;}
   read(i,primitive);
-  if(i-first>=minCount&&(i-first>=maxCount||combinedSpan(bounds,primitive)>span)){
+  if(i-first>=maxCount||(i-first>=minCount&&combinedSpan(bounds,primitive)>span)){
    ranges.push({first,end:i,bounds});first=i;bounds=emptyBounds();
   }
   extend(bounds,primitive);
@@ -45,14 +45,15 @@ export function partitionGlobeMesh(packet,options){
  },options);
 }
 export function partitionGlobeStrokes(packet,options){
+ const high=packet.points,low=high.subarray(3);
  return partition(packet.count,(i,bounds)=>{
-  include(bounds,packet.start,packet.startLow,i*3);include(bounds,packet.end,packet.endLow,i*3);
+  include(bounds,high,low,packet.endpointIndices[i*2]*6);
+  include(bounds,high,low,packet.endpointIndices[i*2+1]*6);
  },options);
 }
 export function globeStrokeRange(packet,first,end){
- const result={count:end-first,widths:packet.widths.subarray(first,end),ownerGroups:packet.ownerGroups.subarray(first,end)};
- for(const key of ['start','startLow','end','endLow'])result[key]=packet[key].subarray(first*3,end*3);
- return result;
+ return {count:end-first,points:packet.points,endpointIndices:packet.endpointIndices.subarray(first*2,end*2),
+  widths:packet.widths.subarray(first,end),ownerGroups:packet.ownerGroups.subarray(first,end)};
 }
 
 function maxDot(bounds,vector){

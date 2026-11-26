@@ -30,7 +30,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
    const packet=await load(row,entry.controller.signal);
    if(entries.get(row.id)!==entry)return;
    entry.resource=attach(row,packet);
-   entry.packet=packet;
+   entry.packet=packet;entry.bytes=entry.resource.residentBytes;
    residentBytes+=entry.bytes;
    trim();invalidate();
   }catch(error){
@@ -57,7 +57,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
     }
     continue;
    }
-   const entry={row,controller:new AbortController(),bytes:row.spec.decodedBytes,resource:null,packet:null};
+   const entry={row,controller:new AbortController(),bytes:0,resource:null,packet:null};
    entries.set(row.id,entry);prepare(row,entry);
   }
   trim();return true;

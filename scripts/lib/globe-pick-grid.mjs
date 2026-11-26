@@ -1,4 +1,5 @@
 import { GLOBE_PICK_GRID_MAGIC,GLOBE_PICK_GRID_SIDE,globePickCellCoordinate,globePickCellIndex } from '../../src/rendering/globe-picking.js';
+import {globeStrokePoint} from '../../src/rendering/globe-mesh.js';
 
 /** Index exact primitive extents. The browser only reads packed ranges. */
 function buildGrid(count,extents){
@@ -29,9 +30,9 @@ export function buildGlobePickGrid({positions,residuals,indices}){
   });
 }
 
-export function buildGlobeStrokePickGrid({count,start,startLow,end,endLow}){
-  return buildGrid(count,segment=>[0,1,2].map(axis=>{
-    const i=segment*3+axis;
-    return [start[i]+startLow[i],end[i]+endLow[i]];
-  }));
+export function buildGlobeStrokePickGrid(packet){
+  return buildGrid(packet.count,segment=>{
+    const start=globeStrokePoint(packet,segment,0),end=globeStrokePoint(packet,segment,1);
+    return [0,1,2].map(axis=>[start[axis],end[axis]]);
+  });
 }
