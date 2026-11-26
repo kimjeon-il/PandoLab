@@ -12,12 +12,12 @@ import {automaticLabelSettings, labelKey} from './label-layout.js';
 import {globeMeshResourceKey,globeTerritoryKey} from './globe-mesh.js';
 import {createGlobeHistoryIndex} from './globe-history-index.js';
 import {createGlobePacketTasks} from './globe-packet-tasks.js';
-import {globePickCellBounds,globePickRayCells,globePickStrokeCells,pickCellsIntersectBounds,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
+import {globeRayIntersectsBounds,globeStrokePickPredicate,createGlobePacketIndex,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
 import {createThreeGlobeSurface} from './three-globe-surface.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
 import {createGlobeRiverDetail,selectGlobeRiverChunks} from './three-globe-rivers.js';
-import {createRenderPacketCache,renderCacheBudget} from './render-cache-budget.js';
+import {createRenderPacketCache,renderCacheBudget,renderPacketBytes,createRenderResidencyBudget,createRenderLoadGate} from './render-cache-budget.js';
 import {createGlobePhysicalAssets} from './three-globe-physical.js';
 
 const centerOf=([a,b])=>[(a[0]+b[0])/2,(a[1]+b[1])/2];
@@ -35,6 +35,10 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  const baseTerritories=historyIndex.base;
  const cacheBudget=renderCacheBudget();
  const historicalCache=createRenderPacketCache({byteBudget:cacheBudget.historicalCpuBytes});
+ const residency=createRenderResidencyBudget(cacheBudget.totalRenderBytes),loadGate=createRenderLoadGate({concurrency:cacheBudget.concurrentLoads,byteBudget:cacheBudget.pendingBytes});
+ residency.register(historicalCache.memoryEntries);
+ const hydroMetadataCache=createRenderPacketCache({byteBudget:16*1024*1024,entryLimit:1});
+ let acceptedPick=null,drawnFrame=null,countryPaintInputsDirty=true,basePaint=new Map(),visiblePaintSlots=new Set(),residencyDirty=true;
  const pendingOutlines=new Map(),requestScopes=new Map();
  let prefetchView=null,prefetchPhysical=null,visiblePhysicalPlan=null,publishedView=null,publishedPhysical=null;
  let visiblePhysicalFailed=null,fontReady=false,fontPending=null,fontFailed=false,lastLabelsNeeded=false;
@@ -43,18 +47,18 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  const events=new Map(),pointers=new Map(),lifetime=new AbortController();
  const metrics=createRenderingMetrics(),packetTasks=createGlobePacketTasks();
  let host,canvas,surface,assets,camera,viewport,pending,disposed=false,lost=false,loaded=false,ready=false,error;
- let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null,acceptedFeatures=null;
+ let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null;
  let territories=baseTerritories,acceptedTerritories=baseTerritories,territoryParts=null,acceptedTerritoryParts=null,activeSlots=new Set(baseTerritories.slots);
  let selection=null,style=null,paintDirty=true,fullPaintDirty=true,moving=false,moveTimer,velocity,pointerTravel=0,lastPointerMove=0;
- let activeSlotByKey=new Map(baseTerritories.slots.map(slot=>[refs[slot].key,slot])),acceptedActiveSlots=activeSlots;
- let paintedSlots=new Set(),countryRoles=new Map(),pickingRevision=0,pickingChanged=false;
+ let activeSlotByKey=new Map(baseTerritories.slots.map(slot=>[refs[slot].key,slot]));
+ let countryRoles=new Map(),pickingRevision=0,pickingChanged=false;
  let outlineSlots=new Set();
  let labelContentDirty=true;
  let framePreserved=false,initialLoading=true,drawCount=0,unsupported=false;
  let riverDetail,riverCamera=null,riverVisible=null,riverContext=null;
  let physical=null,acceptedPhysical=null;
  let acceptedRiverChunks=[],hydroMetadata=null;
- const riverPickGrids=new WeakMap(),hydroSlots=new Map();
+ const hydroSlots=new Map();
  let view={center:[15,12],zoom:2,bearing:0,pitch:0,roll:0};
  const readyState=()=>({mapReady:ready,status:error?'error':ready?'ready':'loading'});
  const presentation=createMapPresentationSession({getGeneration:()=>generation,getContextRevision:()=>contextRevision,
@@ -72,7 +76,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const controller=requestScopes.get(name);requestScopes.delete(name);controller?.abort();
  }
  function clearPreparation(){
-  for(const name of ['country-prefetch','physical-prefetch','territory-apply','physical-view'])cancelRequest(name);
+  for(const name of ['country-prefetch','physical-prefetch','territory-apply','physical-view','pick-click','pick-hover'])cancelRequest(name);
   prefetchView=null;prefetchPhysical=null;visiblePhysicalPlan=null;visiblePhysicalFailed=null;
   retainCpuResources();
  }
@@ -163,29 +167,15 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   host.appendChild(canvas);installInput();
  }
  const loader=createStoredAssetLoader({dataRevision:meta.dataRevision,cachePolicy:'immutable',deferCacheWrite:true,resolveUrl:row=>new URL(row.url,document.baseURI).href});
- async function load(row,kind,{phase='startup',label='Three.js 지도 자산',signal=lifetime.signal,...parameters}={}){
-  const result=await loader.loadStoredAsset(row,phase,row.sha256,label,bytes=>
-   metrics.track('three.decode-packet',()=>packetTasks.decode(kind,bytes,row,{signal,priority:phase==='startup'?10:0,...parameters})),signal);
-  return result.value;
+ async function load(row,kind,{phase='startup',label='Three.js 지도 자산',signal=lifetime.signal,priority=phase==='startup'?10:0,...parameters}={}){
+  const estimate=(Number(row.compressedBytes)||0)+Math.max(1,Number(row.decodedBytes)||0)*4;
+  return loadGate.run({bytes:estimate,priority,signal},async()=>{
+   const result=await loader.loadStoredAsset(row,phase,row.sha256,label,bytes=>
+    metrics.track('three.decode-packet',()=>packetTasks.decode(kind,bytes,row,{signal,priority,...parameters})),signal);
+   return result.value;
+  });
  }
- const loadMesh=async(row,signal)=>({packet:await load(row,'mesh',{signal}),gridSpec:row.pickGrid});
- const meshGrids=new WeakMap(),pickBounds=new WeakMap();
- function packetBounds(packet){
-  if(!pickBounds.has(packet)){
-   const bounds=packet.positions?globePickCellBounds([packet.positions,packet.residuals]):
-    globePickCellBounds([packet.points,packet.points.subarray(3),6]);
-   pickBounds.set(packet,bounds);
-  }
-  return pickBounds.get(packet);
- }
- async function pickMesh(mesh,ray,cells,visible,options){
-  // The global base mesh is always a candidate. Local packets need not even
-  // load their exact pick grid when the sampled ray misses their cell bounds.
-  if(mesh!==assets.countries&&!pickCellsIntersectBounds(cells,packetBounds(mesh.packet)))return [];
-  const grid=await historicalResource(meshGrids,mesh,()=>load(mesh.gridSpec,
-   'pick',{phase:'background',label:'지도 선택 인덱스',primitiveCount:mesh.packet.indices.length/3}));
-  return pickGlobeSlots(mesh.packet,grid,ray,visible,{...options,cells});
- }
+ const loadMesh=async(row,signal)=>({packet:await load(row,'mesh',{signal})});
  async function loadOutlines(row,owners,signal){
   if(!owners.length||owners.some(group=>!group.length||group.some(slot=>!Number.isInteger(slot)||slot<0||slot>=slots.length)))
    throw Error('Invalid globe outline owners');
@@ -204,6 +194,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  const physicalAssets=createGlobePhysicalAssets([spec.physical,...spec.physicalContexts],{
   loadMesh,loadStroke:(row,signal)=>load(row,'stroke',{signal}),byteBudget:cacheBudget.physicalCpuBytes,
  });
+ residency.register(physicalAssets.memoryEntries);
  const physicalPlan=identity=>physicalAssets.plan(identity,{zoom:view.zoom,
   lakesVisible:state.layerVisibility.lakes!==false,riversVisible:state.layerVisibility.rivers!==false});
  function initialize(){
@@ -224,6 +215,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
     attach:surface.attachRiverDetail,invalidate:()=>invalidate('three-river-detail'),
     onError:cause=>deps.feedback.reportOperationError(cause,'상세 하천을 불러오지 못했습니다.','PL-THREE-RIVER-001'),
    });
+   residency.register(surface.memoryEntries);residency.register(riverDetail.memoryEntries);
+   residency.register(()=>hydroMetadata?[{protected:true,extraBytes:Math.max(0,Number(spec.hydroMetadata.decodedBytes)||0)*2+hydroSlots.size*64}]:[]);
    verifyLayout();if(restored)syncCameraFromState(restored);else fitWorld();
    loaded=true;return true;
   })();pending.catch(failMapPreparation);return pending;
@@ -298,60 +291,61 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   return match;
  }
  function featureRefs(rows){return new Map(rows.map(row=>[String(row.id),geometryReferenceFor(row.geometry)]));}
- function historicalResource(cache,key,read){
-  if(!cache.has(key)){
-   const promise=read();cache.set(key,promise);
-   promise.catch(()=>{if(cache.get(key)===promise)cache.delete(key);});
-  }
-  return cache.get(key);
- }
  const countryCacheKey=row=>'country:'+globeMeshResourceKey(row);
- const borderCacheKey=row=>'border:'+row.sha256;
- function borderBatchKey(view){
-  if(!view?.borders.length)return null;
-  if(view.borders.length===1)return borderCacheKey(spec.historicalBorders[view.borders[0]]);
-  // Exact ordered group identity. Different dates with the same combination
-  // share one prepared batch; raw group packets remain independently reusable.
-  return 'border-batch:'+view.borders.join(',');
+ const borderPlans=new WeakMap();
+ function borderBatchPlans(view){
+  if(!view?.borders.length)return [];
+  if(borderPlans.has(view))return borderPlans.get(view);
+  const plans=[];let rows=[],bytes=0;
+  function flush(){if(!rows.length)return;plans.push({rows,key:'border-batch:'+rows.map(row=>row.sha256).join(','),bytes});rows=[];bytes=0;}
+  for(const index of view.borders){
+   const row=spec.historicalBorders[index],size=Math.max(1,Number(row.decodedBytes)||0);
+   if(rows.length&&(rows.length>=32||bytes+size>cacheBudget.borderBatchBytes))flush();
+   rows.push(row);bytes+=size;
+  }
+  flush();borderPlans.set(view,plans);return plans;
  }
  function historicalKeys(view){
   if(!view)return [];
-  const key=borderBatchKey(view);
   return [...view.slots.filter(slot=>slot>=baseSlots.length).map(slot=>
-   countryCacheKey(spec.historicalCountries[slot-baseSlots.length].countries)),...(key?[key]:[])];
+   countryCacheKey(spec.historicalCountries[slot-baseSlots.length].countries)),...borderBatchPlans(view).map(row=>row.key)];
  }
  function retainCpuResources(){
   if(disposed)return;
+  residencyDirty=true;
   const views=new Set([prefetchView,territories.view,publishedView]);
   historicalCache.retain([...views].flatMap(historicalKeys));
   physicalAssets.retain([prefetchPhysical,visiblePhysicalPlan,physical?.plan,publishedPhysical?.plan]);
  }
- function readBorder(index,signal){
-  const row=spec.historicalBorders[index];
-  return historicalCache.read(borderCacheKey(row),readSignal=>load(row,'stroke',{signal:readSignal}),signal);
- }
- async function loadBorderBatch(view,signal){
-  const key=borderBatchKey(view);
-  if(!key)return null;
-  const packet=view.borders.length===1?await readBorder(view.borders[0],signal):
-   await historicalCache.read(key,async readSignal=>{
-    const packets=await Promise.all(view.borders.map(index=>readBorder(index,readSignal)));
+ async function loadBorderBatches(view,signal){
+  const batches=[];
+  // Bound the original packets held by a merge and avoid cloning their
+  // display indexes. Keep every completed batch independently reusable.
+  for(const plan of borderBatchPlans(view)){
+   signal?.throwIfAborted();
+   const packet=await historicalCache.read(plan.key,async readSignal=>{
+    if(plan.rows.length===1)return load(plan.rows[0],'stroke',{signal:readSignal});
+    const packets=await Promise.all(plan.rows.map(row=>historicalCache.read('raw-border:'+row.sha256,
+     rawSignal=>load(row,'stroke',{signal:rawSignal,spatial:false}),readSignal)));
     readSignal.throwIfAborted();
-    return metrics.track('three.combine-borders',()=>packetTasks.combineStrokes(packets,{signal:readSignal}));
+    const bytes=packets.reduce((sum,row)=>sum+renderPacketBytes(row),0);
+    return loadGate.run({bytes:bytes*4,priority:10,signal:readSignal},()=>metrics.track('three.combine-borders',()=>packetTasks.combineStrokes(packets,{signal:readSignal})));
    },signal);
-  return {key,packet};
+   batches.push({key:plan.key,packet});
+  }
+  return batches;
  }
  async function loadHistoricalAssets(view,signal){
   if(!view)return null;
-  const [countries,borderBatch]=await Promise.all([
+  const [countries,borderBatches]=await Promise.all([
    Promise.all(view.slots.filter(slot=>slot>=baseSlots.length).map(async slot=>{
     const row=spec.historicalCountries[slot-baseSlots.length].countries;
     const key=globeMeshResourceKey(row);
     return {slot,key,mesh:await historicalCache.read(countryCacheKey(row),readSignal=>loadMesh(row,readSignal),signal)};
    })),
-   loadBorderBatch(view,signal),
+   loadBorderBatches(view,signal),
   ]);
-  return {countries,borderBatch};
+  return {countries,borderBatches};
  }
  async function prepareDatedTerritories(month,references,{isCurrent=()=>true}={}){
   const prepared=requireTerritorialGeometry(month,references);
@@ -359,7 +353,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   prefetchView=prepared.view;retainCpuResources();
   try{
    if(!isCurrent())throw Object.assign(Error('Territorial preparation superseded'),{name:'AbortError',cancelled:true});
-   await loadHistoricalAssets(prepared.view,controller.signal);
+   if(prepared.key!==territories.key||!features)await loadHistoricalAssets(prepared.view,controller.signal);
    if(!requestCurrent('country-prefetch',controller)||!isCurrent())throw Object.assign(Error('Territorial preparation superseded'),{name:'AbortError',cancelled:true});
   }catch(error){
    if(requestCurrent('country-prefetch',controller)&&prefetchView===prepared.view){prefetchView=null;retainCpuResources();}
@@ -377,12 +371,15 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   prefetchView=prepared.view;prefetchPhysical=target;retainCpuResources();
   try{
    const [parts,nextPhysical]=await Promise.all([
-    loadHistoricalAssets(prepared.view,controller.signal),physicalAssets.prepare(target,{signal:controller.signal}),
+    prepared.key===territories.key&&features?territoryParts:loadHistoricalAssets(prepared.view,controller.signal),physicalAssets.prepare(target,{signal:controller.signal}),
    ]);
    if(!requestCurrent('territory-apply',controller)||request!==territorialRequest||requestGeneration!==generation||month!==state.timelineCursor)return false;
-   territories=prepared;territoryParts=parts;physical=nextPhysical;activeSlots=new Set(prepared.slots);
-   activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));
-   features=new Map(rows.map(row=>[String(row.id),row]));paintDirty=fullPaintDirty=true;labelContentDirty=true;return true;
+   if(prepared.key!==territories.key||!features){
+    territories=prepared;territoryParts=parts;activeSlots=new Set(prepared.slots);
+    activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));pickingChanged=true;
+   }
+   if(physical!==nextPhysical){physical=nextPhysical;pickingChanged=true;}
+   features=new Map(rows.map(row=>[String(row.id),row]));paintDirty=countryPaintInputsDirty=true;labelContentDirty=true;return true;
   }catch(error){
    if(controller.signal.aborted)return false;
    throw error;
@@ -416,7 +413,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    else deps.feedback.reportOperationError(error,'확대 수준의 수역을 불러오지 못했습니다.','PL-THREE-HYDRO-TIER-001');
   }).finally(()=>{
    if(requestScopes.get('physical-view')===controller){visiblePhysicalPlan=null;retainCpuResources();}
-   finishRequest('physical-view',controller);
+   controller.abort();finishRequest('physical-view',controller);
   });
   return false;
  }
@@ -521,17 +518,27 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
     if(appearance.width>0&&appearance.alpha>0)outlineSlots.add(slot<baseSlots.length?null:slot);
    }
   }
-  // A selection change only touches old/new highlighted slots. A real scene,
-  // palette or visibility change also refreshes active and retired slots.
-  const changed=fullPaintDirty?new Set([...paintedSlots,...activeSlots]):
-    new Set([...countryRoles.keys(),...nextRoles.keys()].filter(slot=>countryRoles.get(slot)!==nextRoles.get(slot)));
+  const changed=new Set([...countryRoles.keys(),...nextRoles.keys()].filter(slot=>countryRoles.get(slot)!==nextRoles.get(slot)));
+  if(fullPaintDirty||countryPaintInputsDirty){
+   const nextBase=new Map(),nextVisible=new Set();
+   for(const slot of activeSlots){
+    const ref=refs[slot],color=colors?deps.colorModel.territorialEntityColor(features.get(ref.id)):null,visible=Boolean(deps.objectRefVisible(ref));
+    nextBase.set(slot,{color,visible});if(visible)nextVisible.add(slot);
+    const previous=basePaint.get(slot);
+    if(!previous||previous.color!==color||previous.visible!==visible)changed.add(slot);
+   }
+   for(const slot of basePaint.keys())if(!nextBase.has(slot))changed.add(slot);
+   if(nextVisible.size!==visiblePaintSlots.size||[...nextVisible].some(slot=>!visiblePaintSlots.has(slot))){
+    visiblePaintSlots=nextVisible;pickingChanged=true;
+   }
+   basePaint=nextBase;countryPaintInputsDirty=false;
+  }
+  if(fullPaintDirty)for(const slot of new Set([...countryRoles.keys(),...nextRoles.keys()]))changed.add(slot);
   surface.setCountryPaint([...changed].map(slot=>{
-   if(!activeSlots.has(slot))return [slot,{color:null,visible:false}];
-   const ref=refs[slot],appearance=roleStyles[nextRoles.get(slot)];
-   return [slot,{color:colors?deps.colorModel.territorialEntityColor(features.get(ref.id)):null,
-    visible:deps.objectRefVisible(ref),highlight:appearance?{color:appearance.color,alpha:appearance.fillAlpha}:null}];
-  }),{full:fullPaintDirty});
-  paintedSlots=activeSlots;countryRoles=nextRoles;
+   const base=basePaint.get(slot)??{color:null,visible:false},appearance=roleStyles[nextRoles.get(slot)];
+   return [slot,{...base,highlight:appearance?{color:appearance.color,alpha:appearance.fillAlpha}:null}];
+  }),{full:changed.size>Math.max(64,activeSlots.size/2)});
+  countryRoles=nextRoles;
   surface.setOutlinePaint(nextRoles,roleStyles,style?.selection.color);
   if(ready)requestOutlines();
   const hydroRoles=new Map(),waterRoles=new Map();
@@ -555,7 +562,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   if((!ready||framePreserved)&&(!physicalReady||!graticuleReady||!bordersReady||!fontAvailable))return {...base,deferred:true};
   surface.activateDatedView(territories.view,territoryParts);
   surface.activatePhysicalContext(physical);
-  pickingChanged||=fullPaintDirty||lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
+  pickingChanged||=lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
   if(paintDirty)metrics.run('three.country-paint',updatePaint);
   if(labelContentDirty)metrics.run('three.label-content',updateLabelContent);
   const showRivers=state.layerVisibility.rivers!==false;
@@ -564,10 +571,10 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    riverDetail.update(showRivers?selectGlobeRiverChunks(physical.spec.riverDetail,camera.geographicBounds(),view.zoom):[]);
   }
   metrics.run('three.submit-frame',()=>surface.draw(camera,viewport.width,viewport.height));
-  drawCount++;lastFrame=frame;lastCamera=camera;acceptedFeatures=features;
-  acceptedTerritories=territories;acceptedTerritoryParts=territoryParts;acceptedPhysical=physical;acceptedActiveSlots=activeSlots;
-  acceptedRiverChunks=riverDetail.activeEntries();
-  presentation.markTemporalFrame(frame);emit('render');
+  drawCount++;
+  drawnFrame={frame,camera,territories,territoryParts,physical,visibleSlots:visiblePaintSlots,riverChunks:riverDetail.activeEntries(),
+   labelHit:surface.labels.hitSnapshot(),lakesVisible:state.layerVisibility.lakes!==false,riversVisible:showRivers,generation};
+  presentation.markTemporalFrame(frame);
   if(moving&&!pointers.size&&velocity){
    const now=performance.now(),dt=Math.min(32,now-lastPointerMove);lastPointerMove=now;
    const point=camera.frame.center;velocity=velocity.map(value=>value*Math.exp(-dt/135));
@@ -576,79 +583,109 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   }
   return {...base,succeeded:true,presentationReady:true};
  }
+ function publishPickSnapshot(draw){
+  const previous=acceptedPick,riverChunks=draw.riverChunks;
+  const sameRivers=previous&&riverChunks.length===previous.riverChunks.length&&riverChunks.every((row,i)=>row.packet===previous.riverChunks[i].packet);
+  const sameCountries=previous&&draw.territoryParts===previous.territoryParts;
+  const samePhysical=previous&&draw.physical===previous.physical;
+  if(!pickingChanged&&previous&&previous.generation===draw.generation&&previous.camera===draw.camera&&sameCountries&&samePhysical&&sameRivers&&
+    previous.visibleSlots===draw.visibleSlots&&previous.labelHit===draw.labelHit&&previous.lakesVisible===draw.lakesVisible&&previous.riversVisible===draw.riversVisible)return;
+  const active=draw.physical;
+  cancelRequest('pick-click');cancelRequest('pick-hover');
+  acceptedPick={...draw,
+   countryIndex:sameCountries?previous.countryIndex:createGlobePacketIndex([...(draw.territoryParts?.countries??[]).map(row=>row.mesh),assets.countries],row=>row.packet.spatialBounds),
+   waterIndex:samePhysical?previous.waterIndex:createGlobePacketIndex(active.waters,row=>row.mesh.packet.spatialBounds),
+   lakeIndex:samePhysical?previous.lakeIndex:createGlobePacketIndex(active.lakes,row=>row.mesh.packet.spatialBounds),
+   riverIndex:samePhysical&&sameRivers?previous.riverIndex:createGlobePacketIndex([
+    ...(active.rivers?[{packet:active.rivers,minZoom:active.spec.riverMinZoom}]:[]),
+    ...riverChunks.map(row=>({packet:row.packet,minZoom:row.row.minZoom})),
+   ].flatMap(row=>row.packet.spatialParts.map(part=>({...part,minZoom:row.minZoom}))),row=>row.index.rootBounds),
+  };
+  pickingRevision++;pickingChanged=false;
+ }
  function commitVisualFrame(frame){
+  const draw=drawnFrame;
+  if(!draw||draw.frame!==frame)return false;
   const first=!ready;ready=true;
-  if(!presentation.commitVisualFrame(frame)){ready=!first;return false;}
-  if(publishedView!==territories.view||publishedPhysical!==physical||first){
-   publishedView=territories.view;publishedPhysical=physical;
+  if(!presentation.commitVisualFrame(frame)){ready=!first;drawnFrame=null;return false;}
+  lastFrame=frame;lastCamera=draw.camera;
+  acceptedTerritories=draw.territories;acceptedTerritoryParts=draw.territoryParts;acceptedPhysical=draw.physical;
+  acceptedRiverChunks=draw.riverChunks;
+  publishPickSnapshot(draw);drawnFrame=null;
+  if(publishedView!==draw.territories.view||publishedPhysical!==draw.physical||first){
+   publishedView=draw.territories.view;publishedPhysical=draw.physical;
    if(prefetchView===publishedView)prefetchView=null;
    if(prefetchPhysical?.key===publishedPhysical?.plan.key)prefetchPhysical=null;
    retainCpuResources();
   }
-  surface.trimResidency();
+  const riverChanged=riverDetail.commit(acceptedRiverChunks),surfaceChanged=surface.trimResidency();
+  if(first||residencyDirty||riverChanged||surfaceChanged){residencyDirty=false;residency.trim();}
   if(first){metrics.publish();notify('ready','지도 표시 준비 완료');requestOutlines();}
-  if(pickingChanged){pickingRevision++;pickingChanged=false;}
-  revision++;return true;
+  revision++;emit('render');return true;
  }
- async function pickHydroFeatures(point,active,camera,lakeSlots,waterFeatures){
-  const slots=new Set(lakeSlots);
-  if(state.layerVisibility.rivers!==false&&camera.view.zoom>=active.spec.riverMinZoom){
-   const chunks=[...(active.rivers?[{row:{spec:active.spec.rivers,minZoom:active.spec.riverMinZoom},packet:active.rivers}]:[]),
-    ...acceptedRiverChunks.filter(({row})=>camera.view.zoom>=row.minZoom)];
-   const cells=globePickStrokeCells(camera,point);
-   await Promise.all(chunks.filter(({packet})=>packet===active.rivers||pickCellsIntersectBounds(cells,packetBounds(packet))).map(async({row,packet})=>{
-    if(!riverPickGrids.has(packet))riverPickGrids.set(packet,new Map());
-    const gridSpec=row.spec.pickGrid;
-    const grid=await historicalResource(riverPickGrids.get(packet),gridSpec.sha256,
-     ()=>load(gridSpec,'pick',{phase:'background',primitiveCount:packet.count}));
-    for(const slot of pickGlobeStrokeSlots(packet,grid,camera,point,5,cells))slots.add(slot);
-   }));
-  }
+ async function hydroFeaturesForSlots(slots,waterFeatures,signal){
   if(!slots.size)return waterFeatures;
-  if(!hydroMetadata){
-   hydroMetadata=load(spec.hydroMetadata,'hydro',{phase:'background',identityCount:spec.hydroCount}).then(rows=>{
-    rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));return rows;
-   });
-   hydroMetadata.catch(()=>{hydroMetadata=null;});
-  }
-  const items=await hydroMetadata;
-  return [...waterFeatures,...[...slots].map(slot=>items[slot])];
+  const items=hydroMetadata??await hydroMetadataCache.read('hydro-metadata',async readSignal=>{
+   const rows=await load(spec.hydroMetadata,'hydro',{phase:'background',priority:30,identityCount:spec.hydroCount,signal:readSignal});
+   readSignal.throwIfAborted();
+   hydroMetadata=rows;rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));paintDirty=residencyDirty=true;invalidate('three-hydro-identities');
+   return rows;
+  },signal);
+  signal?.throwIfAborted();
+  return [...waterFeatures,...[...slots].map(slot=>items[slot]).filter(Boolean)];
  }
- async function queryObjectRefs(point,{includeHydro=true,includeLabels=true}={}){
-  if(!acceptedFeatures||framePreserved||!lastCamera)return [];
-  const label=includeLabels?surface.labels.hitTest(point):null;
-  if(label)return [label];
-  const sampledCamera=lastCamera,active=acceptedPhysical,territory=acceptedTerritories,generationAtPick=generation,ray=sampledCamera.worldRay(point);
-  if(!ray)return [];
-  const cells=globePickRayCells(ray),visibleSlots=acceptedActiveSlots;
-  const isCurrent=()=>!disposed&&!framePreserved&&lastCamera===sampledCamera&&acceptedPhysical===active&&
-   acceptedTerritories===territory&&generationAtPick===generation;
-  const [waterHits,lakeHits]=await Promise.all([
-   Promise.all(active.waters.map(({mesh})=>pickMesh(mesh,ray,cells,undefined,{firstHit:true}))),
-   Promise.all(state.layerVisibility.lakes===false?[]:active.lakes.filter(({minZoom})=>sampledCamera.view.zoom>=minZoom).map(({mesh})=>pickMesh(mesh,ray,cells))),
-  ]);
-  if(!isCurrent())return [];
-  const waters=active.waters.filter((_,index)=>waterHits[index].length>0),lakeSlots=lakeHits.flat();
-  let hydroRefs=[];
-  if(includeHydro){
-   const candidates=await pickHydroFeatures(point,active,sampledCamera,lakeSlots,waters.map(row=>row.feature));
-   if(!isCurrent())return [];
-   const visible=[...new Map(candidates.filter(feature=>deps.physicalServices.isHydroFeatureVisible(feature)).map(feature=>[feature.id,feature])).values()];
-   const missing=visible.filter(feature=>{
-    const existing=deps.hydroModel.hydroFeatureById(feature.id);
-    return !existing||existing.__awBounds!==feature.__awBounds;
-   });
-   if(missing.length)await deps.physicalResources.admitHydroFeatures(missing,{isCurrent});
-   if(!isCurrent())return [];
-   hydroRefs=visible.map(feature=>normalizeObjectRef({domain:'hydro',type:feature.properties.category,id:feature.id}));
-  }
-  if(waters.length||lakeSlots.length)return hydroRefs;
-  const visibleSlot=slot=>visibleSlots.has(slot)&&deps.objectRefVisible(refs[slot]);
-  const meshes=[...(acceptedTerritoryParts?.countries??[]).map(row=>row.mesh),assets.countries];
-  const hits=await Promise.all(meshes.map(row=>pickMesh(row,ray,cells,visibleSlot)));
-  return isCurrent()?[...hydroRefs,...hits.flat().map(slot=>refs[slot])]:[];
+ async function queryObjectRefs(point,{includeHydro=true,includeLabels=true,signal:consumerSignal}={}){
+  const sample=acceptedPick;
+  if(!sample||framePreserved||!ready||sample.generation!==generation)throw new DOMException('Picking frame unavailable','AbortError');
+  const controller=startRequest(includeHydro||includeLabels?'pick-click':'pick-hover');
+  const abort=()=>controller.abort(consumerSignal?.reason);
+  consumerSignal?.addEventListener('abort',abort,{once:true});if(consumerSignal?.aborted)abort();
+  const {signal}=controller;
+  const isCurrent=()=>!signal.aborted&&!disposed&&!framePreserved&&ready&&acceptedPick===sample&&sample.generation===generation;
+  const assertCurrent=()=>{signal.throwIfAborted();if(!isCurrent())throw new DOMException('Picking frame superseded','AbortError');};
+  try{
+   assertCurrent();
+   const label=includeLabels?sample.labelHit(point):null;
+   if(label)return [label];
+   const sampledCamera=sample.camera,ray=sampledCamera.worldRay(point);
+   if(!ray)return [];
+   const intersect=bounds=>globeRayIntersectsBounds(ray,bounds),waterFeatures=[],lakeSlots=new Set();
+   for(const row of sample.waterIndex.query(intersect)){
+    const packet=row.mesh.packet;
+    if(pickGlobeSlots(packet,packet.spatial,ray,undefined,{firstHit:true,signal}).length){
+     if(!includeHydro)return [];
+     waterFeatures.push(row.feature);
+    }
+   }
+   if(sample.lakesVisible)for(const row of sample.lakeIndex.query(intersect)){
+    if(sampledCamera.view.zoom<row.minZoom)continue;
+    const packet=row.mesh.packet,hits=pickGlobeSlots(packet,packet.spatial,ray,undefined,{firstHit:!includeHydro,signal});
+    if(hits.length&&!includeHydro)return [];
+    for(const slot of hits)lakeSlots.add(slot);
+   }
+   let hydroRefs=[];
+   if(includeHydro){
+    const slots=new Set(lakeSlots);
+    if(sample.riversVisible&&sampledCamera.view.zoom>=sample.physical.spec.riverMinZoom){
+     const predicate=globeStrokePickPredicate(sampledCamera,point,5);
+     for(const row of sample.riverIndex.query(predicate)){
+      if(sampledCamera.view.zoom<row.minZoom)continue;
+      for(const slot of pickGlobeStrokeSlots(row.packet,row.index,sampledCamera,point,5,{predicate,signal}))slots.add(slot);
+     }
+    }
+    const candidates=await hydroFeaturesForSlots(slots,waterFeatures,signal);assertCurrent();
+    const visible=[...new Map(candidates.filter(feature=>deps.physicalServices.isHydroFeatureVisible(feature)).map(feature=>[feature.id,feature])).values()];
+    const missing=visible.filter(feature=>{const existing=deps.hydroModel.hydroFeatureById(feature.id);return !existing||existing.__awBounds!==feature.__awBounds;});
+    if(missing.length)await deps.physicalResources.admitHydroFeatures(missing,{isCurrent});
+    assertCurrent();hydroRefs=visible.map(feature=>normalizeObjectRef({domain:'hydro',type:feature.properties.category,id:feature.id}));
+   }
+   if(waterFeatures.length||lakeSlots.size)return hydroRefs;
+   const hits=[];
+   for(const {packet} of sample.countryIndex.query(intersect))hits.push(...pickGlobeSlots(packet,packet.spatial,ray,slot=>sample.visibleSlots.has(slot),{signal}));
+   assertCurrent();return [...hydroRefs,...hits.map(slot=>refs[slot])];
+  }finally{consumerSignal?.removeEventListener('abort',abort);finishRequest(includeHydro||includeLabels?'pick-click':'pick-hover',controller);}
  }
- function appearance(){paintDirty=fullPaintDirty=true;invalidate('three-style');}
+ function appearance(){paintDirty=fullPaintDirty=countryPaintInputsDirty=true;invalidate('three-style');}
  const projection=Object.freeze({projectCoordinate:coord=>camera?.projectCoordinate(coord)??null,
   projectVisibleCoordinate:(coord,options)=>camera?.projectVisibleCoordinate(coord,options)??null,
   screenToGeo:point=>camera?.screenToGeo(point)??null,geographicBounds:()=>camera?.geographicBounds()??null});
@@ -672,7 +709,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   waitForTemporalPresentation:presentation.waitForTemporalPresentation,getProjectGeneration:()=>generation,
   preserveTemporalFrame(){framePreserved=true;},isFramePreserved:()=>framePreserved,
   resetProjectRenderState(options){generation=options.generation;features=null;ready=false;error=null;
-    clearPreparation();cancelOutlines();presentation.resetForProject(options);},
+    drawnFrame=null;clearPreparation();cancelOutlines();countryPaintInputsDirty=true;presentation.resetForProject(options);},
   measureWork:metrics.track,measureSyncWork:metrics.run,failMapPreparation,retryMapPreparation,getRuntimeState,
   getStats:()=>({...getRuntimeState(),mapReadiness:readyState(),displayedRevision:ready?revision:0,sourceRevision:revision,
    generation,certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
@@ -683,7 +720,9 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
    historicalCache:historicalCache.stats(),historicalMetadata:historyIndex.stats(),physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
-   labelAtlas:surface?.labels.cacheStats()??null,packetWorker:packetTasks.stats(),errorMessage:error?.message??null,initialLoading}),
-  dispose(){disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historicalCache.dispose();physicalAssets.dispose();riverDetail?.dispose();packetTasks.dispose();surface?.dispose();canvas?.remove();},
+   labelAtlas:surface?.labels.cacheStats()??null,packetWorker:packetTasks.stats(),residency:residency.stats(),loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
+  dispose(){disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historicalCache.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();residency.dispose();packetTasks.dispose();surface?.dispose();canvas?.remove();
+   acceptedPick=drawnFrame=features=territoryParts=acceptedTerritoryParts=physical=acceptedPhysical=publishedPhysical=hydroMetadata=null;
+   acceptedRiverChunks=[];hydroSlots.clear();basePaint.clear();assets=surface=riverDetail=null;},
  });
 }

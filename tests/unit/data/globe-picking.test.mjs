@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildGlobePickGrid } from '../../../scripts/lib/globe-pick-grid.mjs';
+import {buildGlobeSpatialIndex} from '../../../src/rendering/globe-spatial-partition.js';
 import { combineGlobeCountryMeshes } from '../../../scripts/lib/globe-preview-assets.mjs';
 import { createGlobeCamera } from '../../../src/rendering/globe-camera.js';
 import { decodeGlobeMesh } from '../../../src/rendering/globe-mesh.js';
-import { decodeGlobePickGrid, globePickCellBounds, globePickRayCells, pickCellsIntersectBounds, pickGlobeSlots } from '../../../src/rendering/globe-picking.js';
+import {globeRayIntersectsBounds,createGlobePacketIndex,pickGlobeSlots} from '../../../src/rendering/globe-picking.js';
 import { createObjectPicking } from '../../../src/map/object-picking.js';
 import { normalizeObjectRef } from '../../../src/document/object-ref-identity.js';
 
@@ -13,7 +13,7 @@ test('picking returns overlapping visible slots, excludes the far side and skips
     vertices: Float64Array.of(lon - 1, -1, lon + 1, -1, lon, 1), indices: Uint32Array.of(0, 1, 2) });
   const { buffer } = combineGlobeCountryMeshes([row('first', 179.9), row('second', 179.9), row('far', 0)]);
   const mesh = decodeGlobeMesh(buffer);
-  const grid = decodeGlobePickGrid(buildGlobePickGrid(mesh), mesh.indices.length / 3);
+  const grid=buildGlobeSpatialIndex(mesh);
   const camera = createGlobeCamera({ center: [179.9, 0], zoom: 3 }, { width: 800, height: 600 });
   assert.deepEqual(pickGlobeSlots(mesh, grid, camera.worldRay([400, 300])), [1, 0]);
   assert.deepEqual(pickGlobeSlots(mesh, grid, camera.worldRay([400, 300]), slot => slot !== 1), [0]);
@@ -47,27 +47,26 @@ test('the overlapping-object chooser publishes temporary candidates and clears t
 });
 
 test('indexed line picking finds the nearby visible river and ignores the far hemisphere', async () => {
-  const {buildGlobeStrokePickGrid}=await import('../../../scripts/lib/globe-pick-grid.mjs');
   const {pickGlobeStrokeSlots}=await import('../../../src/rendering/globe-picking.js');
   const {encodeGlobeStrokes}=await import('../../../scripts/lib/globe-preview-assets.mjs');
   const {decodeGlobeStrokes}=await import('../../../src/rendering/globe-mesh.js');
   const packet=decodeGlobeStrokes(encodeGlobeStrokes([179.8,0,-179.8,0,-.2,0,.2,0],null,[1,1],Uint16Array.of(3,7)));
-  const grid=decodeGlobePickGrid(buildGlobeStrokePickGrid(packet),packet.count);
+  const grid=buildGlobeSpatialIndex(packet);
   const camera=createGlobeCamera({center:[180,0],zoom:5},{width:800,height:600});
   assert.deepEqual(pickGlobeStrokeSlots(packet,grid,camera,[400,303]),[3]);
   assert.deepEqual(pickGlobeStrokeSlots(packet,grid,camera,[400,325]),[]);
 });
 
-test('packet bounds use exact grid cells and a shared ray traversal preserves hits', () => {
+test('packet hierarchy excludes disjoint packet bounds and preserves exact ray hits', () => {
   const row=(id,lon)=>({id,geometry:{id,version:1},
     vertices:Float64Array.of(lon-1,-1,lon+1,-1,lon,1),indices:Uint32Array.of(0,1,2)});
   const near=decodeGlobeMesh(combineGlobeCountryMeshes([row('near',179.9)]).buffer);
   const far=decodeGlobeMesh(combineGlobeCountryMeshes([row('far',0)]).buffer);
   const camera=createGlobeCamera({center:[179.9,0],zoom:5},{width:800,height:600});
-  const ray=camera.worldRay([400,300]),cells=globePickRayCells(ray);
-  const bounds=mesh=>globePickCellBounds([mesh.positions,mesh.residuals]);
-  assert.equal(pickCellsIntersectBounds(cells,bounds(near)),true);
-  assert.equal(pickCellsIntersectBounds(cells,bounds(far)),false);
-  const grid=decodeGlobePickGrid(buildGlobePickGrid(near),near.indices.length/3);
-  assert.deepEqual(pickGlobeSlots(near,grid,ray,undefined,{cells}),[0]);
+  const ray=camera.worldRay([400,300]);
+  const nearIndex=buildGlobeSpatialIndex(near),farIndex=buildGlobeSpatialIndex(far);
+  const index=createGlobePacketIndex([{mesh:near,index:nearIndex},{mesh:far,index:farIndex}],row=>row.index.rootBounds);
+  const matches=index.query(bounds=>globeRayIntersectsBounds(ray,bounds));
+  assert.equal(matches.length,1);assert.equal(matches[0].mesh,near);
+  assert.deepEqual(pickGlobeSlots(near,nearIndex,ray),[0]);
 });

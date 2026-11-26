@@ -7,6 +7,7 @@ import { layerObjectRank, territorialPaintRole } from "../ui/layer-presentation.
 export function createObjectPicking({performanceRecorder=null,closeActiveOverlay=null}={}) {
   let dependencies;
   let objectPickRevision = 0;
+  let clickController=null;
   let objectChooserPresentationRevision = 0;
   let chooserCandidates=[];
   let objectChooserIntentMode = 'replace';
@@ -65,21 +66,22 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
         - layerObjectRank(dependencies.projectState.state.layerPresentation, left.key);
   }
 
-  async function selectableObjectsAt(screenPoint, coord, { seedRefs = [], includeLabels = true, includeHydro = true } = {}) {
-    const candidates = [];
+  async function selectableObjectsAt(screenPoint, coord, { seedRefs = [], includeLabels = true, includeHydro = true, signal } = {}) {
+    signal?.throwIfAborted();
+    const candidates = [],keys=new Set();
     const add = ref => {
       const normalized = (0, dependencies.selectionServices.normalizeObjectRef)(ref);
-      if (objectRefSelectable(normalized) && !candidates.some(candidate => candidate.key === normalized.key)) candidates.push(normalized);
+      if (objectRefSelectable(normalized) && !keys.has(normalized.key)){keys.add(normalized.key);candidates.push(normalized);}
     };
     seedRefs.forEach(add);
-    (await dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint,{includeHydro,includeLabels})).forEach(ref=>{
+    (await dependencies.rendering.mapRenderer.queryObjectRefs(screenPoint,{includeHydro,includeLabels,signal})).forEach(ref=>{
       if((includeHydro||ref.domain!=='hydro')&&(includeLabels||ref.domain!=='label'))add(ref);
     });
-    return candidates.sort(compareVisualOrder);
+    signal?.throwIfAborted();return candidates.sort(compareVisualOrder);
   }
 
   function closeObjectChooser({ restoreFocus = false, cancelPending = true } = {}) {
-    if (cancelPending) objectPickRevision += 1;
+    if (cancelPending){objectPickRevision += 1;clickController?.abort();clickController=null;}
     objectChooserPresentationRevision += 1;
     objectChooserIntentMode = 'replace';
     const hadCandidates=chooserCandidates.length>0&&!chooserSelection;
@@ -154,6 +156,7 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
 
   async function handleObjectSelectionAt(screenPoint, { sourceEvent = dependencies.platform.d3.event, hitRef = null } = {}) {
     const requestRevision = ++objectPickRevision;
+    clickController?.abort();const controller=new AbortController();clickController=controller;
     const projectGeneration = dependencies.domains.projectDomain?.getGeneration?.() ?? 0;
     const pickViewRevision = dependencies.mapLayout.viewRevision;
     const source = sourceEvent?.sourceEvent || sourceEvent || {};
@@ -173,7 +176,10 @@ export function createObjectPicking({performanceRecorder=null,closeActiveOverlay
       if(projectGeneration!==dependencies.domains.projectDomain.getGeneration())return false;
       return false;
     }
-    const candidates = (await selectableObjectsAt(screenPoint, coord, { seedRefs: [normalizedHit] })).filter(objectRefSelectable);
+    let candidates;
+    try{candidates=(await selectableObjectsAt(screenPoint,coord,{seedRefs:[normalizedHit],signal:controller.signal})).filter(objectRefSelectable);}
+    catch(error){if(controller.signal.aborted||error?.name==='AbortError'||error?.cancelled)return false;throw error;}
+    finally{if(clickController===controller)clickController=null;}
     if (requestRevision !== objectPickRevision
       || projectGeneration !== (dependencies.domains.projectDomain?.getGeneration?.() ?? 0)
       || pickViewRevision !== dependencies.mapLayout.viewRevision) return false;

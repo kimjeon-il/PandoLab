@@ -1,136 +1,130 @@
 import {globeStrokePoint} from './globe-mesh.js';
-export const GLOBE_PICK_GRID_MAGIC = 0x31494750;
-export const GLOBE_PICK_GRID_SIDE = 32;
-const side = GLOBE_PICK_GRID_SIDE;
-const cellWidth = 2 / side;
+import {walkGlobeSpatialLeaves,globePrimitiveOwner} from './globe-spatial-partition.js';
 
-export const globePickCellCoordinate = value => Math.max(0, Math.min(side - 1, Math.floor((value + 1) / cellWidth)));
-export const globePickCellIndex = (x,y,z) => (z * side + y) * side + x;
-
-export function decodeGlobePickGrid(buffer, triangleCount) {
-  const headerWords = 3, offsetCount = side ** 3 + 1;
-  if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < (headerWords + offsetCount) * 4 || buffer.byteLength % 4) throw Error('Invalid globe pick grid');
-  const words = new Uint32Array(buffer);
-  if (words[0] !== GLOBE_PICK_GRID_MAGIC || words[1] !== side || words[2] !== triangleCount) throw Error('Globe pick grid does not match its mesh');
-  const offsets = words.subarray(headerWords, headerWords + offsetCount), triangles = words.subarray(headerWords + offsetCount);
-  if (offsets[0] !== 0 || offsets.at(-1) !== triangles.length || offsets.some((offset,i)=>i>0&&offset<offsets[i-1]) ||
-    triangles.some(triangle=>triangle>=triangleCount)) throw Error('Invalid globe pick grid ranges');
-  return Object.freeze({offsets,triangles});
+/** A sparse hierarchy is shared with GPU selection; no fixed 32^3 table or
+ * per-packet grid download. Clip the ray to the exact primitive AABB. */
+export function globeRayIntersectsBounds(ray,bounds,at=0){
+ if(!ray||!bounds)return false;
+ let lo=ray.start-1e-12,hi=ray.end;
+ for(let axis=0;axis<3;axis++){
+  const o=ray.origin[axis],d=ray.direction[axis],min=bounds[at+axis],max=bounds[at+axis+3];
+  if(!d){if(o<min||o>max)return false;continue;}
+  let a=(min-o)/d,b=(max-o)/d;
+  if(a>b){const swap=a;a=b;b=swap;}
+  if(a>lo)lo=a;if(b<hi)hi=b;
+  if(hi<lo)return false;
+ }
+ return true;
 }
 
-const dot = (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-const minus = (a,b) => [a[0]-b[0],a[1]-b[1],a[2]-b[2]];
-const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
-
-function intersects(mesh, first, {origin,direction,start,end}) {
-  const vertex = index => {
-    const offset = mesh.indices[index] * 3;
-    return [0,1,2].map(axis=>mesh.positions[offset+axis]+mesh.residuals[offset+axis]);
-  };
-  const a=vertex(first), ab=minus(vertex(first+1),a), ac=minus(vertex(first+2),a);
-  const normal=cross(direction,ac), determinant=dot(ab,normal);
-  if (Math.abs(determinant)<1e-20) return false;
-  const relative=minus(origin,a), u=dot(relative,normal)/determinant;
-  if (u<0||u>1) return false;
-  const q=cross(relative,ab), v=dot(direction,q)/determinant;
-  if (v<0||u+v>1) return false;
-  const distance=dot(ac,q)/determinant;
-  return distance>=start-1e-12&&distance<end;
+function intersects(mesh,first,ray){
+ const {positions:p,residuals:l,indices}=mesh,{origin:o,direction:d,start,end}=ray;
+ const a=indices[first]*3,b=indices[first+1]*3,c=indices[first+2]*3;
+ const ax=p[a]+l[a],ay=p[a+1]+l[a+1],az=p[a+2]+l[a+2];
+ const ux=p[b]+l[b]-ax,uy=p[b+1]+l[b+1]-ay,uz=p[b+2]+l[b+2]-az;
+ const vx=p[c]+l[c]-ax,vy=p[c+1]+l[c+1]-ay,vz=p[c+2]+l[c+2]-az;
+ const nx=d[1]*vz-d[2]*vy,ny=d[2]*vx-d[0]*vz,nz=d[0]*vy-d[1]*vx;
+ const det=ux*nx+uy*ny+uz*nz;
+ if(Math.abs(det)<1e-20)return false;
+ const rx=o[0]-ax,ry=o[1]-ay,rz=o[2]-az,inv=1/det;
+ const u=(rx*nx+ry*ny+rz*nz)*inv;
+ if(u<0||u>1)return false;
+ const qx=ry*uz-rz*uy,qy=rz*ux-rx*uz,qz=rx*uy-ry*ux;
+ const v=(d[0]*qx+d[1]*qy+d[2]*qz)*inv;
+ if(v<0||u+v>1)return false;
+ const t=(vx*qx+vy*qy+vz*qz)*inv;
+ return t>=start-1e-12&&t<end;
 }
 
-function visitPickCells(ray,visitor){
-  if(!ray)return;
-  const {origin,direction,start,end}=ray;
-  const cell=origin.map((value,axis)=>globePickCellCoordinate(value+direction[axis]*start));
-  const steps=direction.map(Math.sign);
-  const advance=direction.map(value=>value ? cellWidth/Math.abs(value) : Infinity);
-  const next=direction.map((value,axis)=>value ? (-1+(cell[axis]+Number(value>0))*cellWidth-origin[axis])/value : Infinity);
-  while (cell.every(value=>value>=0&&value<side)) {
-    if(visitor(cell))return;
-    const axis=next[0]<=next[1]&&next[0]<=next[2]?0:next[1]<=next[2]?1:2;
-    if(next[axis]>end)break;
-    cell[axis]+=steps[axis];next[axis]+=advance[axis];
-  }
-}
-
-/** Packet bounds in the exact same Cartesian grid used by the pick index.
- * All triangle/segment extents lie inside the endpoint/vertex bounds.
- */
-export function globePickCellBounds(...vectors){
-  const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
-  for(const [positions,residuals,stride=3] of vectors){
-    for(let i=0;i+2<residuals.length;i+=stride)for(let axis=0;axis<3;axis++){
-      const coordinate=positions[i+axis]+residuals[i+axis];
-      if(coordinate<low[axis])low[axis]=coordinate;
-      if(coordinate>high[axis])high[axis]=coordinate;
-    }
-  }
-  return low[0]===Infinity?null:[...low.map(globePickCellCoordinate),...high.map(globePickCellCoordinate)];
-}
-
-export function pickCellsIntersectBounds(cells,bounds){
-  if(!bounds)return false;
-  const [x0,y0,z0,x1,y1,z1]=bounds;
-  for(const index of cells){
-    const x=index%side,y=Math.floor(index/side)%side,z=Math.floor(index/(side*side));
-    if(x>=x0&&x<=x1&&y>=y0&&y<=y1&&z>=z0&&z<=z1)return true;
+export function pickGlobeSlots(mesh,index,ray,visible=()=>true,{firstHit=false,signal}={}){
+ if(!ray)return [];
+ const hits=new Set();
+ const ownerVisible=owner=>owner<0||visible(owner);
+ walkGlobeSpatialLeaves(index,(bounds,at)=>globeRayIntersectsBounds(ray,bounds,at),(first,end,owner)=>{
+  signal?.throwIfAborted();
+  for(let i=first;i<end;i++){
+   const triangle=index.order[i],slot=globePrimitiveOwner(mesh,triangle);
+   const id=slot<0?0:slot;
+   if(hits.has(id)||!visible(id))continue;
+   if(intersects(mesh,triangle*3,ray)){hits.add(id);if(firstHit)return true;}
   }
   return false;
-}
-
-export function globePickRayCells(ray){
-  const cells=[];
-  visitPickCells(ray,cell=>{cells.push(globePickCellIndex(...cell));});
-  return cells;
-}
-
-export function pickGlobeSlots(mesh, grid, ray, visible = () => true, { firstHit = false, cells = globePickRayCells(ray) } = {}) {
-  const seen=new Set(), hits=new Set();
-  for(const index of cells){
-    for(let i=grid.offsets[index];i<grid.offsets[index+1];i++){
-      const triangle=grid.triangles[i],first=triangle*3,slot=mesh.slots[mesh.indices[first]]??0;
-      if(hits.has(slot)||seen.has(triangle)||!visible(slot))continue;
-      seen.add(triangle);
-      if(intersects(mesh,first,ray)){
-        hits.add(slot);
-        if(firstHit)return [slot];
-      }
-    }
-  }
-  // The combined mesh draws larger slot indices last when fills overlap.
-  return [...hits].sort((a,b)=>b-a);
+ },ownerVisible);
+ return [...hits].sort((a,b)=>b-a);
 }
 
 const pointSegmentDistance=([x,y],[[ax,ay],[bx,by]])=>{
-  const dx=bx-ax,dy=by-ay;
-  const fraction=Math.min(1,Math.max(0,((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy||1)));
-  return Math.hypot(x-ax-dx*fraction,y-ay-dy*fraction);
+ const dx=bx-ax,dy=by-ay,fraction=Math.min(1,Math.max(0,((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy||1)));
+ return Math.hypot(x-ax-dx*fraction,y-ay-dy*fraction);
 };
 
-export function globePickStrokeCells(camera,point,tolerance=5){
-  const cells=new Set();
-  const [x,y]=point;
-  for(const dy of [-tolerance,0,tolerance])for(const dx of [-tolerance,0,tolerance]){
-    visitPickCells(camera.worldRay([x+dx,y+dy]),([a,b,c])=>{
-      for(let iz=Math.max(0,c-1);iz<=Math.min(side-1,c+1);iz++)
-        for(let iy=Math.max(0,b-1);iy<=Math.min(side-1,b+1);iy++)
-          for(let ix=Math.max(0,a-1);ix<=Math.min(side-1,a+1);ix++)cells.add(globePickCellIndex(ix,iy,iz));
-    });
+// A tolerance rectangle is four perspective half-spaces. Bounding a stroke
+// by its chord includes the endpoints clipped by the renderer at the horizon.
+export function globeStrokePickPredicate(camera,point,tolerance=5){
+ const {frame:{eye,right,up,forward,focal,center}}=camera;
+ const [x,y]=point,planes=[];
+ const plane=(axis,sign,slope)=>{
+  const n=axis.map((v,i)=>sign*v+slope*forward[i]);
+  planes.push([n,n[0]*eye[0]+n[1]*eye[1]+n[2]*eye[2]]);
+ };
+ plane(right,1,(center[0]-x+tolerance)/focal);
+ plane(right,-1,(x+tolerance-center[0])/focal);
+ plane(up,1,(y+tolerance-center[1])/focal);
+ plane(up,-1,(center[1]-y+tolerance)/focal);
+ planes.push([forward,forward[0]*eye[0]+forward[1]*eye[1]+forward[2]*eye[2]]);
+ const epsilon=1e-10*(1+Math.hypot(...eye));
+ return (bounds,at=0)=>{
+  for(const [normal,offset] of planes){
+   let maximum=0;
+   for(let axis=0;axis<3;axis++)maximum+=normal[axis]*bounds[at+axis+(normal[axis]>=0?3:0)];
+   if(maximum<offset-epsilon)return false;
   }
-  return cells;
+  return true;
+ };
+}
+export function pickGlobeStrokeSlots(packet,index,camera,point,tolerance=5,{predicate=globeStrokePickPredicate(camera,point,tolerance),signal}={}){
+ const hits=new Map();
+ walkGlobeSpatialLeaves(index,predicate,(first,end)=>{
+  signal?.throwIfAborted();
+  for(let i=first;i<end;i++){
+   const segment=index.order[i],slot=packet.ownerGroups[segment];
+   const line=camera.projectStroke(globeStrokePoint(packet,segment,0),globeStrokePoint(packet,segment,1));
+   if(!line)continue;
+   const distance=pointSegmentDistance(point,line);
+   if(distance<=tolerance&&distance<(hits.get(slot)??Infinity))hits.set(slot,distance);
+  }
+  return false;
+ });
+ return [...hits].sort((a,b)=>a[1]-b[1]).map(([slot])=>slot);
 }
 
-export function pickGlobeStrokeSlots(packet,grid,camera,point,tolerance=5,cells=globePickStrokeCells(camera,point,tolerance)){
-  const seen=new Set(),hits=new Map();
-  for(const cell of cells)for(let i=grid.offsets[cell];i<grid.offsets[cell+1];i++){
-    const segment=grid.triangles[i],slot=packet.ownerGroups[segment];
-    if(seen.has(segment))continue;
-    seen.add(segment);
-    const start=globeStrokePoint(packet,segment,0),end=globeStrokePoint(packet,segment,1);
-    const line=camera.projectStroke(start,end);
-    if(!line)continue;
-    const distance=pointSegmentDistance(point,line);
-    if(distance<=tolerance&&distance<(hits.get(slot)??Infinity))hits.set(slot,distance);
+/** Broad phase across active packets. Median splitting on actual bound
+ * centres keeps disjoint water/territory packets out of the query entirely. */
+export function createGlobePacketIndex(rows,boundsOf){
+ const entries=rows.map((row,order)=>({row,order,bounds:boundsOf(row)})).filter(row=>row.bounds);
+ function build(items){
+  if(!items.length)return null;
+  const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+  for(const {bounds:box} of items)for(let axis=0;axis<3;axis++){
+   bounds[axis]=Math.min(bounds[axis],box[axis]);bounds[axis+3]=Math.max(bounds[axis+3],box[axis+3]);
   }
-  return [...hits].sort((a,b)=>a[1]-b[1]).map(([slot])=>slot);
+  if(items.length<=4)return {bounds,items};
+  let axis=0;
+  for(let i=1;i<3;i++)if(bounds[i+3]-bounds[i]>bounds[axis+3]-bounds[axis])axis=i;
+  items.sort((a,b)=>a.bounds[axis]+a.bounds[axis+3]-b.bounds[axis]-b.bounds[axis+3]||a.order-b.order);
+  const middle=items.length>>1;
+  return {bounds,left:build(items.slice(0,middle)),right:build(items.slice(middle))};
+ }
+ const root=build(entries);
+ function query(predicate){
+  const found=[];
+  function visit(node){
+   if(!node||!predicate(node.bounds))return;
+   if(node.items){for(const item of node.items)if(predicate(item.bounds))found.push(item);}
+   else{visit(node.left);visit(node.right);}
+  }
+  visit(root);
+  return found.sort((a,b)=>a.order-b.order).map(item=>item.row);
+ }
+ return {query};
 }

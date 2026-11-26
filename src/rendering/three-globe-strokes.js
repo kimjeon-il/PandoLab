@@ -38,11 +38,6 @@ const vertexShader = `
     uniform vec2 outlineStyles[5];
     varying float strokeAlpha;
   #endif
-  #ifdef GROUP_VISIBILITY
-    attribute float ownerGroup;
-    uniform sampler2D groupVisibility;
-    uniform float groupCount;
-  #endif
   #ifdef RIVER_PALETTE
     attribute float ownerGroup;
     uniform vec3 strokeColor;
@@ -58,9 +53,6 @@ const vertexShader = `
     strokeRadius = radius;
     gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
     if (zoom < minZoom) return;
-    #ifdef GROUP_VISIBILITY
-      if (texture2D(groupVisibility, vec2((ownerGroup + 0.5) / groupCount, 0.5)).r < 0.5) return;
-    #endif
     #ifdef WIDTH_PROFILE
       strokeRadius *= mix(sourceWidth, max(1.5, sourceWidth), clamp(4.0 - zoom, 0.0, 1.0));
     #endif
@@ -142,7 +134,7 @@ export function createGlobeStrokePointTexture(THREE,points,maxTextureSize){
   return {texture,bytes:data.byteLength,uniforms:{pointCoordinates:{value:texture},pointTextureWidth:{value:width}}};
 }
 
-export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, viewport, margin, multisampling, order, minZoom = -2, outlineUniforms, visibilityUniforms, hydroUniforms, pointUniforms, sharedMaterial }) {
+export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, viewport, margin, multisampling, order, minZoom = -2, outlineUniforms, hydroUniforms, pointUniforms, sharedMaterial }) {
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(Float32Array.of(0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0), 3));
   geometry.setIndex([0, 1, 2, 2, 1, 3]);
@@ -150,15 +142,15 @@ export function createThreeGlobeStrokes(THREE, { packet, style, cameraUniforms, 
   endpoints.gpuType=THREE.IntType;
   geometry.setAttribute('endpointIndices',endpoints);
   if (packet.widths.length) geometry.setAttribute('sourceWidth', new THREE.InstancedBufferAttribute(packet.widths, 1));
-  if (outlineUniforms||visibilityUniforms||hydroUniforms) geometry.setAttribute('ownerGroup', new THREE.InstancedBufferAttribute(packet.ownerGroups, 1));
+  if (outlineUniforms||hydroUniforms) geometry.setAttribute('ownerGroup', new THREE.InstancedBufferAttribute(packet.ownerGroups, 1));
   geometry.instanceCount = packet.count;
   const material = sharedMaterial??new THREE.ShaderMaterial({ vertexShader, fragmentShader,
     depthTest: false, depthWrite: false, alphaToCoverage: multisampling, transparent: !multisampling,
     defines: { ...(packet.widths.length?{WIDTH_PROFILE:1}:{}),...(outlineUniforms?{OUTLINE_OWNERS:1}:{}),
-      ...(visibilityUniforms?{GROUP_VISIBILITY:1}:{}),...(hydroUniforms?{RIVER_PALETTE:1}:{}) },
+      ...(hydroUniforms?{RIVER_PALETTE:1}:{}) },
     uniforms: { ...cameraUniforms, viewport, margin, minZoom: { value: minZoom },
       radius: { value: style.width / 2 }, strokeColor: { value: new THREE.Color(style.color) },
-      strokeOpacity:{value:style.opacity??1},...pointUniforms,...outlineUniforms,...visibilityUniforms,...hydroUniforms } });
+      strokeOpacity:{value:style.opacity??1},...pointUniforms,...outlineUniforms,...hydroUniforms } });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.renderOrder = order;

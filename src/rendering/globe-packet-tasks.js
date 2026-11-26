@@ -36,7 +36,7 @@ export function createGlobePacketTasks({
   signal?.throwIfAborted();
   // Cached immutable packet buffers remain with their other consumers.
   return scheduler.enqueue({jobKey:'stroke-batch-'+(++sequence),priority,signal,
-   payload:{operation:'globe.combine-strokes',body:{packets},transfer:[]}}).promise;
+   payload:{operation:'globe.combine-strokes',body:{packets:packets.map(({count,points,endpointIndices,widths,ownerGroups})=>({count,points,endpointIndices,widths,ownerGroups}))},transfer:[]}}).promise;
  }
  function dispose(){scheduler.close('globe-packet-disposed');rpc?.stop('globe-packet-disposed');rpc=null;}
  return Object.freeze({decode,combineStrokes,dispose,stats:scheduler.stats});

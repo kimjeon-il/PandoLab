@@ -216,4 +216,4 @@ export function compactGlobeStrokeRange(packet,first,end){
 }
 
 export const globeTerritoryKey=(id,geometry)=>JSON.stringify([id,geometry?.id,geometry?.version]);
-export const globeMeshResourceKey=spec=>`${spec.sha256}:${spec.pickGrid?.sha256??''}`;
+export const globeMeshResourceKey=spec=>spec.sha256;

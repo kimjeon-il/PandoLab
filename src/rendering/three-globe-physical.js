@@ -61,5 +61,5 @@ export function createGlobePhysicalAssets(descriptors,{loadMesh,loadStroke,byteB
  }
  function retain(plans){retained=plans.filter(Boolean);refresh();}
  function dispose(){disposed=true;contexts.clear();pending.clear();retained=[];files.dispose();}
- return Object.freeze({has:identity=>catalog.has(identity),plan,prepare,retain,stats:()=>({...files.stats(),contexts:contexts.size}),dispose});
+ return Object.freeze({has:identity=>catalog.has(identity),plan,prepare,retain,memoryEntries:files.memoryEntries,stats:()=>({...files.stats(),contexts:contexts.size}),dispose});
 }

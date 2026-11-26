@@ -3,15 +3,15 @@ import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLooku
 import {compactGlobeStrokeRange} from './globe-mesh.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
-import {renderCacheBudget,renderPacketBytes,touchRenderCache,trimRenderCache} from './render-cache-budget.js';
-import {partitionGlobeMesh,partitionGlobeStrokes,globeStrokeRange,createGlobeRangeCuller,visibleGlobeMeshRanges} from './globe-spatial-partition.js';
+import {renderCacheBudget,renderPacketBytes,renderPacketBuffers,touchRenderCache,trimRenderCache} from './render-cache-budget.js';
+import {createGlobeSpatialSelection,createGlobeRangeCuller} from './globe-spatial-partition.js';
 
 const surfaceVertex = `
   attribute vec3 positionLow;
   #ifdef COUNTRY_PALETTE
     attribute float objectSlot;
     uniform sampler2D objectColors;
-    uniform float objectCount;
+    uniform vec2 objectSize;
   #endif
   #ifdef HYDRO_PALETTE
     attribute float objectSlot;
@@ -30,7 +30,8 @@ const surfaceVertex = `
     surfaceNormal = position;
     surfaceRay = (position - eyeHigh) + (positionLow - eyeLow);
     #ifdef COUNTRY_PALETTE
-      paint = texture2D(objectColors, vec2((objectSlot + 0.5) / objectCount, 0.5));
+      vec2 pixel=vec2(mod(objectSlot,objectSize.x),floor(objectSlot/objectSize.x));
+      paint=texture2D(objectColors,(pixel+0.5)/objectSize);
     #elif defined(HYDRO_PALETTE)
       paint = vec4(mix(surfaceColor, hydroTint, hydroStyle(objectSlot).z), 1.0);
     #else
@@ -89,16 +90,16 @@ export function globeOutlineRanges(index,groups){
 export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, hydroCount, cacheBudget=renderCacheBudget() }) {
   const renderer = new THREE.WebGLRenderer({ canvas, context });
   const maxPointTextureSize=renderer.capabilities.maxTextureSize;
-  const maxTexturePoints=Math.min(1_000_000,Math.floor(maxPointTextureSize**2*2/3));
-  const strokePartitionOptions={maxPrimitives:Math.max(1,Math.floor(maxTexturePoints/2))};
   renderer.setClearColor(palette.ocean);
   renderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
     throw new Error([gl.getProgramInfoLog(program), gl.getShaderInfoLog(vertexShader), gl.getShaderInfoLog(fragmentShader)].filter(Boolean).join('\n'));
   };
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(GLOBE_FIELD_OF_VIEW, 1);
-  const channels = new Uint8Array(countryCount * 4);
-  const texture = new THREE.DataTexture(channels, countryCount, 1);
+  const countryWidth=Math.min(maxPointTextureSize,Math.max(1,countryCount)),countryHeight=Math.ceil(Math.max(1,countryCount)/countryWidth);
+  const channels=new Uint8Array(countryWidth*countryHeight*4),countryVisible=new Uint8Array(countryCount);
+  let countryVisibilityRevision=0,borderVisibilityRevision=0;
+  const texture=new THREE.DataTexture(channels,countryWidth,countryHeight);
   texture.colorSpace = THREE.SRGBColorSpace;
   let countryTextureUploaded=false;
   texture.onUpdate=()=>{countryTextureUploaded=true;};
@@ -132,6 +133,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       const offset = index * 4;
       const next = [Math.round(reusableColor.r*255),Math.round(reusableColor.g*255),Math.round(reusableColor.b*255),visible?255:0];
       if(next.every((value,channel)=>value===channels[offset+channel]))continue;
+      if(countryVisible[index]!==Number(visible)){countryVisible[index]=Number(visible);countryVisibilityRevision++;}
       channels.set(next,offset);
       if(!full&&countryTextureUploaded)texture.addUpdateRange(offset,4);
       changed = true;
@@ -142,7 +144,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const spatialResources=new Set(),activeSpatialResources=new Set();
   let spatialStats={triangles:0,submittedTriangles:0,segments:0,submittedSegments:0,ranges:0,visibleRanges:0};
   let cullingCamera=null,cullingWidth=0,cullingHeight=0,cullers=new Map();
-  let residencyDirty=true,meshResidentBytes=0,outlineResidentBytes=0;
+  let residencyDirty=true;
   let activePhysical=null,physicalLayers=null;
   const visibleLayers={lakes:true,rivers:true};
   let activeView=null,activeCountries=[],activeBorders=[],showBorders=true;
@@ -157,18 +159,21 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   // The logical visibility/ownership of a packet is independent of which
   // spatial ranges its current camera actually submits.
-  function spatialResource(objects,material,update,pointResources=[]){
+  function spatialResource(objects,material,update,pointResources=[],retained=null){
     let enabled=true,disposed=false;
     const materials=new Set(objects.flatMap(mesh=>Array.isArray(mesh.material)?mesh.material:[mesh.material]));
     if(material)materials.add(material);
-    const bytes=objects.reduce((sum,mesh)=>sum+geometryBytes(mesh),0)+pointResources.reduce((sum,row)=>sum+row.bytes,0);
+    const deviceBytes=objects.reduce((sum,mesh)=>sum+geometryBytes(mesh),0)+pointResources.reduce((sum,row)=>sum+row.bytes,0);
+    const buffers=renderPacketBuffers([retained,...objects.flatMap(mesh=>[...Object.values(mesh.geometry.attributes).map(attribute=>attribute.array),mesh.geometry.index?.array]),...pointResources.map(row=>row.texture.image.data)]);
     const resource={
-      material,bytes,update,
+      material,bytes:deviceBytes,update,lastUsed:performance.now(),buffers,deviceBytes,
+      footprint:()=>({buffers,extraBytes:deviceBytes}),
+      setOrder(order,span=0){objects.forEach((mesh,i)=>{mesh.renderOrder=order+span*i/Math.max(1,objects.length);});},
       get visible(){return enabled;},
       set visible(value){
         if(disposed||enabled===Boolean(value))return;
         enabled=Boolean(value);
-        if(enabled)activeSpatialResources.add(resource);
+        if(enabled){resource.lastUsed=performance.now();activeSpatialResources.add(resource);}
         else{activeSpatialResources.delete(resource);for(const mesh of objects)mesh.visible=false;}
       },
       dispose(){
@@ -190,40 +195,50 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     // Include the end cap and normal expansion in both screen axes.
     return 2*(radius+margin.value)+1;
   }
+  const admitNone=()=>false;
+  const countryOwnerVisible=slot=>slot<0||countryVisible[slot]===1;
+  const borderOwnerVisible=slot=>slot<0||borderBytes[slot]!==0;
   function spatialStrokes(packet,options){
-    const ranges=partitionGlobeStrokes(packet,strokePartitionOptions);
-    const pointResources=[];
-    const sharePoints=packet.points.length/6<=maxTexturePoints;
-    const shared=sharePoints&&ranges.length?createGlobeStrokePointTexture(THREE,packet.points,maxPointTextureSize):null;
-    if(shared)pointResources.push(shared);
-    let material,maxWidth=1;
+    const pointResources=[],textures=new Map(),drawParts=[];
+    let maxWidth=1;
     if(packet.widths.length){
       maxWidth=1.5;
       for(const width of packet.widths)maxWidth=Math.max(maxWidth,width);
     }
-    const objects=ranges.map(({first,end})=>{
-      const local=shared?globeStrokeRange(packet,first,end):compactGlobeStrokeRange(packet,first,end);
-      const points=shared??createGlobeStrokePointTexture(THREE,local.points,maxPointTextureSize);
-      if(!shared)pointResources.push(points);
-      const mesh=createThreeGlobeStrokes(THREE,{...options,packet:local,pointUniforms:points.uniforms,sharedMaterial:shared?material:undefined});
-      if(shared)material??=mesh.material;
-      return mesh;
-    });
-    let previousCuller=null,previousZoom=null,admitted=[];
+    for(const {packet:part,index} of packet.spatialParts){
+      let points=textures.get(part.points);
+      if(!points){points=createGlobeStrokePointTexture(THREE,part.points,maxPointTextureSize);textures.set(part.points,points);pointResources.push(points);}
+      const output={count:part.count,endpointIndices:new Uint32Array(part.count*2),widths:new Float32Array(part.widths.length),ownerGroups:new Uint16Array(options.hydroUniforms?part.ownerGroups.length:0)};
+      const mesh=createThreeGlobeStrokes(THREE,{...options,packet:output,pointUniforms:points.uniforms});
+      const attributes=Object.values(mesh.geometry.attributes).filter(attribute=>attribute.isInstancedBufferAttribute);
+      for(const attribute of attributes)attribute.setUsage(THREE.DynamicDrawUsage);
+      mesh.geometry.instanceCount=0;
+      drawParts.push({part,index,mesh,output,attributes,selection:createGlobeSpatialSelection(part,index)});
+    }
     const count=packet.count;
-    return spatialResource(objects,material,(getCuller,currentZoom,stats)=>{
-      const cull=getCuller(strokePadding(options,maxWidth)),zoomVisible=currentZoom>=(options.minZoom??-2);
-      if(cull!==previousCuller||zoomVisible!==previousZoom){
-        admitted=ranges.map(range=>zoomVisible&&cull(range.bounds));
-        previousCuller=cull;previousZoom=zoomVisible;
+    return spatialResource(drawParts.map(row=>row.mesh),null,(getCuller,currentZoom,stats)=>{
+      const cull=currentZoom>=(options.minZoom??-2)?getCuller(strokePadding(options,maxWidth)):admitNone;
+      stats.segments+=count;
+      for(const {part,index,mesh,output,attributes,selection} of drawParts){
+        const selected=selection.select(cull,options.baseBorder?borderVisibilityRevision:0,options.baseBorder?borderOwnerVisible:null);
+        stats.ranges+=index.leafCount??index.owners.length;
+        stats.submittedSegments+=selected.count;stats.visibleRanges+=selected.leaves;
+        if(selected.changed&&selected.count){
+          let offset=0;
+          for(let i=0;i<selected.ranges.length;i+=2){
+            const first=selected.ranges[i],end=selected.ranges[i+1];
+            output.endpointIndices.set(part.endpointIndices.subarray(first*2,end*2),offset*2);
+            if(output.widths.length)output.widths.set(part.widths.subarray(first,end),offset);
+            if(output.ownerGroups.length)output.ownerGroups.set(part.ownerGroups.subarray(first,end),offset);
+            offset+=end-first;
+          }
+          for(const attribute of attributes){
+            attribute.clearUpdateRanges();attribute.addUpdateRange(0,selected.count*attribute.itemSize);attribute.needsUpdate=true;
+          }
+        }
+        mesh.geometry.instanceCount=selected.count;mesh.visible=selected.count>0;
       }
-      stats.segments+=count;stats.ranges+=ranges.length;
-      for(let i=0;i<ranges.length;i++){
-        const range=ranges[i],visible=admitted[i];
-        objects[i].visible=visible;
-        if(visible){stats.submittedSegments+=range.end-range.first;stats.visibleRanges++;}
-      }
-    },pointResources);
+    },pointResources,packet);
   }
   function setLayerVisibility(name,visible){
     if(name==='graticule')graticuleVisible=visible;
@@ -241,42 +256,34 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(packet.positions, 3));
     geometry.setAttribute('positionLow', new THREE.BufferAttribute(packet.residuals, 3));
-    geometry.setIndex(new THREE.BufferAttribute(packet.indices, 1));
+    const drawIndices=new Uint32Array(packet.indices.length),drawIndex=new THREE.BufferAttribute(drawIndices,1).setUsage(THREE.DynamicDrawUsage);
+    geometry.setIndex(drawIndex);geometry.setDrawRange(0,0);
     if (packet.slots.length) geometry.setAttribute('objectSlot', new THREE.BufferAttribute(packet.slots, 1));
     const material = new THREE.ShaderMaterial({
       vertexShader: surfaceVertex, fragmentShader: surfaceFragment,
       depthTest: false, depthWrite: false, side: THREE.DoubleSide,
       defines: style==='country'?{COUNTRY_PALETTE:1}:style==='lake'?{HYDRO_PALETTE:1}:{},
       uniforms: { ...cameraUniforms,
-        surfaceColor: { value: new THREE.Color(color) }, objectColors: { value: texture }, objectCount: { value: countryCount }, minZoom: { value: minZoom },...hydroUniforms },
+        surfaceColor: { value: new THREE.Color(color) }, objectColors: { value: texture }, objectSize:{value:new THREE.Vector2(countryWidth,countryHeight)}, minZoom: { value: minZoom },...hydroUniforms },
     });
-    const ranges=partitionGlobeMesh(packet);
-    // One shared vertex/index buffer. Only admitted contiguous index ranges
-    // become draw groups; equal material and object IDs preserve their order.
-    const mesh = new THREE.Mesh(geometry, [material]);
-    mesh.frustumCulled = false;
-    mesh.renderOrder = order;
-    let selected=[],previousCuller=null,previousZoom=null,visibleCount=0;
+    const index=packet.spatial,selection=createGlobeSpatialSelection(packet,index);
+    const mesh=new THREE.Mesh(geometry,material);
+    mesh.frustumCulled=false;mesh.renderOrder=order;
     const resource=spatialResource([mesh],material,(getCuller,currentZoom,stats)=>{
-      const cull=getCuller(0),zoomVisible=currentZoom>=minZoom;
-      if(cull!==previousCuller||zoomVisible!==previousZoom){
-        visibleCount=0;
-        const next=zoomVisible?visibleGlobeMeshRanges(ranges,bounds=>{
-          if(!cull(bounds))return false;
-          visibleCount++;return true;
-        }):[];
-        const changed=next.length!==selected.length||next.some((row,i)=>row.first!==selected[i]?.first||row.end!==selected[i]?.end);
-        if(changed){
-          geometry.clearGroups();
-          for(const {first,end} of next)geometry.addGroup(first*3,(end-first)*3,0);
+      const cull=currentZoom>=minZoom?getCuller(0):admitNone;
+      const selected=selection.select(cull,style==='country'?countryVisibilityRevision:0,style==='country'?countryOwnerVisible:null);
+      if(selected.changed&&selected.count){
+        let offset=0;
+        for(let i=0;i<selected.ranges.length;i+=2){
+          const first=selected.ranges[i]*3,end=selected.ranges[i+1]*3;
+          drawIndices.set(packet.indices.subarray(first,end),offset);offset+=end-first;
         }
-        selected=next;previousCuller=cull;previousZoom=zoomVisible;
+        drawIndex.clearUpdateRanges();drawIndex.addUpdateRange(0,selected.count*3);drawIndex.needsUpdate=true;
       }
-      mesh.visible=selected.length>0;
-      stats.triangles+=packet.indices.length/3;stats.ranges+=ranges.length;
-      for(const {first,end} of selected)stats.submittedTriangles+=end-first;
-      stats.visibleRanges+=visibleCount;
-    });
+      geometry.setDrawRange(0,selected.count*3);mesh.visible=selected.count>0;
+      stats.triangles+=index.count;stats.ranges+=index.leafCount??index.owners.length;
+      stats.submittedTriangles+=selected.count;stats.visibleRanges+=selected.leaves;
+    },[],packet);
     if(name)addLayer(name,resource);
     return resource;
   }
@@ -287,7 +294,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     style:riverStyle,cameraUniforms,viewport,margin,multisampling,hydroUniforms});
   function attachRiverDetail(row,packet){
     const resource=riverMesh(packet,row.minZoom);
-    return {residentBytes:renderPacketBytes(packet)+resource.bytes*2,setVisible:visible=>{resource.visible=visible;},dispose:()=>resource.dispose()};
+    resource.externalOwner=true;
+    return {residentBytes:[...resource.buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0)+resource.deviceBytes,footprint:resource.footprint,setVisible:visible=>{resource.visible=visible;},dispose:()=>resource.dispose()};
   }
   const strokeOptions={style:palette.strokes.country,cameraUniforms,viewport,margin,multisampling};
   let graticule=null,graticuleVisible=true;
@@ -298,7 +306,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     addLayer('graticule',graticule);graticule.visible=graticuleVisible;
   }
   if(packets.graticule)installGraticule(packets.graticule);
-  function meshBytes(resource){return resource.bytes;}
   function releaseMesh(resource){resource.dispose();}
   function useMesh(role,identity,prepare){
     const key=role+':'+identity;
@@ -306,7 +313,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if(existing)return existing.mesh;
     const mesh=prepare();
     // Buffer attributes retain their CPU arrays alongside the device copy.
-    residentMeshes.set(key,{mesh,bytes:meshBytes(mesh)*2});residencyDirty=true;
+    residentMeshes.set(key,{mesh,bytes:[...mesh.buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0)+mesh.deviceBytes});residencyDirty=true;
     return mesh;
   }
   function activatePhysicalContext(parts){
@@ -341,15 +348,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     }
   }
   const borderBytes=new Uint8Array(Math.max(1,packets.borderGroupCount)).fill(255);
-  const borderTexture=new THREE.DataTexture(borderBytes,borderBytes.length,1,THREE.RedFormat);
-  borderTexture.needsUpdate=true;
+
   let baseBordersInstalled=false;
   function installBaseBorders(packet){
     if(baseBordersInstalled)return;
     if(packet.count){
-      const resource=spatialStrokes(packet,{...strokeOptions,order:5,
-        visibilityUniforms:{groupVisibility:{value:borderTexture},groupCount:{value:borderBytes.length}},
-      });
+      const resource=spatialStrokes(packet,{...strokeOptions,order:5,baseBorder:true});
       addLayer('borders',resource);resource.visible=showBorders;
     }
     baseBordersInstalled=true;
@@ -358,13 +362,11 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
 
   function createOutlines({packet,owners}){
     const index=indexGlobeOutlineRanges(packet,owners);
-    const partitions=partitionGlobeStrokes(packet,strokePartitionOptions);
+    const partitions=packet.spatialParts;
     const outlineStyles=Array.from({length:5},()=>new THREE.Vector2());
     const attributeNames=['endpointIndices','ownerGroup'];
     const chunks=new Map();
-    let previousGroups=new Map(),activeChunks=new Set();
-    const sameRanges=(a,b)=>a.length===b.length&&a.every((row,i)=>
-      row.first===b[i].first&&row.end===b[i].end&&row.code===b[i].code);
+    let previousGroups=new Map(),activeChunks=new Set(),groupRevision=0;
     function ensureCapacity(chunk,partition,count){
       if(chunk.capacity>=count)return;
       chunk.resource?.dispose();
@@ -376,14 +378,27 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       const mesh=createThreeGlobeStrokes(THREE,{...options,packet:buffer,pointUniforms:points.uniforms});
       for(const name of attributeNames)mesh.geometry.getAttribute(name).setUsage(THREE.DynamicDrawUsage);
       mesh.geometry.instanceCount=0;
+      const selection=createGlobeSpatialSelection(chunk.source,partition.index);
       const resource=spatialResource([mesh],mesh.material,(getCuller,_zoom,stats)=>{
-        const count=mesh.geometry.instanceCount;
-        mesh.visible=count>0&&getCuller(strokePadding(options,1))(partition.bounds);
-        stats.segments+=count;stats.ranges++;
-        if(mesh.visible){stats.submittedSegments+=count;stats.visibleRanges++;}
-      },[points]);
+        const selected=selection.select(getCuller(strokePadding(options,1)),chunk.revision,group=>chunk.groups.has(group));
+        if(selected.changed&&selected.count){
+          let offset=0;
+          for(let i=0;i<selected.ranges.length;i+=2){
+            const first=selected.ranges[i],end=selected.ranges[i+1];
+            buffer.endpointIndices.set(chunk.source.endpointIndices.subarray(first*2,end*2),offset*2);
+            for(let id=first;id<end;id++)buffer.ownerGroups[offset++]=chunk.groups.get(chunk.source.ownerGroups[id])??0;
+          }
+          for(const name of attributeNames){
+            const attribute=mesh.geometry.getAttribute(name);
+            attribute.clearUpdateRanges();attribute.addUpdateRange(0,selected.count*attribute.itemSize);attribute.needsUpdate=true;
+          }
+        }
+        mesh.geometry.instanceCount=selected.count;mesh.visible=selected.count>0;
+        stats.segments+=chunk.selectedCount;stats.ranges+=partition.index.leafCount;
+        stats.submittedSegments+=selected.count;stats.visibleRanges+=selected.leaves;
+      },[points],chunk.source);
+      resource.outlineOwner=true;
       chunk.capacity=capacity;chunk.buffer=buffer;chunk.mesh=mesh;chunk.resource=resource;
-      chunk.ranges=[];
     }
     function hide(){for(const chunk of activeChunks)chunk.resource.visible=false;}
     function paint(roles,styles,color){
@@ -392,6 +407,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       if(!groups.size){hide();return;}
       const changed=groups.size!==previousGroups.size||[...groups].some(([group,code])=>previousGroups.get(group)!==code);
       if(changed){
+        groupRevision++;
         const ranges=globeOutlineRanges(index,groups),next=new Set();
         let cursor=0;
         for(let part=0;part<partitions.length&&cursor<ranges.length;part++){
@@ -404,21 +420,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
           }
           if(!local.length)continue;
           let chunk=chunks.get(part);
-          if(!chunk){chunk={capacity:0,ranges:[]};chunks.set(part,chunk);}
+          if(!chunk){chunk={capacity:0};chunks.set(part,chunk);}
           const count=local.reduce((sum,{first,end})=>sum+end-first,0);
           ensureCapacity(chunk,partition,count);
-          if(!sameRanges(local,chunk.ranges)){
-            let offset=0;
-            for(const {first,end,code} of local){
-              chunk.buffer.endpointIndices.set(chunk.source.endpointIndices.subarray((first-partition.first)*2,(end-partition.first)*2),offset*2);
-              chunk.buffer.ownerGroups.fill(code,offset,offset+end-first);offset+=end-first;
-            }
-            for(const name of attributeNames){
-              const attribute=chunk.mesh.geometry.getAttribute(name);
-              attribute.clearUpdateRanges();attribute.addUpdateRange(0,count*attribute.itemSize);attribute.needsUpdate=true;
-            }
-            chunk.mesh.geometry.instanceCount=count;chunk.ranges=local;
-          }
+          chunk.groups=groups;chunk.revision=groupRevision;chunk.selectedCount=count;
           next.add(chunk);
         }
         for(const chunk of activeChunks)if(!next.has(chunk))chunk.resource.visible=false;
@@ -430,10 +435,18 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       }
     }
     const indexBytes=owners.reduce((sum,slots)=>sum+slots.length*8,0)
-      +index.rangesByGroup.reduce((sum,ranges)=>sum+ranges.length*32,0)+partitions.length*80;
+      +index.rangesByGroup.reduce((sum,ranges)=>sum+ranges.length*32,0);
     function bytes(){return renderPacketBytes(packet)+indexBytes+[...chunks.values()].reduce((sum,chunk)=>sum+chunk.resource.bytes*2+chunk.source.points.byteLength+chunk.source.endpointIndices.byteLength,0);}
     function dispose(){for(const chunk of chunks.values())chunk.resource?.dispose();chunks.clear();activeChunks.clear();previousGroups.clear();}
-    return {paint,hide,bytes,dispose};
+    function footprint(){
+      const buffers=renderPacketBuffers(packet);let extraBytes=indexBytes;
+      for(const chunk of chunks.values())if(chunk.resource){
+        for(const buffer of chunk.resource.buffers)buffers.add(buffer);
+        extraBytes+=chunk.resource.deviceBytes;
+      }
+      return {buffers,extraBytes};
+    }
+    return {paint,hide,bytes,dispose,footprint,lastUsed:performance.now()};
   }
   const outlineCache=new Map();
   let paintedOutlines=new Set();
@@ -451,7 +464,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       local.set(slot,code);
     }
     for(const target of paintedOutlines)if(!targets.has(target))target.hide();
-    for(const [target,local] of targets)target.paint(local,styles,color);
+    for(const [target,local] of targets){target.lastUsed=performance.now();target.paint(local,styles,color);}
     paintedOutlines=new Set(targets.keys());residencyDirty=true;
   }
   function activateDatedView(view,parts){
@@ -465,35 +478,53 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         mesh:useMesh('dated-country',key,()=>register(null,mesh.packet,palette.defaultLand,1,-2,'country')),
       });
       const row=datedCountries.get(slot);
+      row.mesh.setOrder(1+.5*(slot+1)/(countryCount+1));
       touchRenderCache(residentMeshes,'dated-country:'+key);
       return row;
     });
-    activeBorders=parts?.borderBatch?[useMesh('dated-border-batch',parts.borderBatch.key,()=>spatialStrokes(parts.borderBatch.packet,{...strokeOptions,order:5}))]:[];
+    activeBorders=(parts?.borderBatches??[]).map(({key,packet})=>useMesh('dated-border-batch',key,()=>spatialStrokes(packet,{...strokeOptions,order:5})));
     for(const row of activeCountries)row.mesh.visible=true;
-    for(const mesh of activeBorders)mesh.visible=showBorders;
+    for(const [i,mesh] of activeBorders.entries()){mesh.setOrder(5+.4*(i+1)/(activeBorders.length+1),.4/(activeBorders.length+1));mesh.visible=showBorders;}
     borderBytes.fill(255);
     for(const slot of view?.hiddenBorders??[])borderBytes[slot]=0;
-    borderTexture.needsUpdate=true;
+    borderVisibilityRevision++;
   }
 
   // Only called after successful visual publication. Never dispose the
   // previously published scene while a replacement is still being drawn.
+  function activeMeshesNow(){return new Set([...activeCountries.map(row=>row.mesh),...activeBorders,...Object.values(physicalLayers??{}).flat()]);}
+  function evictMesh(key,entry){
+    for(const [slot,row] of datedCountries)if(row.mesh===entry.mesh)datedCountries.delete(slot);
+    residentMeshes.delete(key);releaseMesh(entry.mesh);
+  }
+  function memoryEntries(){
+    const rows=[],protectedMeshes=activeMeshesNow(),owned=new Set();
+    for(const [key,entry] of residentMeshes){
+      owned.add(entry.mesh);
+      rows.push({...entry.mesh.footprint(),lastUsed:entry.mesh.lastUsed,protected:protectedMeshes.has(entry.mesh),evict:()=>evictMesh(key,entry)});
+    }
+    for(const [slot,entry] of outlineCache)rows.push({...entry.footprint(),lastUsed:entry.lastUsed,protected:paintedOutlines.has(entry),evict:()=>{outlineCache.delete(slot);entry.dispose();}});
+    for(const resource of spatialResources)if(!owned.has(resource)&&!resource.outlineOwner&&!resource.externalOwner)rows.push({...resource.footprint(),protected:true});
+    rows.push({buffers:renderPacketBuffers([channels,countryVisible,hydroBytes,borderBytes]),extraBytes:channels.byteLength+hydroBytes.byteLength,protected:true});
+    return [...rows,...labels.memoryEntries()];
+  }
   function trimResidency(){
-    labels.trim();
-    if(!residencyDirty)return;
+    const labelsChanged=labels.trim();
+    if(!residencyDirty)return labelsChanged;
     residencyDirty=false;
-    const activeMeshes=new Set([...activeCountries.map(row=>row.mesh),...activeBorders,...Object.values(physicalLayers??{}).flat()]);
+    const activeMeshes=activeMeshesNow();
     const protectedMeshes=new Set();
     for(const [key,entry] of residentMeshes)if(activeMeshes.has(entry.mesh))protectedMeshes.add(key);
-    meshResidentBytes=trimRenderCache(residentMeshes,protectedMeshes,cacheBudget.residentMeshBytes,entry=>entry.bytes,(_key,entry)=>{
+    trimRenderCache(residentMeshes,protectedMeshes,cacheBudget.residentMeshBytes,entry=>entry.bytes,(_key,entry)=>{
       for(const [slot,row] of datedCountries)if(row.mesh===entry.mesh)datedCountries.delete(slot);
       releaseMesh(entry.mesh);
     },{entryLimit:512});
     const protectedOutlines=new Set();
     for(const [slot,resource] of outlineCache)if(paintedOutlines.has(resource))protectedOutlines.add(slot);
-    outlineResidentBytes=trimRenderCache(outlineCache,protectedOutlines,cacheBudget.outlineBytes,entry=>entry.bytes(),(_slot,entry)=>entry.dispose(),{entryLimit:128});
+    trimRenderCache(outlineCache,protectedOutlines,cacheBudget.outlineBytes,entry=>entry.bytes(),(_slot,entry)=>entry.dispose(),{entryLimit:128});
+    return true;
   }
-  function cacheStats(){return {meshes:residentMeshes.size,meshResidentBytes,outlines:outlineCache.size,outlineResidentBytes};}
+  function cacheStats(){return {meshes:residentMeshes.size,meshResidentBytes:[...residentMeshes.values()].reduce((sum,row)=>sum+row.bytes,0),outlines:outlineCache.size,outlineResidentBytes:[...outlineCache.values()].reduce((sum,row)=>sum+row.bytes(),0)};}
 
   function resize(width, height, dpr) {
     viewport.value.set(width, height);
@@ -528,11 +559,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     for(const entry of outlineCache.values())entry.dispose();
     outlineCache.clear();paintedOutlines.clear();residentMeshes.clear();datedCountries.clear();
     for(const resource of [...spatialResources])resource.dispose();
-    layers.clear();waterMeshes.clear();
+    layers.clear();waterMeshes.clear();activeCountries=[];activeBorders=[];physicalLayers=activePhysical=null;graticule=null;
     texture.dispose();hydroTexture.dispose();
-    borderTexture.dispose();
     renderer.dispose();
   }
-  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installGraticule,hasGraticule:()=>graticule!==null,installBaseBorders,hasBaseBorders:()=>baseBordersInstalled,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateDatedView,activatePhysicalContext,trimResidency,cacheStats,labels,dispose,
+  return Object.freeze({resize,draw,setCountryPaint,restoreCountryPaint,installGraticule,hasGraticule:()=>graticule!==null,installBaseBorders,hasBaseBorders:()=>baseBordersInstalled,installOutlines,hasOutlines:slot=>outlineCache.has(slot),setOutlinePaint,setHydroPaint,setLayerVisibility,attachRiverDetail,activateDatedView,activatePhysicalContext,trimResidency,cacheStats,memoryEntries,labels,dispose,
     drawCalls:()=>renderer.info.render.calls,spatialStats:()=>({...spatialStats})});
 }

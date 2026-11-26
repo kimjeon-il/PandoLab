@@ -12,7 +12,7 @@ export function selectGlobeRiverChunks(chunks,bounds,zoom){
 /** Retain prepared line buffers for the accepted viewport and recent visits. */
 export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onError}){
  const entries=new Map();
- let wanted=new Set(),residentBytes=0;
+ let wanted=new Set(),published=new Set(),residentBytes=0;
  function discard(id,entry){
   entries.delete(id);
   if(!entry.resource){entry.controller.abort();return;}
@@ -22,7 +22,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
  function trim(){
   for(const [id,entry] of entries){
    if(residentBytes<=byteBudget)return;
-   if(!wanted.has(id))discard(id,entry);
+   if(!wanted.has(id)&&!published.has(id))discard(id,entry);
   }
  }
  async function prepare(row,entry){
@@ -30,7 +30,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
    const packet=await load(row,entry.controller.signal);
    if(entries.get(row.id)!==entry)return;
    entry.resource=attach(row,packet);
-   entry.packet=packet;entry.bytes=entry.resource.residentBytes;
+   entry.packet=packet;entry.bytes=entry.resource.residentBytes;entry.lastUsed=performance.now();
    residentBytes+=entry.bytes;
    trim();invalidate();
   }catch(error){
@@ -52,7 +52,7 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
    const cached=entries.get(row.id);
    if(cached){
     if(!previous.has(row.id)){
-     cached.resource?.setVisible(true);
+     cached.resource?.setVisible(true);cached.lastUsed=performance.now();
      entries.delete(row.id);entries.set(row.id,cached);
     }
     continue;
@@ -63,13 +63,15 @@ export function createGlobeRiverDetail({byteBudget,load,attach,invalidate,onErro
   trim();return true;
  }
  const activeEntries=()=>[...wanted].map(id=>entries.get(id)).filter(entry=>entry?.resource);
+ function commit(active){const next=new Set(active.map(entry=>entry.row.id)),changed=next.size!==published.size||[...next].some(id=>!published.has(id));published=next;const before=residentBytes;trim();return changed||before!==residentBytes;}
+ function memoryEntries(){return [...entries].filter(([,entry])=>entry.resource).map(([id,entry])=>({...entry.resource.footprint(),lastUsed:entry.lastUsed,protected:wanted.has(id)||published.has(id),evict:()=>discard(id,entry)}));}
  function stats(){
   const active=activeEntries();
   return {requestedChunks:wanted.size,visibleChunks:active.length,activeSegments:active.reduce((sum,row)=>sum+row.packet.count,0),residentBytes};
  }
  function dispose(){
   for(const [id,entry] of entries)discard(id,entry);
-  wanted.clear();
+  wanted.clear();published.clear();
  }
- return Object.freeze({update,stats,activeEntries,dispose});
+ return Object.freeze({update,commit,stats,activeEntries,memoryEntries,dispose});
 }

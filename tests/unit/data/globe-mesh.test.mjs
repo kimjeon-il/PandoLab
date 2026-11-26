@@ -180,7 +180,7 @@ test('dated physical contexts reuse unchanged river packets while changing water
   const context=(identity,water,rivers=asset('rivers'))=>({identity,rivers,
     waters:[{id:'waterbody:lake',spec:water}],lakes:[],riverDetail:[],riverMinZoom:2});
   const modern=asset('modern-water'),datedWater=asset('dated-water');
-  const indexedWater={...modern,pickGrid:asset('water-pick')};
+  const indexedWater=asset('modern-water-alias',modern.sha256);
   const assets=createGlobePhysicalAssets([
     context('current',modern),
     context('dated',datedWater,asset('river-alias','rivers')),
@@ -193,9 +193,9 @@ test('dated physical contexts reuse unchanged river packets while changing water
   ]);
   assert.equal(current.rivers,dated.rivers);
   assert.notEqual(current.waters[0].mesh,dated.waters[0].mesh);
-  assert.notEqual(current.waters[0].mesh,indexed.waters[0].mesh);
+  assert.equal(current.waters[0].mesh,indexed.waters[0].mesh);
   assert.equal(dated.waters[0].id,'waterbody:lake');
-  assert.deepEqual(calls.sort(),['dated-water','modern-water','modern-water','rivers']);
+  assert.deepEqual(calls.sort(),['dated-water','modern-water','rivers']);
   assert.equal(await assets.prepare(assets.plan('dated')),dated);
 });
 
@@ -260,21 +260,27 @@ test('dated physical cache drops inactive contexts without releasing a shared ac
   assets.dispose();
 });
 
-test('spatial mesh and stroke ranges preserve every primitive and original owner order', async () => {
-  const {partitionGlobeMesh,partitionGlobeStrokes,globeStrokeRange,visibleGlobeMeshRanges}=await import('../../../src/rendering/globe-spatial-partition.js');
-  const options={minPrimitives:1,maxRanges:16,span:.1};
+test('sparse spatial leaves separate alternating hemispheres and preserve draw order',async()=>{
+  const {buildGlobeSpatialIndex,createGlobeSpatialSelection,prepareGlobeSpatialPacket}=await import('../../../src/rendering/globe-spatial-partition.js');
+  const coordinates=[],owners=[],widths=[];
+  for(let i=0;i<1000;i++){
+    const lon=i%2?180:0;coordinates.push(lon,0,lon+.1,0);owners.push(i%3);widths.push(1);
+  }
+  const stroke=decodeGlobeStrokes(encodeGlobeStrokes(coordinates,null,widths,Uint16Array.from(owners)));
+  const index=buildGlobeSpatialIndex(stroke),selection=createGlobeSpatialSelection(stroke,index);
+  assert.deepEqual([...index.order].sort((a,b)=>a-b),Array.from({length:1000},(_,i)=>i));
+  const near=(bounds,at)=>bounds[at+3]>0;
+  const selected=selection.select(near,0);
+  assert.equal(selected.count,500);
+  assert.deepEqual([...selected.ranges],Array.from({length:500},(_,i)=>[2*i,2*i+1]).flat());
+  assert.equal(selection.select(near,0).changed,false);
+  assert.equal(selection.select(near,1,owner=>owner===0).count,167);
+  const prepared=prepareGlobeSpatialPacket(stroke);
+  assert.equal(prepared.spatialParts[0].packet.points,stroke.points);
   const country=(id,lon)=>({id,geometry:{id,version:1},vertices:Float64Array.of(lon,0,lon+.1,0,lon,.1),indices:Uint32Array.of(0,1,2)});
-  const mesh=decodeGlobeMesh(combineGlobeCountryMeshes([country('a',0),country('b',90),country('c',-90)]).buffer);
-  const ranges=partitionGlobeMesh(mesh,options);
-  assert.deepEqual(ranges.map(({first,end})=>[first,end]),[[0,1],[1,2],[2,3]]);
-  assert.deepEqual(visibleGlobeMeshRanges(ranges,()=>true),[{first:0,end:3}]);
-  assert.deepEqual(visibleGlobeMeshRanges(ranges,bounds=>bounds[1]<.5),[{first:0,end:1},{first:2,end:3}]);
-  const stroke=decodeGlobeStrokes(encodeGlobeStrokes([0,0,.1,0,90,0,90.1,0,-90,0,-89.9,0],null,[1,2,3],Uint16Array.of(4,5,6)));
-  const pieces=partitionGlobeStrokes(stroke,options).map(({first,end})=>globeStrokeRange(stroke,first,end));
-  assert.deepEqual(pieces.flatMap(piece=>[...piece.ownerGroups]),[4,5,6]);
-  assert.deepEqual(pieces.flatMap(piece=>[...piece.widths]),[1,2,3]);
-  assert.deepEqual(pieces.flatMap(piece=>[...piece.endpointIndices]),[...stroke.endpointIndices]);
-  assert.ok(pieces.every(piece=>piece.points===stroke.points&&piece.endpointIndices.buffer===stroke.endpointIndices.buffer));
+  const mesh=prepareGlobeSpatialPacket(decodeGlobeMesh(combineGlobeCountryMeshes([country('a',0),country('b',90),country('c',-90)]).buffer));
+  const fill=createGlobeSpatialSelection(mesh,mesh.spatial);
+  assert.deepEqual([...fill.select(()=>true,0,slot=>slot!==1).ranges],[0,1,2,3]);
 });
 
 test('obsolete packet consumers cancel only their own reads until the final waiter leaves',async()=>{
@@ -372,4 +378,28 @@ test('indexed point texture keeps six coordinate words per point and pads only t
   assert.deepEqual([...resource.texture.image.data.subarray(0,points.length)],[...points]);
   assert.equal(resource.uniforms.pointTextureWidth.value,resource.texture.image.width);
   assert.equal(resource.bytes,resource.texture.image.data.byteLength);
+});
+
+test('global residency counts shared CPU backing stores once and protects published entries',async()=>{
+  const {createRenderResidencyBudget}=await import('../../../src/rendering/render-cache-budget.js');
+  const shared=new ArrayBuffer(16),standby=new ArrayBuffer(8);
+  let evicted=false;
+  const budget=createRenderResidencyBudget(24);
+  budget.register(()=>[{buffers:new Set([shared]),protected:true,extraBytes:4},{buffers:new Set([shared]),protected:true,extraBytes:4},
+    ...(!evicted?[{buffers:new Set([standby]),protected:false,lastUsed:0,evict:()=>{evicted=true;}}]:[])]);
+  const stats=budget.trim();
+  assert.equal(stats.cpuBytes,16);assert.equal(stats.residentBytes,24);assert.equal(evicted,true);
+});
+
+test('load gate bounds queued work and cancels a superseded waiter',async()=>{
+  const {createRenderLoadGate}=await import('../../../src/rendering/render-cache-budget.js');
+  const gate=createRenderLoadGate({concurrency:2,byteBudget:10});
+  const first=Promise.withResolvers(),controller=new AbortController();
+  const running=gate.run({bytes:8},()=>first.promise);
+  const cancelled=gate.run({bytes:5,signal:controller.signal},()=>assert.fail('cancelled job ran'));
+  controller.abort();await assert.rejects(cancelled,{name:'AbortError'});
+  const next=gate.run({bytes:3},()=>42);
+  assert.equal(gate.stats().active,1);
+  first.resolve(true);await running;assert.equal(await next,42);
+  assert.equal(gate.stats().peakBytes,8);gate.dispose();
 });

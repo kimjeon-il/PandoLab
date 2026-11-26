@@ -3,7 +3,7 @@ import { runInNewContext } from 'node:vm';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { globeVector } from '../../src/rendering/globe-camera.js';
 import {encodeGlobeHistoricalViews} from '../../src/rendering/globe-history-index.js';
-import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes, GLOBE_MESH_HEADER_BYTES, GLOBE_MESH_MAGIC,
+import { decodeGlobeMesh, packGlobeMesh, GLOBE_MESH_HEADER_BYTES, GLOBE_MESH_MAGIC,
   createGlobeStrokePointTable, encodeIndexedGlobeStrokes, globeTerritoryKey } from '../../src/rendering/globe-mesh.js';
 import { decodePolygonMesh } from '../../src/rendering/polygon-mesh-codec.js';
 import { applyPreparedMeshDelta, preparedMeshDeltaLayout } from '../../src/data/prepared-mesh-delta.js';
@@ -14,7 +14,6 @@ import { readBuiltinGeometryRows } from './builtin-geometry-packs.mjs';
 import { validateBuiltinReadIndex } from '../../src/data/builtin-country-files.js';
 import { resolveBuiltinWorldGeometry } from '../../src/data/builtin-world-loader.js';
 import { compareTemporalKeys, parseTemporal, temporalFollowingDay } from '../../src/document/temporal.js';
-import { buildGlobePickGrid, buildGlobeStrokePickGrid } from './globe-pick-grid.mjs';
 import { coordinateBounds } from '../../src/geometry/coordinate-bounds.js';
 import { multiCoordinates } from '../../src/geometry/polygon-geometry-utils.js';
 import { territorialLabelShortSide } from '../../src/rendering/label-layout.js';
@@ -362,12 +361,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     return decodePolygonMesh(packet, { algorithmVersion: prepared.algorithmVersion, includeStrokeEndpoints: false });
   }
   const emitPackedMesh = (buffer, dir) => emit(packGlobeMesh(buffer), dir, 7);
-  const withPickGrid = (buffer, dir = '', emitMesh = emit) => ({
-    ...emitMesh(buffer, dir),
-    pickGrid: emit(buildGlobePickGrid(decodeGlobeMesh(buffer)), dir + 'pick/'),
-  });
-  const withStrokePickGrid=(buffer,dir='')=>({...emit(buffer,dir),
-    pickGrid:emit(buildGlobeStrokePickGrid(decodeGlobeStrokes(buffer)),'hydro-pick/')});
+
 
   await import('../../src/rendering/workers/polygon-mesh-core.js');
   const engine = globalThis.PandoLabPolygonMeshCore;
@@ -392,7 +386,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const baseMeshSpecs = readCountryMeshInputs(features);
   const preparedCountries = combineGlobeCountryMeshes(features.map((feature,index)=>countryMeshRow(feature,baseMeshSpecs[index])));
   const {countrySlots} = preparedCountries;
-  const countries = withPickGrid(preparedCountries.buffer, '', emitPackedMesh);
+  const countries = emitPackedMesh(preparedCountries.buffer, '');
   const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors,features);
   const {buffer:outlineBuffer,owners:outlineOwners} = buildGlobeOutlineStrokes(features.map(feature=>feature.geometry));
   const outlines = emit(outlineBuffer,'outlines/');
@@ -431,7 +425,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       const asset=row.assets.asset,id=row.objectRef.id;
       if(!waterParts.has(asset.sha256)){
         const geometry=await readGeometry(asset),{positions,indices}=physicalMesh(geometry,id);
-        waterParts.set(asset.sha256,{spec:withPickGrid(encodeGlobeMesh({coordinates:positions,indices})),bounds:coordinateBounds(geometry.coordinates)});
+        waterParts.set(asset.sha256,{spec:emit(encodeGlobeMesh({coordinates:positions,indices})),bounds:coordinateBounds(geometry.coordinates)});
       }
       const {spec,bounds}=waterParts.get(asset.sha256);
       const {entityKind:category,layerId:layer_id,name,source,sourceId}=row.identity;
@@ -445,14 +439,14 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       for(const [minZoom,features] of lakesByZoom){
         const mesh=engine.buildPolygonMeshFeatures(features,{validate:true});
         const objectSlots=features.map(hydroSlot),slots=Uint16Array.from(mesh.countryIndices,slot=>objectSlots[slot]);
-        const spec=withPickGrid(encodeGlobeMesh({coordinates:mesh.positions,indices:mesh.triangleIndices,slots,units:1e-6}));
+        const spec=emit(encodeGlobeMesh({coordinates:mesh.positions,indices:mesh.triangleIndices,slots,units:1e-6}));
         lakes.push({spec,minZoom});
       }
       const riverDetail=detail.map(({buffer,...row})=>{
-        const spec=withStrokePickGrid(buffer,'river-detail/');
+        const spec=emit(buffer,'river-detail/');
         return {...row,id:row.id+':'+spec.sha256,spec};
       });
-      hydroParts.set(mask,{lakes,rivers:withStrokePickGrid(base),riverDetail,riverMinZoom});
+      hydroParts.set(mask,{lakes,rivers:emit(base),riverDetail,riverMinZoom});
     }
     const descriptor={identity,waters,...hydroParts.get(mask)};
     physicalContexts.set(identity,descriptor);
@@ -490,7 +484,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     const extraOutlines=buildGlobeOutlineStrokes([feature.geometry],slot);
     const anchors={[feature.id]:{coordinates:computeLabelAnchor(feature)}};
     return {...packet.countrySlots[0],label:countryLabelMetadata(decodeGlobeMesh(packet.buffer),packet.countrySlots,anchors,[feature])[feature.id]??null,
-      countries:withPickGrid(packet.buffer,historyDirectory,emitPackedMesh),outlines:emit(extraOutlines.buffer,historyDirectory+'outlines/'),outlineOwners:extraOutlines.owners};
+      countries:emitPackedMesh(packet.buffer,historyDirectory),outlines:emit(extraOutlines.buffer,historyDirectory+'outlines/'),outlineOwners:extraOutlines.owners};
   });
   // Advance the same incremental boundary preparation as the Viewer worker.
   // The partition output only re-encodes owner groups touched by changed shapes.

@@ -6,7 +6,7 @@ import {renderCacheBudget} from './render-cache-budget.js';
 export const COUNTRY_LABEL_MIN_ZOOM=3;
 const fontSize=56, outlineRange=7, padding=outlineRange+2, atlasSize=2048;
 
-export function placeGlobeLabels(candidates,camera,viewport,previous) {
+export function placeGlobeLabels(candidates,camera,viewport,previous,onGrid=null) {
   const placed=[],cells=new Map();
   // Retain greedy priority and hysteresis. Inspect only occupied screen
   // cells touched by the candidate (including its existing gap).
@@ -47,6 +47,7 @@ export function placeGlobeLabels(candidates,camera,viewport,previous) {
       bucket.push(row);return false;
     });
   }
+  onGrid?.(cells,columns,cellSize);
   return placed;
 }
 
@@ -136,7 +137,8 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport,by
   const context=raster.getContext('2d',{willReadFrequently:true});
   const pages=[],cache=new Map();
   const textColor=new THREE.Color(palette.text),haloColor=new THREE.Color(0xffffff);
-  let candidates=[],placed=[],previous=new Set(),lastCamera=null,clock=0,cacheDirty=true;
+  let candidates=[],placed=[],previous=new Set(),lastCamera=null,cacheDirty=true;
+  let candidateSignature=null,hitSnapshot=()=>null;
 
   function addPage(place){
     const pixels=new Uint8Array(atlasSize*atlasSize), values=new Float32Array(capacity*8);
@@ -153,7 +155,7 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport,by
         textColor:{value:textColor},haloColor:{value:haloColor}}});
     const mesh=new THREE.Mesh(geometry,material);
     mesh.frustumCulled=false;mesh.renderOrder=7;geometry.instanceCount=0;scene.add(mesh);
-    const page={pixels,values,atlas,boxes,mesh,place,x:0,y:0,rowHeight:0,count:0,keys:new Set(),lastUsed:++clock,retired:false};
+    const page={pixels,values,atlas,boxes,mesh,place,x:0,y:0,rowHeight:0,count:0,keys:new Set(),lastUsed:performance.now(),retired:false};
     pages.push(page);cacheDirty=true;return page;
   }
 
@@ -209,14 +211,18 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport,by
     candidates=candidates.map(row=>({...row,...cache.get(row.atlasKey)}));
   }
   function setCandidates(rows){
-    candidates=orderGlobeLabels(rows).map(({lines,...label})=>({...label,...prepareText(lines,Boolean(label.place),label.marker??'')}));
+    const ordered=orderGlobeLabels(rows);
+    const signature=ordered.map(row=>JSON.stringify(row));
+    if(candidateSignature&&signature.length===candidateSignature.length&&signature.every((value,index)=>value===candidateSignature[index]))return false;
+    candidateSignature=signature;
+    candidates=ordered.map(({lines,...label})=>({...label,...prepareText(lines,Boolean(label.place),label.marker??'')}));
     const current=new Set(candidates.map(row=>row.page));
     if(current.size*pageBytes>byteBudget&&current.size>1)compactActivePages(current);
-    for(const page of new Set(candidates.map(row=>row.page)))page.lastUsed=++clock;
-    cacheDirty=true;lastCamera=null;
+    for(const page of new Set(candidates.map(row=>row.page)))page.lastUsed=performance.now();
+    cacheDirty=true;lastCamera=null;return true;
   }
   function trim(){
-    if(!cacheDirty)return;
+    if(!cacheDirty)return false;
     cacheDirty=false;
     const current=new Set(candidates.map(row=>row.page));
     const inactive=pages.filter(page=>!current.has(page)).sort((a,b)=>Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
@@ -224,11 +230,15 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport,by
       if(!page.retired&&pages.length*pageBytes<=byteBudget)break;
       disposePage(page);pages.splice(pages.indexOf(page),1);
     }
+    return true;
   }
   function update(camera,width,height){
     if(camera===lastCamera)return;
     lastCamera=camera;
-    placed=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?placeGlobeLabels(candidates,camera,{width,height},previous):[];
+    hitSnapshot=()=>null;
+    placed=camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?placeGlobeLabels(candidates,camera,{width,height},previous,(cells,columns,cellSize)=>{
+      hitSnapshot=([x,y])=>x<0||y<0||x>width||y>height?null:(cells.get(Math.floor(y/cellSize)*columns+Math.floor(x/cellSize))??[]).find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null;
+    }):[];
     previous=new Set(placed.map(row=>row.key));
     for(const page of pages)page.count=0;
     for(const {page,uv,left,top,right,bottom} of placed){
@@ -245,12 +255,16 @@ export function createThreeGlobeLabels(THREE,{scene,palette,capacity,viewport,by
     scene.remove(page.mesh);page.mesh.geometry.dispose();page.mesh.material.dispose();page.atlas.dispose();page.boxes.dispose();
     for(const key of page.keys)if(cache.get(key)?.page===page)cache.delete(key);
   }
+  function memoryEntries(){
+    const current=new Set(candidates.map(row=>row.page));
+    return pages.map(page=>({buffers:new Set([page.pixels.buffer,page.values.buffer,...Object.values(page.mesh.geometry.attributes).map(attribute=>attribute.array.buffer),page.mesh.geometry.index.array.buffer]),extraBytes:pageBytes/2,lastUsed:page.lastUsed,protected:current.has(page),evict:()=>{disposePage(page);pages.splice(pages.indexOf(page),1);}}));
+  }
   function dispose(){
     for(const page of pages)disposePage(page);
-    pages.length=0;cache.clear();candidates=[];placed=[];previous.clear();lastCamera=null;
+    pages.length=0;cache.clear();candidates=[];placed=[];previous.clear();lastCamera=null;candidateSignature=null;hitSnapshot=()=>null;
   }
-  return Object.freeze({setCandidates,update,trim,dispose,cacheStats:()=>({pages:pages.length,residentBytes:pages.length*pageBytes}),
+  return Object.freeze({setCandidates,update,trim,dispose,memoryEntries,hitSnapshot:()=>hitSnapshot,cacheStats:()=>({pages:pages.length,residentBytes:pages.length*pageBytes}),
     visibleCount:place=>placed.filter(row=>Boolean(row.place)===place).length,atlasEntryCount:()=>cache.size,
-    hitTest:([x,y])=>placed.find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null,
+    hitTest:point=>hitSnapshot(point),
   });
 }
