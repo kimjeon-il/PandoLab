@@ -1,5 +1,4 @@
 import { VIEWER_RESOURCE_CAPABILITIES } from '../runtime/resource-capabilities.js';
-import { createProjectSourceRuntime } from '../document/project-source-runtime.js';
 import { createTerritorialSceneRuntime } from '../rendering/territorial-scene-runtime.js';
 import { createWorkspaceSurfaces } from '../ui/workspace-surfaces.js';
 import { createProjectSession } from '../document/project-session.js';
@@ -21,18 +20,7 @@ import { mapProjectResourcePath } from '../data/map-project-manifest.js';
 /** One read-only map owner graph for the Web Viewer. */
 export function createMapOwners({buildMeta, isObjectVisible, resolveVisibilityGroup, closeActiveOverlay = null, onViewingChange = null}) {
   const capabilities = VIEWER_RESOURCE_CAPABILITIES;
-  // One read-port admission, two existing responsibility owners. No combined
-  // builtin session, second document model or duplicated mutable cache.
-  let projectResourceDependencies = null;
-  const projectResourcePorts = Object.freeze({connect(ports) {
-    if (projectResourceDependencies)throw new Error('Project resource ports already connected');
-    projectResourceDependencies = ports;
-  }});
-  const getDependencies = () => projectResourceDependencies;
-  const projectSourceRuntime = createProjectSourceRuntime({
-    buildMeta, getDependencies,
-  });
-  const territorialSceneRuntime = createTerritorialSceneRuntime({getDependencies});
+  const territorialSceneRuntime = createTerritorialSceneRuntime();
   const workspaceSurfaces = createWorkspaceSurfaces();
   const projectSession = createProjectSession({resolveVisibilityGroup, onViewingChange});
   const renderQuality = createRenderQuality();
@@ -50,5 +38,5 @@ export function createMapOwners({buildMeta, isObjectVisible, resolveVisibilityGr
   const physicalResources = createPhysicalResources({capabilities, buildMeta});
   const mapHost = createMapHost();
   const objectPicking = createObjectPicking({closeActiveOverlay});
-  return Object.freeze({capabilities, projectResourcePorts, projectSourceRuntime, territorialSceneRuntime, workspaceSurfaces, projectSession, renderQuality, pointerTargets, cameraNavigation, countryIndex, spatialIndex, mapProjection, objectPresentation, hydroSettings, objectCatalog, territorialLabels, physicalResources, mapHost, objectPicking});
+  return Object.freeze({capabilities, territorialSceneRuntime, workspaceSurfaces, projectSession, renderQuality, pointerTargets, cameraNavigation, countryIndex, spatialIndex, mapProjection, objectPresentation, hydroSettings, objectCatalog, territorialLabels, physicalResources, mapHost, objectPicking});
 }
