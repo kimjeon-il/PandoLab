@@ -179,6 +179,30 @@ export async function storeLsibDisplay({root=defaultRoot,sourceBytes,displayVali
   return {...stored,plan};
 }
 
+export async function storeArchivedTerritorialRestoration({root=defaultRoot,publicationBaseline,donorRevision}){
+  const {buildArchivedTerritorialRestoration,assertReviewedBorderEdition}=await import('../build/reviewed-border-edition.mjs');
+  validateExpectedLibraryRevision(publicationBaseline);
+  validateExpectedLibraryRevision(donorRevision);
+  if(!publicationBaseline||!donorRevision)throw Error('Archived territorial restoration requires two explicit pins');
+  const shared=librarySharedCheckout(root);
+  const donor=JSON.parse(git(shared,['show',donorRevision+':archive/index.json'])).files;
+  const appRevision=libraryConfig(root).revision,sourceRevision=git(root,['rev-parse','HEAD']);
+  let plan;
+  const stored=storeLocalViewerEdition({root,appRevision,sourceRevision,baselineRevision:publicationBaseline,
+    kind:'archived territorial display restoration',prepare:(readBaseline,readBaselineFiles)=>{
+      const edition=buildArchivedTerritorialRestoration({
+        baseline:publicationBaseline,donorRevision,indexPath:'assets/data/builtin-world/generated/v1/index.json',
+        readBaseline,readBaselineFiles,
+        readDonor:path=>decodeArchiveEntry(shared,donor[path],donorRevision),
+        readDonorFiles:paths=>decodeArchiveEntries(shared,new Map(paths.map(path=>[path,donor[path]])),donorRevision),
+      });
+      assertReviewedBorderEdition(edition);
+      plan=edition.plan;
+      return edition.files;
+    }});
+  return {...stored,plan};
+}
+
 export async function storeLocalTerritorialRetirement({root=defaultRoot,retirement,engine,replacementSource}){
   const split=retirement?.kind==='split-us-minor-outlying-islands';
   const independent=Object.hasOwn(INDEPENDENT_WORLD_RETIREMENT_IDS,retirement?.kind);
@@ -284,11 +308,13 @@ function storeLocalViewerEdition({root,baselineRevision,appRevision=baselineRevi
         throw Error('Pending Viewer edition must directly descend from the paired data pin');
     }else git(shared,['merge-base','--is-ancestor',baselineRevision,head]);
     const baseline=JSON.parse(git(shared,['show',baselineRevision+':archive/index.json']));
-    const files=prepare(path=>{
+    const entryFor=path=>{
       const entry=baseline.files[path];
       if(!entry)throw Error('Missing source in Viewer baseline: '+path);
-      return decodeArchiveEntry(shared,entry,baselineRevision);
-    });
+      return entry;
+    };
+    const files=prepare(path=>decodeArchiveEntry(shared,entryFor(path),baselineRevision),
+      paths=>decodeArchiveEntries(shared,new Map(paths.map(path=>[path,entryFor(path)])),baselineRevision));
     const archived=structuredClone(baseline),directories=directRuntimeDirectories(archived);
     for(const [path,receipt] of removalReceipts){
       if(files.has(path)||receipt.path!==path||baseline.files[path]?.sha256!==receipt.sha256)

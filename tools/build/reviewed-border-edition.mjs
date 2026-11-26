@@ -547,6 +547,83 @@ export function buildLsibDisplayEdition({baseline,readBaseline,indexPath,sourceB
  return issue({baseline,files,reports:{},plan:{changed:changed.map(country=>country.entityId),held:evidence.held}});
 }
 
+const replacedDisplayClaims=['worldPolygonsDisplay','lsibDisplay','historicalLsibDisplay'];
+
+function loadRestoreCountries(index,indexPath,entries,readFiles){
+ const directory=indexPath.slice(0,indexPath.lastIndexOf('/')+1);
+ const refs=new Set(entries.flatMap(entry=>entry.geometryRefs.map(ref=>JSON.stringify([ref.id,ref.version]))));
+ const files=new Set(entries.flatMap(entry=>(entry.parts??[entry]).map(spec=>spec.file)));
+ for(const asset of index.geometryAssets)if(refs.has(JSON.stringify([asset.id,asset.version])))files.add(asset.file);
+ const resources=readFiles([...files].map(file=>directory+file));
+ return entries.map(entry=>readBuiltinCountry(entry,index,file=>resources.get(directory+file)));
+}
+
+export function buildArchivedTerritorialRestoration({baseline,donorRevision,indexPath,readBaseline,readDonor,readBaselineFiles,readDonorFiles}){
+ if(![baseline,donorRevision].every(revision=>/^[a-f0-9]{40}$/.test(revision))||baseline===donorRevision)
+  fail('two distinct archive revisions are required');
+ const index=JSON.parse(readBaseline(indexPath)),donorIndex=JSON.parse(readDonor(indexPath)),nextIndex=structuredClone(index);
+ const donorsById=new Map(donorIndex.entities.map(row=>[row.entityId,row]));
+ const selected=index.entities.filter(row=>donorsById.has(row.entityId));
+ const donors=loadRestoreCountries(donorIndex,indexPath,selected.map(row=>donorsById.get(row.entityId)),readDonorFiles);
+ const current=loadRestoreCountries(index,indexPath,selected,readBaselineFiles);
+ const changed=[],restored=[];
+ for(const [i,country] of current.entries()){
+  const donor=donors[i];
+  const currentTimeline=country.identity.properties.metadata.historicalTimeline;
+  const donorTimeline=donor.identity.properties.metadata.historicalTimeline;
+  if(currentTimeline.entityId!==donorTimeline.entityId)fail('archived restoration source identity differs '+country.entityId);
+  const scheduled=new Map();
+  for(const binding of country.sourceBindings){
+   const version=currentTimeline.geometryVersions.find(row=>row.versionId===binding.sourceVersionId);
+   const provenance=version?.historicalProvenance;
+   const sameDates=row=>row.validFrom===binding.validFrom&&row.validTo===binding.validTo;
+   const ended=binding.validTo!==null;
+   if(ended&&!replacedDisplayClaims.some(key=>provenance?.[key]?.some(sameDates)))continue;
+   const options=donor.sourceBindings.filter(row=>row.sourceVersionId===binding.sourceVersionId&&(ended
+    ?(row.validFrom===null||(binding.validFrom!==null&&compareTemporal(row.validFrom,binding.validFrom)<=0))
+     &&(row.validTo===null||compareTemporal(row.validTo,binding.validTo,{leftBoundary:'end',rightBoundary:'end'})>=0)
+    :row.validTo===null));
+   if(options.length!==1)fail('archived restoration requires one equivalent donor binding '+country.entityId);
+   const previous=binding.geometryRef,next=options[0].geometryRef;
+   const archived=donor.geometries.find(geo=>geo.id===next.id&&geo.version===next.version);
+   if(!archived)fail('archived restoration geometry is missing '+country.entityId);
+   if(equal(previous,next))continue;
+   const runtime=findReviewedTimelineBinding(country,binding)?.row;
+   if(!runtime)fail('archived restoration has no runtime geometry binding '+country.entityId);
+   const priorTarget=scheduled.get(runtime);
+   if(priorTarget&&!equal(priorTarget,next))fail('archived restoration conflicts with a shared time interval '+country.entityId);
+   scheduled.set(runtime,next);
+   binding.geometryRef=structuredClone(next);
+   if(!country.geometries.some(geo=>geo.id===next.id&&geo.version===next.version))country.geometries.push(archived);
+   if(provenance)for(const key of replacedDisplayClaims)if(provenance[key]){
+    const retained=provenance[key].filter(row=>!sameDates(row));
+    if(retained.length)provenance[key]=retained;
+    else delete provenance[key];
+   }
+   restored.push({entityId:country.entityId,sourceVersionId:binding.sourceVersionId,validFrom:binding.validFrom,
+    validTo:binding.validTo,before:previous,after:next,donorValidFrom:options[0].validFrom,donorValidTo:options[0].validTo});
+  }
+  if(!scheduled.size)continue;
+  for(const [binding,next] of scheduled)binding.geometryRef=structuredClone(next);
+  const referenced=[...country.sourceBindings,...country.timelineRecords.geometryBindings];
+  country.geometries=country.geometries.filter(geo=>referenced.some(({geometryRef})=>geo.id===geometryRef.id&&geo.version===geometryRef.version));
+  changed.push(country);
+ }
+ if(!changed.length)fail('archived restoration contains no changed geometry');
+ const encoded=encodeBuiltinCountries(nextIndex,changed,new Map());
+ finalizeBuiltinWorldFiles(nextIndex,encoded,{previousIndex:index});
+ const {geometryBindings:beforeGeometry,...beforeTables}=index.readIndex.records;
+ const {geometryBindings:afterGeometry,...afterTables}=nextIndex.readIndex.records;
+ const omitGeometry=rows=>rows.map(({geometryRef,...row})=>row);
+ if(!equal(beforeTables,afterTables)||!equal(omitGeometry(beforeGeometry),omitGeometry(afterGeometry)))
+  fail('archived restoration changed Viewer timelines');
+ const directory=indexPath.slice(0,indexPath.lastIndexOf('/')+1);
+ const files=new Map([...encoded].map(([file,bytes])=>[directory+file,bytes]));
+ const receipt=jsonBytes({schemaVersion:1,baseline,donorRevision,restored});
+ files.set('assets/data/builtin-world/source/archived-restorations/'+digest(receipt)+'.json',receipt);
+ return issue({baseline,files,reports:{},plan:{changed:changed.map(row=>row.entityId),restored}});
+}
+
 const reviewedSudanCoast='reports/borders/validation/ne-world-map-rebase-2026-11-08/historical-modern-reuse-local-20261109/sdn-red-sea-coast-20261110/safe-coast-source-provenance.json';
 const reviewedIndonesiaUnion='reports/borders/validation/ne-world-map-rebase-2026-11-08/historical-modern-reuse-local-20261109/idn-complete-modern-union-correction-20261110/source-provenance.json';
 

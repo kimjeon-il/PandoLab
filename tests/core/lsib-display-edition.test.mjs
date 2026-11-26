@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { applyHistoricalLsibDisplay, applyLsibDisplay, buildLsibDisplayEdition, coordinateDigest } from '../../tools/build/reviewed-border-edition.mjs';
+import { applyHistoricalLsibDisplay, applyLsibDisplay, buildArchivedTerritorialRestoration, buildLsibDisplayEdition, coordinateDigest } from '../../tools/build/reviewed-border-edition.mjs';
 import { encodeBuiltinCountries, finalizeBuiltinWorldFiles } from '../../tools/data/builtin-country-bytes.mjs';
 import { assertHistoricalCompiledChanges, historicalLsibDisplayEvidencePath, lsibDisplayEvidencePath, worldPolygonsDisplayEvidencePath } from '../../tools/gis/historical-display-review.mjs';
 
@@ -31,6 +31,51 @@ const feature = {
   geometry: polygon(2),
 };
 const cutoff = { displayValidFrom: '2026-11-26', previousDisplayThrough: '2026-11-25' };
+
+test('archived display restoration preserves the current roster and binding dates', () => {
+  function country(id, size, date, historical = false) {
+    const result = structuredClone(originalCountry);
+    const sourceId = 'state:' + id;
+    const geometryRef = { id: id + ':' + size, version: 1 };
+    const binding = { ...original, objectRef: { domain: 'territorial', id }, geometryRef, validFrom: date };
+    result.schemaVersion = 2;
+    result.entityId = result.identity.id = id;
+    result.sourceBindings = [binding];
+    result.geometries = [{ ...geometryRef, geojson: polygon(size) }];
+    result.timelineRecords = { schemaVersion: 3, lifetimes: [], parentRelations: [], propertyBindings: [],
+      geometryBindings: [{ ...binding, id: id + ':display' }] };
+    const timeline = result.identity.properties.metadata.historicalTimeline;
+    timeline.entityId = sourceId;
+    if (historical) {
+      const past = { ...binding, validFrom: '1950-01-01', validTo: '2026-11-25' };
+      result.sourceBindings.unshift(past);
+      result.timelineRecords.geometryBindings.unshift({ ...past, id: id + ':past' });
+      timeline.geometryVersions[0].historicalProvenance.historicalLsibDisplay = [past];
+    }
+    return result;
+  }
+  const indexPath = 'builtin/index.json';
+  function edition(countries) {
+    const index = { schema: 'pandolab-builtin-world', schemaVersion: 2, entities: countries.map(({entityId}) => ({entityId})) };
+    const files = finalizeBuiltinWorldFiles(index, encodeBuiltinCountries(index, countries, new Map()));
+    const read = path => files.get(path.slice('builtin/'.length));
+    return { index, read, readFiles: paths => new Map(paths.map(path => [path, read(path)])) };
+  }
+  const archived = edition([country('ROU', 1, '1950-01-01'), country('DEL', 1, '1950-01-01')]);
+  const current = edition([country('ROU', 2, '2026-11-26', true), country('NEW', 2, '2026-11-26')]);
+  const result = buildArchivedTerritorialRestoration({
+    baseline: 'a'.repeat(40), donorRevision: 'b'.repeat(40), indexPath,
+    readBaseline: current.read, readDonor: archived.read,
+    readBaselineFiles: current.readFiles, readDonorFiles: archived.readFiles,
+  });
+  const next = JSON.parse(result.files.get(indexPath));
+  assert.deepEqual(next.entities.map(row => row.entityId), ['ROU', 'NEW']);
+  assert.deepEqual(next.entities[1], current.index.entities[1]);
+  const dates = index => index.readIndex.records.geometryBindings.map(({geometryRef, ...row}) => row);
+  assert.deepEqual(dates(next), dates(current.index));
+  assert.deepEqual(next.readIndex.records.geometryBindings.filter(row => row.objectRef.id === 'ROU')
+    .map(row => row.geometryRef.id), ['ROU:1', 'ROU:1']);
+});
 
 test('LSIB switches the current display on the selected date and requires exact evidence', () => {
   const evidence = gzipSync(JSON.stringify({
