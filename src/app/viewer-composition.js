@@ -7,7 +7,6 @@ import { createNotificationPresentation } from '../ui/notification-presentation.
 import { createApplicationLifecycle } from './application-lifecycle.js';
 import { createPreferencePresentation } from '../ui/preference-presentation.js';
 import { createMapOwners } from './map-owner-composition.js';
-import { saveUserPreferences } from '../ui/user-preferences.js';
 import { createDiagnosticLog, isRecoverableLoadError } from '../runtime/reliability-core.js';
 import { createNavigationBindings } from '../ui/navigation-bindings.js';
 import { createSelectController } from '../ui/select-controller.js';
@@ -459,11 +458,11 @@ export async function composeViewer({ meta }) {
   display.connect({
     layerResources:{loadHydroData:owners.physicalResources.loadHydroData, preparePlaces:owners.territorialLabels.preparePlaces},
     platform:{$:id => get(id==='app'?'viewer':id), deepClone:structuredClone, clamp:(value, min, max) => Math.max(min, Math.min(max, value))},
-    navigation:map.navigation, domains:{renderingDomain:map.renderingDomain, objectSearchController:searchController}, rendering:{mapRenderer:map.renderer}, objectDisplay:map.objectCatalog, distributionPresentation:map.distributionPresentation, feedback:{reportOperationError:report},
+    navigation:map.navigation, domains:{renderingDomain:map.renderingDomain, objectSearchController:searchController}, rendering:{mapRenderer:map.renderer}, objectDisplay:map.objectCatalog, feedback:{reportOperationError:report},
     projectState:{get state() {return map.displayState();}},
     mapDisplayModel:{expandedMapDisplayGroups:map.objectPresentation.expandedMapDisplayGroups}, territorialModel:{entityRepository:map.entityRepository},
     layerStyleServices:{layerStyle}, applicationConstants:{DISTRIBUTION_RENDER_MODES},
-    preferences:{saveUserPreferences, get userPreferences() {return preferencePresentation.current;}, setUserPreferences:value => {preferencePresentation.current = value;}, renderPreferences:() => preferencePresentation.apply(preferencePresentation.current, {persist:false})},
+    preferences:{get userPreferences() {return preferencePresentation.current;}, apply:preferencePresentation.apply},
     hydroModel:owners.hydroSettings,
     workspaceUi:surfaces,
   });

@@ -9,6 +9,9 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
   const projectHydro = buildMeta?.mapProject?mapProjectResourcePath(buildMeta.mapProject,'rivers'):null;
   let dependencies;
   let hydroService;
+  const hydroFeatureCache = new Map();
+  let hydroManifest = null;
+  let physicalLoadState = Object.freeze({hydro: 'idle', hydroCache: 'idle', hydroCachePercent: 0});
   let physicalSelection = null;
   // The active document, not the serialized sourceMode field, selects
   // optional project-owned Hydro/physical-water catalogs.
@@ -67,9 +70,22 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
     return hydroService.load();
   }
 
+  function allBuiltInHydroFeatures() {
+    return [...hydroFeatureCache.values()];
+  }
+
+  function builtInHydroFeatureById(id) {
+    const key = String(id);
+    if (hydroFeatureCache.has(key)) return hydroFeatureCache.get(key);
+    for (const feature of hydroFeatureCache.values()) {
+      if (String(feature.properties?.pandolab_id || feature.id || '') === key) return feature;
+    }
+    return null;
+  }
+
   function builtinHydroSelectionReferences(features = null) {
     if (activeSource!=='builtin')return [];
-    features??=(0, dependencies.hydroPresentation.allBuiltInHydroFeatures)();
+    features ??= allBuiltInHydroFeatures();
     return [...new Map(features.map(feature => {
       const id = String(feature.properties?.pandolab_id || feature.id);
       const category = dependencies.hydroPresentation.HYDRO_LAYER_META[feature.properties?.layer_id]?.category || feature.properties?.category;
@@ -82,9 +98,8 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
     if (activeSource!=='builtin')return false;
     if (typeof dependencies.domains.projectDomain?.admitSelectionCatalog!=='function')
       throw new TypeError('Hydro source identities require the canonical Core admission boundary.');
-    const cache = dependencies.projectState.state.hydroFeatureCache;
-    if (!(cache instanceof Map))throw new TypeError('The canonical hydro resource cache is required.');
-    const current = () => isCurrent()&&activeSource==='builtin'&&dependencies.projectState.state.hydroFeatureCache===cache;
+    const cache = hydroFeatureCache, epoch = projectSourceEpoch;
+    const current = () => isCurrent() && activeSource === 'builtin' && projectSourceEpoch === epoch;
     if (!current())return false;
     const additions = new Map(features.map(feature => [String(feature.properties?.pandolab_id||feature.id), feature]));
     await dependencies.domains.projectDomain.admitSelectionCatalog('hydroBuiltin', () => {
@@ -100,7 +115,6 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
       // resource allocation rather than replacing it with a second full row.
       if (existing && existing!==feature)Object.assign(existing, feature);
       else cache.set(id, feature);
-      dependencies.projectState.state.hydroFeatureCatalogRevision = (dependencies.projectState.state.hydroFeatureCatalogRevision||0)+1;
     }
     return true;
   }
@@ -115,14 +129,12 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
         manifestUrl.searchParams.set('v', dependencies.physicalConfig.DATA_REVISION);
         return manifestUrl;
       },
-      getLoadState: () => dependencies.projectState.state.physicalLoadState.hydro,
+      getLoadState: () => physicalLoadState.hydro,
       loadKey:()=>projectSourceEpoch,
       isLoadCurrent:key=>hydroDetailEnabled()&&key===projectSourceEpoch,
       onLoading: () => {
-        dependencies.projectState.state.physicalLoadState.hydro = 'loading';
-        dependencies.projectState.state.physicalLoadState.hydroManifest = 'loading';
-        dependencies.projectState.state.physicalLoadState.hydroWorker = 'starting';
-        dependencies.projectState.state.physicalLoadState.hydroView = 'idle';
+        physicalLoadState = Object.freeze({...physicalLoadState,
+          hydro: 'loading', hydroManifest: 'loading', hydroWorker: 'starting', hydroView: 'idle'});
         (0, dependencies.layerPresentation.invalidateObjectPresentation)();
         dependencies.domains.objectSearchController?.render();
       },
@@ -132,26 +144,24 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
       acceptManifest: async (manifest, _manifestUrl, context) => {
         const isCurrent = context?.isCurrent||(() => activeSource==='builtin');
         if (!isCurrent())return false;
-        dependencies.projectState.state.hydroManifest = manifest;
-        dependencies.projectState.state.physicalLoadState.hydroManifest = 'ready';
-        dependencies.projectState.state.physicalLoadState.hydroCache = 'idle';
-        dependencies.projectState.state.physicalLoadState.hydroCachePercent = 0;
+        hydroManifest = manifest;
+        physicalLoadState = Object.freeze({...physicalLoadState,
+          hydroManifest: 'ready', hydroCache: 'idle', hydroCachePercent: 0});
         const renderer = dependencies.rendering.mapRenderer;
         await renderer.initialize();
         if (!isCurrent())return false;
         await admitHydroFeatures();
         if (!isCurrent())return false;
-        dependencies.projectState.state.physicalLoadState.hydroWorker = 'ready';
-        dependencies.projectState.state.physicalLoadState.hydro = 'ready';
+        physicalLoadState = Object.freeze({...physicalLoadState, hydroWorker: 'ready', hydro: 'ready'});
         (0, dependencies.layerPresentation.invalidateObjectPresentation)();
         dependencies.domains.objectSearchController?.render();
         dependencies.domains.renderingDomain?.invalidateProject('hydro-ready');
         return true;
       },
       onFailure: error => {
-        if (dependencies.projectState.state.physicalLoadState.hydroManifest !== 'ready') dependencies.projectState.state.physicalLoadState.hydroManifest = 'error';
-        dependencies.projectState.state.physicalLoadState.hydroWorker = 'error';
-        dependencies.projectState.state.physicalLoadState.hydro = 'error';
+        physicalLoadState = Object.freeze({...physicalLoadState,
+          hydroManifest: physicalLoadState.hydroManifest === 'ready' ? 'ready' : 'error',
+          hydroWorker: 'error', hydro: 'error'});
         dependencies.operationFeedback.reliabilityDiagnostic.push({ category: 'asset', operation: 'hydro-init', result: 'failed', errorCode: 'PL-WATER-001' });
         (0, dependencies.layerPresentation.invalidateObjectPresentation)();
         dependencies.domains.objectSearchController?.render();
@@ -169,6 +179,10 @@ export function createPhysicalResources({ buildMeta, capabilities = {builtinHydr
     physicalSourceIdentityAtMonth:month => physicalSelectionFor(month).key,
     get loadHydroData() { return loadHydroData; },
     builtinHydroSelectionReferences,
+    allBuiltInHydroFeatures,
+    builtInHydroFeatureById,
+    get hydroManifest() {return hydroManifest;},
+    get physicalLoadState() {return physicalLoadState;},
     hydroActivityView,
     isHydroObjectActive,
     hydroDetailEnabled,

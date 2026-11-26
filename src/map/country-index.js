@@ -34,19 +34,6 @@ export function createCountryIndex({buildMeta = globalThis.PANDOLAB_BUILD_META} 
     return String(feature?.id || `country_${index}`);
   }
 
-  function reindexCountries(fc) {
-    const out = fc?.type === 'FeatureCollection' ? fc : { type: 'FeatureCollection', features: [] };
-    dependencies.projectState.state.countryIndex.clear();
-    out.features.forEach((feature, index) => {
-      const id = feature.id;
-      if (typeof id !== 'string' || !id) throw new TypeError('국가 인덱스에는 공통 엔티티 ID가 필요합니다.');
-      dependencies.projectState.state.countryIndex.set(id, index);
-    });
-    (0, dependencies.spatialQuery.rebuildSpatialIndex)(out.features);
-    (0, dependencies.objectDisplay.invalidateObjectPresentation)();
-    return out;
-  }
-
   function validLabelAnchor(value) {
     return Array.isArray(value) && value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]));
   }
@@ -325,10 +312,9 @@ export function createCountryIndex({buildMeta = globalThis.PANDOLAB_BUILD_META} 
 
     get countryLabelAnchors() { return countryLabelAnchors; },
     get countryLandRevision() { return countryLandRevision; },
-    set countryLandRevision(value) { countryLandRevision = value; },
+    noteRootGeometryChange() {countryLandRevision += 1;},
     get featureCountryId() { return featureCountryId; },
     get pendingCountryLabelAnchors() { return pendingCountryLabelAnchors; },
-    get reindexCountries() { return reindexCountries; },
     get resetCountryLabelAnchorRuntime() { return resetCountryLabelAnchorRuntime; },
     get scheduleCountryLabelAnchors() { return scheduleCountryLabelAnchors; },
     get validLabelAnchor() { return validLabelAnchor; },

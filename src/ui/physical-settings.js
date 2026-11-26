@@ -74,28 +74,12 @@ export function createHydroSettings() {
     return hydroLayerVisible(feature?.properties?.layer_id) && dependencies.projectState.state.itemVisibility.hydro?.[id]!==false;
   }
 
-  function allBuiltInHydroFeatures() {
-    return dependencies.projectState.state.hydroFeatureCache instanceof Map ? [...dependencies.projectState.state.hydroFeatureCache.values()] : [];
-  }
-
-  function builtInHydroFeatureById(id) {
-    const key = String(id), cache = dependencies.projectState.state.hydroFeatureCache;
-    if (!(cache instanceof Map))return null;
-    if (cache.has(key))return cache.get(key);
-    // Scan directly without allocating an array of every loaded river/lake
-    // just to resolve a fragment-id alias on a cache miss.
-    for (const feature of cache.values()) {
-      if (String(feature.properties?.pandolab_id || feature.id || '')===key)return feature;
-    }
-    return null;
-  }
-
   function hydroFeatureById(id) {
     const resources = projectHydroResources(), edited = resources.findById(id);
     if (edited)return edited;
     // Retain the source via builtInHydroFeatureById; only the effective
     // presentation/selection is replaced, including raw fragment-key aliases.
-    const builtin = builtInHydroFeatureById(id);
+    const builtin = dependencies.physicalResources.builtInHydroFeatureById(id);
     const logicalId = String(builtin?.properties?.pandolab_id||builtin?.id||id);
     return resources.isSourceReplaced(logicalId)?null:builtin;
   }
@@ -106,8 +90,6 @@ export function createHydroSettings() {
     connect,
     hydroLineParts,
 
-    get allBuiltInHydroFeatures() { return allBuiltInHydroFeatures; },
-    get builtInHydroFeatureById() { return builtInHydroFeatureById; },
     get currentMapDevicePixelRatio() { return currentMapDevicePixelRatio; },
     get hydroDisplayColor() { return hydroDisplayColor; },
     get projectHydroById() { return projectHydroById; },

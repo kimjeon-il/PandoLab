@@ -13,6 +13,13 @@ export function createPointerTargets() {
   let lastMapHover;
   let hoverPickSequence = 0;
   let pendingHoverRequests = 0;
+  let clickSuppression = null;
+  let clickSuppressionTimer = 0;
+  function clearClickSuppression() {
+    clearTimeout(clickSuppressionTimer);
+    clickSuppressionTimer = 0;
+    clickSuppression = null;
+  }
   function connect(ports) {
     if (dependencies) throw new Error('pointer-targets already connected');
     dependencies = ports;
@@ -124,7 +131,7 @@ export function createPointerTargets() {
       event.stopPropagation?.();
       return true;
     }
-    const suppression = dependencies.projectState.state.suppressNextMapClick;
+    const suppression = clickSuppression;
     if (!suppression) return false;
     const eventPoint = Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)
       ? [event.clientX, event.clientY]
@@ -132,21 +139,16 @@ export function createPointerTargets() {
     if (suppression.point && eventPoint && Math.hypot(eventPoint[0] - suppression.point[0], eventPoint[1] - suppression.point[1]) > 18) {
       return false;
     }
-    dependencies.projectState.state.suppressNextMapClick = null;
-    clearTimeout(suppressNextMapClick._timer);
+    clearClickSuppression();
     event?.preventDefault?.();
     event?.stopPropagation?.();
     return true;
   }
 
   function suppressNextMapClick(point = null, timeout = 450) {
-    dependencies.projectState.state.suppressNextMapClick = {
-      point: Array.isArray(point) ? [Number(point[0]), Number(point[1])] : null,
-    };
-    clearTimeout(suppressNextMapClick._timer);
-    suppressNextMapClick._timer = setTimeout(() => {
-      dependencies.projectState.state.suppressNextMapClick = null;
-    }, timeout);
+    clearClickSuppression();
+    clickSuppression = {point: Array.isArray(point) ? [Number(point[0]), Number(point[1])] : null};
+    clickSuppressionTimer = setTimeout(clearClickSuppression, timeout);
   }
 
   function initializeHoverPickFrame() {
@@ -167,6 +169,7 @@ export function createPointerTargets() {
   return Object.freeze({
     connect,
     initializeHoverPickFrame,
+    dispose() {clearClickSuppression(); return cancelCountryHoverPick();},
     get cancelCountryHoverPick() { return cancelCountryHoverPick; },
     get lastHoverPickPoint() { return lastHoverPickPoint; },
     get lastHoverPickViewRevision() { return lastHoverPickViewRevision; },

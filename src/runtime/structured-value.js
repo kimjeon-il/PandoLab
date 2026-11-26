@@ -15,3 +15,10 @@ export function sameStructuredValue(left, right, equal = strictEqual) {
   return keys.length === Object.keys(right).length
     && keys.every(key => Object.hasOwn(right, key) && sameStructuredValue(left[key], right[key], equal));
 }
+
+/** Freeze an owned JSON-like snapshot; previously frozen branches are shared. */
+export function freezeStructuredValue(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeStructuredValue(child);
+  return Object.freeze(value);
+}

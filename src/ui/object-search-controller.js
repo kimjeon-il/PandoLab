@@ -391,6 +391,7 @@ export function createAppObjectSearchController(runtime = {}) {
     objectSearchGroupKeys, listObjectSearchItems, layerItemObjectRef, selectionDomain,
     selectObjectSearchItem, closeSearchAfterSingleSelection, focusObjectRef, createIcon,
   } = runtime;
+  let searchValue = '';
   const handleHoverError = error => {if (!error.cancelled&&error.name!=='AbortError')runtime.onSearchError(error);};
   return createObjectSearchController({
     window,
@@ -422,7 +423,7 @@ export function createAppObjectSearchController(runtime = {}) {
     model: {
       snapshot: () => ({ projectScope:runtime.getProjectScope?.()??null,
         builtinContext:JSON.stringify([runtime.getProjectScope?.()??null, state.timelineCursor, state.layerVisibility?.labels, state.itemVisibility?.labels]),
-        search: state.objectSearch, searchActive: runtime.isSearchOpen(),
+        search: searchValue, searchActive: runtime.isSearchOpen(),
         searchSurfaceOpen: runtime.isSearchSurfaceOpen() }),
       items: listObjectSearchItems,
       catalogRevision: () => resourceKey([runtime.getProjectScope?.()??null, state.objectPresentationRevision]),
@@ -452,7 +453,7 @@ export function createAppObjectSearchController(runtime = {}) {
         if (metrics) metrics.layerReadyMs = performance.now() - metrics.startedAt;
       },
       setSearchValue: value => {
-        state.objectSearch = value;
+        searchValue = value;
         syncSearchClearButton($('objectSearchInput'), $('objectSearchClearBtn'));
       },
       selectItem: ({ group, id, additive, range, orderedRefs }) => {

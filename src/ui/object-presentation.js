@@ -12,8 +12,6 @@ import { createTerritorialScopeResolver } from '../document/territorial-scope.js
 export function createObjectPresentation() {
   let dependencies;
   let territorialScope;
-  let distributionVisibilityRevision;
-  let distributionRenderRowCache;
   let LAYER_GROUP_KEYS;
   let LAYER_SEARCH_GROUP_KEYS;
   let layerGroupNames;
@@ -95,21 +93,6 @@ export function createObjectPresentation() {
       clipper: () => dependencies.platform.polygonClipping,
     }));
 
-    (distributionVisibilityRevision = 0);
-
-    (distributionRenderRowCache = {
-      layers: null,
-      entries: null,
-      countries: null,
-      countryGeometryRevision: -1,
-      territorialUnits: null,
-      renderMode: '',
-      selectedLayerId: '',
-      visibilityRevision: -1,
-      rows: [],
-      rebuildCount: 0,
-      buildMs: 0,
-    });
   }
 
   function initializeObjectPresentationModel() {
@@ -146,9 +129,6 @@ export function createObjectPresentation() {
     get LAYER_SEARCH_GROUP_KEYS() { return LAYER_SEARCH_GROUP_KEYS; },
     get defaultGenericFeatureColor() { return defaultGenericFeatureColor; },
     get distributionColor() { return distributionColor; },
-    get distributionRenderRowCache() { return distributionRenderRowCache; },
-    get distributionVisibilityRevision() { return distributionVisibilityRevision; },
-    set distributionVisibilityRevision(value) { distributionVisibilityRevision = value; },
     get expandedMapDisplayGroups() { return expandedMapDisplayGroups; },
     get genericFeatureColor() { return genericFeatureColor; },
     get genericFeatureName() { return genericFeatureName; },
