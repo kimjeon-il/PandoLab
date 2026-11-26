@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {hash,domain,keys,active,hasActiveSeam,createSeamReviewChecks,assertPriorBelarusArc} from './seam-source-review-common.mjs';
 import {isDeepStrictEqual as eq} from 'node:util';
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {decodeOriginalBlobGeometry} from '../data/chunked-original-source.mjs';
@@ -18,24 +18,12 @@ const priorGeometryDomain='9cb75fe8a17684065528776e388cf56686438525f0c62164bac20
 const priorGeometryCas='8223b54a3f6ce969be38d36e8e1bcb09741e2441499de54fa7a186e974ac69ad';
 const priorHistory=[{versionId:'state:ukraine:1991-2014-r1',from:'1991-08-24',to:'2014-03-17',resourceSHA:'c2ba09faefaa062e0fbb947109d01e5ade145e49a151a82a134e0049a7a8ca0a'}];
 export function assertPriorBlrArc(previous,next,donor,arc,scope){
- const points=exactCyclicChain(donor.coordinates[arc.polygonIndex][arc.ringIndex],arc.startIndex,arc.endIndex,arc.direction);
- const p=previous.coordinates[scope.polygonIndex]?.[scope.ringIndex], n=next.coordinates[scope.polygonIndex]?.[scope.ringIndex];
- if(points.length!==scope.length||!p||!n||!eq(p.slice(scope.beforeStart,scope.beforeStart+scope.length),points)||
-  !eq(n.slice(scope.afterStart,scope.afterStart+scope.length),points))fail('previously approved Belarus seam vertices changed');
- return true;
+ return assertPriorBelarusArc(previous,next,donor,arc,scope,fail);
 }
 
-const hash=b=>createHash('sha256').update(b).digest('hex');
-const domain=g=>hash(JSON.stringify([g.type,g.coordinates]));
 const fail=message=>{throw Error('UKR/MDA exact current seam: '+message);};
-const keys=(o,names)=>o&&eq(Object.keys(o).sort(),[...names].sort());
-const omit=(o,...names)=>Object.fromEntries(Object.entries(o??{}).filter(([k])=>!names.includes(k)));
-const active=e=>e.geometryVersions.filter(x=>x.validTo===null);
-const preserved=e=>({...e,sourceInfo:omit(e.sourceInfo,'geometrySha256','geometryVersionId'),
- geometryVersions:e.geometryVersions.map(x=>x.versionId===version?omit(x,'geometry','modernBoundarySupplement'):x)});
-const dig=(a,b,label)=>{if(a!==b)fail(label+' digest mismatch');};
-const bytes=(read,p,h)=>{const x=read(p);if(!Buffer.isBuffer(x))fail(p+' exact archived bytes required');dig(hash(x),h,p);return x;};
-export const hasUkrMdaSeam=e=>e?.entityId===id&&e?.geometryVersions?.some(x=>x.validTo===null&&x.modernBoundarySupplement?.adoptionMode===ukrMdaSeamMethod)===true;
+const {preserved,dig,bytes}=createSeamReviewChecks(version,fail);
+export const hasUkrMdaSeam=e=>hasActiveSeam(e,id,ukrMdaSeamMethod);
 
 export function assertUkrMdaTopology(p,b,peers){
  const {openRingVertexCount,...mdaArc}=p.MDADonor??{};

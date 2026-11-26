@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {hash,domain,keys,active,hasActiveSeam,createSeamReviewChecks} from './seam-source-review-common.mjs';
 import {isDeepStrictEqual as eq} from 'node:util';
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 import {decodeOriginalBlobGeometry} from '../data/chunked-original-source.mjs';
@@ -113,17 +113,9 @@ export function assertOutsideSdsReplay(old,next,o,count){
  return true;
 }
 
-const hash=b=>createHash('sha256').update(b).digest('hex');
-const domain=g=>hash(JSON.stringify([g.type,g.coordinates]));
 const fail=message=>{throw Error('SDS/UGA exact current seam: '+message);};
-const keys=(o,names)=>o&&eq(Object.keys(o).sort(),[...names].sort());
-const omit=(o,...names)=>Object.fromEntries(Object.entries(o??{}).filter(([k])=>!names.includes(k)));
-const active=e=>e.geometryVersions.filter(x=>x.validTo===null);
-const preserved=e=>({...e,sourceInfo:omit(e.sourceInfo,'geometrySha256','geometryVersionId'),
- geometryVersions:e.geometryVersions.map(x=>x.versionId===version?omit(x,'geometry','modernBoundarySupplement'):x)});
-const dig=(a,b,label)=>{if(a!==b)fail(label+' digest mismatch');};
-const bytes=(read,p,h)=>{const x=read(p);if(!Buffer.isBuffer(x))fail(p+' exact archived bytes required');dig(hash(x),h,p);return x;};
-export const hasSdsUgaSeam=e=>e?.entityId===id&&e?.geometryVersions?.some(x=>x.validTo===null&&x.modernBoundarySupplement?.adoptionMode===sdsUgaSeamMethod)===true;
+const {preserved,dig,bytes}=createSeamReviewChecks(version,fail);
+export const hasSdsUgaSeam=e=>hasActiveSeam(e,id,sdsUgaSeamMethod);
 
 export function assertSdsUgaTopology(p,b,peers){
  const ugaArcs=p.UGADonors;

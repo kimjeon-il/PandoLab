@@ -83,6 +83,8 @@ const digest=geometry=>createHash('sha256').update(JSON.stringify([geometry.type
 const requiredHash=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const historical=version=>version.validFrom!=null||version.validTo!=null||!!version.historicalProvenance;
 const evidence=value=>value&&typeof value.reference==='string'&&value.reference.length>0&&requiredHash(value.sha256);
+function bounds(ps){const b=[Infinity,Infinity,-Infinity,-Infinity];for(const p of ps)for(const r of p)for(const [x,y]of r){b[0]=Math.min(b[0],x);b[1]=Math.min(b[1],y);b[2]=Math.max(b[2],x);b[3]=Math.max(b[3],y);}return b;}
+
 /** Explicit completion of one already-partial current feature. This is not a
  * general relaxation of source caveats or a first-adoption contract. No imports
  * from the original-authoring owner: that owner depends on this module. */
@@ -128,7 +130,6 @@ function assertOmittedOriginalRestoration(next,previous,review,{prefixes,archive
  const allowed=new Set(['sourceId','status','geometrySha256','adoptionMode','wholeCountryRaw','priorPreparedAttribution','sourceAdoptionReview']);for(const [k,x]of Object.entries(prior))if(!allowed.has(k)&&(!Object.hasOwn(s,k)||!eq(x,s[k])))reject('old attribution and preimage-index review must remain exact: '+k);
  const coordinate=p=>Array.isArray(p)&&p.length===2&&p.every(Number.isFinite),sameBounds=(a,b)=>Array.isArray(a)&&a.length===4&&a.every((x,i)=>Number.isFinite(x)&&x===b[i]);
  function polygons(g,bounded=false,noHoles=false){if(!g||!['Polygon','MultiPolygon'].includes(g.type)||!Array.isArray(g.coordinates))reject('polygon coordinate payload required');const ps=g.type==='Polygon'?[g.coordinates]:g.coordinates;if(!ps.length)reject('empty geometry');for(const p of ps){if(!Array.isArray(p)||!p.length||noHoles&&p.length!==1)reject('nonempty zero-hole components required');for(const r of p){if(!Array.isArray(r)||r.length<4||r.some(x=>!coordinate(x)||bounded&&(Math.abs(x[0])>180||Math.abs(x[1])>90))||!eq(r[0],r.at(-1)))reject('closed finite original rings required');}}return ps;}
- function bounds(ps){const b=[Infinity,Infinity,-Infinity,-Infinity];for(const p of ps)for(const r of p)for(const [x,y]of r){b[0]=Math.min(b[0],x);b[1]=Math.min(b[1],y);b[2]=Math.max(b[2],x);b[3]=Math.max(b[3],y);}return b;}
  function wkb(ps){let size=9;for(const p of ps){size+=9;for(const r of p)size+=4+r.length*16;}if(size>64*1024*1024)reject('original feature exceeds bounded payload');const b=Buffer.alloc(size);let i=0;const u=n=>{b.writeUInt32LE(n,i);i+=4;},head=t=>{b[i++]=1;u(t);};head(6);u(ps.length);for(const p of ps){head(3);u(p.length);for(const r of p){u(r.length);for(const [x,y]of r){b.writeDoubleLE(x,i);b.writeDoubleLE(y,i+8);i+=16;}}}return b;}
  function checkBlob(record,g,prepared=false){const ps=polygons(g,true,true);if(g.type!=='MultiPolygon'||Object.keys(g).length!==2)reject('exact MultiPolygon fields required');const str=record.rawBlobBase64,bh=prepared?record.blobSha256:record.rawBlobSha256,wh=prepared?record.wkbSha256:record.rawWkbSha256;if(typeof str!=='string'||str.length>90000000||!/^[A-Za-z0-9+/]+={0,2}$/.test(str)||!requiredHash(bh)||!requiredHash(wh))reject('original blob evidence required');const b=Buffer.from(str,'base64');if(b.length<53||b.length>64*1024*1024||b.toString('base64')!==str||hash(b)!==bh||b[0]!==71||b[1]!==80||b[2]!==0||b[3]!==3||b.readInt32LE(4)!==4326)reject('actual GeoPackage header/SRID/hash mismatch');const box=bounds(ps),envelope=[box[0],box[2],box[1],box[3]];for(let i=0;i<4;i++)if(b.readDoubleLE(8+i*8)!==envelope[i])reject('actual original envelope mismatch');const bytes=wkb(ps);if(!b.subarray(40).equals(bytes)||hash(bytes)!==wh)reject('actual original WKB differs');return ps;}
  function word(p){const b=Buffer.alloc(16);b.writeDoubleLE(p[0],0);b.writeDoubleLE(p[1],8);return b.toString('hex');}
@@ -253,7 +254,6 @@ function assertDetachedComponentAppend(next,previous,review,{prefixes,archivedRe
   if(!anchors.length||anchors.some(x=>x.rawFeatureId!==source.featureId||x.rawBlobSha256!==source.rawBlobSha256))reject('immutable prior raw feature/blob anchor mismatch');
  }
  function polygons(g,bounded=false){if(!g||!['Polygon','MultiPolygon'].includes(g.type)||!Array.isArray(g.coordinates))reject('polygon coordinate payload required');const ps=g.type==='Polygon'?[g.coordinates]:g.coordinates;if(!ps.length)reject('empty polygon payload');for(const p of ps){if(!Array.isArray(p)||!p.length)reject('empty polygon');for(const r of p){if(!Array.isArray(r)||r.length<4||r.some(a=>!Array.isArray(a)||a.length!==2||!a.every(Number.isFinite)||bounded&&(Math.abs(a[0])>180||Math.abs(a[1])>90))||!eq(r[0],r.at(-1)))reject('closed finite rings required');}}return ps;}
- function bounds(ps){const b=[Infinity,Infinity,-Infinity,-Infinity];for(const p of ps)for(const r of p)for(const [x,y]of r){b[0]=Math.min(b[0],x);b[1]=Math.min(b[1],y);b[2]=Math.max(b[2],x);b[3]=Math.max(b[3],y);}return b;}
  const raw=polygons(source.geometry,true),before=polygons(old.geometry,true),after=polygons(v.geometry,true);
  if(source.geometry.type!=='MultiPolygon'||old.geometry.type!=='MultiPolygon'||v.geometry.type!=='MultiPolygon'||Object.keys(source.geometry).length!==2||Object.keys(v.geometry).length!==2)reject('exact MultiPolygon fields required');
  const indexes=scope.selectedRawIndexes;if(!Array.isArray(indexes)||!indexes.length||indexes.some((x,i)=>!Number.isSafeInteger(x)||x<0||x>=raw.length||i>0&&x<=indexes[i-1]))reject('unique increasing original indices required');
@@ -508,84 +508,98 @@ function assertOriginalExistingComponents(next,previous,review,{prefixes,archive
  if(!isDeepStrictEqual(reconstructed,v.geometry))fail('coordinates or metadata outside selected components changed');return 1;
 }
 
+// Ordered rules retain the original first-match precedence and distinguish
+// a new-marker-only test, an old-or-new-marker test, and a paired test.
+const sourceStorageReviewRules=[
+ [hasSdnEriSeam,assertSdnEriSeam],
+ [hasSdnTcdSeam,assertSdnTcdSeam],
+ [hasUkrSvkSeam,assertUkrSvkSeam],
+ [hasUkrHunSeam,assertUkrHunSeam],
+ [hasUkrPolSeam,assertUkrPolSeam],
+ [hasUkrMdaSeam,assertUkrMdaSeam],
+ [hasUkrBlrSeam,assertUkrBlrSeam],
+ [hasEgyBrtSeam,assertEgyBrtSeam,"next","base"],
+ [hasEgyLbySeam,assertEgyLbySeam],
+ [hasRusLtuSeam,assertRusLtuSeam],
+ [hasRusPolSeam,assertRusPolSeam],
+ [hasRusLvaSeam,assertRusLvaSeam],
+ [hasRusEstSeam,assertRusEstSeam],
+ [hasRusAzeSeam,assertRusAzeSeam],
+ [hasRusBlrSeam,assertRusBlrSeam],
+ [hasIndMmrSeam,assertIndMmrSeam],
+ [hasPakIrnSeam,assertPakIrnSeam],
+ [hasSomEthSeam,assertSomEthSeam],
+ [hasSdsUgaSeam,assertSdsUgaSeam],
+ [hasSdsEthSeam,assertSdsEthSeam],
+ [hasTjkUzbSeam,assertTjkUzbSeam,"both","sourceDataRevision"],
+ [hasChnTjkSeam,assertChnTjkSeam,"next","sourceDataRevision"],
+ [hasChnKgzSeam,assertChnKgzSeam,"next","sourceDataRevision"],
+ [hasChnMacSeam,assertChnMacSeam],
+ [hasChnHkgSeam,assertChnHkgSeam],
+ [hasChnAfgSeam,assertChnAfgSeam],
+ [hasChnKazSeam,assertChnKazSeam],
+ [hasCafCodSeam,assertCafCodSeam],
+ [hasRusMngTermination,assertRusMngTermination],
+ [hasChnMngSeam,assertChnMngSeam],
+ [hasRussiaSeam,assertRussiaSeam],
+ [hasIndBgdSeam,assertIndBgdSeam],
+ [hasPrkOffshore,assertPrkOffshore],
+ [hasJpnRyukyuOriginal,assertJpnRyukyuOriginal],
+ [hasKorSouthwestOriginal,assertKorSouthwestOriginal],
+ [hasSdsPairedOriginal,assertSdsPairedOriginal],
+ [hasFinSweSeam,assertFinSweSeam,"next","base"],
+ [hasFinDetachedOriginal,assertFinDetachedOriginal],
+ [hasEuropeReviewedOriginal,assertEuropeReviewedOriginal],
+ [hasEspRetainedOriginal,assertEspRetainedOriginal],
+ [hasRusKurilOriginal,assertRusKurilOriginal],
+ [hasItaAutSeam,assertItaAutSeam,"next","base"],
+ [hasItaSvnSeam,assertItaSvnSeam,"next","base"],
+ [hasDeuPolSeam,assertDeuPolSeam,"next","base"],
+ [hasDeuCzeSeam,assertDeuCzeSeam,"next","base"],
+ [hasDeuAutSeam,assertDeuAutSeam,"next","base"],
+ [hasDeuCheSeam,assertDeuCheSeam,"next","base"],
+ [hasEuropePairedCoast,assertEuropePairedCoast,"both","getSourceSnapshot"],
+ [hasIrnGulfLiteral,assertIrnGulfLiteral,"both","getSourceSnapshot"],
+ [hasArcticLiteral,assertArcticLiteral,"both","getSourceSnapshot"],
+ [hasKoreanHistoricalCoast,assertKoreanHistoricalCoast,"both","getSourceSnapshot"],
+ [hasDeu1914Combined,assertDeu1914Combined,"both","getSourceSnapshot"],
+ [hasProtectedSsrCopy,assertProtectedSsrCopy,"both","getSourceSnapshot"],
+ [hasRegisteredCurrentOutlineReuse,assertRegisteredCurrentOutlineCopy,"both","getSourceSnapshot"],
+ [hasAfgTjkSeam,assertAfgTjkSeam,"next","sourceDataRevision"],
+ [hasKgzUzbSeam,assertKgzUzbSeam,"both","sourceDataRevision"],
+ [hasKgzKazSeam,assertKgzKazSeam,"next","sourceDataRevision"],
+ [hasProtectedOriginalArcs,assertProtectedOriginalArcs,"both","getSourceSnapshot"],
+ [hasFixedFourOriginal,assertFixedFourOriginal,"next","getSourceSnapshot"],
+ [hasJpnScopeCorrection,assertJpnScopeCorrection,"pair","getSourceSnapshot"],
+ [hasFinScopeCorrection,assertFinScopeCorrection,"pair","getSourceSnapshot"],
+ [hasFixedScopeCorrection,assertFixedScopeCorrection,"pair","getSourceSnapshot"],
+ [hasThirteenScopeCorrection,assertThirteenScopeCorrection,"pair","getSourceSnapshot"],
+ [hasRegisteredCzeSvkUnion,assertRegisteredCzeSvkUnion,"both","getSourceSnapshot"],
+ [hasRegisteredFiveUnion,assertRegisteredFiveUnion,"both","getSourceSnapshot"],
+ [hasHistoricalSourceReuse,assertHistoricalModernCopy,"both","getSourceSnapshot"],
+ [hasSelectedOriginalComposition,assertSelectedOriginalComposition,"both","getSourceSnapshot"],
+ [hasPatagoniaComposition,assertPatagoniaComposition,"both","getSourceSnapshot"],
+ [hasOriginalRetainedComposition,assertOriginalRetainedComposition,"both","getSourceSnapshot"],
+ [hasRetainedCoast,assertRetainedCoast],
+ [hasOriginalComposition,assertOriginalComposition,"both","getSourceSnapshot"],
+ [hasWholeOriginalBatch,assertWholeOriginalBatch],
+];
+
 /** Admit an original modern authoring source, never a display or compiled resource.
  * Evidence must already be archived by the storage owner, not supplied by a flag.
  * A dated current-source proxy needs its existing archived adoption evidence;
  * this does not approve historical reconstruction or derived display geometry.
  */
 export function assertHistoricalSourceStorageChanges(next,previous,{prefixes,readEvidence,getSourceSnapshot,sourceDataRevision}={}){
- if(hasSdnEriSeam(next)||hasSdnEriSeam(previous))return assertSdnEriSeam(next,previous,{prefixes,readEvidence});
- if(hasSdnTcdSeam(next)||hasSdnTcdSeam(previous))return assertSdnTcdSeam(next,previous,{prefixes,readEvidence});
- if(hasUkrSvkSeam(next)||hasUkrSvkSeam(previous))return assertUkrSvkSeam(next,previous,{prefixes,readEvidence});
- if(hasUkrHunSeam(next)||hasUkrHunSeam(previous))return assertUkrHunSeam(next,previous,{prefixes,readEvidence});
- if(hasUkrPolSeam(next)||hasUkrPolSeam(previous))return assertUkrPolSeam(next,previous,{prefixes,readEvidence});
- if(hasUkrMdaSeam(next)||hasUkrMdaSeam(previous))return assertUkrMdaSeam(next,previous,{prefixes,readEvidence});
- if(hasUkrBlrSeam(next)||hasUkrBlrSeam(previous))return assertUkrBlrSeam(next,previous,{prefixes,readEvidence});
- if(hasEgyBrtSeam(next))return assertEgyBrtSeam(next,previous,{prefixes,readEvidence});
- if(hasEgyLbySeam(next)||hasEgyLbySeam(previous))return assertEgyLbySeam(next,previous,{prefixes,readEvidence});
- if(hasRusLtuSeam(next)||hasRusLtuSeam(previous))return assertRusLtuSeam(next,previous,{prefixes,readEvidence});
- if(hasRusPolSeam(next)||hasRusPolSeam(previous))return assertRusPolSeam(next,previous,{prefixes,readEvidence});
- if(hasRusLvaSeam(next)||hasRusLvaSeam(previous))return assertRusLvaSeam(next,previous,{prefixes,readEvidence});
- if(hasRusEstSeam(next)||hasRusEstSeam(previous))return assertRusEstSeam(next,previous,{prefixes,readEvidence});
- if(hasRusAzeSeam(next)||hasRusAzeSeam(previous))return assertRusAzeSeam(next,previous,{prefixes,readEvidence});
- if(hasRusBlrSeam(next)||hasRusBlrSeam(previous))return assertRusBlrSeam(next,previous,{prefixes,readEvidence});
- if(hasIndMmrSeam(next)||hasIndMmrSeam(previous))return assertIndMmrSeam(next,previous,{prefixes,readEvidence});
- if(hasPakIrnSeam(next)||hasPakIrnSeam(previous))return assertPakIrnSeam(next,previous,{prefixes,readEvidence});
- if(hasSomEthSeam(next)||hasSomEthSeam(previous))return assertSomEthSeam(next,previous,{prefixes,readEvidence});
- if(hasSdsUgaSeam(next)||hasSdsUgaSeam(previous))return assertSdsUgaSeam(next,previous,{prefixes,readEvidence});
- if(hasSdsEthSeam(next)||hasSdsEthSeam(previous))return assertSdsEthSeam(next,previous,{prefixes,readEvidence});
- if(hasTjkUzbSeam(next)||hasTjkUzbSeam(previous))return assertTjkUzbSeam(next,previous,{prefixes,readEvidence,sourceDataRevision});
- if(hasChnTjkSeam(next))return assertChnTjkSeam(next,previous,{prefixes,readEvidence,sourceDataRevision});
- if(hasChnKgzSeam(next))return assertChnKgzSeam(next,previous,{prefixes,readEvidence,sourceDataRevision});
- if(hasChnMacSeam(next)||hasChnMacSeam(previous))return assertChnMacSeam(next,previous,{prefixes,readEvidence});
- if(hasChnHkgSeam(next)||hasChnHkgSeam(previous))return assertChnHkgSeam(next,previous,{prefixes,readEvidence});
- if(hasChnAfgSeam(next)||hasChnAfgSeam(previous))return assertChnAfgSeam(next,previous,{prefixes,readEvidence});
- if(hasChnKazSeam(next)||hasChnKazSeam(previous))return assertChnKazSeam(next,previous,{prefixes,readEvidence});
- if(hasCafCodSeam(next)||hasCafCodSeam(previous))return assertCafCodSeam(next,previous,{prefixes,readEvidence});
- if(hasRusMngTermination(next)||hasRusMngTermination(previous))return assertRusMngTermination(next,previous,{prefixes,readEvidence});
- if(hasChnMngSeam(next)||hasChnMngSeam(previous))return assertChnMngSeam(next,previous,{prefixes,readEvidence});
- if(hasRussiaSeam(next)||hasRussiaSeam(previous))return assertRussiaSeam(next,previous,{prefixes,readEvidence});
- if(hasIndBgdSeam(next)||hasIndBgdSeam(previous))return assertIndBgdSeam(next,previous,{prefixes,readEvidence});
- if(hasPrkOffshore(next)||hasPrkOffshore(previous))return assertPrkOffshore(next,previous,{prefixes,readEvidence});
- if(hasJpnRyukyuOriginal(next)||hasJpnRyukyuOriginal(previous))return assertJpnRyukyuOriginal(next,previous,{prefixes,readEvidence});
- if(hasKorSouthwestOriginal(next)||hasKorSouthwestOriginal(previous))return assertKorSouthwestOriginal(next,previous,{prefixes,readEvidence});
- if(hasSdsPairedOriginal(next)||hasSdsPairedOriginal(previous))return assertSdsPairedOriginal(next,previous,{prefixes,readEvidence});
- if(hasFinSweSeam(next))return assertFinSweSeam(next,previous,{prefixes,readEvidence});
- if(hasFinDetachedOriginal(next)||hasFinDetachedOriginal(previous))return assertFinDetachedOriginal(next,previous,{prefixes,readEvidence});
- if(hasEuropeReviewedOriginal(next)||hasEuropeReviewedOriginal(previous))return assertEuropeReviewedOriginal(next,previous,{prefixes,readEvidence});
- if(hasEspRetainedOriginal(next)||hasEspRetainedOriginal(previous))return assertEspRetainedOriginal(next,previous,{prefixes,readEvidence});
- if(hasRusKurilOriginal(next)||hasRusKurilOriginal(previous))return assertRusKurilOriginal(next,previous,{prefixes,readEvidence});
- if(hasItaAutSeam(next))return assertItaAutSeam(next,previous,{prefixes,readEvidence});
- if(hasItaSvnSeam(next))return assertItaSvnSeam(next,previous,{prefixes,readEvidence});
- if(hasDeuPolSeam(next))return assertDeuPolSeam(next,previous,{prefixes,readEvidence});
- if(hasDeuCzeSeam(next))return assertDeuCzeSeam(next,previous,{prefixes,readEvidence});
- if(hasDeuAutSeam(next))return assertDeuAutSeam(next,previous,{prefixes,readEvidence});
- if(hasDeuCheSeam(next))return assertDeuCheSeam(next,previous,{prefixes,readEvidence});
- if(hasEuropePairedCoast(next)||hasEuropePairedCoast(previous))return assertEuropePairedCoast(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasIrnGulfLiteral(next)||hasIrnGulfLiteral(previous))return assertIrnGulfLiteral(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasArcticLiteral(next)||hasArcticLiteral(previous))return assertArcticLiteral(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasKoreanHistoricalCoast(next)||hasKoreanHistoricalCoast(previous))return assertKoreanHistoricalCoast(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasDeu1914Combined(next)||hasDeu1914Combined(previous))return assertDeu1914Combined(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasProtectedSsrCopy(next)||hasProtectedSsrCopy(previous))return assertProtectedSsrCopy(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasRegisteredCurrentOutlineReuse(next)||hasRegisteredCurrentOutlineReuse(previous))return assertRegisteredCurrentOutlineCopy(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasAfgTjkSeam(next))return assertAfgTjkSeam(next,previous,{prefixes,readEvidence,sourceDataRevision});
- if(hasKgzUzbSeam(next)||hasKgzUzbSeam(previous))return assertKgzUzbSeam(next,previous,{prefixes,readEvidence,sourceDataRevision});
- if(hasKgzKazSeam(next))return assertKgzKazSeam(next,previous,{prefixes,readEvidence,sourceDataRevision});
- if(hasProtectedOriginalArcs(next)||hasProtectedOriginalArcs(previous))return assertProtectedOriginalArcs(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasFixedFourOriginal(next))return assertFixedFourOriginal(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasJpnScopeCorrection(next,previous))return assertJpnScopeCorrection(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasFinScopeCorrection(next,previous))return assertFinScopeCorrection(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasFixedScopeCorrection(next,previous))return assertFixedScopeCorrection(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasThirteenScopeCorrection(next,previous))return assertThirteenScopeCorrection(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasRegisteredCzeSvkUnion(next)||hasRegisteredCzeSvkUnion(previous))return assertRegisteredCzeSvkUnion(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasRegisteredFiveUnion(next)||hasRegisteredFiveUnion(previous))return assertRegisteredFiveUnion(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasHistoricalSourceReuse(next)||hasHistoricalSourceReuse(previous))return assertHistoricalModernCopy(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasSelectedOriginalComposition(next)||hasSelectedOriginalComposition(previous))return assertSelectedOriginalComposition(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasPatagoniaComposition(next)||hasPatagoniaComposition(previous))return assertPatagoniaComposition(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasOriginalRetainedComposition(next)||hasOriginalRetainedComposition(previous))return assertOriginalRetainedComposition(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasRetainedCoast(next)||hasRetainedCoast(previous))return assertRetainedCoast(next,previous,{prefixes,readEvidence});
- if(hasOriginalComposition(next)||hasOriginalComposition(previous))return assertOriginalComposition(next,previous,{prefixes,readEvidence,getSourceSnapshot});
- if(hasWholeOriginalBatch(next)||hasWholeOriginalBatch(previous))return assertWholeOriginalBatch(next,previous,{prefixes,readEvidence});
+ const reviewOptions={
+  base:{prefixes,readEvidence},
+  sourceDataRevision:{prefixes,readEvidence,sourceDataRevision},
+  getSourceSnapshot:{prefixes,readEvidence,getSourceSnapshot},
+ };
+ for(const [match,validate,scope='both',options='base'] of sourceStorageReviewRules){
+  const matched=scope==='pair'?match(next,previous):match(next)||(scope==='both'&&match(previous));
+  if(matched)return validate(next,previous,reviewOptions[options]);
+ }
  const appendMarked=v=>v?.modernBoundarySupplement&&(Object.hasOwn(v.modernBoundarySupplement,'detachedComponentAppend')||Object.hasOwn(v.modernBoundarySupplement,'initialPreparedAppend')||v.modernBoundarySupplement.adoptionMode==='lossless-original-detached-component-append');
  if(next.geometryVersions?.some(v=>appendMarked(v)&&!v.modernBoundarySupplement.sourceAdoptionReview))throw Error('Raw source adoption: detached-component append: initial append receipt is required');
  if(next.geometryVersions?.some(appendMarked)&&previous&&next.geometryVersions.length===previous.geometryVersions?.length&&next.geometryVersions.every((v,i)=>v.versionId===previous.geometryVersions[i].versionId&&digest(v.geometry)===digest(previous.geometryVersions[i].geometry))&&!isDeepStrictEqual(next,previous))throw Error('Raw source adoption: detached-component append: unchanged geometry cannot acquire or alter append attribution');
