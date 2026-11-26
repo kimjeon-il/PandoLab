@@ -6,6 +6,7 @@ export function createPointerTargets() {
   let dependencies;
   let hoverPickFrame;
   let pendingHoverPick;
+  let hoverPickInFlight=false;
   let lastHoverPickPoint;
   let lastHoverPickViewRevision;
   let lastPickingRevision;
@@ -70,15 +71,21 @@ export function createPointerTargets() {
   function queueCountryHoverPick(screenPoint, coord) {
     if (!screenPoint || !coord || dependencies.projectState.state.mapMoving) return;
     const renderer = dependencies.rendering.mapRenderer;
-    if (lastHoverPickPoint && lastHoverPickViewRevision === dependencies.mapLayout.viewRevision
+    if (!pendingHoverPick && lastHoverPickPoint && lastHoverPickViewRevision === dependencies.mapLayout.viewRevision
       && lastPickingRevision === renderer.getPickingRevision()
       && Math.hypot(screenPoint[0] - lastHoverPickPoint[0], screenPoint[1] - lastHoverPickPoint[1]) < 3) return;
     pendingHoverPick = { screenPoint: [...screenPoint], coord: [...coord], sequence: ++hoverPickSequence };
-    if (hoverPickFrame) return;
+    scheduleHoverPick();
+  }
+
+  function scheduleHoverPick(){
+    if(hoverPickFrame||hoverPickInFlight||!pendingHoverPick)return;
+    const renderer=dependencies.rendering.mapRenderer;
     hoverPickFrame = requestAnimationFrame(async () => {
       hoverPickFrame = 0;
       const pending = pendingHoverPick;
       pendingHoverPick = null;
+      hoverPickInFlight=true;
       try {
         if (!pending || dependencies.projectState.state.mapMoving) return false;
         lastHoverPickPoint = pending.screenPoint;
@@ -95,6 +102,8 @@ export function createPointerTargets() {
       } catch (error) {
         if (!obsoleteHoverError(error)) dependencies.feedback.reportOperationError(error,'지도 hover 대상을 찾지 못했습니다.','PL-MAP-HOVER-001',4200);
         return false;
+      } finally {
+        hoverPickInFlight=false;scheduleHoverPick();
       }
     });
   }

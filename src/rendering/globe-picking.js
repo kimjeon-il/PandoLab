@@ -52,21 +52,50 @@ function visitPickCells(ray,visitor){
   }
 }
 
-export function pickGlobeSlots(mesh, grid, ray, visible = () => true, { firstHit = false } = {}) {
+/** Packet bounds in the exact same Cartesian grid used by the pick index.
+ * All triangle/segment extents lie inside the endpoint/vertex bounds.
+ */
+export function globePickCellBounds(...vectors){
+  const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
+  for(const [positions,residuals] of vectors){
+    for(let i=0;i<positions.length;i+=3)for(let axis=0;axis<3;axis++){
+      const coordinate=positions[i+axis]+residuals[i+axis];
+      if(coordinate<low[axis])low[axis]=coordinate;
+      if(coordinate>high[axis])high[axis]=coordinate;
+    }
+  }
+  return low[0]===Infinity?null:[...low.map(globePickCellCoordinate),...high.map(globePickCellCoordinate)];
+}
+
+export function pickCellsIntersectBounds(cells,bounds){
+  if(!bounds)return false;
+  const [x0,y0,z0,x1,y1,z1]=bounds;
+  for(const index of cells){
+    const x=index%side,y=Math.floor(index/side)%side,z=Math.floor(index/(side*side));
+    if(x>=x0&&x<=x1&&y>=y0&&y<=y1&&z>=z0&&z<=z1)return true;
+  }
+  return false;
+}
+
+export function globePickRayCells(ray){
+  const cells=[];
+  visitPickCells(ray,cell=>{cells.push(globePickCellIndex(...cell));});
+  return cells;
+}
+
+export function pickGlobeSlots(mesh, grid, ray, visible = () => true, { firstHit = false, cells = globePickRayCells(ray) } = {}) {
   const seen=new Set(), hits=new Set();
-  visitPickCells(ray,cell=>{
-    const index=globePickCellIndex(...cell);
+  for(const index of cells){
     for(let i=grid.offsets[index];i<grid.offsets[index+1];i++){
       const triangle=grid.triangles[i],first=triangle*3,slot=mesh.slots[mesh.indices[first]]??0;
       if(hits.has(slot)||seen.has(triangle)||!visible(slot))continue;
       seen.add(triangle);
       if(intersects(mesh,first,ray)){
         hits.add(slot);
-        if(firstHit)return true;
+        if(firstHit)return [slot];
       }
     }
-    return false;
-  });
+  }
   // The combined mesh draws larger slot indices last when fills overlap.
   return [...hits].sort((a,b)=>b-a);
 }
@@ -77,8 +106,8 @@ const pointSegmentDistance=([x,y],[[ax,ay],[bx,by]])=>{
   return Math.hypot(x-ax-dx*fraction,y-ay-dy*fraction);
 };
 
-export function pickGlobeStrokeSlots(packet,grid,camera,point,tolerance=5){
-  const cells=new Set(),seen=new Set(),hits=new Map();
+export function globePickStrokeCells(camera,point,tolerance=5){
+  const cells=new Set();
   const [x,y]=point;
   for(const dy of [-tolerance,0,tolerance])for(const dx of [-tolerance,0,tolerance]){
     visitPickCells(camera.worldRay([x+dx,y+dy]),([a,b,c])=>{
@@ -87,6 +116,11 @@ export function pickGlobeStrokeSlots(packet,grid,camera,point,tolerance=5){
           for(let ix=Math.max(0,a-1);ix<=Math.min(side-1,a+1);ix++)cells.add(globePickCellIndex(ix,iy,iz));
     });
   }
+  return cells;
+}
+
+export function pickGlobeStrokeSlots(packet,grid,camera,point,tolerance=5,cells=globePickStrokeCells(camera,point,tolerance)){
+  const seen=new Set(),hits=new Map();
   for(const cell of cells)for(let i=grid.offsets[cell];i<grid.offsets[cell+1];i++){
     const segment=grid.triangles[i],slot=packet.ownerGroups[segment];
     if(seen.has(segment))continue;

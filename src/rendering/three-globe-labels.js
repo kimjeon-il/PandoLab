@@ -6,7 +6,17 @@ export const COUNTRY_LABEL_MIN_ZOOM=3;
 const fontSize=56, outlineRange=7, padding=outlineRange+2, atlasSize=2048;
 
 export function placeGlobeLabels(candidates,camera,viewport,previous) {
-  const placed=[];
+  const placed=[],cells=new Map();
+  // Retain greedy priority and hysteresis. Inspect only occupied screen
+  // cells touched by the candidate (including its existing gap).
+  const cellSize=64,columns=Math.floor(viewport.width/cellSize)+1;
+  function cellRange(left,top,right,bottom,visit){
+    const x0=Math.max(0,Math.floor(left/cellSize)),y0=Math.max(0,Math.floor(top/cellSize));
+    const x1=Math.min(columns-1,Math.floor(right/cellSize));
+    const y1=Math.min(Math.floor(viewport.height/cellSize),Math.floor(bottom/cellSize));
+    for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)if(visit(y*columns+x))return true;
+    return false;
+  }
   const scale=referenceZoomPixelsPerDegree(camera.view.zoom)*180/Math.PI;
   for(const label of candidates){
     if(label.visible===false||camera.view.zoom<(label.minZoom??-Infinity)||camera.view.zoom>(label.maxZoom??Infinity))continue;
@@ -26,8 +36,15 @@ export function placeGlobeLabels(candidates,camera,viewport,previous) {
     const right=left+label.width*size,bottom=top+label.height*size;
     if(left<0||top<0||right>viewport.width||bottom>viewport.height)continue;
     const gap=retained?0:3;
-    if(placed.some(row=>row.left<right+gap&&row.right>left-gap&&row.top<bottom+gap&&row.bottom>top-gap))continue;
-    placed.push({...label,left,right,top,bottom});
+    if(cellRange(left-gap,top-gap,right+gap,bottom+gap,key=>
+      (cells.get(key)??[]).some(row=>row.left<right+gap&&row.right>left-gap&&row.top<bottom+gap&&row.bottom>top-gap)))continue;
+    const row={...label,left,right,top,bottom};
+    placed.push(row);
+    cellRange(left,top,right,bottom,key=>{
+      let bucket=cells.get(key);
+      if(!bucket){bucket=[];cells.set(key,bucket);}
+      bucket.push(row);return false;
+    });
   }
   return placed;
 }

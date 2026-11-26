@@ -4,7 +4,7 @@ import { buildGlobePickGrid } from '../../../scripts/lib/globe-pick-grid.mjs';
 import { combineGlobeCountryMeshes } from '../../../scripts/lib/globe-preview-assets.mjs';
 import { createGlobeCamera } from '../../../src/rendering/globe-camera.js';
 import { decodeGlobeMesh } from '../../../src/rendering/globe-mesh.js';
-import { decodeGlobePickGrid, pickGlobeSlots } from '../../../src/rendering/globe-picking.js';
+import { decodeGlobePickGrid, globePickCellBounds, globePickRayCells, pickCellsIntersectBounds, pickGlobeSlots } from '../../../src/rendering/globe-picking.js';
 import { createObjectPicking } from '../../../src/map/object-picking.js';
 import { normalizeObjectRef } from '../../../src/document/object-ref-identity.js';
 
@@ -56,4 +56,18 @@ test('indexed line picking finds the nearby visible river and ignores the far he
   const camera=createGlobeCamera({center:[180,0],zoom:5},{width:800,height:600});
   assert.deepEqual(pickGlobeStrokeSlots(packet,grid,camera,[400,303]),[3]);
   assert.deepEqual(pickGlobeStrokeSlots(packet,grid,camera,[400,325]),[]);
+});
+
+test('packet bounds use exact grid cells and a shared ray traversal preserves hits', () => {
+  const row=(id,lon)=>({id,geometry:{id,version:1},
+    vertices:Float64Array.of(lon-1,-1,lon+1,-1,lon,1),indices:Uint32Array.of(0,1,2)});
+  const near=decodeGlobeMesh(combineGlobeCountryMeshes([row('near',179.9)]).buffer);
+  const far=decodeGlobeMesh(combineGlobeCountryMeshes([row('far',0)]).buffer);
+  const camera=createGlobeCamera({center:[179.9,0],zoom:5},{width:800,height:600});
+  const ray=camera.worldRay([400,300]),cells=globePickRayCells(ray);
+  const bounds=mesh=>globePickCellBounds([mesh.positions,mesh.residuals]);
+  assert.equal(pickCellsIntersectBounds(cells,bounds(near)),true);
+  assert.equal(pickCellsIntersectBounds(cells,bounds(far)),false);
+  const grid=decodeGlobePickGrid(buildGlobePickGrid(near),near.indices.length/3);
+  assert.deepEqual(pickGlobeSlots(near,grid,ray,undefined,{cells}),[0]);
 });

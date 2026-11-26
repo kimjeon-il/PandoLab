@@ -66,3 +66,18 @@ test('the viewport bounds include visible locations across the date line and sta
     assert.ok(unwrapped>=west&&unwrapped<=east&&lat>=south&&lat<=north);
   }
 });
+
+test('label collision grid keeps the retained gap rule across cell boundaries', async () => {
+  const {placeGlobeLabels}=await import('../../../src/rendering/three-globe-labels.js');
+  const camera={view:{zoom:4},frame:{eye:[2,2,0]},projectVisibleCoordinate:([x])=>[x,64]};
+  const base={place:true,width:56,height:56};
+  const candidates=[
+    {...base,key:'first',coordinate:[57,0]},
+    {...base,key:'overlap-gap',coordinate:[70,0]},
+    {...base,key:'clear',coordinate:[90,0]},
+  ];
+  const ordinary=placeGlobeLabels(candidates,camera,{width:128,height:128},new Set());
+  assert.deepEqual(ordinary.map(row=>row.key),['first','clear']);
+  const retained=placeGlobeLabels(candidates,camera,{width:128,height:128},new Set(['overlap-gap']));
+  assert.deepEqual(retained.map(row=>row.key),['first','overlap-gap','clear']);
+});

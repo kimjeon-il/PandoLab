@@ -23,8 +23,6 @@ const vertexShader = `
   #endif
   #ifdef OUTLINE_OWNERS
     attribute float ownerGroup;
-    uniform sampler2D outlineGroups;
-    uniform float outlineGroupCount;
     uniform vec2 outlineStyles[5];
     varying float strokeAlpha;
   #endif
@@ -55,8 +53,7 @@ const vertexShader = `
       strokeRadius *= mix(sourceWidth, max(1.5, sourceWidth), clamp(4.0 - zoom, 0.0, 1.0));
     #endif
     #ifdef OUTLINE_OWNERS
-      float code = texture2D(outlineGroups, vec2((ownerGroup + 0.5) / outlineGroupCount, 0.5)).r;
-      vec2 style = outlineStyles[int(code * 255.0 + 0.5)];
+      vec2 style = outlineStyles[int(ownerGroup + 0.5)];
       strokeRadius = style.x;
       strokeAlpha = style.y;
       if (strokeRadius <= 0.0 || strokeAlpha <= 0.0) return;

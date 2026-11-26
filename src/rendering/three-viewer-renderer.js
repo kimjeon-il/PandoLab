@@ -10,7 +10,7 @@ import {createGlobeCamera} from './globe-camera.js';
 import {COUNTRY_LABEL_MIN_ZOOM} from './three-globe-labels.js';
 import {automaticLabelSettings, labelKey} from './label-layout.js';
 import {decodeGlobeMesh,decodeGlobeStrokes,globeMeshResourceKey,globeTerritoryKey} from './globe-mesh.js';
-import {decodeGlobePickGrid,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
+import {decodeGlobePickGrid,globePickCellBounds,globePickRayCells,globePickStrokeCells,pickCellsIntersectBounds,pickGlobeSlots,pickGlobeStrokeSlots} from './globe-picking.js';
 import {createMapPresentationSession} from './map-presentation-session.js';
 import {createThreeGlobeSurface} from './three-globe-surface.js';
 import {createRenderingMetrics} from './rendering-metrics.js';
@@ -41,7 +41,9 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  let host,canvas,surface,assets,camera,viewport,pending,disposed=false,lost=false,loaded=false,ready=false,error;
  let generation=0,contextRevision=0,revision=0,lastFrame=null,lastCamera=null,features=null,acceptedFeatures=null;
  let territories=baseTerritories,acceptedTerritories=baseTerritories,territoryParts=null,acceptedTerritoryParts=null,activeSlots=new Set(baseTerritories.slots);
- let selection=null,style=null,paintDirty=true,moving=false,moveTimer,velocity,pointerTravel=0,lastPointerMove=0;
+ let selection=null,style=null,paintDirty=true,fullPaintDirty=true,moving=false,moveTimer,velocity,pointerTravel=0,lastPointerMove=0;
+ let activeSlotByKey=new Map(baseTerritories.slots.map(slot=>[refs[slot].key,slot])),acceptedActiveSlots=activeSlots;
+ let paintedSlots=new Set(),countryRoles=new Map(),pickingRevision=0,pickingChanged=false;
  let outlineSlots=new Set();
  let labelContentDirty=true;
  let framePreserved=false,initialLoading=true,drawCount=0,unsupported=false;
@@ -122,7 +124,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    moveTimer=setTimeout(finishMovement,140);
   },{passive:false});
   listen('webglcontextlost',event=>{event.preventDefault();lost=true;ready=false;notify('loading','그래픽 연결 복구 중');});
-  listen('webglcontextrestored',()=>{lost=false;contextRevision++;presentation.rebaseContext();invalidate('three-context-restored');});
+  listen('webglcontextrestored',()=>{lost=false;contextRevision++;surface?.restoreCountryPaint();pickingChanged=true;presentation.rebaseContext();invalidate('three-context-restored');});
  }
 
  function attach(element){
@@ -136,11 +138,22 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   return result.value;
  }
  const loadMesh=async row=>({packet:await load(row,decodeGlobeMesh),gridSpec:row.pickGrid});
- const meshGrids=new WeakMap();
- async function pickMesh(mesh,ray,visible,options){
+ const meshGrids=new WeakMap(),pickBounds=new WeakMap();
+ function packetBounds(packet){
+  if(!pickBounds.has(packet)){
+   const bounds=packet.positions?globePickCellBounds([packet.positions,packet.residuals]):
+    globePickCellBounds([packet.start,packet.startLow],[packet.end,packet.endLow]);
+   pickBounds.set(packet,bounds);
+  }
+  return pickBounds.get(packet);
+ }
+ async function pickMesh(mesh,ray,cells,visible,options){
+  // The global base mesh is always a candidate. Local packets need not even
+  // load their exact pick grid when the sampled ray misses their cell bounds.
+  if(mesh!==assets.countries&&!pickCellsIntersectBounds(cells,packetBounds(mesh.packet)))return [];
   const grid=await historicalResource(meshGrids,mesh,()=>load(mesh.gridSpec,
    bytes=>decodeGlobePickGrid(bytes,mesh.packet.indices.length/3),{phase:'background',label:'지도 선택 인덱스'}));
-  return pickGlobeSlots(mesh.packet,grid,ray,visible,options);
+  return pickGlobeSlots(mesh.packet,grid,ray,visible,{...options,cells});
  }
  async function loadOutlines(row,owners){
   return load(row,bytes=>{
@@ -281,7 +294,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const [parts,nextPhysical]=await Promise.all([loadHistoricalAssets(prepared.view),physicalAssets.prepare(identity)]);
   if(disposed||request!==territorialRequest||requestGeneration!==generation||month!==state.timelineCursor)return false;
   territories=prepared;territoryParts=parts;physical=nextPhysical;activeSlots=new Set(prepared.slots);
-  features=new Map(rows.map(row=>[String(row.id),row]));paintDirty=true;labelContentDirty=true;return true;
+  activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));
+  features=new Map(rows.map(row=>[String(row.id),row]));paintDirty=fullPaintDirty=true;labelContentDirty=true;return true;
  }
  function updateLabelContent(){
   const namesVisible=territorialNamesVisible(state);
@@ -328,26 +342,37 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }
  function updatePaint(){
   const colors=layerStyle(state.layerPresentation,'objects').colorVisible!==false;
-  const selected=selection?.selection;
+  const selected=selection?.selection,selectedKeys=new Set(selected?.keys??[]);
   const candidates=deps.highlightCandidates(),candidateKeys=new Set(candidates.map(ref=>ref.key));
-  const roles=new Uint8Array(refs.length),roleStyles=[{width:0,alpha:0}];
+  const roleStyles=[{width:0,alpha:0}];
   if(style)for(const [role,code] of Object.entries(INTERACTION_ROLE_PRIORITY))roleStyles[code]=resolveMapStrokeStyle(style,role);
-  const roleFor=ref=>selected?.primaryKey===ref.key?'primary':selected?.keys.includes(ref.key)?'secondary':
+  const roleFor=ref=>selected?.primaryKey===ref.key?'primary':selectedKeys.has(ref.key)?'secondary':
     selection?.hover?.key===ref.key?'hover':candidateKeys.has(ref.key)?'candidate':null;
+  const nextRoles=new Map();
   outlineSlots=new Set();
-  surface.setCountryPaint(refs.map((ref,slot)=>{
-   if(!activeSlots.has(slot))return {color:null,visible:false};
-   const role=roleFor(ref);
-   const visible=deps.objectRefVisible(ref);
-   const appearance=role&&style?roleStyles[INTERACTION_ROLE_PRIORITY[role]]:null;
-   if(appearance&&visible){
-    roles[slot]=INTERACTION_ROLE_PRIORITY[role];
+  if(style){
+   const keys=new Set([...selectedKeys,selected?.primaryKey,selection?.hover?.key,...candidateKeys]);
+   for(const key of keys){
+    const slot=activeSlotByKey.get(key);
+    if(slot===undefined||!deps.objectRefVisible(refs[slot]))continue;
+    const code=INTERACTION_ROLE_PRIORITY[roleFor(refs[slot])],appearance=roleStyles[code];
+    if(!appearance)continue;
+    nextRoles.set(slot,code);
     if(appearance.width>0&&appearance.alpha>0)outlineSlots.add(slot<baseSlots.length?null:slot);
    }
-   return {color:colors?deps.colorModel.territorialEntityColor(features.get(ref.id)):null,visible,
-    highlight:appearance?{color:appearance.color,alpha:appearance.fillAlpha}:null};
-  }));
-  surface.setOutlinePaint(roles,roleStyles,style?.selection.color);
+  }
+  // A selection change only touches old/new highlighted slots. A real scene,
+  // palette or visibility change also refreshes active and retired slots.
+  const changed=fullPaintDirty?new Set([...paintedSlots,...activeSlots]):
+    new Set([...countryRoles.keys(),...nextRoles.keys()].filter(slot=>countryRoles.get(slot)!==nextRoles.get(slot)));
+  surface.setCountryPaint([...changed].map(slot=>{
+   if(!activeSlots.has(slot))return [slot,{color:null,visible:false}];
+   const ref=refs[slot],appearance=roleStyles[nextRoles.get(slot)];
+   return [slot,{color:colors?deps.colorModel.territorialEntityColor(features.get(ref.id)):null,
+    visible:deps.objectRefVisible(ref),highlight:appearance?{color:appearance.color,alpha:appearance.fillAlpha}:null}];
+  }),{full:fullPaintDirty});
+  paintedSlots=activeSlots;countryRoles=nextRoles;
+  surface.setOutlinePaint(nextRoles,roleStyles,style?.selection.color);
   if(ready)requestOutlines();
   const hydroRoles=new Map(),waterRoles=new Map();
   if(style)for(const ref of [...(selected?.items??[]),selection?.hover,...candidates]){
@@ -359,7 +384,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   surface.setHydroPaint(hydroRoles,waterRoles,roleStyles,style?.selection.color);
   for(const layer of ['lakes','rivers'])surface.setLayerVisibility(layer,state.layerVisibility[layer]!==false);
   surface.setLayerVisibility('borders',state.layerVisibility.objects!==false&&layerStyle(state.layerPresentation,'objects').boundaryVisible!==false);
-  paintDirty=false;
+  paintDirty=fullPaintDirty=false;
  }
  function renderFrame(frame){
   const base={frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
@@ -367,6 +392,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   surface.activateDatedView(territories.view,territoryParts);
   surface.activatePhysicalContext(physical);
   surface.setLayerVisibility('graticule',state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false);
+  pickingChanged||=fullPaintDirty||lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
   if(paintDirty)metrics.run('three.country-paint',updatePaint);
   if(labelContentDirty)metrics.run('three.label-content',updateLabelContent);
   const showRivers=state.layerVisibility.rivers!==false;
@@ -376,7 +402,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   }
   metrics.run('three.submit-frame',()=>surface.draw(camera,viewport.width,viewport.height));
   drawCount++;lastFrame=frame;lastCamera=camera;acceptedFeatures=features;
-  acceptedTerritories=territories;acceptedTerritoryParts=territoryParts;acceptedPhysical=physical;
+  acceptedTerritories=territories;acceptedTerritoryParts=territoryParts;acceptedPhysical=physical;acceptedActiveSlots=activeSlots;
   acceptedRiverChunks=riverDetail.activeEntries();
   presentation.markTemporalFrame(frame);emit('render');
   if(moving&&!pointers.size&&velocity){
@@ -391,6 +417,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const first=!ready;ready=true;
   if(!presentation.commitVisualFrame(frame)){ready=!first;return false;}
   if(first){metrics.publish();notify('ready','지도 표시 준비 완료');requestOutlines();}
+  if(pickingChanged){pickingRevision++;pickingChanged=false;}
   revision++;return true;
  }
  async function pickHydroFeatures(point,active,camera,lakeSlots,waterFeatures){
@@ -398,12 +425,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   if(state.layerVisibility.rivers!==false&&camera.view.zoom>=active.spec.riverMinZoom){
    const chunks=[{row:{spec:active.spec.rivers,minZoom:active.spec.riverMinZoom},packet:active.rivers},
     ...acceptedRiverChunks.filter(({row})=>camera.view.zoom>=row.minZoom)];
-   await Promise.all(chunks.map(async({row,packet})=>{
+   const cells=globePickStrokeCells(camera,point);
+   await Promise.all(chunks.filter(({packet},index)=>index===0||pickCellsIntersectBounds(cells,packetBounds(packet))).map(async({row,packet})=>{
     if(!riverPickGrids.has(packet))riverPickGrids.set(packet,new Map());
     const gridSpec=row.spec.pickGrid;
     const grid=await historicalResource(riverPickGrids.get(packet),gridSpec.sha256,
      ()=>load(gridSpec,bytes=>decodeGlobePickGrid(bytes,packet.count)));
-    for(const slot of pickGlobeStrokeSlots(packet,grid,camera,point))slots.add(slot);
+    for(const slot of pickGlobeStrokeSlots(packet,grid,camera,point,5,cells))slots.add(slot);
    }));
   }
   if(!slots.size)return waterFeatures;
@@ -425,11 +453,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   if(label)return [label];
   const sampledCamera=lastCamera,active=acceptedPhysical,territory=acceptedTerritories,generationAtPick=generation,ray=sampledCamera.worldRay(point);
   if(!ray)return [];
+  const cells=globePickRayCells(ray),visibleSlots=acceptedActiveSlots;
   const isCurrent=()=>!disposed&&!framePreserved&&lastCamera===sampledCamera&&acceptedPhysical===active&&
    acceptedTerritories===territory&&generationAtPick===generation;
   const [waterHits,lakeHits]=await Promise.all([
-   Promise.all(active.waters.map(({mesh})=>pickMesh(mesh,ray,undefined,{firstHit:true}))),
-   Promise.all(state.layerVisibility.lakes===false?[]:active.lakes.filter(({minZoom})=>sampledCamera.view.zoom>=minZoom).map(({mesh})=>pickMesh(mesh,ray))),
+   Promise.all(active.waters.map(({mesh})=>pickMesh(mesh,ray,cells,undefined,{firstHit:true}))),
+   Promise.all(state.layerVisibility.lakes===false?[]:active.lakes.filter(({minZoom})=>sampledCamera.view.zoom>=minZoom).map(({mesh})=>pickMesh(mesh,ray,cells))),
   ]);
   if(!isCurrent())return [];
   const waters=active.waters.filter((_,index)=>waterHits[index].length>0),lakeSlots=lakeHits.flat();
@@ -447,12 +476,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    hydroRefs=visible.map(feature=>normalizeObjectRef({domain:'hydro',type:feature.properties.category,id:feature.id}));
   }
   if(waters.length||lakeSlots.length)return hydroRefs;
-  const visibleSlot=slot=>territory.slots.includes(slot)&&deps.objectRefVisible(refs[slot]);
+  const visibleSlot=slot=>visibleSlots.has(slot)&&deps.objectRefVisible(refs[slot]);
   const meshes=[...(acceptedTerritoryParts?.countries??[]).map(row=>row.mesh),assets.countries];
-  const hits=await Promise.all(meshes.map(row=>pickMesh(row,ray,visibleSlot)));
+  const hits=await Promise.all(meshes.map(row=>pickMesh(row,ray,cells,visibleSlot)));
   return isCurrent()?[...hydroRefs,...hits.flat().map(slot=>refs[slot])]:[];
  }
- function appearance(){paintDirty=true;invalidate('three-style');}
+ function appearance(){paintDirty=fullPaintDirty=true;invalidate('three-style');}
  const projection=Object.freeze({projectCoordinate:coord=>camera?.projectCoordinate(coord)??null,
   projectVisibleCoordinate:(coord,options)=>camera?.projectVisibleCoordinate(coord,options)??null,
   screenToGeo:point=>camera?.screenToGeo(point)??null,geographicBounds:()=>camera?.geographicBounds()??null});
@@ -468,7 +497,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   setRenderQuality:appearance,
   labelZoomVisibility:()=>({country:Boolean(camera&&camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM),
    places:Boolean(camera&&camera.view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR)}),
-  invalidateLabelContent(){labelContentDirty=true;},getPickingRevision:()=>revision,queryObjectRefs,
+  invalidateLabelContent(){labelContentDirty=true;},getPickingRevision:()=>pickingRevision,queryObjectRefs,
   setInitialMapLoading(value){initialLoading=value;},isStyleReady:()=>loaded,renderFrame,commitVisualFrame,
   canPresentVisualFrame:presentation.canPresentVisualFrame,prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
   beginTemporalViewTransition:presentation.beginTemporalViewTransition,admitTemporalViewTransition:presentation.admitTemporalViewTransition,

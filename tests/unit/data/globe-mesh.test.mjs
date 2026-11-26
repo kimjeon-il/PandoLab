@@ -192,3 +192,19 @@ test('dated physical contexts reuse unchanged river packets while changing water
   assert.deepEqual(calls.sort(),['dated-water','modern-water','modern-water','rivers']);
   assert.equal(await assets.prepare('dated'),dated);
 });
+
+test('outline selection submits only active owner ranges in original segment order', async () => {
+  const {indexGlobeOutlineRanges,selectGlobeOutlineGroups,globeOutlineRanges}=await import('../../../src/rendering/three-globe-surface.js');
+  const packet={count:6,ownerGroups:Uint16Array.of(0,0,1,2,1,0)};
+  const index=indexGlobeOutlineRanges(packet,[[5],[5,8],[8]]);
+  const styles=[{width:0,alpha:0},{width:1,alpha:1},{width:2,alpha:1}];
+  const groups=selectGlobeOutlineGroups(index,new Map([[5,1],[8,2]]),styles);
+  assert.deepEqual(globeOutlineRanges(index,groups),[
+    {first:0,end:2,code:1},{first:2,end:3,code:2},{first:3,end:4,code:2},
+    {first:4,end:5,code:2},{first:5,end:6,code:1},
+  ]);
+  assert.deepEqual(globeOutlineRanges(index,selectGlobeOutlineGroups(index,new Map([[8,2]]),styles)),[
+    {first:2,end:3,code:2},{first:3,end:4,code:2},{first:4,end:5,code:2},
+  ]);
+  assert.equal(selectGlobeOutlineGroups(index,new Map([[8,0]]),styles).size,0);
+});
