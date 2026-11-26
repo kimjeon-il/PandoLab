@@ -39,7 +39,10 @@ export function createRenderQuality() {
   function applyMapAppearanceChange({ reason = 'user-preferences', rerender = true } = {}) {
     syncResolvedInteractionStyle({ redraw: rerender });
     dependencies.rendering.mapRenderer.invalidateCountryPalette({ base: true, emphasis: true }, reason);
-    if (rerender) dependencies.domains.renderingDomain.invalidateBaseScene(reason);
+    if (rerender) {
+      const domain=dependencies.domains.renderingDomain;
+      if(domain.invalidateAppearance)domain.invalidateAppearance(reason);else domain.invalidateBaseScene(reason);
+    }
   }
 
   function initializeRenderQualityController() {

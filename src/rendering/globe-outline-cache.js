@@ -3,61 +3,8 @@ import {createThreeGlobeStrokes,createGlobeStrokePointTexture} from './three-glo
 import {renderPacketBuffers} from './render-cache-budget.js';
 import {planGlobeCompactionUpdates,applyGlobeDrawWrites,useDirectGlobeStrokeAttributes} from './globe-draw-compaction.js';
 
-function indexOwners(owners){
-  const groupsBySlot=new Map();
-  owners.forEach((slots,group)=>{
-    for(const slot of slots){
-      let groups=groupsBySlot.get(slot);
-      if(!groups){groups=[];groupsBySlot.set(slot,groups);}
-      groups.push(group);
-    }
-  });
-  return groupsBySlot;
-}
-export function indexGlobeOutlineRanges(packet,owners){
-  const groupsBySlot=indexOwners(owners),rangesByGroup=Array.from({length:owners.length},()=>[]);
-  for(let first=0;first<packet.count;){
-    const group=packet.ownerGroups[first];
-    let end=first+1;
-    while(end<packet.count&&packet.ownerGroups[end]===group)end++;
-    rangesByGroup[group].push([first,end]);first=end;
-  }
-  return {groupsBySlot,rangesByGroup};
-}
-export function selectGlobeOutlineGroups(index,roles,styles){
-  const groups=new Map();
-  for(const [slot,code] of roles){
-    const style=styles[code];
-    if(!style||style.width<=0||style.alpha<=0)continue;
-    for(const group of index.groupsBySlot.get(slot)??[]){
-      if(code>(groups.get(group)??0))groups.set(group,code);
-    }
-  }
-  return groups;
-}
-export function globeOutlineRanges(index,groups){
-  return [...groups].flatMap(([group,code])=>index.rangesByGroup[group].map(([first,end])=>({first,end,code})))
-    .sort((a,b)=>a.first-b.first);
-}
-
-// One immutable reverse index: changing one owner group visits only its
-// affected chunks, even for a base packet spanning the entire world.
-export function indexGlobeOutlineChunks(packet,owners){
-  const groupsBySlot=indexOwners(owners);
-  const chunksByGroup=Array.from({length:owners.length},()=>[]);
-  let metadataBytes=owners.reduce((sum,slots)=>sum+slots.length*8,0)+owners.length*24;
-  packet.spatialParts.forEach(({packet:part},chunkId)=>{
-    const groups=new Map();
-    for(let first=0;first<part.count;){
-      const group=part.ownerGroups[first];
-      let end=first+1;while(end<part.count&&part.ownerGroups[end]===group)end++;
-      let row=groups.get(group);
-      if(!row){row={chunkId,count:0,ranges:[]};groups.set(group,row);chunksByGroup[group].push(row);metadataBytes+=48;}
-      row.count+=end-first;row.ranges.push([first,end]);metadataBytes+=32;first=end;
-    }
-  });
-  return {groupsBySlot,chunksByGroup,metadataBytes};
-}
+import {indexGlobeOutlineChunks,selectGlobeOutlineGroups} from './globe-outline-index.js';
+export {indexGlobeOutlineRanges,selectGlobeOutlineGroups,globeOutlineRanges,indexGlobeOutlineChunks} from './globe-outline-index.js';
 
 // Only points referenced by active owners enter the texture dictionary.
 // Preserve all six Float32 words, including the low-coordinate residuals.
@@ -93,8 +40,8 @@ export function outlineInstanceCapacity(current,needed,limit){
 }
 const bytesOf=buffers=>[...buffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);
 
-export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions,maxTextureSize,orderForChunk,residency,onResidencyChange=()=>{}}){
-  const index=indexGlobeOutlineChunks(packet,owners),partitions=packet.spatialParts;
+export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex=null,strokeOptions,maxTextureSize,orderForChunk,residency,onResidencyChange=()=>{}}){
+  const index=preparedIndex??indexGlobeOutlineChunks(packet,owners),partitions=packet.spatialParts;
   const packetBuffers=renderPacketBuffers(packet);
   const outlineStyles=Array.from({length:5},()=>new THREE.Vector2());
   const strokeColor=new THREE.Color(strokeOptions.style.color);
@@ -102,8 +49,9 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
   const chunks=new Map(),activeChunks=new Set(),dirtyChunks=new Set(),baseKey={};
   let baseDirty=true,ledgerActive=null;
   function markChunk(chunk){dirtyChunks.add(chunk);onResidencyChange();}
-  let previousGroups=new Map(),lastUsed=performance.now();
-  let evictedChunks=0,createdChunks=0,shrunkBuffers=0,updatedChunks=0;
+  let previousGroups=new Map(),previousRoles=null,previousStyles=null,previousColor=null,lastUsed=performance.now();
+  let evictedChunks=0,createdChunks=0,shrunkBuffers=0,updatedChunks=0,subsetHits=0,subsetBuilds=0;
+  const subsetLimit=2;
   function hideMesh(chunk){
     if(chunk.gpu?.mesh.visible){chunk.gpu.mesh.visible=false;chunk.lastUsed=performance.now();markChunk(chunk);}
   }
@@ -116,7 +64,7 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
   function evictChunk(chunk){
     if(!chunk.gpu)return;
     disposeGpu(chunk);evictedChunks++;
-    chunk.selection=null;chunk.selected=null;
+    chunk.selection=null;chunk.selected=null;chunk.subsets.clear();
     if(!chunk.roles.size)chunks.delete(chunk.id);
     else residency?.set(chunk,{...chunkFootprint(chunk),lastUsed:chunk.lastUsed,protected:true,groups:['outline','outlineChunk']});
     markChunk(chunk);
@@ -124,10 +72,14 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
   function clearInactive(chunk){
     hideMesh(chunk);activeChunks.delete(chunk);
     chunk.selection=null;chunk.selected=null;
-    if(!chunk.gpu)chunks.delete(chunk.id);
+    if(!chunk.gpu){chunk.subsets.clear();chunks.delete(chunk.id);}
     markChunk(chunk);
   }
   function paint(roles,styles,color){
+    const sameRoles=previousRoles&&previousRoles.size===roles.size&&[...roles].every(([slot,code])=>previousRoles.get(slot)===code);
+    const signature=styles.map(row=>[row?.width??0,row?.alpha??0]).flat().join(',');
+    if(sameRoles&&previousStyles===signature&&previousColor===color)return activeChunks.size>0;
+    previousRoles=new Map(roles);previousStyles=signature;previousColor=color;
     for(let code=0;code<outlineStyles.length;code++){
       const style=styles[code];outlineStyles[code].set((style?.width??0)/2,style?.alpha??0);
     }
@@ -139,7 +91,7 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
       if(before===after)continue;
       for(const row of index.chunksByGroup[group]){
         let chunk=chunks.get(row.chunkId);
-        if(!chunk){chunk={id:row.chunkId,roles:new Map(),selectedCount:0,membershipRevision:0,roleRevision:0,selection:null,selected:null,gpu:null,lastUsed:performance.now()};chunks.set(chunk.id,chunk);}
+        if(!chunk){chunk={id:row.chunkId,roles:new Map(),selectedCount:0,membershipRevision:0,roleRevision:0,selection:null,selected:null,gpu:null,subsets:new Map(),lastUsed:performance.now()};chunks.set(chunk.id,chunk);}
         if(after===undefined){chunk.roles.delete(group);chunk.selectedCount-=row.count;}
         else{
           chunk.roles.set(group,{code:after,row});
@@ -162,7 +114,7 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
     for(const chunk of [...activeChunks]){
       chunk.roles.clear();chunk.selectedCount=0;chunk.membershipRevision++;chunk.roleRevision++;clearInactive(chunk);
     }
-    previousGroups=new Map();lastUsed=performance.now();baseDirty=true;onResidencyChange();
+    previousGroups=new Map();previousRoles=null;lastUsed=performance.now();baseDirty=true;onResidencyChange();
   }
   function newGpu(chunk,subset,capacity,reuseTexture=null){
     const direct=useDirectGlobeStrokeAttributes({count:capacity});
@@ -180,21 +132,31 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
   }
   function ensureGpu(chunk,needed){
     let gpu=chunk.gpu;
-    const part=partitions[chunk.id].packet;
-    let same=!!gpu;
-    if(gpu&&gpu.membershipRevision!==chunk.membershipRevision){
-      same=gpu.sourceGroups.size===chunk.roles.size&&[...chunk.roles.keys()].every(group=>gpu.sourceGroups.has(group));
-      if(same)gpu.membershipRevision=chunk.membershipRevision;
+    const part=partitions[chunk.id].packet,capacity=outlineInstanceCapacity(gpu?.capacity??0,needed,part.count);
+    const direct=useDirectGlobeStrokeAttributes({count:capacity});
+    if(gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.membershipRevision===chunk.membershipRevision))return gpu;
+    const membership=[...chunk.roles.keys()].sort((a,b)=>a-b).join(',');
+    // Direct attributes only need the visible source endpoints. No partial
+    // point dictionary is generated for a small outline.
+    let subset=null;
+    if(!direct){
+      subset=chunk.subsets.get(membership);
+      if(subset){chunk.subsets.delete(membership);chunk.subsets.set(membership,subset);subsetHits++;}
+      else{
+        const build=()=>buildGlobeOutlinePointSubset(part,[...chunk.roles.values()].flatMap(({row})=>row.ranges).sort((a,b)=>a[0]-b[0]));
+        subset=residency?.withTemporary(chunk.selectedCount*72+part.count*4,'outline-subset',build)??build();
+        subsetBuilds++;chunk.subsets.set(membership,subset);
+        while(chunk.subsets.size>subsetLimit)chunk.subsets.delete(chunk.subsets.keys().next().value);
+        markChunk(chunk);
+      }
     }
-    const capacity=outlineInstanceCapacity(gpu?.capacity??0,needed,part.count);
-    if(!gpu||!same||capacity!==gpu.capacity){
-      const subset=same?gpu.subset:buildGlobeOutlinePointSubset(part,[...chunk.roles.values()].flatMap(({row})=>row.ranges).sort((a,b)=>a[0]-b[0]));
-      if(gpu&&capacity<gpu.capacity)shrunkBuffers++;
-      const reuseTexture=same&&!useDirectGlobeStrokeAttributes({count:capacity})?gpu.texture:null;
-      disposeGpu(chunk,{keepTexture:Boolean(reuseTexture)});
-      chunk.gpu=gpu=newGpu(chunk,subset,capacity,reuseTexture);markChunk(chunk);
-    }
-    return gpu;
+    if(gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.subset===subset)){gpu.membershipRevision=chunk.membershipRevision;return gpu;}
+    if(gpu&&capacity<gpu.capacity)shrunkBuffers++;
+    const reuseTexture=gpu&&!direct&&gpu.subset===subset?gpu.texture:null;
+    const create=()=>newGpu(chunk,subset,capacity,reuseTexture);
+    const replacement=residency?.withTemporary(capacity*(direct?100:24)+(reuseTexture?0:(subset?.points.byteLength??0)*2),'outline-gpu',create)??create();
+    disposeGpu(chunk,{keepTexture:Boolean(reuseTexture)});
+    chunk.gpu=replacement;markChunk(chunk);return replacement;
   }
   function update(getCuller,strokePadding,stats){
     const cull=getCuller(strokePadding(options,1));
@@ -214,13 +176,16 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
         for(const {first,end,offset} of writes){
           let dst=offset;
           for(let id=first;id<end;id++,dst++){
-            const at=subset.segmentOffsets[id]*2,a=subset.endpointIndices[at],b=subset.endpointIndices[at+1];
             if(gpu.direct){
+              const a=part.endpointIndices[id*2]*6,b=part.endpointIndices[id*2+1]*6;
               for(let axis=0;axis<3;axis++){
-                output.start[dst*3+axis]=subset.points[a*6+axis];output.startLow[dst*3+axis]=subset.points[a*6+axis+3];
-                output.end[dst*3+axis]=subset.points[b*6+axis];output.endLow[dst*3+axis]=subset.points[b*6+axis+3];
+                output.start[dst*3+axis]=part.points[a+axis];output.startLow[dst*3+axis]=part.points[a+axis+3];
+                output.end[dst*3+axis]=part.points[b+axis];output.endLow[dst*3+axis]=part.points[b+axis+3];
               }
-            }else{output.endpointIndices[dst*2]=a;output.endpointIndices[dst*2+1]=b;}
+            }else{
+              const at=subset.segmentOffsets[id]*2;
+              output.endpointIndices[dst*2]=subset.endpointIndices[at];output.endpointIndices[dst*2+1]=subset.endpointIndices[at+1];
+            }
             output.ownerGroups[dst]=chunk.roles.get(part.ownerGroups[id]).code;
           }
         }
@@ -241,7 +206,7 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
   }
   function chunkFootprint(chunk){
     const gpu=chunk.gpu;
-    const buffers=renderPacketBuffers([chunk.selected?.ranges,gpu?.subset,gpu?.output,gpu?.ranges]);
+    const buffers=renderPacketBuffers([chunk.selection?.footprint(),chunk.selected?.ranges,...chunk.subsets.values(),gpu?.subset,gpu?.output,gpu?.ranges]);
     let extraBytes=chunk.roles.size*48+96;
     if(gpu){
       const geometry=gpu.mesh.geometry;
@@ -287,7 +252,7 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,strokeOptions
   function stats(){
     let resident=0,visible=0;
     for(const chunk of chunks.values())if(chunk.gpu){resident++;if(chunk.gpu.mesh.visible)visible++;}
-    return {residentChunks:resident,visibleChunks:visible,activeChunks:activeChunks.size,evictedChunks,createdChunks,shrunkBuffers,updatedChunks};
+    return {residentChunks:resident,visibleChunks:visible,activeChunks:activeChunks.size,evictedChunks,createdChunks,shrunkBuffers,updatedChunks,subsetHits,subsetBuilds};
   }
   return {paint,hide,update,dispose,bytes,syncResidency,stats,get lastUsed(){return lastUsed;}};
 }

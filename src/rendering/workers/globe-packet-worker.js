@@ -2,6 +2,7 @@ import '../../runtime/workers/worker-rpc-host.js';
 import {decodeStoredBuffer,validateAssetLength} from '../../data/asset-decompression.js';
 import {decodeGlobeMesh,decodeGlobeStrokes,createGlobeStrokeBatchBuilder} from '../globe-mesh.js';
 import {prepareGlobeSpatialPacket} from '../globe-spatial-partition.js';
+import {indexGlobeOutlineChunks} from '../globe-outline-index.js';
 
 const rpc=self.PandoLabWorkerRpc;
 function transfer(value){
@@ -29,7 +30,7 @@ rpc.install({handlers:{
   context.throwIfCancelled();
   return transfer(prepareGlobeSpatialPacket(builder.finish()));
  },
- 'globe.decode-packet':async({kind,bytes,spec,ownerCount,identityCount,spatial=true},context)=>{
+ 'globe.decode-packet':async({kind,bytes,spec,ownerCount,outlineOwners,identityCount,spatial=true},context)=>{
   context.throwIfCancelled();
   const decoded=await decodeStoredBuffer(bytes,spec,'worker','globe','지도 패킷',context.signal);
   validateAssetLength(decoded,spec,'지도 패킷');
@@ -42,6 +43,10 @@ rpc.install({handlers:{
     if(ownerCount!==undefined&&(value.ownerGroups.length!==value.count||value.ownerGroups.some(group=>group>=ownerCount)))
      throw Error('Invalid globe outline owners');
     if(spatial)value=prepareGlobeSpatialPacket(value,{outline:ownerCount!==undefined});
+    if(outlineOwners){
+     if(outlineOwners.length!==ownerCount)throw Error('Invalid outline owner table');
+     value={...value,outlineIndex:indexGlobeOutlineChunks(value,outlineOwners)};
+    }
     break;
    case 'catalog':
     value=JSON.parse(new TextDecoder().decode(decoded.buffer));

@@ -9,9 +9,10 @@ export function globeViewChunkCuller(camera,viewport,padding=0){
 export function selectGlobeMeshChunks(chunks,cull,slots=null){
  return chunks.filter(row=>(!row.bounds||cull(row.bounds))&&(!slots||!row.slots?.length||row.slots.some(slot=>slots.has(slot))));
 }
+const chunkKeys=new WeakMap();
 export function globeChunkSetContains(have,needed){
  if(have===needed)return true;
- const keys=new Set(have.map(row=>row.key));
+ let keys=chunkKeys.get(have);if(!keys){keys=new Set(have.map(row=>row.key));chunkKeys.set(have,keys);}
  return needed.every(row=>keys.has(row.key));
 }
 export const globeChunkPlanKey=rows=>rows.map(row=>row.key).join('|');

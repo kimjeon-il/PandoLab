@@ -474,9 +474,19 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const preparedCountries = combineGlobeCountryMeshes(features.map((feature,index)=>countryMeshRow(feature,baseMeshSpecs[index])));
   const {countrySlots} = preparedCountries;
   const countryChunks=emitMeshChunks(preparedCountries.buffer,'countries/');
+  const emitOutlineChunks=({buffer,owners},directory)=>{
+    const rows=[];
+    for(const {buffer:part,slots:groupIds,...row} of globeStrokeChunks(buffer,{maxSegments:8192,span:.30,preserveOwnerOrder:false})){
+      const packet=decodeGlobeStrokes(part),remap=new Map(groupIds.map((group,i)=>[group,i]));
+      const localOwners=groupIds.map(group=>owners[group]);
+      const ownerGroups=Uint16Array.from(packet.ownerGroups,group=>remap.get(group));
+      const local=encodeIndexedGlobeStrokes({...packet,ownerGroups});
+      rows.push({...row,owners:localOwners,ownerSlots:[...new Set(localOwners.flat())].sort((a,b)=>a-b),spec:emit(local,directory)});
+    }
+    return rows;
+  };
   const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors,features);
-  const {buffer:outlineBuffer,owners:outlineOwners} = buildGlobeOutlineStrokes(features.map(feature=>feature.geometry));
-  const outlines = emit(outlineBuffer,'outlines/');
+  const outlineChunks=emitOutlineChunks(buildGlobeOutlineStrokes(features.map(feature=>feature.geometry)),'outlines/');
   const readGeometry = async spec => JSON.parse(source(spec));
   const physicalContexts=new Map(),waterParts=new Map(),hydroParts=new Map();
   let skeleton;
@@ -571,7 +581,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     const extraOutlines=buildGlobeOutlineStrokes([feature.geometry],slot);
     const anchors={[feature.id]:{coordinates:computeLabelAnchor(feature)}};
     return {...packet.countrySlots[0],label:countryLabelMetadata(decodeGlobeMesh(packet.buffer),packet.countrySlots,anchors,[feature])[feature.id]??null,
-      countryChunks:emitMeshChunks(packet.buffer,historyDirectory+'countries/'),outlines:emit(extraOutlines.buffer,historyDirectory+'outlines/'),outlineOwners:extraOutlines.owners};
+      countryChunks:emitMeshChunks(packet.buffer,historyDirectory+'countries/'),outlineChunks:emitOutlineChunks(extraOutlines,historyDirectory+'outlines/')};
   });
   // Advance the same incremental boundary preparation as the Viewer worker.
   // The partition output only re-encodes owner groups touched by changed shapes.
@@ -608,6 +618,6 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const physicalIndex=new Map([basePhysical,...otherPhysical].map((row,index)=>[row.identity,index]));
   const historyCatalog=emit(Buffer.from(JSON.stringify({version:1,historicalCountries,historicalBorders,physicalContexts:otherPhysical,
     history:encodeGlobeHistoricalViews(historicalViews),historyTimeline:timeline.map(row=>[row.month,viewBySignature.get(row.signature),physicalIndex.get(row.physicalIdentity)])})),'catalog/');
-  return {assets,skeleton,preview:{countryChunks,countrySlots,countryLabels,outlines,outlineOwners,borderChunks,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
+  return {assets,skeleton,preview:{countryChunks,countrySlots,countryLabels,outlineChunks,borderChunks,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:basePhysical,physicalMonth:month,historySlotCount:historicalCountries.length,historyCatalog}};
 }

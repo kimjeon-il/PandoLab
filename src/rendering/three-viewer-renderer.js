@@ -3,7 +3,7 @@ import {normalizeObjectRef} from '../document/object-ref-identity.js';
 import {coordinateBounds} from '../geometry/coordinate-bounds.js';
 import {geometryReferenceFor} from '../geometry/geometry-version-store.js';
 import {INTERACTION_ROLE_PRIORITY, layerStyle, territorialNamesVisible} from '../ui/layer-presentation.js';
-import {resolveMapStrokeStyle} from '../map/map-interaction-style.js';
+import {globeInteractionStyles,globeRoleStyleKey,globeInteractionRoles,sameGlobeRoleInputs,createGlobePresentationInputReader,globeChangedHiddenIds,emptyRoleStyles} from './globe-style-state.js';
 import {PLACE_DISPLAY_ZOOM_FLOOR} from '../map/map-display-zoom.js';
 import {territorialNativeLabelRows} from '../ui/territorial-native-label.js';
 import {createGlobeCamera} from './globe-camera.js';
@@ -70,8 +70,13 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  let selection=null,style=null,paintDirty=true,fullPaintDirty=true,moving=false,moveTimer,velocity,pointerTravel=0,lastPointerMove=0;
  let activeSlotByKey=new Map(baseTerritories.slots.map(slot=>[refs[slot].key,slot]));
  let countryRoles=new Map(),pickingRevision=0,pickingChanged=false;
- let outlineSlots=new Set();
- let labelContentDirty=true;
+ let outlineTargets=new Map(),outlinePlanDirty=true,lastOutlineCamera=null,outlinePaintDirty=true;
+ let labelContentDirty=true,placeLabelContentDirty=true,placeLabelList=[];
+ let roleStyles=emptyRoleStyles,interactionRefs=globeInteractionRoles(null),countryRolesDirty=true,countryEmphasisDirty=true,hydroRolesDirty=true,hydroStyleDirty=true,layerPaintDirty=true,paletteDirty=true;
+ let hydroRoles=new Map(),waterRoles=new Map(),presentationInputs=null,renderPalette=null,qualityKey=null;
+ const readPresentationInputs=createGlobePresentationInputReader();
+ const paintStats={countrySlots:0,countryRoleUpdates:0,hydroRoleUpdates:0,outlinePlans:0,outlineDownloads:0,paletteUpdates:0,placeCandidateUpdates:0};
+ const outlineBySlot=new Map(),outlineFailed=new Set();
  let framePreserved=false,initialLoading=true,drawCount=0,unsupported=false;
  let riverDetail,riverCamera=null,riverVisible=null,riverContext=null;
  let physical=null,acceptedPhysical=null;
@@ -109,7 +114,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }
  function cancelOutlines(){
   for(const controller of pendingOutlines.values())controller.abort();
-  pendingOutlines.clear();
+  pendingOutlines.clear();outlineTargets=new Map();outlineFailed.clear();outlinePlanDirty=outlinePaintDirty=true;lastOutlineCamera=null;
  }
  function beginTemporalViewTransition(...args){clearPreparation();return presentation.beginTemporalViewTransition(...args);}
  function finishTemporalViewTransition(token){
@@ -129,7 +134,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   presentation.rejectMapPresentationWaiters(cause);presentation.failTemporalPresentation(cause);
   deps.feedback.reportOperationError(cause,'Three.js 지도를 표시하지 못했습니다.','PL-THREE-001');
  }
- function retryMapPreparation(){error=null;baseFailures.clear();physicalFailures.clear();failedLineLayers.clear();fontFailed=false;riverCamera=null;return invalidate('map-retry');}
+ function retryMapPreparation(){error=null;baseFailures.clear();physicalFailures.clear();failedLineLayers.clear();fontFailed=false;outlineFailed.clear();outlinePlanDirty=true;riverCamera=null;return invalidate('map-retry');}
  function subscribeInput(type,callback){
   if(!events.has(type))events.set(type,new Set());
   events.get(type).add(callback);return ()=>events.get(type)?.delete(callback);
@@ -269,33 +274,60 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   }
   return result;
  }
- async function loadOutlines(row,owners,signal){
-  if(!owners.length||owners.some(group=>!group.length||group.some(slot=>!Number.isInteger(slot)||slot<0||slot>=slots.length)))
+ function addOutlineDescriptors(row,slot){
+  const chunks=row.outlineChunks??(row.outlines?[{spec:row.outlines,owners:row.outlineOwners,ownerSlots:[...new Set(row.outlineOwners.flat())]}]:[]);
+  for(let order=0;order<chunks.length;order++){
+   const chunk=chunks[order],descriptor={...chunk,key:'outline:'+(slot??'base')+':'+order+':'+chunk.spec.sha256,slot,order,count:chunks.length};
+   for(const owner of chunk.ownerSlots??[]){
+    let rows=outlineBySlot.get(owner);if(!rows){rows=[];outlineBySlot.set(owner,rows);}rows.push(descriptor);
+   }
+  }
+ }
+ addOutlineDescriptors(spec,null);
+ async function loadOutlines(row,signal){
+  const owners=row.owners;
+  if(!owners?.length||owners.some(group=>!group.length||group.some(slot=>!Number.isInteger(slot)||slot<0||slot>=slots.length)))
    throw Error('Invalid globe outline owners');
-  const packet=await load(row,'stroke',{phase:'background',label:'선택 윤곽선',signal,ownerCount:owners.length});
-  return {packet,owners};
+  const packet=await load(row.spec,'stroke',{phase:'background',priority:6,label:'선택 윤곽선',signal,ownerCount:owners.length,outlineOwners:owners});
+  return {packet,owners,preparedIndex:packet.outlineIndex};
  }
  const graticuleNeeded=()=>state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false;
  const bordersNeeded=()=>state.layerVisibility.objects!==false&&layerStyle(state.layerPresentation,'objects').boundaryVisible!==false;
  const physicalAssets=createGlobePhysicalAssets([spec.physical],{
   loadMesh,loadStroke:(row,signal,priority=20)=>load(row,'stroke',{signal,priority}),byteBudget:cacheBudget.physicalCpuBytes,residency,
  });
- const viewCull=(padding=0)=>globeViewChunkCuller(camera,viewport,padding);
- // Include stroke cap, AA margin and the widest source/interaction stroke.
+ let planCamera=null,planViewport=null;const cullCache=new Map(),territoryPlans=new Map(),physicalPlans=new Map(),planKeys=new WeakMap();
+ function clearViewPlans(){planCamera=null;planViewport=null;cullCache.clear();territoryPlans.clear();physicalPlans.clear();}
+ function syncViewPlans(){
+  if(planCamera===camera&&planViewport===viewport)return;
+  clearViewPlans();planCamera=camera;planViewport=viewport;
+ }
+ const viewCull=(padding=0)=>{
+  syncViewPlans();let cull=cullCache.get(padding);
+  if(!cull){cull=globeViewChunkCuller(camera,viewport,padding);cullCache.set(padding,cull);}return cull;
+ };
  const strokePadding=()=>{
-  const palette=deps.preferences.mapPalette().strokes;
-  let width=Math.max(1,Number(palette.country.width)||1,(Number(palette.river.width)||1)*3);
-  if(style)for(const role of Object.keys(INTERACTION_ROLE_PRIORITY))width=Math.max(width,resolveMapStrokeStyle(style,role).width||0);
+  const palette=renderPalette??deps.preferences.mapPalette();
+  let width=Math.max(1,Number(palette.strokes.country.width)||1,(Number(palette.strokes.river.width)||1)*3);
+  for(const row of roleStyles)width=Math.max(width,row?.width??0);
   return Math.max(5,Math.ceil(width+2*(0.5/(viewport?.dpr||1))+2));
  };
- const physicalPlan=(identity,padding=0)=>physicalAssets.plan(identity,{zoom:view.zoom,cull:viewCull(padding),strokeCull:viewCull(padding+strokePadding()),
-  lakesVisible:state.layerVisibility.lakes!==false,riversVisible:state.layerVisibility.rivers!==false});
+ function physicalPlan(identity,padding=0){
+  syncViewPlans();const extra=strokePadding(),lakesVisible=state.layerVisibility.lakes!==false,riversVisible=state.layerVisibility.rivers!==false;
+  const key=JSON.stringify([identity,padding,extra,lakesVisible,riversVisible,view.zoom]);
+  let plan=physicalPlans.get(key);
+  if(!plan){plan=physicalAssets.plan(identity,{zoom:view.zoom,cull:viewCull(padding),strokeCull:viewCull(padding+extra),lakesVisible,riversVisible});
+   if(physicalPlans.size>=8)physicalPlans.clear();physicalPlans.set(key,plan);}
+  return plan;
+ }
  const territorialContext=prepared=>prepared.key+'|'+Number(state.layerVisibility.objects!==false)+'|'+Number(bordersNeeded());
  function territorialPlan(prepared=territories,padding=0){
+  syncViewPlans();const extra=strokePadding(),key=territorialContext(prepared)+'|'+padding+'|'+extra;
+  if(territoryPlans.has(key))return territoryPlans.get(key);
   if(state.layerVisibility.objects===false)return [];
   const selectedSlots=new Set(prepared.slots),hidden=new Set(prepared.view?.hiddenBorders??[]);
   const cull=viewCull(padding);
-  const rows=territorialAssets.plan(viewCull(padding+strokePadding()),row=>{
+  const rows=territorialAssets.plan(viewCull(padding+extra),row=>{
    if(row.role==='country')return (!row.bounds||cull(row.bounds))&&
     (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot=>selectedSlots.has(slot)));
    if(!bordersNeeded())return false;
@@ -306,13 +338,11 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    if(!index){
     const groups=new Set(prepared.view.borders);
     const all=territorialAssets.plan(()=>true,row=>row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder));
-    // The same historical batch identity is used in the required and
-    // padded plans. A padded batch must not invalidate exact coverage.
     index=createGlobeChunkCatalog(combineHistoryBorders(all));borderPlansByView.set(prepared.view,index);
    }
-   rows.push(...index.select(viewCull(padding+strokePadding())));
+   rows.push(...index.select(viewCull(padding+extra)));
   }
-  return rows;
+  if(territoryPlans.size>=8)territoryPlans.clear();territoryPlans.set(key,rows);return rows;
  }
  function installHistoryCatalog(catalog){
   if(historyLoaded)return;
@@ -329,8 +359,9 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   territorialAssets.addDescriptors(descriptors);physicalAssets.addDescriptors(catalog.physicalContexts);
   for(const {row,key,ref} of identities){
    const slot=slots.length;slots.push(row);slotByKey.set(key,slot);
-   labelsBySlot.push(row.label);refs.push(ref);
+   labelsBySlot.push(row.label);refs.push(ref);addOutlineDescriptors(row,slot);
   }
+  clearViewPlans();
   historyIndex=index;historyLoaded=true;
   historyCatalogBytes=(Number(spec.historyCatalog?.decodedBytes)||0)*3;
   residency.set(historyCatalogKey,{protected:true,extraBytes:historyCatalogBytes});residencyDirty=true;
@@ -345,7 +376,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   },signal,{priority});
   signal?.throwIfAborted();return historyLoaded;
  }
- const basePlanKey=globeChunkPlanKey;
+ const basePlanKey=rows=>{let key=planKeys.get(rows);if(key===undefined){key=globeChunkPlanKey(rows);planKeys.set(rows,key);}return key;};
  function initialize(){
   if(pending)return pending;
   pending=(async()=>{
@@ -355,7 +386,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const threeUrl=new URL(spec.moduleUrl,document.baseURI);
    const [THREE,restored]=await Promise.all([import(threeUrl.href),initialCamera]);
    lifetime.signal.throwIfAborted();
-   surface=createThreeGlobeSurface(THREE,{canvas,context,palette:deps.preferences.mapPalette(),countryCount,baseCountryCount:baseSlots.length,hydroCount:spec.hydroCount,cacheBudget,residency,workScheduler,
+   renderPalette=deps.preferences.mapPalette();
+   surface=createThreeGlobeSurface(THREE,{canvas,context,palette:renderPalette,countryCount,baseCountryCount:baseSlots.length,hydroCount:spec.hydroCount,cacheBudget,residency,workScheduler,
     onLabelReady:()=>invalidate('three-label-sdf-ready'),onLabelError:cause=>deps.feedback.reportOperationError(cause,'지도 지명 SDF Worker를 사용할 수 없어 로컬 계산으로 전환했습니다.','PL-THREE-SDF-001'),packets:{
     borderGroupCount:spec.borderOwners.length,
    }});
@@ -564,13 +596,14 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    const delta=temporalInputs.advance(sourceRows,month);
    const previousSlots=activeSlots,geometryChanged=prepared.key!==territories.key||!features;
    if(geometryChanged){
+    countryRolesDirty=outlinePlanDirty=true;paintDirty=true;
     territories=prepared;activeSlots=new Set(prepared.slots);
     activeSlotByKey=new Map(prepared.slots.map(slot=>[refs[slot].key,slot]));pickingChanged=true;
     for(const slot of previousSlots)if(!activeSlots.has(slot)){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
     for(const slot of activeSlots)if(!previousSlots.has(slot)){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
    }
    if(basePrepared!==nextBase){basePrepared=nextBase;pickingChanged=true;}
-   if(physical!==nextPhysical){physical=nextPhysical;pickingChanged=true;paintDirty=true;}
+   if(physical!==nextPhysical){physical=nextPhysical;pickingChanged=true;paintDirty=hydroRolesDirty=hydroStyleDirty=true;}
    if(!features||geometryChanged)features=new Map(rows.map(row=>[String(row.id),row]));
    else for(const id of delta.changedIds){
     const row=temporalInputs.get(id);
@@ -581,8 +614,10 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
     if(slot!==undefined){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
    }
    if(delta.first){countryPaintInputsDirty=true;allCountryLabelsDirty=true;}
+   if(delta.dirtyIds.size||dirtyPaintSlots.size)countryRolesDirty=true;
+   hydroRolesDirty=true;paintDirty=true;
    temporalStats={examinedRows:delta.examined,receipt:delta.receipt,changedRows:delta.changedIds.size,dirtyPaintSlots:dirtyPaintSlots.size,dirtyCountryLabels:dirtyCountryLabels.size};
-   paintDirty||=dirtyPaintSlots.size>0||countryPaintInputsDirty;labelContentDirty=true;return true;
+   paintDirty||=dirtyPaintSlots.size>0||countryPaintInputsDirty;labelContentDirty=placeLabelContentDirty=true;return true;
   }catch(error){
    if(controller.signal.aborted)return false;
    throw error;
@@ -640,7 +675,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   visiblePhysicalPlan=target;physicalJobRequired=!covered;retainCpuResources();
   physicalAssets.prepare(target,{signal:controller.signal,priority:covered?5:20}).then(next=>{
    if(!requestCurrent('physical-view',controller)||generation!==requestedGeneration||physical?.spec.identity!==target.spec.identity)return;
-   physical=next;physicalFailures.clear();paintDirty=true;pickingChanged=true;invalidate('three-physical-chunks-ready');
+   physical=next;physicalFailures.clear();paintDirty=hydroStyleDirty=true;pickingChanged=true;invalidate('three-physical-chunks-ready');
   }).catch(error=>{
    if(!requestCurrent('physical-view',controller))return;
    const now=physicalPlan(target.spec.identity),sameRequired=now.key===target.key;
@@ -676,12 +711,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
  }
  function ensureLabelFont(){
   const wanted=labelsNeeded();
-  if(wanted!==lastLabelsNeeded){lastLabelsNeeded=wanted;labelContentDirty=true;}
+  if(wanted!==lastLabelsNeeded){lastLabelsNeeded=wanted;labelContentDirty=placeLabelContentDirty=true;}
   if(!wanted||fontReady)return true;
   if(fontPending||fontFailed)return false;
-  fontPending=document.fonts.load('800 56px "Pretendard Variable"','대한민국').then(()=>{
+  fontPending=Promise.all([document.fonts.load('800 56px "Pretendard Variable"','대한민국'),document.fonts.load('600 56px "Pretendard Variable"','대한민국')]).then(()=>{
    if(disposed)return;
-   fontReady=true;labelContentDirty=true;invalidate('three-label-font-ready');
+   fontReady=true;labelContentDirty=placeLabelContentDirty=true;invalidate('three-label-font-ready');
   }).catch(error=>{
    if(disposed)return;
    fontFailed=true;
@@ -713,59 +748,102 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    if(changed.size||allCountryLabelsDirty)countryLabelList=[...countryLabels.values()];
    allCountryLabelsDirty=false;dirtyCountryLabels.clear();
   }
-  const placeCandidates=view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false?
-   deps.countryLabelModel.placeLabelCandidates({zoom:view.zoom,geographicBounds:camera.geographicBounds()}).rows:[];
-  const places=placeCandidates.filter(row=>row.viewportVisible||row.selected).flatMap(row=>{
+  if(placeLabelContentDirty){
+   const placeCandidates=view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false?
+    deps.countryLabelModel.placeLabelCandidates({zoom:view.zoom,geographicBounds:camera.geographicBounds()}).rows:[];
+   placeLabelList=placeCandidates.filter(row=>row.viewportVisible||row.selected).flatMap(row=>{
    const ref=normalizeObjectRef({domain:'label',type:row.source.kind,id:row.source.id});
    if(!ref||!deps.objectRefVisible(ref))return [];
    return [{ref,key:ref.key,place:true,coordinate:row.coordinate,selected:row.selected,priority:row.priority,
     marker:['capital','city','town'].includes(row.source.kind)?row.source.kind:'',
     minZoom:row.minZoom,maxZoom:row.maxZoom,lines:row.rows.map(label=>label.text)}];
-  });
-  surface.labels.setCandidateGroups(namesVisible?countryLabelList:[],places);labelContentDirty=false;
+   });
+   placeLabelContentDirty=false;paintStats.placeCandidateUpdates++;
+  }
+  surface.labels.setCandidateGroups(namesVisible?countryLabelList:[],view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR&&state.layerVisibility.labels!==false?placeLabelList:[]);labelContentDirty=false;
  }
  function requestOutlines(){
-  for(const [slot,controller] of pendingOutlines)if(!outlineSlots.has(slot)){
-   pendingOutlines.delete(slot);controller.abort();
+  if(!ready||!camera||!surface)return;
+  if(lastOutlineCamera!==camera||outlinePlanDirty){
+   const cull=viewCull(strokePadding()+32),targets=new Map();
+   for(const [slot,code] of countryRoles){
+    if(!(roleStyles[code]?.width>0&&roleStyles[code]?.alpha>0))continue;
+    for(const descriptor of outlineBySlot.get(slot)??[]){
+     if(descriptor.bounds&&!cull(descriptor.bounds))continue;
+     let target=targets.get(descriptor.key);
+     if(!target){target={descriptor,roles:new Map()};targets.set(descriptor.key,target);}
+     target.roles.set(slot,code);
+    }
+   }
+   const changed=targets.size!==outlineTargets.size||[...targets].some(([key,row])=>{
+    const previous=outlineTargets.get(key);
+    return !previous||previous.roles.size!==row.roles.size||[...row.roles].some(([slot,code])=>previous.roles.get(slot)!==code);
+   });
+   if(changed){
+    for(const key of outlineFailed)if(!targets.has(key))outlineFailed.delete(key);
+    outlineTargets=targets;outlinePaintDirty=true;
+   }
+   lastOutlineCamera=camera;outlinePlanDirty=false;paintStats.outlinePlans++;
+   for(const [key,controller] of pendingOutlines)if(!outlineTargets.has(key)){pendingOutlines.delete(key);controller.abort();}
+   for(const [key,{descriptor}] of outlineTargets){
+    if(pendingOutlines.has(key)||surface.hasOutlines(key)||outlineFailed.has(key))continue;
+    const controller=new AbortController();pendingOutlines.set(key,controller);paintStats.outlineDownloads++;
+    loadOutlines(descriptor,controller.signal).then(data=>{
+     if(disposed||controller.signal.aborted||pendingOutlines.get(key)!==controller||!outlineTargets.has(key))return;
+     surface.installOutlines(key,data,descriptor);outlinePaintDirty=true;invalidate('three-outlines-ready');
+    }).catch(cause=>{
+     if(disposed||controller.signal.aborted)return;
+     outlineFailed.add(key);
+     if(!cause?.memoryPressure)deps.feedback.reportOperationError(cause,'선택 윤곽선을 불러오지 못했습니다.','PL-THREE-OUTLINE-001');
+    }).finally(()=>{if(pendingOutlines.get(key)===controller)pendingOutlines.delete(key);});
+   }
   }
-  for(const slot of outlineSlots){
-   if(pendingOutlines.has(slot)||surface.hasOutlines(slot))continue;
-   const controller=new AbortController();pendingOutlines.set(slot,controller);
-   const row=slot===null?spec:slots[slot];
-   loadOutlines(row.outlines,row.outlineOwners,controller.signal).then(data=>{
-    if(disposed||controller.signal.aborted||pendingOutlines.get(slot)!==controller||!outlineSlots.has(slot))return;
-    surface.installOutlines(slot,data);paintDirty=true;invalidate('three-outlines-ready');
-   }).catch(cause=>{
-    if(!disposed&&!controller.signal.aborted)deps.feedback.reportOperationError(cause,'선택 윤곽선을 불러오지 못했습니다.','PL-THREE-OUTLINE-001');
-   }).finally(()=>{if(pendingOutlines.get(slot)===controller)pendingOutlines.delete(slot);});
+  if(outlinePaintDirty){
+   surface.setOutlinePaint(new Map([...outlineTargets].map(([key,row])=>[key,row.roles])),roleStyles,style?.selection.color);
+   outlinePaintDirty=false;
+  }
+ }
+ function markCountryInputs(){countryPaintInputsDirty=countryRolesDirty=paintDirty=true;}
+ function markHydroInputs(){hydroRolesDirty=hydroStyleDirty=paintDirty=true;pickingChanged=true;}
+ function syncPresentationInputs(force=false){
+  const next=readPresentationInputs(state,deps.preferences.userPreferences,{force}),old=presentationInputs;
+  presentationInputs=next;
+  if(!old||old.objects!==next.objects||old.colors!==next.colors||old.objectStyles!==next.objectStyles){
+   markCountryInputs();allCountryLabelsDirty=labelContentDirty=true;
+  }else if(old.objectItems!==next.objectItems){
+   for(const id of globeChangedHiddenIds(old.objectItems,next.objectItems)){
+    const slot=activeSlotByKey.get(normalizeObjectRef({domain:'territorial',type:'entity',id})?.key);
+    if(slot!==undefined){dirtyPaintSlots.add(slot);dirtyCountryLabels.add(slot);}
+   }
+   countryRolesDirty=paintDirty=labelContentDirty=true;
+  }
+  if(!old||old.lakes!==next.lakes||old.rivers!==next.rivers||old.hydroItems!==next.hydroItems||old.hydroLayers!==next.hydroLayers||old.builtinHydro!==next.builtinHydro)markHydroInputs();
+  if(!old||old.borders!==next.borders||old.lakes!==next.lakes||old.rivers!==next.rivers||old.objects!==next.objects){
+   layerPaintDirty=paletteDirty=paintDirty=true;
+  }
+  if(!old||old.names!==next.names||old.nameItems!==next.nameItems||old.countryLabelSettings!==next.countryLabelSettings||old.nativeNames!==next.nativeNames)
+   allCountryLabelsDirty=labelContentDirty=true;
+  const placesChanged=!old||old.places!==next.places||old.placeItems!==next.placeItems||old.builtinPlaces!==next.builtinPlaces||old.nativeNames!==next.nativeNames||old.placeLabelSettings!==next.placeLabelSettings;
+  if(placesChanged)placeLabelContentDirty=labelContentDirty=true;
+  return placesChanged;
+ }
+ function refreshPalette(){
+  if(paletteDirty){
+   const next=deps.preferences.mapPalette();
+   if(!renderPalette||renderPalette.defaultLand!==next.defaultLand){fullPaintDirty=true;markCountryInputs();}
+   if(!renderPalette||renderPalette.ocean!==next.ocean)hydroStyleDirty=true;
+   renderPalette=next;surface?.setPalette(next);paletteDirty=false;paintStats.paletteUpdates++;
   }
  }
  function updatePaint(){
-  const colors=layerStyle(state.layerPresentation,'objects').colorVisible!==false;
-  const selected=selection?.selection,selectedKeys=new Set(selected?.keys??[]);
-  const candidates=deps.highlightCandidates(),candidateKeys=new Set(candidates.map(ref=>ref.key));
-  const roleStyles=[{width:0,alpha:0}];
-  if(style)for(const [role,code] of Object.entries(INTERACTION_ROLE_PRIORITY))roleStyles[code]=resolveMapStrokeStyle(style,role);
-  const roleFor=ref=>selected?.primaryKey===ref.key?'primary':selectedKeys.has(ref.key)?'secondary':
-    selection?.hover?.key===ref.key?'hover':candidateKeys.has(ref.key)?'candidate':null;
-  const nextRoles=new Map();
-  outlineSlots=new Set();
-  if(style){
-   const keys=new Set([...selectedKeys,selected?.primaryKey,selection?.hover?.key,...candidateKeys]);
-   for(const key of keys){
-    const slot=activeSlotByKey.get(key);
-    if(slot===undefined||!deps.objectRefVisible(refs[slot]))continue;
-    const code=INTERACTION_ROLE_PRIORITY[roleFor(refs[slot])],appearance=roleStyles[code];
-    if(!appearance)continue;
-    nextRoles.set(slot,code);
-    if(appearance.width>0&&appearance.alpha>0)outlineSlots.add(slot<baseSlots.length?null:slot);
-   }
-  }
-  const changed=new Set([...countryRoles.keys(),...nextRoles.keys()].filter(slot=>countryRoles.get(slot)!==nextRoles.get(slot)));
+  refreshPalette();
+  const changed=new Set();
   if(fullPaintDirty||countryPaintInputsDirty||dirtyPaintSlots.size){
+   const colors=layerStyle(state.layerPresentation,'objects').colorVisible!==false;
    const pendingSlots=fullPaintDirty||countryPaintInputsDirty?new Set([...basePaint.keys(),...activeSlots]):dirtyPaintSlots;
    let nextVisible=null;
    for(const slot of pendingSlots){
+    paintStats.countrySlots++;
     const previous=basePaint.get(slot);
     if(!activeSlots.has(slot)){
      if(previous){basePaint.delete(slot);changed.add(slot);}
@@ -773,37 +851,49 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
      continue;
     }
     const ref=refs[slot],color=colors?deps.colorModel.territorialEntityColor(features.get(ref.id)):null,visible=Boolean(deps.objectRefVisible(ref));
-    if(!previous||previous.color!==color||previous.visible!==visible){basePaint.set(slot,{color,visible});changed.add(slot);}
+    if(fullPaintDirty||!previous||previous.color!==color||previous.visible!==visible){basePaint.set(slot,{color,visible});changed.add(slot);}
     if(visible!==visiblePaintSlots.has(slot)){
      nextVisible??=new Set(visiblePaintSlots);if(visible)nextVisible.add(slot);else nextVisible.delete(slot);
     }
    }
-   if(nextVisible){visiblePaintSlots=nextVisible;pickingChanged=true;}
+   if(nextVisible){visiblePaintSlots=nextVisible;countryRolesDirty=true;pickingChanged=true;}
    countryPaintInputsDirty=false;dirtyPaintSlots.clear();
   }
-  if(fullPaintDirty)for(const slot of new Set([...countryRoles.keys(),...nextRoles.keys()]))changed.add(slot);
-  surface.setCountryPaint([...changed].map(slot=>{
-   const base=basePaint.get(slot)??{color:null,visible:false},appearance=roleStyles[nextRoles.get(slot)];
+  if(countryRolesDirty){
+   const nextRoles=new Map();
+   if(style)for(const [key,{code}] of interactionRefs.territorial){
+    const slot=activeSlotByKey.get(key);if(slot!==undefined&&visiblePaintSlots.has(slot))nextRoles.set(slot,code);
+   }
+   for(const slot of new Set([...countryRoles.keys(),...nextRoles.keys()]))if(countryRoles.get(slot)!==nextRoles.get(slot))changed.add(slot);
+   const roleChanged=nextRoles.size!==countryRoles.size||[...nextRoles].some(([slot,code])=>countryRoles.get(slot)!==code);
+   if(roleChanged)outlinePlanDirty=outlinePaintDirty=true;
+   countryRoles=nextRoles;countryRolesDirty=false;paintStats.countryRoleUpdates++;
+  }
+  if(countryEmphasisDirty)for(const slot of countryRoles.keys())changed.add(slot);
+  if(changed.size)surface.setCountryPaint([...changed].map(slot=>{
+   const base=basePaint.get(slot)??{color:null,visible:false},appearance=roleStyles[countryRoles.get(slot)];
    return [slot,{...base,highlight:appearance?{color:appearance.color,alpha:appearance.fillAlpha}:null}];
   }),{full:changed.size>Math.max(64,activeSlots.size/2)});
-  countryRoles=nextRoles;
-  surface.setOutlinePaint(nextRoles,roleStyles,style?.selection.color);
-  if(ready)requestOutlines();
-  const hydroRoles=new Map(),waterRoles=new Map();
-  if(style)for(const ref of [...(selected?.items??[]),selection?.hover,...candidates]){
-   if(ref?.domain!=='hydro'||!deps.objectRefVisible(ref))continue;
-   const code=INTERACTION_ROLE_PRIORITY[roleFor(ref)],slot=hydroSlots.get(ref.id);
-   if(slot!==undefined)hydroRoles.set(slot,code);
-   waterRoles.set(ref.id,code);
+  if(hydroRolesDirty){
+   hydroRoles=new Map();waterRoles=new Map();
+   if(style)for(const {ref,code} of interactionRefs.hydro.values()){
+    if(!deps.objectRefVisible(ref))continue;
+    const slot=hydroSlots.get(ref.id);if(slot!==undefined)hydroRoles.set(slot,code);
+    waterRoles.set(ref.id,code);
+   }
+   hydroRolesDirty=false;hydroStyleDirty=true;paintStats.hydroRoleUpdates++;
   }
-  surface.setHydroPaint(hydroRoles,waterRoles,roleStyles,style?.selection.color);
-  for(const layer of ['lakes','rivers'])surface.setLayerVisibility(layer,state.layerVisibility[layer]!==false);
-  surface.setLayerVisibility('borders',state.layerVisibility.objects!==false&&layerStyle(state.layerPresentation,'objects').boundaryVisible!==false);
-  paintDirty=fullPaintDirty=false;
+  if(hydroStyleDirty){surface.setHydroPaint(hydroRoles,waterRoles,roleStyles,style?.selection.color);hydroStyleDirty=false;}
+  if(layerPaintDirty){
+   for(const layer of ['lakes','rivers'])surface.setLayerVisibility(layer,state.layerVisibility[layer]!==false);
+   surface.setLayerVisibility('borders',bordersNeeded());layerPaintDirty=false;
+  }
+  paintDirty=fullPaintDirty=countryEmphasisDirty=false;
  }
  function renderFrame(frame){
   const base={frameId:frame.frameId,viewRevision:frame.viewRevision,projectionRevision:frame.projectionRevision};
   if(!features||lost||error||frame.projectGeneration!==generation||requestScopes.has('territory-apply')||!presentation.countrySourceAdmitted(territories.key))return {...base,deferred:true};
+  syncPresentationInputs();refreshPalette();
   const baseReady=ensureVisibleBase(),physicalReady=ensureVisiblePhysical(),fontAvailable=ensureLabelFont();
   const graticuleReady=ensureLineLayer('graticule',graticuleNeeded(),surface.hasGraticule,surface.installGraticule,spec.graticule,'경위선');
   if(!baseReady||!physicalReady)return {...base,deferred:true};
@@ -816,7 +906,8 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   surface.activateTerritorialChunks(territories.view,basePrepared.parts);
   surface.activatePhysicalContext(physical);
   pickingChanged||=lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
-  if(paintDirty)metrics.run('three.country-paint',updatePaint);
+  if(paintDirty)metrics.run('three.paint',updatePaint);
+  requestOutlines();
   const showRivers=state.layerVisibility.rivers!==false;
   if(riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical){
    riverCamera=camera;riverVisible=showRivers;riverContext=physical;
@@ -886,7 +977,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   const items=hydroMetadata??await hydroMetadataCache.read('hydro-metadata',async readSignal=>{
    const rows=await load(spec.hydroMetadata,'hydro',{phase:'background',priority:30,identityCount:spec.hydroCount,signal:readSignal});
    readSignal.throwIfAborted();
-   hydroMetadata=rows;rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));refreshHydroLedger();paintDirty=residencyDirty=true;invalidate('three-hydro-identities');
+   hydroMetadata=rows;rows.forEach((row,slot)=>hydroSlots.set(row.id,slot));refreshHydroLedger();paintDirty=hydroRolesDirty=residencyDirty=true;invalidate('three-hydro-identities');
    return rows;
   },signal);
   signal?.throwIfAborted();
@@ -945,7 +1036,12 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    assertCurrent();return [...hydroRefs,...hits.map(slot=>refs[slot])];
   }finally{consumerSignal?.removeEventListener('abort',abort);finishRequest(includeHydro||includeLabels?'pick-click':'pick-hover',controller);}
  }
- function appearance(){paintDirty=fullPaintDirty=countryPaintInputsDirty=true;invalidate('three-style');}
+ function invalidateCountryColors(){markCountryInputs();syncPresentationInputs(true);invalidate('three-country-colors');}
+ function invalidatePalette(){paletteDirty=paintDirty=true;invalidate('three-palette');}
+ function invalidatePhysicalStyle(){paletteDirty=hydroStyleDirty=paintDirty=true;invalidate('three-physical-style');}
+ function invalidateHydroVisibility(){markHydroInputs();syncPresentationInputs(true);layerPaintDirty=true;invalidate('three-hydro-visibility');}
+ function invalidatePresentationStyle(){const placesChanged=syncPresentationInputs(true);paletteDirty=paintDirty=true;invalidate('three-presentation-style');return placesChanged;}
+ function setRenderQuality(value){const key=JSON.stringify([value?.tier,value?.phase,value?.revision]);if(key===qualityKey)return;qualityKey=key;invalidate('three-quality');}
  const canPickFrame=()=>!!acceptedPick&&ready&&!disposed&&!lost&&!framePreserved&&acceptedPick.generation===generation&&acceptedPick.viewport===viewport;
  const displayCamera=()=>acceptedPick?.generation===generation?acceptedPick.camera:camera;
  const projection=Object.freeze({projectCoordinate:coord=>displayCamera()?.projectCoordinate(coord)??null,
@@ -961,14 +1057,23 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   setSelection(value){
    const prior=(selection?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
    const next=(value?.selection?.items??[]).filter(ref=>ref.domain==='label').map(ref=>ref.key);
-   if(prior.length!==next.length||prior.some((key,i)=>key!==next[i]))labelContentDirty=true;
-   selection=value;paintDirty=true;
-  },setInteractionStyle(value){style=value;appearance();},
-  invalidateCountryColors:appearance,invalidateCountryPalette:appearance,invalidatePhysicalStyle:appearance,invalidateHydroVisibility:appearance,
-  setRenderQuality:appearance,
+   if(prior.length!==next.length||prior.some((key,i)=>key!==next[i]))labelContentDirty=placeLabelContentDirty=true;
+   const roles=globeInteractionRoles(value,deps.highlightCandidates());
+   if(!sameGlobeRoleInputs(interactionRefs.territorial,roles.territorial))countryRolesDirty=paintDirty=true;
+   if(!sameGlobeRoleInputs(interactionRefs.hydro,roles.hydro))hydroRolesDirty=paintDirty=true;
+   interactionRefs=roles;selection=value;
+  },setInteractionStyle(value){
+   const next=globeInteractionStyles(value);
+   if(globeRoleStyleKey(roleStyles,'fill')!==globeRoleStyleKey(next,'fill'))countryEmphasisDirty=paintDirty=true;
+   if(globeRoleStyleKey(roleStyles,'outline')!==globeRoleStyleKey(next,'outline'))outlinePlanDirty=outlinePaintDirty=true;
+   if(globeRoleStyleKey(roleStyles,'hydro')!==globeRoleStyleKey(next,'hydro'))hydroStyleDirty=paintDirty=true;
+   if(Boolean(style)!==Boolean(value))countryRolesDirty=hydroRolesDirty=paintDirty=true;
+   style=value;roleStyles=next;invalidate('three-interaction-style');
+  },
+  invalidateCountryColors,invalidateCountryPalette:invalidatePalette,invalidatePhysicalStyle,invalidateHydroVisibility,invalidatePresentationStyle,setRenderQuality,
   labelZoomVisibility:()=>({country:Boolean(camera&&camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM),
    places:Boolean(camera&&camera.view.zoom>=PLACE_DISPLAY_ZOOM_FLOOR)}),
-  invalidateLabelContent({countries=true}={}){labelContentDirty=true;if(countries)allCountryLabelsDirty=true;},getPickingRevision:()=>pickingRevision,canPickFrame,queryObjectRefs,
+  invalidateLabelContent({countries=true,places=true}={}){labelContentDirty=true;if(countries)allCountryLabelsDirty=true;if(places)placeLabelContentDirty=true;},getPickingRevision:()=>pickingRevision,canPickFrame,queryObjectRefs,
   setInitialMapLoading(value){initialLoading=value;},isStyleReady:()=>loaded,renderFrame,commitVisualFrame,
   canPresentVisualFrame:presentation.canPresentVisualFrame,prepareTemporalCountrySource:presentation.prepareTemporalCountrySource,
   beginTemporalViewTransition,admitTemporalViewTransition:presentation.admitTemporalViewTransition,
@@ -976,7 +1081,7 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
   waitForTemporalPresentation:presentation.waitForTemporalPresentation,getProjectGeneration:()=>generation,
   preserveTemporalFrame(){cancelNeighborPrefetch();framePreserved=true;},isFramePreserved:()=>framePreserved,
   resetProjectRenderState(options){generation=options.generation;features=null;ready=false;error=null;
-    drawnFrame=null;surface?.labels.cancelPending();clearPreparation();neighborKey=null;publishedMonth=null;monthDirection=0;cancelOutlines();territorialAssets.releaseWarm();physicalAssets.releaseWarm();temporalInputs.reset();countryLabels.clear();countryLabelList=[];dirtyPaintSlots.clear();dirtyCountryLabels.clear();allCountryLabelsDirty=countryPaintInputsDirty=true;labelContentDirty=true;presentation.resetForProject(options);},
+    drawnFrame=null;surface?.labels.cancelPending();clearPreparation();neighborKey=null;publishedMonth=null;monthDirection=0;cancelOutlines();territorialAssets.releaseWarm();physicalAssets.releaseWarm();temporalInputs.reset();countryLabels.clear();countryLabelList=[];dirtyPaintSlots.clear();dirtyCountryLabels.clear();allCountryLabelsDirty=countryPaintInputsDirty=true;labelContentDirty=placeLabelContentDirty=paintDirty=countryRolesDirty=hydroRolesDirty=hydroStyleDirty=layerPaintDirty=true;presentationInputs=null;placeLabelList=[];clearViewPlans();presentation.resetForProject(options);},
   measureWork:metrics.track,measureSyncWork:metrics.run,failMapPreparation,retryMapPreparation,getRuntimeState,
   getStats:()=>({...getRuntimeState(),mapReadiness:readyState(),displayedRevision:ready?revision:0,sourceRevision:revision,
    generation,certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
@@ -987,10 +1092,10 @@ export function createThreeViewerRenderer(deps,{meta,initialCamera,presentMapPre
    countryLabelCount:surface?.labels.visibleCount(false)??0,
    placeLabelCount:surface?.labels.visibleCount(true)??0,riverDetail:riverDetail?.stats()??null,
    labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
-   territorialChunkCache:territorialAssets.stats(),historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes},historicalMetadata:historyIndex.stats(),temporalPresentation:temporalStats,physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
+   territorialChunkCache:territorialAssets.stats(),historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes},historicalMetadata:historyIndex.stats(),temporalPresentation:temporalStats,paintWork:{...paintStats},physicalCache:physicalAssets.stats(),residentCache:surface?.cacheStats()??null,
    labelAtlas:surface?.labels.cacheStats()??null,hydroTextureUploads:surface?.hydroUploadStats()??null,packetWorker:packetTasks.stats(),workScheduler:workScheduler.stats(),residency:residency.stats(),persistence:{bytes:persistenceBytes,peakBytes:persistencePeakBytes,skipped:persistenceSkipped},loadGate:loadGate.stats(),errorMessage:error?.message??null,initialLoading}),
   dispose(){cancelNeighborPrefetch();disposed=true;clearTimeout(moveTimer);lifetime.abort();for(const name of requestScopes.keys())cancelRequest(name);cancelOutlines();presentation.dispose();events.clear();historyCatalogCache.dispose();territorialAssets.dispose();physicalAssets.dispose();hydroMetadataCache.dispose();riverDetail?.dispose();loadGate.dispose();packetTasks.dispose();surface?.dispose();workScheduler.dispose();residency.dispose();canvas?.remove();
    acceptedPick=drawnFrame=features=basePrepared=publishedBase=basePreparing=physical=acceptedPhysical=publishedPhysical=hydroMetadata=null;
-   acceptedRiverChunks=[];hydroSlots.clear();basePaint.clear();temporalInputs.reset();countryLabels.clear();countryLabelList=[];surface=riverDetail=null;},
+   acceptedRiverChunks=[];hydroSlots.clear();basePaint.clear();temporalInputs.reset();countryLabels.clear();countryLabelList=[];placeLabelList=[];outlineBySlot.clear();clearViewPlans();surface=riverDetail=null;},
  });
 }
