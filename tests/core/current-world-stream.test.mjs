@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildCurrentWorld,visitCurrentWorldFeatures} from '../../tools/data/territorial-current-world.mjs';
+import {buildCurrentWorld,indexedTerritorialWorldView,visitCurrentWorldFeatures} from '../../tools/data/territorial-current-world.mjs';
 import {streamCurrentWorldJson} from '../../tools/data/current-world-json-stream.mjs';
 
 function source(id,featureId,geometry) {
@@ -52,4 +52,17 @@ test('current world feature selection rejects duplicate canonical IDs without re
     entities:unique,view:{...view,selections:[view.selections[0],view.selections[0]]},
     visit:()=>{},
   }),/Invalid world view/);
+});
+
+test('current world generation follows the selections paired with the source index',()=>{
+  const geometry={type:'Polygon',coordinates:[[[0,0],[1,0],[1,1],[0,0]]]};
+  const a=source('entity:a','A',geometry);
+  const selection={...view,id:'world:catalog',selections:[view.selections[0]]};
+  const index={views:[selection],entities:[
+    {entityId:a.entityId,geometryVersions:[{versionId:'modern'}]},
+  ]};
+  const output=buildCurrentWorld({entities:[a],view:indexedTerritorialWorldView(index)});
+  assert.deepEqual(output.features.map(feature=>[feature.id,feature.geometry]),[['A',geometry]]);
+  assert.throws(()=>indexedTerritorialWorldView({...index,views:[{...selection,selections:view.selections}]}),
+    /Missing indexed world view geometry: entity:b\/modern/);
 });

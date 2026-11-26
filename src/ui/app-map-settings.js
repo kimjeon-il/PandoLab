@@ -30,7 +30,7 @@ export function createMapSettings({ capabilities, viewPresentation } = {}) {
     if (key === 'distributions') ports.distributionPresentation.bumpVisibilityRevision();
     if (key === 'objects') ports.rendering.mapRenderer.invalidateCountryPalette({base:true,emphasis:true},'country-layer-visibility');
     if (key === 'rivers' || key === 'lakes') ports.rendering.mapRenderer.invalidateHydroVisibility();
-    if (key === 'labels' || key === 'objectNames' || key === 'objectFlags')
+    if (key === 'labels' || key === 'objectNames')
       ports.domains.renderingDomain.invalidateLabels('label-visibility');
     else {
       ports.domains.renderingDomain.invalidateBaseScene('layer-visibility');

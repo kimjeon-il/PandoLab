@@ -6,6 +6,68 @@ const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const box=(x,y=0)=>[[[x,y],[x+1,y],[x+1,y+1],[x,y+1],[x,y]]];
 function fixture(){const codes=['KAZ','KAB','COL','BJN','SER','VNM','PHL','CHN','TWN','PGA','GAB','UMI'];const before={type:'FeatureCollection',features:codes.map((id,i)=>({type:'Feature',id,properties:{name:id,keep:'licensed'},geometry:{type:'MultiPolygon',coordinates:[box(i*3)]}}))};const additions=Object.fromEntries(['VNM','PHL','CHN','TWN'].map((c,i)=>[c,Array.from({length:[4,4,1,1][i]},(_,j)=>box(60+i*10+j*2))]));const by=new Map(before.features.map(f=>[f.id,f]));const candidates=Object.fromEntries(['KAZ','COL','VNM','PHL','CHN','TWN'].map(id=>[id,{beforeSha256:hash(by.get(id).geometry),geometry:{type:'MultiPolygon',coordinates:[...by.get(id).geometry.coordinates,...(id==='KAZ'?by.get('KAB').geometry.coordinates:id==='COL'?[...by.get('BJN').geometry.coordinates,...by.get('SER').geometry.coordinates]:additions[id])]}}]));return{before,candidates,additions};}
 test('scoped retirement preserves unrelated features and applies exact selected additions',()=>{assert.equal(typeof api.patchWorldRetirementLayer,'function');const f=fixture(),out=api.patchWorldRetirementLayer(f);assert.deepEqual(out.features.map(f=>f.id),['KAZ','COL','VNM','PHL','CHN','TWN','GAB','UMI']);assert.deepEqual(out.features.at(-2),f.before.features.at(-2));assert.deepEqual(out.features.at(-1),f.before.features.at(-1));assert.deepEqual(out.features[0].properties,f.before.features[0].properties);});
+test('retires the three current identities and carries their two existing Colombian components forward',()=>{
+ const {before,candidates}=fixture();
+ const output=api.patchWorldRetirementLayer({before,candidates:{COL:candidates.COL},additions:{},kind:'existing-colombian-territories'});
+ assert.deepEqual(output.features.map(f=>f.id),before.features.filter(f=>!['BJN','SER','PGA'].includes(f.id)).map(f=>f.id));
+ assert.deepEqual(output.features.find(f=>f.id==='COL').geometry,candidates.COL.geometry);
+ assert.deepEqual(output.features.find(f=>f.id==='UMI'),before.features.find(f=>f.id==='UMI'));
+ assert.throws(()=>api.patchWorldRetirementLayer({before,candidates:{COL:candidates.COL,UMI:candidates.COL},additions:{},kind:'existing-colombian-territories'}));
+ const unchanged=structuredClone(before);
+ const col=unchanged.features.find(f=>f.id==='COL');
+ col.geometry=structuredClone(candidates.COL.geometry);
+ const alreadyCovered=api.patchWorldRetirementLayer({before:unchanged,candidates:{COL:{beforeSha256:hash(col.geometry),geometry:col.geometry}},additions:{},kind:'existing-colombian-territories'});
+ assert.deepEqual(alreadyCovered.features.find(f=>f.id==='COL'),col);
+ col.geometry.coordinates=[box(8.5)];
+ assert.throws(()=>api.patchWorldRetirementLayer({before:unchanged,candidates:{COL:{beforeSha256:hash(col.geometry),geometry:col.geometry}},additions:{},kind:'existing-colombian-territories'}),/partially overlapping/);
+});
+test('three-identity world derivation requires Colombia as its sole existing recipient',async()=>{
+ const {validateScopedRetirementDerivation}=await import('../../../src/data/world-bundle-manifest.js');
+ const derivation={preview:'scoped-retirement-patch',scopedRetirement:{schemaVersion:1,
+  baselinePreview:'canonical-topology-simplified',baselineWorldSha256:'a'.repeat(64),patchReceiptSha256:'b'.repeat(64),
+  retiredIds:['BJN','SER','PGA'],recipientIds:['COL'],detachedCaches:['preparedCountryScene','sharedBoundaries'],
+  layerPreimages:{currentworld:'c'.repeat(64),pcg:'d'.repeat(64),preview:'e'.repeat(64)}}};
+ assert.equal(validateScopedRetirementDerivation(derivation),true);
+ derivation.scopedRetirement.recipientIds.push('UMI');
+ assert.throws(()=>validateScopedRetirementDerivation(derivation));
+});
+test('the outlying-island split replaces one aggregate with nine separate source features',()=>{
+ const {before}=fixture(),ids=['XBK','XHO','XJA','XJV','XKR','XMW','XNV','XPL','XWK'];
+ const replacements=ids.map((id,i)=>({id,type:'Feature',properties:{name:id},geometry:{type:'Polygon',coordinates:box(i)}}));
+ const output=api.patchWorldRetirementLayer({before,replacements,kind:'split-us-minor-outlying-islands'});
+ assert.deepEqual(output.features.slice(0,-9),before.features.filter(f=>f.id!=='UMI'));
+ assert.deepEqual(output.features.slice(-9),replacements);
+ assert.throws(()=>api.patchWorldRetirementLayer({before,replacements:replacements.slice(1),kind:'split-us-minor-outlying-islands'}));
+});
+test('Cyprus buffer zone retirement removes only CNM with no recipient',async()=>{
+ const {validateScopedRetirementDerivation}=await import('../../../src/data/world-bundle-manifest.js');
+ const before={type:'FeatureCollection',features:['CYP','CNM','CYN'].map((id,i)=>({
+   type:'Feature',id,properties:{name:id},geometry:{type:'Polygon',coordinates:box(i)},
+ }))};
+ const input={before,candidates:{},additions:{},kind:'cyprus-buffer-zone-retirement'};
+ assert.deepEqual(api.patchWorldRetirementLayer(input).features,[before.features[0],before.features[2]]);
+ assert.throws(()=>api.patchWorldRetirementLayer({...input,candidates:{CYN:{}}}),/exact scoped recipients/);
+ const derivation={preview:'scoped-retirement-patch',scopedRetirement:{schemaVersion:1,
+   baselinePreview:'scoped-retirement-patch',baselineWorldSha256:'a'.repeat(64),patchReceiptSha256:'b'.repeat(64),
+   retiredIds:['CNM'],recipientIds:[],detachedCaches:['preparedCountryScene','sharedBoundaries'],
+   layerPreimages:{currentworld:'c'.repeat(64),pcg:'d'.repeat(64),preview:'e'.repeat(64)}}};
+ assert.equal(validateScopedRetirementDerivation(derivation),true);
+ derivation.scopedRetirement.recipientIds.push('CYP');
+ assert.throws(()=>validateScopedRetirementDerivation(derivation));
+});
+test('Southern Patagonian Ice Field retirement keeps Argentina and Chile geometry intact',async()=>{
+ const {validateScopedRetirementDerivation}=await import('../../../src/data/world-bundle-manifest.js');
+ const before={type:'FeatureCollection',features:['ARG','SPI','CHL'].map((id,i)=>({
+   type:'Feature',id,properties:{name:id},geometry:{type:'Polygon',coordinates:box(i)},
+ }))};
+ const input={before,candidates:{},additions:{},kind:'southern-patagonia-icefield-retirement'};
+ assert.deepEqual(api.patchWorldRetirementLayer(input).features,[before.features[0],before.features[2]]);
+ assert.throws(()=>api.patchWorldRetirementLayer({...input,candidates:{CHL:{}}}),/exact scoped recipients/);
+ assert.equal(validateScopedRetirementDerivation({preview:'scoped-retirement-patch',scopedRetirement:{schemaVersion:1,
+   baselinePreview:'scoped-retirement-patch',baselineWorldSha256:'a'.repeat(64),patchReceiptSha256:'b'.repeat(64),
+   retiredIds:['SPI'],recipientIds:[],detachedCaches:['preparedCountryScene','sharedBoundaries'],
+   layerPreimages:{currentworld:'c'.repeat(64),pcg:'d'.repeat(64),preview:'e'.repeat(64)}}}),true);
+});
 for(const [name,mutate]of Object.entries({stale:f=>f.candidates.KAZ.beforeSha256='0'.repeat(64),missing:f=>delete f.candidates.COL,extra:f=>f.candidates.GAB=f.candidates.COL,external:f=>f.candidates.VNM.geometry.coordinates[0]=box(-99),lost:f=>f.candidates.KAZ.geometry.coordinates.pop(),duplicates:f=>f.before.features.push(f.before.features[0])})){test('rejects '+name,()=>{assert.equal(typeof api.patchWorldRetirementLayer,'function');const f=fixture();mutate(f);assert.throws(()=>api.patchWorldRetirementLayer(f));});}
 test('scoped mesh reuses untouched slots and remaps only ownership indices',async()=>{assert.equal(typeof api.rebuildScopedWorldMesh,'function');await import('../../../tools/build/load-spherical-core.mjs');await import('../../../src/rendering/workers/polygon-mesh-core.js');const engine=globalThis.PandoLabPolygonMeshCore;engine.setSharedCore(globalThis.PandoLabSphericalCore);const {encodeCountryMesh,decodeCountryMesh,extractCountryMeshSlot}=await import('../../../src/rendering/country-mesh-codec.js');const f=fixture(),after=api.patchWorldRetirementLayer(f),old=engine.buildPolygonMeshFeatures(f.before.features,{validate:true}),buffer=encodeCountryMesh(old,f.before.features.map(f=>f.id),60);const result=await api.rebuildScopedWorldMesh({before:f.before,after,buffer,engine,maxEdgeDegrees:engine.MAX_RENDER_EDGE_DEGREES});const decoded=decodeCountryMesh(result.buffer,after.features.map(f=>f.id)).mesh;for(const id of ['GAB','UMI']){const a=extractCountryMeshSlot(old,f.before.features.findIndex(f=>f.id===id)),b=extractCountryMeshSlot(decoded,after.features.findIndex(f=>f.id===id));for(const field of ['positions','triangleIndices','lineIndices','countryBounds','countryBoundsFlags'])assert.deepEqual(b[field],a[field]);}assert.deepEqual(result.built.sort(),['CHN','COL','KAZ','PHL','TWN','VNM']);});
 test('scoped derivation requires exact scope hashes and explicit detached caches',async()=>{const m=await import('../../../src/data/world-bundle-manifest.js');assert.equal(typeof m.validateScopedRetirementDerivation,'function');const valid={preview:'scoped-retirement-patch',scopedRetirement:{schemaVersion:1,baselinePreview:'canonical-topology-simplified',baselineWorldSha256:'a'.repeat(64),patchReceiptSha256:'b'.repeat(64),retiredIds:['KAB','BJN','SER','PGA'],recipientIds:['KAZ','COL','VNM','PHL','CHN','TWN'],detachedCaches:['preparedCountryScene','sharedBoundaries'],layerPreimages:{currentworld:'c'.repeat(64),pcg:'d'.repeat(64),preview:'e'.repeat(64)}}};assert.equal(m.validateScopedRetirementDerivation(valid),true);for(const key of ['baselineWorldSha256','patchReceiptSha256','retiredIds','recipientIds','detachedCaches','layerPreimages']){const bad=structuredClone(valid);delete bad.scopedRetirement[key];assert.throws(()=>m.validateScopedRetirementDerivation(bad));}const extra=structuredClone(valid);extra.scopedRetirement.privateReportUrl='reports/private';assert.throws(()=>m.validateScopedRetirementDerivation(extra));assert.equal(m.validateScopedRetirementDerivation({preview:'canonical-topology-simplified'}),false);assert.throws(()=>m.validateScopedRetirementDerivation({preview:'anything'}));});

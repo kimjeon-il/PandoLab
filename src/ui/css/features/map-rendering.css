@@ -1,3 +1,1 @@
-/* Current MapLibre map interactions. Geographic geometry, labels and selections
-   are rendered by MapLibre layers, not by parallel SVG elements. */
 .map-overlay-layer > * { pointer-events: auto; }

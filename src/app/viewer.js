@@ -32,6 +32,7 @@ function start() {
   const attemptWakeRevision = wakeRevision;
   let importing = false;
   pending = Promise.resolve().then(async () => {
+    const meta = globalThis.PANDOLAB_BUILD_META;
     if (!coreReady) {
       const core = await loadVerifiedCore({ baseUrl: new URL('../wasm/', import.meta.url), signal: controller.signal });
       controller.signal.throwIfAborted();
@@ -44,7 +45,7 @@ function start() {
     importing = false;
     handedOff = true;
     detach();
-    await composeViewer({ productMode: 'viewer', meta: globalThis.PANDOLAB_BUILD_META });
+    await composeViewer({ productMode: 'viewer', meta });
   }).catch(error => {
     if (controller.signal.aborted) return;
     console.error('[PL-VIEWER-START]', error);

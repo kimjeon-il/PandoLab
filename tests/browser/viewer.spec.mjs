@@ -1,5 +1,8 @@
 import {test,expect} from '@playwright/test';
+
 import {readFile} from 'node:fs/promises';
+
+import { COUNTRY_DEFAULT_COLORS } from '../../src/ui/country-default-colors.js';
 
 async function ready(page,stage='map presentation'){
   const started=performance.now();let lastBlockers='',lastLogAt=-Infinity;
@@ -16,17 +19,10 @@ async function ready(page,stage='map presentation'){
       };
       const blockers=Object.keys(checks).filter(key=>!checks[key]);
       if(!blockers.length)return {blockers};
-      const map=window.__PANDOLAB_MAPLIBRE__;
-      const inspect=read=>{try{return read();}catch{return null;}};
       return {blockers,rendererStatus:s?.mapReadiness?.status??null,
-        webglContextLost:s?.webglContextLost??null,errorMessage:s?.errorMessage,
-        sourceRevision:s?.sourceRevision??null,certifiedRevision:s?.certifiedRevision??null,
-        displayedRevision:s?.displayedRevision??null,
+        webglContextLost:s?.webglContextLost??null,errorMessage:s?.errorMessage??null,
+        sourceRevision:s?.sourceRevision??null,displayedRevision:s?.displayedRevision??null,
         viewerStatus:status?.textContent??null,loadingKind:status?.dataset.loadingKind??null,
-        tilesLoaded:inspect(()=>map?.areTilesLoaded()??null),styleLoaded:inspect(()=>map?.isStyleLoaded()??null),
-        sources:Object.fromEntries(['territories','physical-land','physical-water','hydro','interaction'].map(id=>[
-          id,map?.getSource(id)?map.isSourceLoaded(id)??null:null,
-        ])),
       };
     });
     const now=performance.now(),elapsedMs=Math.round(now-started);
@@ -34,7 +30,7 @@ async function ready(page,stage='map presentation'){
       console.log('[viewer-ready]',JSON.stringify({stage,elapsedMs,result:'ready'}));
       return true;
     }
-    const key=JSON.stringify([sample.blockers,sample.rendererStatus,sample.tilesLoaded,sample.styleLoaded,sample.sources]);
+    const key=JSON.stringify([sample.blockers,sample.rendererStatus,sample.errorMessage]);
     if(key!==lastBlockers||now-lastLogAt>=10_000){
       console.log('[viewer-ready]',JSON.stringify({stage,elapsedMs,...sample}));
       lastBlockers=key;lastLogAt=now;
@@ -42,6 +38,7 @@ async function ready(page,stage='map presentation'){
     return false;
   },{timeout:90_000,message:`Viewer not ready: ${stage}`}).toBe(true);
 }
+
 async function open(page,query=''){
   const health=await page.request.get('./__shell/health');
   if(health.ok()&&health.headers()['content-type']?.includes('application/json')){
@@ -54,70 +51,396 @@ async function open(page,query=''){
   await ready(page,'initial map');
   await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.visibleTerritorialCount())).toBeGreaterThan(0);
 }
+
 const camera=page=>page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState());
 
-for(const [profile,viewport,saved] of [
- ['mobile',{width:390,height:844},null],
- ['desktop',{width:1440,height:900},null],
- ['saved desktop',{width:1440,height:900},{projection:'globe',center:[38,42],zoom:3.25,bearing:12,pitch:0,roll:0}],
- ['saved below world fit',{width:1440,height:900},{projection:'globe',center:[38,42],zoom:-2,bearing:12,pitch:0,roll:0}],
-]){
- test(`first visible globe keeps its camera through data loading (${profile})`,async({browser,baseURL})=>{
-  const context=await browser.newContext({baseURL,viewport,hasTouch:profile==='mobile',isMobile:profile==='mobile'});
-  const page=await context.newPage();
-  if(saved){
-   await page.route('**/camera-storage-fixture',route=>route.fulfill({contentType:'text/html',body:'<!doctype html>'}));
-   await page.goto('./camera-storage-fixture');
-   await page.evaluate(async value=>{
-    const {createBrowserProjectStorage}=await import(new URL('./assets/js/modules/browser-project-storage.js',location.href).href);
-    const storage=createBrowserProjectStorage({productMode:'viewer',indexedDB,databaseName:'pandolab-viewer',storeName:'views',viewKey:'active-view'});
-    await storage.writeCamera('default-world',value);
-   },saved);
-  }
-  let allowGeometry,geometryRequested=false;
-  const geometryBlocked=new Promise(resolve=>{allowGeometry=resolve;});
-  try{
-   await page.route(/\/world-geometry\/sha256-/,async route=>{
-    geometryRequested=true;
-    await geometryBlocked;
-    await route.continue();
-   });
-   await page.addInitScript(()=>{
-    const capture=()=>{
-     const map=window.__PANDOLAB_MAPLIBRE__,canvas=map?.getCanvas();
-     if(canvas&&getComputedStyle(canvas).visibility==='visible'){
-      const center=map.getCenter();
-      (window.__visibleGlobeFrames??=[]).push([center.lng,center.lat,map.getZoom(),map.getBearing()]);
-      if(document.querySelector('#viewer')?.dataset.initialLoading==='true'&&
-       !map.getLayer('initial-map-land')&&!document.querySelector('[data-map-preserved-frame]'))
-       window.__uncoveredInitialFrame=true;
-     }
-     if(document.querySelector('#viewerStatus')?.dataset.ready!=='true')requestAnimationFrame(capture);
+test('Three globe draws prepared surfaces with no base uploads while dragging', async ({ browser, baseURL }) => {
+ const context = await browser.newContext({ baseURL, viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1.5 });
+ let allowOutlines;
+ const outlineGate=new Promise(resolve=>{allowOutlines=resolve;});
+ try {
+  const page = await context.newPage();
+  await page.route('**/outlines/**',async route=>{await outlineGate;await route.continue();});
+  page.on('pageerror', error => console.error('Three globe page error:', error));
+  page.on('console', message => { if (message.type() === 'error') console.error('Three globe error:', message.text()); });
+  await page.addInitScript(() => {
+   localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,selection:{color:'#ff00fd',fillStrength:0}}));
+   const prototype = window.WebGL2RenderingContext.prototype;
+   window.globeBufferWrites = 0;
+   for (const method of ['bufferData', 'bufferSubData']) {
+    const original = prototype[method];
+    prototype[method] = function (...args) {
+     window.globeBufferWrites++;
+     return original.apply(this, args);
     };
-    requestAnimationFrame(capture);
-   });
-   await page.goto('./?debug=1',{waitUntil:'domcontentloaded'});
-   await expect.poll(()=>page.evaluate(()=>window.__visibleGlobeFrames?.length??0)).toBeGreaterThan(0);
-   await expect.poll(()=>geometryRequested).toBe(true);
-   expect(await page.locator('#viewer').getAttribute('data-initial-loading')).toBe('true');
-   allowGeometry();
-   await ready(page,'globe camera after loading');
-   expect(await page.evaluate(()=>window.__uncoveredInitialFrame??false)).toBe(false);
-   const {frames,final,minZoom}=await page.evaluate(()=>{
-    const map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter();
-    return {frames:window.__visibleGlobeFrames,final:[center.lng,center.lat,map.getZoom(),map.getBearing()],minZoom:map.getMinZoom()};
-   });
-   for(const frame of frames)frame.forEach((value,index)=>expect(value).toBeCloseTo(final[index],5));
-   if(saved){
-    const adjustedMinimum=minZoom+Math.log2(Math.cos(saved.center[1]*Math.PI/180));
-    [...saved.center,Math.max(saved.zoom,adjustedMinimum),saved.bearing].forEach((value,index)=>expect(final[index]).toBeCloseTo(value,5));
    }
-  }finally{
-   allowGeometry();
-   await context.close();
+  });
+  await page.route('**/three-camera-fixture', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html>' }));
+  await page.goto('./three-camera-fixture');
+  const saved = { projection: 'globe', center: [3.12, 45.78], zoom: 2.75, bearing: 18, pitch: 0, roll: 0 };
+  await page.evaluate(async view => {
+   const { createBrowserProjectStorage } = await import(new URL('./assets/js/modules/browser-project-storage.js', location.href).href);
+   const storage = createBrowserProjectStorage({ productMode: 'viewer', indexedDB,
+    databaseName: 'pandolab-viewer', storeName: 'views', viewKey: 'active-view' });
+   await storage.writeCamera('default-world', view);
+  }, saved);
+  const assetRequests = [];
+  page.on('request', request => assetRequests.push(new URL(request.url()).pathname));
+  const outlineRequests=()=>assetRequests.filter(path=>path.includes('/outlines/'));
+  const meshRequests = () => assetRequests.filter(path => path.includes('/globe-preview/')&&!path.includes('/hydro-pick/')&&!path.includes('/pick/')&&!path.includes('/outlines/')).length;
+  await page.goto('./?debug=1');
+  await expect(page.locator('#viewerStatus')).toHaveAttribute('data-ready', 'true', { timeout: 90_000 });
+  await expect(page.locator('#map canvas')).toHaveCount(1);
+  const canvas = page.locator('#map canvas');
+  const box = await canvas.boundingBox();
+  expect(await canvas.evaluate(element => element.width)).toBe(Math.floor(box.width * 1.5));
+  expect((await camera(page)).camera).toEqual(saved);
+  const scene = await page.evaluate(() => ({
+   prepared: window.__PANDOLAB_VIEWER__.rendererStats().countrySlotCount,
+   month: window.__PANDOLAB_VIEWER__.builtinMonth().month,
+   expectedMonth: window.PANDOLAB_BUILD_META.globePreview.physicalMonth,
+   owner: window.__PANDOLAB_VIEWER__.visibleTerritorialCount(),
+   drawCalls: window.__PANDOLAB_VIEWER__.rendererStats().drawCalls,
+   firstPublishedAt: window.__PANDOLAB_VIEWER__.rendererStats().performance.firstPublishedAt,
+   labels: window.__PANDOLAB_VIEWER__.rendererStats().countryLabelCount,
+   atlasEntries: window.__PANDOLAB_VIEWER__.rendererStats().labelAtlasEntries,
+  }));
+  expect(scene.prepared).toBeGreaterThan(0);
+  expect(scene.month).toBe(scene.expectedMonth);
+  expect(scene.owner).toBeGreaterThan(0);
+  expect(scene.drawCalls).toBeGreaterThan(0);
+  expect(scene.firstPublishedAt).toBeGreaterThan(0);
+  expect(scene.labels).toBe(0);
+  expect(scene.atlasEntries).toBeGreaterThan(scene.labels);
+  const before = await canvas.screenshot();
+  const middlePixel = await page.evaluate(async encoded => {
+   const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), char => char.charCodeAt(0))]));
+   const pixel = new OffscreenCanvas(1, 1).getContext('2d');
+   pixel.drawImage(bitmap, Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2), 1, 1, 0, 0, 1, 1);
+   bitmap.close();
+   return Array.from(pixel.getImageData(0, 0, 1, 1).data).slice(0, 3);
+  }, before.toString('base64'));
+  const expected = COUNTRY_DEFAULT_COLORS.FRA.slice(1).match(/../g).map(value => parseInt(value, 16));
+  expect(Math.max(...middlePixel.map((value, i) => Math.abs(value - expected[i])))).toBeLessThanOrEqual(1);
+  const writes = await page.evaluate(() => window.globeBufferWrites);
+  const requests = meshRequests();
+  expect(assetRequests.filter(path=>path.includes('/pick/'))).toEqual([]);
+  expect(outlineRequests()).toEqual([]);
+  const landSources = await page.evaluate(async () => {
+   const meta = window.PANDOLAB_BUILD_META;
+   const catalog = await fetch(meta.projectCatalogs.physicalLand.catalog).then(response => response.json());
+   return [catalog.asset, catalog.modernCoast?.asset]
+    .filter(Boolean).map(asset => new URL(asset.url, location.href).pathname);
+  });
+  expect(assetRequests.filter(path => landSources.includes(path))).toEqual([]);
+  expect(requests).toBe(await page.evaluate(() => {
+   const { waters, lakes } = window.PANDOLAB_BUILD_META.globePreview.physical;
+   return 5 + waters.length + lakes.length;
+  }));
+  expect(writes).toBeGreaterThan(0);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect.poll(() => page.evaluate(() => window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref => ref.id))).toEqual(['FRA']);
+  expect(assetRequests.some(path=>path.includes('/pick/'))).toBe(true);
+  await expect.poll(()=>outlineRequests().length).toBe(1);
+  expect(await page.evaluate(() => window.globeBufferWrites)).toBe(writes);
+  allowOutlines();
+  const outlinePixels = async screenshot => page.evaluate(async encoded => {
+   const image = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), char=>char.charCodeAt(0))]));
+   const context = new OffscreenCanvas(image.width,image.height).getContext('2d');
+   context.drawImage(image,0,0);
+   const rgba = context.getImageData(0,0,image.width,image.height).data;
+   image.close();
+   let count=0;
+   for(let pixel=0;pixel<rgba.length;pixel+=4)if(rgba[pixel]>250&&rgba[pixel+1]<5&&rgba[pixel+2]>247)count++;
+   return count;
+  },screenshot.toString('base64'));
+  expect(await outlinePixels(before)).toBe(0);
+  await expect.poll(async()=>outlinePixels(await canvas.screenshot())).toBeGreaterThan(20);
+  const selectionWrites=await page.evaluate(() => window.globeBufferWrites);
+  expect(selectionWrites).toBeGreaterThan(writes);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 110, box.y + box.height / 2 + 30, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await canvas.screenshot()).equals(before)).toBe(false);
+  const zoomBeforeWheel = (await camera(page)).zoom;
+  await page.mouse.wheel(0, -80);
+  await expect.poll(async () => (await camera(page)).zoom).toBeGreaterThan(zoomBeforeWheel);
+  expect(await page.evaluate(() => window.globeBufferWrites)).toBe(selectionWrites);
+  expect(meshRequests()).toBe(requests);
+  expect(outlineRequests()).toHaveLength(1);
+  expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().labelAtlasEntries)).toBe(scene.atlasEntries);
+  expect(await page.evaluate(() => window.__PANDOLAB_VIEWER__.rendererStats().renderer)).toBe('three');
+  await expect.poll(() => page.evaluate(async () => {
+   const count = window.__PANDOLAB_VIEWER__.rendererStats().drawCount;
+   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+   return window.__PANDOLAB_VIEWER__.rendererStats().drawCount - count;
+  })).toBe(0);
+  const dateCamera = (await camera(page)).camera;
+  await month(page, '2026-10');
+  expect((await camera(page)).camera).toEqual(dateCamera);
+  expect(await page.evaluate(() => window.globeBufferWrites)).toBe(selectionWrites);
+  expect(meshRequests()).toBe(requests);
+  const viewBeforeContextLoss = (await camera(page)).camera;
+  await canvas.evaluate(element => {
+   window.threeContextControl = element.getContext('webgl2').getExtension('WEBGL_lose_context');
+   window.threeContextControl.loseContext();
+  });
+  await expect.poll(() => page.evaluate(() => window.__PANDOLAB_VIEWER__.rendererStats().webglContextLost)).toBe(true);
+  await page.evaluate(() => window.threeContextControl.restoreContext());
+  await expect.poll(() => page.evaluate(() => window.__PANDOLAB_VIEWER__.rendererStats().mapReadiness.mapReady)).toBe(true);
+  expect((await camera(page)).camera).toEqual(viewBeforeContextLoss);
+  expect(meshRequests()).toBe(requests);
+ } finally {
+  allowOutlines();
+  await context.close();
+ }
+});
+
+test('Three globe preserves mobile DPR during pinch, drag and resize', async ({ browser, baseURL }) => {
+ const context = await browser.newContext({ baseURL, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2.625,
+  hasTouch: true, isMobile: true });
+ try {
+  const page = await context.newPage();
+  await page.goto('./?debug=1');
+  await expect(page.locator('#viewerStatus')).toHaveAttribute('data-ready', 'true', { timeout: 90_000 });
+  const canvas = page.locator('#map canvas'), box = await canvas.boundingBox();
+  expect(await canvas.evaluate(element => element.width)).toBe(Math.floor(box.width * 2.625));
+  const points = span => [
+   { id: 0, x: box.x + box.width / 2 - span, y: box.y + box.height / 2 },
+   { id: 1, x: box.x + box.width / 2 + span, y: box.y + box.height / 2 },
+  ];
+  const zoom = async () => (await camera(page)).zoom;
+  const before = await zoom(), cdp = await context.newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points(30) });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(68) });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect.poll(zoom).toBeGreaterThan(before);
+  const centerBefore=(await camera(page)).camera.center;
+  const finger=(dx,dy)=>[{id:0,x:box.x+box.width/2+dx,y:box.y+box.height/2+dy}];
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:finger(0,0)});
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:finger(45,16)});
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  await expect.poll(async()=>(await camera(page)).camera.center).not.toEqual(centerBefore);
+  await page.setViewportSize({width:844,height:390});
+  await expect.poll(()=>canvas.evaluate(element=>element.width===Math.floor(element.clientWidth*window.devicePixelRatio)&&
+   element.height===Math.floor(element.clientHeight*window.devicePixelRatio))).toBe(true);
+ } finally {
+  await context.close();
+ }
+});
+
+test('Viewer graticule can be hidden and restored on the globe',async({page})=>{
+ await open(page);
+ const canvas=page.locator('#map canvas');
+ const toggle=async visible=>{
+  await page.locator('#preferencesBtn').click();
+  await page.locator('#preferencesGraticuleInput').setChecked(visible);
+  await page.locator('#preferencesCloseBtn').click();
+ };
+ const initial=await canvas.screenshot();
+ await toggle(false);
+ await expect.poll(async()=>(await canvas.screenshot()).equals(initial)).toBe(false);
+ await toggle(true);
+ await expect.poll(async()=>(await canvas.screenshot()).equals(initial)).toBe(true);
+});
+
+test('Three globe places and selects a built-in city at its geographic position', async ({page})=>{
+ await page.goto('./?debug=1');
+ await ready(page,'Three globe city startup');
+ const paris=[2.3488,48.8534];
+ await page.evaluate(([lon,lat])=>{
+  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:8,globeRotation:[-lon,-lat,0]}});
+ },paris);
+ await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().placeLabelCount),{timeout:60_000}).toBeGreaterThan(0);
+ const [x,y]=await page.evaluate(coordinate=>window.__PANDOLAB_MAP_HOST__.project(coordinate),paris);
+ const box=await page.locator('#map canvas').boundingBox();
+ await page.mouse.click(box.x+x,box.y+y);
+ await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref=>ref.domain))).toEqual(['label']);
+});
+
+test('Three globe draws local detailed rivers and reuses them after hiding the layer', async ({page})=>{
+ const detailRequests=[];
+ page.on('request',request=>{if(request.url().includes('/globe-preview/river-detail/'))detailRequests.push(request.url());});
+ await page.goto('./?debug=1');
+ await ready(page,'Three globe rivers startup');
+ expect(detailRequests).toEqual([]);
+ const go=zoom=>page.evaluate(zoom=>{
+  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom,globeRotation:[-2.3488,-48.8534,0]}});
+ },zoom);
+ const detail=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().riverDetail);
+ await go(8);
+ await expect.poll(async()=>{const state=await detail();return state.visibleChunks>0&&state.visibleChunks===state.requestedChunks;}).toBe(true);
+ const first=await detail(),network=detailRequests.length;
+ expect(first.activeSegments).toBeGreaterThan(0);
+ expect(network).toBeGreaterThan(0);
+ expect(network).toBeLessThan(await page.evaluate(()=>window.PANDOLAB_BUILD_META.globePreview.physical.riverDetail.length));
+ const canvas=page.locator('#map canvas'),before=await canvas.screenshot();
+ await page.locator('#preferencesBtn').click();
+ await page.locator('#preferencesRiversInput').uncheck();
+ await page.locator('#preferencesCloseBtn').click();
+ await expect.poll(async()=>(await detail()).visibleChunks).toBe(0);
+ await expect.poll(async()=>(await canvas.screenshot()).equals(before)).toBe(false);
+ await page.locator('#preferencesBtn').click();
+ await page.locator('#preferencesRiversInput').check();
+ await page.locator('#preferencesCloseBtn').click();
+ await expect.poll(detail).toEqual(first);
+ expect(detailRequests).toHaveLength(network);
+});
+
+test('Three globe switches to changed historical meshes and reuses them on return', async ({page})=>{
+ const historyRequests=[];
+ page.on('request',request=>{if(request.url().includes('/globe-preview/historical/'))historyRequests.push(request.url());});
+ await page.addInitScript(()=>{
+  window.globeHistoryBufferWrites=0;
+  const gl=window.WebGL2RenderingContext.prototype;
+  for(const name of ['bufferData','bufferSubData']){
+   const implementation=gl[name];
+   gl[name]=function(...args){window.globeHistoryBufferWrites++;return implementation.apply(this,args);};
   }
  });
-}
+ await page.goto('./?debug=1');
+ await ready(page,'Three globe historical startup');
+ await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-46.7,-39.8,0]}}));
+ const canvas=page.locator('#map canvas'),modernMap=await canvas.screenshot();
+ const base=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.builtinMonth().month,
+  count:window.__PANDOLAB_VIEWER__.rendererStats().countrySlotCount}));
+ const initialCamera=(await camera(page)).camera;
+ const active=()=>page.evaluate(()=>{const stats=window.__PANDOLAB_VIEWER__.rendererStats();
+  return {count:stats.countrySlotCount,changed:stats.activeHistoricalTerritories,writes:window.globeHistoryBufferWrites};});
+ expect(historyRequests).toEqual([]);
+ await month(page,'2020-12');
+ const first=await active(),requests=historyRequests.length;
+ expect(first.count).toBe(base.count+1);
+ expect(first.changed).toBe(3);
+ expect(requests).toBeGreaterThan(0);
+ expect((await camera(page)).camera).toEqual(initialCamera);
+ expect((await canvas.screenshot()).equals(modernMap)).toBe(false);
+ await month(page,base.month);
+ expect(await active()).toEqual({count:base.count,changed:0,writes:first.writes});
+ expect((await canvas.screenshot()).equals(modernMap)).toBe(true);
+ await month(page,'2020-12');
+ expect(await active()).toEqual(first);
+ expect(historyRequests).toHaveLength(requests);
+ await month(page,'1991-12');
+ expect((await active()).count).toBeLessThan(base.count);
+ expect((await active()).changed).toBeGreaterThan(first.changed);
+ await month(page,'1910-07');
+ const earlier=await active();
+ expect(earlier.count).toBeLessThan(base.count);
+ expect(earlier.changed).toBeGreaterThan(0);
+ expect((await camera(page)).camera).toEqual(initialCamera);
+ await month(page,'-0001-12');
+ expect((await active()).count).toBeLessThan(earlier.count);
+ await month(page,'0001-01');
+ expect((await active()).count).toBeLessThan(earlier.count);
+});
+
+test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{
+ await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,backgrounds:{viewer:{graticule:false}}})));
+ await page.goto('./?debug=1');
+ await ready(page,'geographic samples startup');
+ const canvas=page.locator('#map canvas');
+ const go=(center,zoom)=>page.evaluate(({center,zoom})=>{
+  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{center,zoom}});
+ },{center,zoom});
+ const pixel=async coordinate=>{
+  const [x,y]=await page.evaluate(point=>window.__PANDOLAB_MAP_HOST__.project(point),coordinate);
+  const png=await canvas.screenshot();
+  return page.evaluate(async({encoded,x,y})=>{
+   const bitmap=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
+   const context=new OffscreenCanvas(bitmap.width,bitmap.height).getContext('2d');
+   context.drawImage(bitmap,0,0);bitmap.close();
+   return [...context.getImageData(Math.round(x*window.devicePixelRatio),Math.round(y*window.devicePixelRatio),1,1).data].slice(0,3);
+  },{encoded:png.toString('base64'),x,y});
+ };
+ const rgb=hex=>hex.slice(1).match(/../g).map(value=>parseInt(value,16));
+ const paint=async(coordinate,hex)=>expect.poll(async()=>{
+  const actual=await pixel(coordinate);
+  return Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value)));
+ }).toBeLessThanOrEqual(1);
+ const ant=[20,-85],north=[0,89.9];
+ await go(ant,5);await paint(ant,'#f1f1f1');
+ await go(north,5);await paint(north,'#ffffff');
+ await go([180,-16.86],12);
+ await paint([179.99,-16.86],COUNTRY_DEFAULT_COLORS.FJI);
+ await paint([-179.99,-16.86],COUNTRY_DEFAULT_COLORS.FJI);
+ await paint([180,-16.86],COUNTRY_DEFAULT_COLORS.FJI);
+ await go([126.5,33.54],10);
+ await paint([126.47,33.42],COUNTRY_DEFAULT_COLORS.KOR);
+ await paint([126.47,33.66],'#ffffff');
+ // Sample inside the polygon beside the country label at this zoom.
+ const vatican=[12.45375,41.90308];
+ await go([12.4534,41.9033],17);
+ await paint(vatican,COUNTRY_DEFAULT_COLORS.VAT);
+ const point=await page.evaluate(coordinate=>window.__PANDOLAB_MAP_HOST__.project(coordinate),vatican);
+ const box=await canvas.boundingBox();
+ await page.mouse.click(box.x+point[0],box.y+point[1]);
+ await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(row=>row.id))).toContain('VAT');
+});
+
+test('Three globe switches historical land and water in the same dated frame',async({page})=>{
+ await page.goto('./?debug=1');
+ await ready(page,'dated physical startup');
+ const state=()=>page.evaluate(()=>{
+  const viewer=window.__PANDOLAB_VIEWER__,stats=viewer.rendererStats();
+  return {month:viewer.builtinMonth().month,land:stats.physicalLandSha256,water:stats.physicalWaterIds,territories:stats.countrySlotCount};
+ });
+ await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-58,-43,0]}}));
+ const initialCamera=(await camera(page)).camera,before=await state();
+ const canvas=page.locator('#map canvas'),modern=await canvas.screenshot();
+ await month(page,'1923-11');
+ const dated=await state();
+ expect(dated).toMatchObject({month:'1923-11',water:expect.arrayContaining(['waterbody:aral','waterbody:caspian'])});
+ expect(dated.land).not.toBe(before.land);
+ expect(dated.territories).toBeLessThan(before.territories);
+ expect((await camera(page)).camera).toEqual(initialCamera);
+ expect((await canvas.screenshot()).equals(modern)).toBe(false);
+ await month(page,before.month);
+ expect(await state()).toEqual(before);
+ expect((await canvas.screenshot()).equals(modern)).toBe(true);
+});
+
+test('Three globe selects rendered rivers and dated water with Core identities',async({page})=>{
+ await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,selection:{color:'#ff00fd',fillStrength:1}})));
+ await page.goto('./?debug=1');
+ await ready(page,'Three globe hydro selection startup');
+ const go=([lon,lat],zoom)=>page.evaluate(({lon,lat,zoom})=>{
+  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom,globeRotation:[-lon,-lat,0]}});
+ },{lon,lat,zoom});
+ const click=async coordinate=>{
+  const point=await page.evaluate(coord=>window.__PANDOLAB_MAP_HOST__.project(coord),coordinate);
+  const box=await page.locator('#map canvas').boundingBox();
+  await page.mouse.click(box.x+point[0],box.y+point[1]);
+ };
+ const selection=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref=>ref.id));
+ const seine=[2.072917,48.989583];
+ await go(seine,6);
+ await expect.poll(()=>page.evaluate(()=>{
+  const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
+  return visibleChunks>0&&visibleChunks===requestedChunks;
+ })).toBe(true);
+ await click(seine);
+ const chooser=page.locator('#objectChooserList [role="option"]').filter({hasText:'센강'});
+ await expect.poll(async()=>await chooser.isVisible()||(await selection()).includes('hydro-system:20386022')).toBe(true);
+ if(await chooser.isVisible())await chooser.click();
+ await expect.poll(selection).toContain('hydro-system:20386022');
+ const canvas=page.locator('#map canvas');
+ await expect.poll(async()=>page.evaluate(async encoded=>{
+  const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
+  const ctx=new OffscreenCanvas(image.width,image.height).getContext('2d');ctx.drawImage(image,0,0);image.close();
+  const rgba=ctx.getImageData(0,0,ctx.canvas.width,ctx.canvas.height).data;
+  for(let i=0;i<rgba.length;i+=4)if(rgba[i]>250&&rgba[i+1]<5&&rgba[i+2]>247)return true;
+  return false;
+ },(await canvas.screenshot()).toString('base64'))).toBe(true);
+ const caspian=[51,42];
+ await go(caspian,2.75);
+ await month(page,'1923-11');
+ const unselectedLake=await canvas.screenshot();
+ await click(caspian);
+ await expect.poll(selection).toEqual(['waterbody:caspian']);
+ await expect.poll(async()=>(await canvas.screenshot()).equals(unselectedLake)).toBe(false);
+});
 
 test('Viewer paints the correct search layout before startup completes',async({browser,baseURL})=>{
  for(const [width,height,layout,touch] of [[390,844,'mobile',true],[844,390,'phone-landscape',true],
@@ -195,619 +518,8 @@ test('Viewer dialogs share readable action colors across layouts and themes',asy
  }finally{await context.close();}
 });
 
-test('graticule draws above the colored map and below selection and labels',async({page})=>{
- await page.emulateMedia({reducedMotion:'no-preference'});
- await page.addInitScript(()=>{
-  const capture=()=>{
-   const viewer=document.querySelector('#viewer'),map=window.__PANDOLAB_MAPLIBRE__;
-   if(viewer?.dataset.initialLoading==='true'&&map?.getLayer('pando-polar-caps')){
-    const layers=map.getLayersOrder();
-    if(layers.at(-2)==='initial-map-land'&&layers.at(-1)==='pando-polar-caps'&&
-       getComputedStyle(map.getCanvas()).animationName==='viewer-map-skeleton-pulse'){
-     window.__polarSkeletonAnimated=true;
-     return;
-    }
-   }
-   if(!window.__PANDOLAB_VIEWER__?.initialMapPresented())requestAnimationFrame(capture);
-  };
-  requestAnimationFrame(capture);
- });
- await open(page);
- expect(await page.evaluate(()=>window.__polarSkeletonAnimated)).toBe(true);
- const ordered=()=>page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,order=map.getLayersOrder();
-  const grid=order.indexOf('map-graticule');
-  const selection=order.indexOf('interaction-fill'),labels=order.indexOf('viewer-label-text');
-  return grid>order.indexOf('physical-land-fill')&&grid>order.indexOf('territories')
-   &&grid>order.indexOf('physical-water')&&grid>order.indexOf('borders')&&grid<selection&&grid<labels;
- });
- await expect.poll(ordered).toBe(true);
- const sample=()=>page.evaluate(()=>new Promise(resolve=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  map.once('render',()=>{
-   const source=map.getCanvas(),canvas=document.createElement('canvas');canvas.width=source.width;canvas.height=source.height;
-   canvas.getContext('2d').drawImage(source,0,0);
-   resolve(canvas.toDataURL());
-  });
-  map.triggerRepaint();
- }));
- const setGrid=async visible=>{
-  await page.locator('#preferencesBtn').click();
-  await page.locator('#preferencesGraticuleInput').setChecked(visible);
-  await page.locator('#preferencesCloseBtn').click();
-  await expect.poll(()=>page.evaluate(()=>Boolean(window.__PANDOLAB_MAPLIBRE__.getLayer('map-graticule')))).toBe(visible);
-  await ready(page,'graticule preference');
- };
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,-85],zoom:3}));
- await ready(page,'polar graticule camera');
- const visible=await sample();
- await setGrid(false);
- expect(await sample()).not.toBe(visible);
- await setGrid(true);
- await expect.poll(ordered).toBe(true);
-});
-
-for(const deviceRatio of [2.625,1.3125])test('physical land stays continuous across inland borders at reference zooms, DPR '+deviceRatio,async({browser,baseURL})=>{
- test.setTimeout(180000);
- const context=await browser.newContext({baseURL,viewport:{width:412,height:780},deviceScaleFactor:deviceRatio});
- const page=await context.newPage();
- try{
- await open(page);
- expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().physicalLandAssetHits)).toBeGreaterThan(0);
- const before=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().physicalLandPreparations);
- await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  map.addLayer({id:'land-proof-background',type:'background',paint:{'background-color':'#ffffff'}});
-  map.addLayer({id:'land-proof-fill',type:'fill',source:'physical-land',paint:{'fill-color':'#cccccc','fill-antialias':true}});
- });
-  for(const zoom of [1,3,5]){
-   await page.evaluate(zoom=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:zoom,globeRotation:[-12,-49,0]}}),zoom);await ready(page,'land continuity '+zoom);
-    await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isSourceLoaded('physical-land'))).toBe(true);
-    const sample=await page.evaluate(()=>new Promise((resolve,reject)=>{
-     const map=window.__PANDOLAB_MAPLIBRE__;let attempts=0;
-     // App ordering can place optional hydro above test layers. Isolate the
-     // actual land source, so white river lines cannot be counted as land gaps.
-     const others=()=>map.getStyle().layers.filter(layer=>!['land-proof-background','land-proof-fill'].includes(layer.id)&&layer.layout?.visibility!=='none');
-     const isolate=()=>{for(const layer of others())map.setLayoutProperty(layer.id,'visibility','none');map.once('render',read);map.triggerRepaint();};
-     const read=()=>{
-      if(others().length){if(++attempts>20){reject(Error('Could not isolate physical land from optional layers'));return;}isolate();return;}
-      const canvas=map.getCanvas(),gl=canvas.getContext('webgl2'),pixels=new Uint8Array(canvas.width*canvas.height*4),ratio=canvas.width/canvas.clientWidth;
-      gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
-      // This inland rectangle excludes coasts and the canonical lake holes.
-      // It spans several national borders; the count is pixels, not gaps.
-      const visited=new Set(),light=[];
-      const visit=coordinate=>{const p=map.project(coordinate),x=Math.round(p.x*ratio),y=Math.round(p.y*ratio);
-       if(x<4||y<4||x>=canvas.width-4||y>=canvas.height-4)return;
-       const key=y*canvas.width+x;if(visited.has(key))return;visited.add(key);
-       const offset=((canvas.height-1-y)*canvas.width+x)*4;
-       if(pixels[offset]>215&&pixels[offset+1]>215&&pixels[offset+2]>215&&light.length<20)light.push({coordinate,pixel:[x,y],rgb:[...pixels.slice(offset,offset+3)]});
-      };
-      for(let x=0;x<=320;x++)for(let y=0;y<=100;y++)visit([8+x*.05,47+y*.05]);
-      visit([17.3796,48.8466]);
-      resolve({sampledPixels:visited.size,light,tolerance:map.getSource('physical-land').serialize().tolerance??.375,
-       deviceRatio:window.devicePixelRatio,pixelRatio:map.getPixelRatio()});
-     };isolate();
-    }));
-    expect(sample.sampledPixels).toBeGreaterThan(100);expect(sample.light,JSON.stringify({zoom,deviceRatio,sample})).toEqual([]);
-    expect(sample.tolerance).toBeGreaterThan(0);
-    expect(sample.deviceRatio).toBe(deviceRatio);
-    expect(sample.pixelRatio).toBe(deviceRatio);
-  }
-  expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().physicalLandPreparations)).toBe(before);
- }finally{
-  await context.close();
- }
-});
-
-test('prepared land and country coverage remain visible while panning',async({page})=>{
- test.setTimeout(180000);await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:4,globeRotation:[-20,-45,0]}}));
- await ready(page,'coverage camera');
- await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,ids=['physical-land',map.getLayer('territories').source];
-  const sources=ids.map(id=>map.getSource(id)),samples=[];
-  const read=()=>{const point=map.project([20,45]),canvas=map.getCanvas();
-   if(point.x<0||point.y<0||point.x>=canvas.clientWidth||point.y>=canvas.clientHeight)return;
-   const layers=['physical-land-fill','territories'];
-   const hits=new Set(map.queryRenderedFeatures(point,{layers}).map(feature=>feature.layer.id));
-   samples.push({missing:layers.filter(id=>!hits.has(id)),sameSources:ids.every((id,index)=>map.getSource(id)===sources[index])});
-  };
-  map.on('render',read);window.__finishCoverage=()=>{map.off('render',read);return samples;};
- });
- const bounds=await page.locator('#map').boundingBox(),x=bounds.x+bounds.width/2,y=bounds.y+bounds.height/2;
- await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-120,y+20,{steps:30});await page.mouse.move(x,y,{steps:30});await page.mouse.up();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
- const samples=await page.evaluate(()=>window.__finishCoverage());
- expect(samples.length).toBeGreaterThan(5);
- expect(samples.filter(row=>!row.sameSources)).toEqual([]);
- expect(samples.filter(row=>row.missing.length)).toEqual([]);
-});
-
-for(const delayed of ['country','land'])test(`rapid zoom keeps the previous frame while the ${delayed} tiles are delayed`,async({page,context})=>{
- const devtools=await context.newCDPSession(page);
- await devtools.send('Network.enable');
- await devtools.send('Network.setCacheDisabled',{cacheDisabled:true});
- await page.setViewportSize({width:1280,height:800});
- await open(page);
- const center=await page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource(map.getLayer('territories').source);
-  let nearest=null,distance=Infinity;
-  for(const feature of (await source.getData()).features){
-   if(feature.properties.displayRole!=='country-border')continue;
-   for(const line of feature.geometry.coordinates)for(const point of line){
-    const d=Math.hypot((point[0]-13.84)*.63,point[1]-50.77);
-    if(d<distance){nearest=point;distance=d;}
-   }
-  }
-  if(!nearest||distance>.1)throw Error('German–Czech boundary is missing near the fixture');
-  return nearest;
- });
- expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getMaxZoom())).toBe(22);
- const jump=zoom=>page.evaluate(({center,zoom})=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom});},{center,zoom});
- await jump(-2);
- await ready(page,'minimum zoom');
- await expect.poll(()=>page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  return map.getZoom()-Math.log2(Math.cos(map.getCenter().lat*Math.PI/180))-map.getMinZoom();
- })).toBeCloseTo(0,6);
- await page.evaluate(({center,delayed})=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas();
-  const source=map.getSource(map.getLayer('territories').source),land=map.getSource('physical-land');
-  if(map.getLayer('borders').source!==map.getLayer('territories').source)throw Error('Separate country tiles');
-  const pending=[];
-  const item=delayed==='country'?source:land;
-  const load=item.loadTile.bind(item);
-  item.loadTile=async tile=>{
-   if(tile.tileID.overscaledZ>=18)await new Promise(resolve=>pending.push(resolve));
-   return load(tile);
-  };
-  const sampleCanvas=document.createElement('canvas');sampleCanvas.width=sampleCanvas.height=12;
-  const ctx=sampleCanvas.getContext('2d',{willReadFrequently:true});
-  const sample=frame=>{ctx.clearRect(0,0,12,12);ctx.drawImage(frame,0,0,12,12);return ctx.getImageData(0,0,12,12).data.join(',');};
-  const before=sample(canvas),frames=[];
-  let recording=true;
-  const capture=()=>{
-   if(!recording)return;
-   const overlay=document.querySelector('[data-map-preserved-frame] canvas');
-   const loaded=map.isSourceLoaded(source.id)&&map.isSourceLoaded(land.id);
-   frames.push({retained:!!overlay&&sample(overlay)===before,loaded,ready:window.__PANDOLAB_VIEWER__.rendererStats().mapReadiness.mapReady});
-   requestAnimationFrame(capture);
-  };
-  window.__rapidZoom={
-   pending:()=>pending.length,
-   release:()=>{item.loadTile=load;for(const resolve of pending.splice(0))resolve();},
-   finish:()=>{recording=false;return frames;},
-  };
-  map.jumpTo({center,zoom:map.getMaxZoom()});
-  requestAnimationFrame(capture);
- },{center,delayed});
- await expect.poll(()=>page.evaluate(()=>window.__rapidZoom.pending())).toBeGreaterThan(0);
- await expect(page.locator('[data-map-preserved-frame]')).toBeVisible();
- const bounds=await page.locator('#map').boundingBox();
- const selected=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items);
- const formerSelection=await selected();
- await page.mouse.click(bounds.x+bounds.width/2,bounds.y+bounds.height/2);
- expect(await selected()).toEqual(formerSelection);
- await page.evaluate(()=>window.__rapidZoom.release());
- await ready(page,'maximum zoom with delayed required tiles');
- const frames=await page.evaluate(()=>window.__rapidZoom.finish());
- expect(frames.some(frame=>!frame.loaded)).toBe(true);
- const firstReady=frames.findIndex(frame=>frame.ready);
- const beforeFirstReady=firstReady===-1?frames:frames.slice(0,firstReady);
- expect(beforeFirstReady.filter(frame=>!frame.loaded||!frame.ready).every(frame=>frame.retained)).toBe(true);
- await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
- const visible=await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  return {countries:[...new Set(map.queryRenderedFeatures({layers:['territories']}).map(row=>row.properties.objectKey))],
-   borders:map.queryRenderedFeatures({layers:['borders']}).length};
- });
- expect(visible.countries).toEqual(expect.arrayContaining(['territorial:entity:DEU','territorial:entity:CZE']));
- expect(visible.borders).toBeGreaterThan(0);
- await jump(-2);
- await ready(page,'reverse rapid zoom');
- await page.locator('#resetViewBtn').click();
- await ready(page,'fitted view');
- await jump(22);
- await ready(page,'fitted view to maximum zoom');
- await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
-});
-
-for(const mobile of [false,true])test(`ordinary camera gestures never preserve the whole frame (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
- const context=await browser.newContext({baseURL,viewport:mobile?{width:390,height:844}:{width:1200,height:800},
-  deviceScaleFactor:mobile?2:1,hasTouch:mobile,isMobile:mobile});
- try{
-  const page=await context.newPage();await open(page);
-  await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:3,globeRotation:[-112,-31,0]}}));
-  await ready(page,'gesture camera');
-  await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
-  const before=await page.evaluate(()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,stats=window.__PANDOLAB_VIEWER__.rendererStats;
-   const baseline=stats(),gaps=[];let previous,request,overlays=0,longTasks=0;
-   const tileRequests=new Map(),baseWrites=[];
-   const tileSources=Object.values(baseline.datedSources).map(id=>map.getSource(id)).filter(Boolean);
-   const restore=tileSources.map(source=>{
-    const load=source.loadTile,setData=source.setData,updateData=source.updateData;
-    source.loadTile=function(tile){
-     const key=this.id+':'+tile.tileID.key;
-     tileRequests.set(key,(tileRequests.get(key)||0)+1);
-     return load.call(this,tile);
-    };
-    source.setData=function(...args){baseWrites.push(this.id);return setData.apply(this,args);};
-    source.updateData=function(...args){baseWrites.push(this.id);return updateData.apply(this,args);};
-    return ()=>{source.loadTile=load;source.setData=setData;source.updateData=updateData;};
-   });
-   const observer=new PerformanceObserver(list=>{longTasks+=list.getEntries().length;});observer.observe({entryTypes:['longtask']});
-   const sample=now=>{if(previous!==undefined)gaps.push(now-previous);previous=now;
-    overlays+=Number(!!document.querySelector('[data-map-preserved-frame]'));request=requestAnimationFrame(sample);};
-   request=requestAnimationFrame(sample);
-   window.__finishCameraProbe=()=>{
-    cancelAnimationFrame(request);longTasks+=observer.takeRecords().length;observer.disconnect();gaps.sort((a,b)=>a-b);
-    restore.forEach(fn=>fn());
-    const after=stats(),percentile=p=>gaps[Math.ceil(gaps.length*p)-1];
-    return {center:map.getCenter().toArray(),zoom:map.getZoom(),overlays,longTasks,p95:percentile(.95),p99:percentile(.99),
-     copies:after.preservedFrameCopies-baseline.preservedFrameCopies,sourceWrites:after.sourceWrites-baseline.sourceWrites,
-     repeatedTiles:[...tileRequests.values()].reduce((total,count)=>total+count-1,0),
-     baseWrites,
-     approvalAttempts:after.approvalAttempts-baseline.approvalAttempts};
-   };
-   return {center:map.getCenter().toArray(),zoom:map.getZoom()};
-  });
-  const bounds=await page.locator('#map').boundingBox(),x=Math.round(bounds.x+bounds.width/2),y=Math.round(bounds.y+bounds.height/2);
-  if(mobile){
-   const session=await context.newCDPSession(page);
-   await session.send('Input.synthesizePinchGesture',{x,y,scaleFactor:1.4,relativeSpeed:280,gestureSourceType:'touch'});
-  }else{
-   await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+95,y-40,{steps:20});await page.mouse.up();
-   await page.mouse.wheel(0,-130);
-  }
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getZoom())).toBeGreaterThan(before.zoom);
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
-  const result=await page.evaluate(()=>window.__finishCameraProbe());
-  console.log('[camera-gesture]',JSON.stringify({mobile,...result}));
-  if(!mobile)expect(result.center).not.toEqual(before.center);
-  expect(result.copies).toBe(0);expect(result.overlays).toBe(0);
-  expect(result.baseWrites).toEqual([]);
-  expect(result.repeatedTiles).toBe(0);
- }finally{await context.close();}
-});
-
-for(const mobile of [false,true])test(`territorial symbols keep their scale from microstates to large countries (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
- test.setTimeout(240_000);
- const viewport=mobile?{width:390,height:844}:{width:1440,height:900};
- const context=await browser.newContext({baseURL,viewport,isMobile:mobile,hasTouch:mobile});
- try{
-  const page=await context.newPage();
-  const font=page.waitForResponse(response=>response.url().endsWith('/Pretendard-ExtraBold.woff2')&&response.ok());
-  await open(page);
-  const camera=(zoom,center=[8,49])=>page.evaluate(view=>window.__PANDOLAB_MAPLIBRE__.jumpTo(view),{center,zoom});
-  const labels=(ids=['LUX','LIE','NLD','FRA','DEU'])=>page.evaluate(async ids=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource('viewer-labels');
-   const features=(await source.getData()).features;
-   const layer=map.getLayer('viewer-label-country');
-   const nameSize=layer.layout.get('text-size').value,iconSize=layer.layout.get('icon-size').value;
-   const globals={zoom:map.getZoom()};
-   return Object.fromEntries(ids.map(id=>{
-    const feature=features.find(row=>row.id==='territorial:entity:'+id);
-    return [id,feature&&{name:feature.properties.primary,size:Math.round(nameSize.evaluate(globals,feature)*10)/10,
-     flag:Math.round(iconSize.evaluate(globals,feature)*120)/10,ready:!!feature.properties.icon&&map.hasImage(feature.properties.icon)}];
-   }));
-  },ids);
-  await camera(4);
-  await font;
-  await expect.poll(async()=>Object.entries(await labels()).filter(([,row])=>!row?.name||!row.ready),
-   {timeout:45_000}).toEqual([]);
-  const rows=await labels();
-  console.log('[territorial-label-sizes]',JSON.stringify({profile:mobile?'touch':'desktop',rows}));
-  expect(rows.LUX).toMatchObject({size:13,flag:12});
-  expect(rows.LIE).toMatchObject({size:13,flag:12});
-  for(const key of ['size','flag']){
-   expect(rows.NLD[key]).toBeGreaterThan(rows.LUX[key]);
-   expect(rows.DEU[key]).toBeGreaterThan(rows.NLD[key]);
-   expect(rows.FRA[key]).toBeGreaterThan(rows.DEU[key]);
-  }
-  await expect.poll(()=>page.evaluate(async()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,id='territorial:entity:DEU';
-   const feature=(await map.getSource('viewer-labels').getData()).features.find(row=>row.id===id);
-   const {x,y}=map.project(feature.geometry.coordinates);
-   const layers=['viewer-label-country','viewer-label-text'];
-   const above=map.queryRenderedFeatures([[x-3,y-12],[x+3,y-7]],{layers});
-   const below=map.queryRenderedFeatures([[x-3,y+7],[x+3,y+12]],{layers});
-   return [above,below].map(hits=>({
-    country:hits.some(hit=>hit.properties.objectKey===id),
-    city:hits.some(hit=>hit.layer.id==='viewer-label-text'),
-   }));
-  })).toEqual([{country:true,city:false},{country:true,city:false}]);
-  const citySnapshot=()=>page.evaluate(async()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__;
-   const features=(await map.getSource('viewer-labels').getData()).features;
-   return features.filter(row=>row.properties.kind==='label').map(row=>[row.id,row.geometry.coordinates]);
-  });
-  await expect.poll(async()=>(await citySnapshot()).length).toBeGreaterThan(0);
-  const cities=await citySnapshot();
-  for(const center of [[9,49],[8,49]]){
-   await camera(4,center);
-   await ready(page,'fixed-zoom label pan');
-   expect(await labels()).toEqual(rows);
-   expect(await citySnapshot()).toEqual(cities);
-  }
-  expect(await page.evaluate(()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__;
-   return map.getLayoutProperty('viewer-label-text','text-anchor');
-  })).toBe('left');
-  await camera(5);
-  await expect.poll(async()=>(await labels()).NLD.size).toBeGreaterThan(rows.NLD.size);
-  for(const [id,center,zoom,expected] of [
-   ['USA',[-99,39],3,{size:25.4,flag:23.7}],
-   ['USA',[-99,39],4,{size:28,flag:26}],
-   ['BRA',[-52,-11],3,{size:28,flag:26}],
-   ['USA',null,7.5,{size:44,flag:40}],
-   ['BRA',null,9,{size:50,flag:46}],
-  ]){
-   const target=center??await page.evaluate(async id=>{
-    const source=window.__PANDOLAB_MAPLIBRE__.getSource('viewer-labels');
-    return (await source.getData()).features.find(row=>row.id==='territorial:entity:'+id).geometry.coordinates;
-   },id);
-   await camera(zoom,target);
-   await expect.poll(async()=>(await labels([id]))[id],{timeout:30_000}).toMatchObject({...expected,ready:true});
-   await expect.poll(()=>page.evaluate(id=>{
-    const map=window.__PANDOLAB_MAPLIBRE__,key='territorial:entity:'+id;
-    return map.queryRenderedFeatures({layers:['viewer-label-country']}).some(row=>row.properties.objectKey===key);
-   },id),{timeout:30_000}).toBe(true);
-  }
- }finally{await context.close();}
-});
-
-test('a country name is drawn above a place name where both labels overlap',async({page})=>{
- await page.setViewportSize({width:1084,height:642});
- await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({
-  version:2,labels:{place:{showNativeNames:true}},
- })));
- await open(page);
- await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[18,50.7],zoom:4});});
- await expect.poll(()=>page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,country='viewer-label-country',place='viewer-label-text';
-  if(!map.getLayer(place)||!map.getLayer(country))return [];
-  const order=map.getLayersOrder();
-  return [order.indexOf(country)>order.indexOf(place),
-   map.queryRenderedFeatures({layers:[country]}).some(row=>row.properties.objectKey==='territorial:entity:POL'),
-   map.queryRenderedFeatures({layers:[place]}).some(row=>row.properties.primary==='브로츠와프'&&row.properties.secondary==='Wrocław')];
- }),{timeout:30_000}).toEqual([true,true,true]);
-});
-
-test('country glyphs keep Jordan and Israel visible at the same anchors through a zoom round trip',async({page})=>{
- await page.setViewportSize({width:1084,height:642});
- await open(page);
- for(const zoom of [4.75,5.15,5.55,5.15]){
-  await page.evaluate(zoom=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[35.9,32],zoom});},zoom);
-  await expect.poll(()=>page.evaluate(()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,layer='viewer-label-country',source='viewer-labels';
-   const manager=map.style.tileManagers[source],symbols={};
-   if(!manager||!map.isSourceLoaded(source))return symbols;
-   for(const key of manager.getRenderableIds(true)){
-    const tile=manager.getTileByID(key),bucket=tile?.getBucket(map.getLayer(layer));
-    const index=Object.values(tile?.latestFeatureIndex?.loadVTLayers()??{})[0];
-    if(!bucket||!index)continue;
-    for(let i=0;i<bucket.symbolInstances.length;i++){
-     const symbol=bucket.symbolInstances.get(i);
-     const id=index.feature(symbol.featureIndex).properties.objectKey?.split(':').at(-1);
-     if(id!=='JOR'&&id!=='ISR')continue;
-     const placement=map.style.placement?.placements[symbol.crossTileID];
-     if(placement?.text&&placement.icon)symbols[id]=true;
-    }
-   }
-   return symbols;
-  }),{timeout:30_000}).toEqual({JOR:true,ISR:true});
- }
-});
-
-test('retained country symbols follow native size stops while replacement label tiles are blocked',async({page})=>{
- await page.setViewportSize({width:1440,height:900});
- await open(page);
- const layer='viewer-label-country',sourceId='viewer-labels';
- const center=[6.2,48.6];
- await page.evaluate(center=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom:4.3});},center);
- await expect.poll(()=>page.evaluate(sourceId=>window.__PANDOLAB_MAPLIBRE__.isSourceLoaded(sourceId),sourceId),{timeout:30_000}).toBe(true);
- await page.evaluate(sourceId=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getSource(sourceId),load=source.loadTile.bind(source);
-  const context=map.painter.context,createBuffer=context.createVertexBuffer.bind(context),uploads=new WeakMap();
-  context.createVertexBuffer=(data,attributes,dynamic)=>{
-   const buffer=createBuffer(data,attributes,dynamic);
-   if(!attributes.some(attribute=>attribute.name==='a_pando_label_size'))return buffer;
-   const update=buffer.updateData.bind(buffer);
-   const record=data=>uploads.set(buffer,new Uint16Array(data.arrayBuffer.slice(0)));
-   record(data);
-   buffer.updateData=data=>{update(data);record(data);};
-   return buffer;
-  };
-  window.countryZoomSizeUploads=uploads;
-  const delayed=[];
-  source.loadTile=(tile,...args)=>tile.tileID.overscaledZ>=5?
-   new Promise(resolve=>delayed.push(()=>resolve(load(tile,...args)))):load(tile,...args);
-  window.releaseCountryZoomTiles=()=>{
-   source.loadTile=load;
-   context.createVertexBuffer=createBuffer;
-   for(const release of delayed)release();
-  };
- },sourceId);
- try{
-  const sample=zoom=>page.evaluate(({zoom,layer,sourceId})=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,manager=map.style.tileManagers[sourceId],label=map.getLayer(layer);
-   const targets=new Set(['FRA','DEU','LUX']),seen={};
-   for(const key of manager.getRenderableIds(true)){
-    const tile=manager.getTileByID(key),bucket=tile.getBucket(label);
-    const index=Object.values(tile.latestFeatureIndex?.loadVTLayers()??{})[0];
-    if(!bucket||!index)continue;
-    for(let i=0;i<bucket.symbolInstances.length;i++){
-     const symbol=bucket.symbolInstances.get(i),feature=index.feature(symbol.featureIndex);
-     const id=feature.properties.objectKey?.split(':').at(-1);
-     if(!targets.has(id)||symbol.placedIconSymbolIndex<0||symbol.centerJustifiedTextSymbolIndex<0)continue;
-     const size=(kind,symbolIndex,property,scale)=>{
-      const buffers=bucket[kind],gpu=buffers.pandoActiveSizeBuffer;
-      let {minZoom,maxZoom}=bucket[kind+'SizeData'];
-      let {lowerSize,upperSize}=buffers.placedSymbolArray.get(symbolIndex);
-      if(gpu){
-       const packed=window.countryZoomSizeUploads.get(gpu);
-       if(!packed)return null;
-       const {first}=buffers.pandoZoomSizes.entries[symbolIndex],stops=buffers.pandoZoomSizes.stops;
-       const upper=stops.findIndex(stop=>stop>=zoom);
-       minZoom=stops[upper-1];maxZoom=stops[upper];
-       lowerSize=packed[first*2];upperSize=packed[first*2+1];
-      }
-      if(zoom<minZoom||zoom>maxZoom)return null;
-      const t=(zoom-minZoom)/(maxZoom-minZoom);
-      const actual=(lowerSize+(upperSize-lowerSize)*t)*scale/128;
-      const expected=label._unevaluatedLayout._values[property].expression.evaluate({zoom},feature)*scale;
-      return {corrected:Boolean(gpu),uploads:buffers.pandoSizeUploads,error:Math.abs(actual-expected)};
-     };
-     const text=size('text',symbol.centerJustifiedTextSymbolIndex,'text-size',1);
-     const icon=size('icon',symbol.placedIconSymbolIndex,'icon-size',12);
-     if(text&&icon)seen[id]={text,icon,tileZoom:tile.tileID.overscaledZ};
-    }
-   }
-   return seen;
-  },{zoom,layer,sourceId});
-  for(const zoom of [5.15,5.7,4.7,5.7]){
-   await page.evaluate(zoom=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom});},zoom);
-   await expect.poll(async()=>Object.entries(await sample(zoom))
-    .filter(([,row])=>row.text.corrected===(zoom>5)&&row.icon.corrected===(zoom>5))
-    .map(([id])=>id).sort(),{timeout:20_000}).toEqual(['DEU','FRA','LUX']);
-   for(const {text,icon,tileZoom} of Object.values(await sample(zoom))){
-    expect(tileZoom).toBe(4);
-    expect(text.corrected).toBe(zoom>5);
-    expect(icon.corrected).toBe(zoom>5);
-    if(zoom>5){
-     expect(text.uploads).toBe(1);
-     expect(icon.uploads).toBe(1);
-    }
-    expect(text.error).toBeLessThan(.15);
-    expect(icon.error).toBeLessThan(.15);
-   }
-  }
- }finally{
-  await page.evaluate(()=>window.releaseCountryZoomTiles());
- }
-});
-
-for(const trackedKind of ['territorial','label'])test(`native ${trackedKind} names and flags stay attached during globe movement`,async({page})=>{
- await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.on('error',event=>{
-  console.error('MapLibre tile error',JSON.stringify({source:event.sourceId,stack:event.error?.stack}));
- }));
- if(trackedKind==='territorial'){
-  await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom:4});});
-  await ready(page,'country tracking camera');
- }
- if(trackedKind==='label'){
-  await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:4,globeRotation:[-90,-25,0]}}));
-  await ready(page,'city tracking camera');
-  await expect.poll(()=>page.evaluate(async()=>{const source=window.__PANDOLAB_MAPLIBRE__.getSource('viewer-labels');return (await source.getData()).features.some(feature=>feature.properties.kind==='label');})).toBe(true);
- }
- await page.evaluate(async trackedKind=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,rows=(await map.getSource('viewer-labels').getData()).features;
-  if(!rows.some(feature=>feature.properties.kind==='territorial'&&feature.geometry.coordinates[0]>-130&&feature.geometry.coordinates[0]<-60&&feature.geometry.coordinates[1]>20&&feature.geometry.coordinates[1]<55))throw Error('The other hemisphere must already have geographic country labels before panning');
-  const target=rows.filter(feature=>feature.properties.kind===trackedKind&&feature.properties.primary&&window.__PANDOLAB_MAP_HOST__.project(feature.geometry.coordinates)).sort((a,b)=>{const distance=feature=>{const p=map.project(feature.geometry.coordinates);return Math.hypot(p.x-map.getCanvas().clientWidth/2,p.y-map.getCanvas().clientHeight/2);};return distance(a)-distance(b);})[0];
-  if(!target)throw Error('No country label to track');
-  const trackedLayer=trackedKind==='territorial'?'viewer-label-country':'viewer-label-text';
-  const key=target.properties.objectKey,coordinate=target.geometry.coordinates;
-  const layout=map.setLayoutProperty.bind(map),filter=map.setFilter.bind(map);
-  const fixed={'text-variable-anchor':null,'text-anchor':'left','text-allow-overlap':true,'icon-allow-overlap':true,'icon-image':'tracking-flag-fixture'};
-  map.setLayoutProperty=(id,name,value)=>layout(id,name,id===trackedLayer&&Object.hasOwn(fixed,name)?fixed[name]:value);
-  map.setFilter=(id,value)=>filter(id,id===trackedLayer?['==',['get','objectKey'],key]:value);
-  map.setFilter(trackedLayer,['==',['get','objectKey'],key]);
-  // Isolate attachment from MapLibre's permitted variable-anchor/collision
-  // changes; those can move a glyph edge without any geographic lag.
-  map.setLayoutProperty(trackedLayer,'text-variable-anchor',null);
-  map.setLayoutProperty(trackedLayer,'text-anchor','left');
-  map.setLayoutProperty(trackedLayer,'text-allow-overlap',true);
-  map.setLayoutProperty(trackedLayer,'icon-allow-overlap',true);
-  const paint=map.setPaintProperty.bind(map);
-  // Keep country fills out of the pixel classifier for the test symbol.
-  const testPaint=(id,name,value)=>id===trackedLayer&&name==='text-color'?'#ff00ff':
-   /^territories(?:-fill-\d+)?$/.test(id)&&name==='fill-color'?'#f1f1f1':value;
-  map.setPaintProperty=(id,name,value)=>paint(id,name,testPaint(id,name,value));
-  for(const layer of map.getStyle().layers)
-   if(layer.type==='fill'&&layer.source===map.getLayer('territories').source)paint(layer.id,'fill-color','#f1f1f1');
-  map.setPaintProperty(trackedLayer,'text-color','#ff00ff');
-  const data=new Uint8Array(12*8*4);for(let i=0;i<data.length;i+=4){data[i+1]=255;data[i+3]=255;}
-  map.addImage('tracking-flag-fixture',{width:12,height:8,data});map.setLayoutProperty(trackedLayer,'icon-image','tracking-flag-fixture');
-  const canvas=map.getCanvas(),gl=canvas.getContext('webgl2'),pixels=new Uint8Array(canvas.width*canvas.height*4),ratio=canvas.width/canvas.clientWidth;
-  // Track the anchored text edge: globe perspective can change a long word's
-  // width and SDF pixel centroid even when its anchor follows perfectly.
-  // Include antialiased magenta fringes: an opaque-only cutoff can lose an
-  // entire thin first glyph as its subpixel coverage changes.
-  const locate=()=>{gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity,n=0,ix=0,iy=0,ni=0;for(let i=0;i<pixels.length;i+=4){const px=(i/4)%canvas.width,py=canvas.height-1-Math.floor(i/4/canvas.width);if(pixels[i]-pixels[i+1]>35&&pixels[i+2]-pixels[i+1]>35){left=Math.min(left,px);right=Math.max(right,px);top=Math.min(top,py);bottom=Math.max(bottom,py);n++;}if(pixels[i]<60&&pixels[i+1]>220&&pixels[i+2]<60){ix+=px;iy+=py;ni++;}}const p=map.project(coordinate);return {point:[p.x,p.y],text:n?[Math.max(left/ratio,Math.min(right/ratio,p.x)),Math.max(top/ratio,Math.min(bottom/ratio,p.y))]:null,flag:ni?[ix/ni/ratio,iy/ni/ratio]:null};};
-  // The default WebGL drawing buffer is discarded after presentation. Read
-  // pixels inside render, including on an otherwise idle city view.
-  await new Promise((resolve,reject)=>{let attempts=0;const check=()=>{
-   const sample=locate();
-   if(sample.text&&sample.flag){map.off('render',check);resolve();return;}
-   if(++attempts>=180){map.off('render',check);reject(Error('The native tracking fixture did not draw: '+JSON.stringify({sample,target,sourcePresent:!!map.getSource('viewer-labels')})));return;}
-   map.triggerRepaint();
-  };map.on('render',check);map.triggerRepaint();});
-  const values=[];let last=-Infinity;
-  const read=()=>{if(performance.now()-last<60)return;last=performance.now();values.push(locate());};map.on('render',read);
-  window.__finishLabelTracking=()=>{map.off('render',read);return values;};
- },trackedKind);
- const bounds=await page.locator('#map').boundingBox(),x=bounds.x+bounds.width/2,y=bounds.y+bounds.height/2;
- await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-220,y+90,{steps:90});await page.mouse.up();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
- const samples=await page.evaluate(()=>window.__finishLabelTracking());
- const visible=samples.filter(row=>row.text&&row.flag);expect(visible.length,JSON.stringify(samples)).toBeGreaterThanOrEqual(8);
- for(const kind of ['text','flag']){const first=visible[0],offset=first[kind].map((value,index)=>value-first.point[index]);const drift=visible.map(row=>Math.hypot(...row[kind].map((value,index)=>value-row.point[index]-offset[index])));expect(Math.max(...drift),JSON.stringify({kind,visible})).toBeLessThan(6);}
-});
-
-test('single white base and object-color toggle preserve boundaries, labels and selection',async({page})=>{
- await open(page);
- const initial=await page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getLayer('territories').source;
-  const features=(await map.getSource(source).getData()).features;
-  return {features:features.length,hasBorders:!!map.getLayer('borders'),
-   hasLabels:!!map.getLayer('viewer-label-text'),
-   hasCountryColors:features.some(feature=>feature.properties.color&&feature.properties.color!=='#f1f1f1'),
-   countryColorOpacities:[...new Set(features.filter(feature=>feature.properties.displayRole==='country-fill'&&feature.properties.color).map(feature=>feature.properties.displayAlpha))],
-   hasChild:features.some(feature=>feature.properties.objectKey==='territorial:entity:d34b00a1-9b13-8000-8000-00000047524c'),
-   document:JSON.stringify(window.__PANDOLAB_VIEWER__.documentSnapshot())};
- });
- expect(initial.features).toBeGreaterThan(100);
- expect(initial.hasBorders).toBe(true);
- expect(initial.hasLabels).toBe(true);
- expect(initial.hasCountryColors).toBe(true);
- expect(initial.countryColorOpacities).toEqual([0.85]);
- expect(initial.hasChild).toBe(true);
- await page.locator('#preferencesBtn').click();
- const toggle=page.locator('#preferencesObjectColorsInput');
- await expect(toggle).toBeChecked();
- await toggle.uncheck();
- await expect.poll(()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getLayer('territories').source,data=await map.getSource(source).getData();
-  const fills=data.features.filter(feature=>feature.properties.displayRole==='country-fill');
-  return fills.length>100&&fills.every(f=>map.getFeatureState({source,id:f.id}).neutral===true);
- }),{timeout:20_000}).toBe(true);
- expect(await page.evaluate(()=>JSON.stringify(window.__PANDOLAB_VIEWER__.documentSnapshot()))).toEqual(initial.document);
- expect(await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  return {borders:!!map.getLayer('borders'),labels:!!map.getLayer('viewer-label-text')};
- })).toEqual({borders:true,labels:true});
- await page.locator('#preferencesCloseBtn').click();
- await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:3,globeRotation:[-23,3,0]}}));
- await ready(page,'neutral map picking');
- const point=await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.project([23,-3]));
- const bounds=await page.locator('#map').boundingBox();
- await page.mouse.click(bounds.x+point[0],bounds.y+point[1]);
- await expect.poll(()=>page.evaluate(()=>
-  window.__PANDOLAB_VIEWER__.selectionSnapshot().items.length>0
-  ||document.querySelector('#objectChooser')?.classList.contains('hidden')===false)).toBe(true);
- await page.locator('#preferencesBtn').click();
- await toggle.check();
- await expect.poll(()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=map.getLayer('territories').source,data=await map.getSource(source).getData();
-  return data.features.some(f=>f.properties.color&&f.properties.alpha>0&&map.getFeatureState({source,id:f.id}).neutral===false);
- }),{timeout:20_000}).toBe(true);
- expect(await page.evaluate(()=>JSON.stringify(window.__PANDOLAB_VIEWER__.documentSnapshot()))).toEqual(initial.document);
-});
-
 async function month(page,value){
-  const [year,month]=value.split('-');
+  const separator=value.lastIndexOf('-'),year=value.slice(0,separator),month=value.slice(separator+1);
   await page.locator('#timelineDateButton').click();
   await page.locator('#timelineViewUnit').selectOption('month');
   await page.locator('#timelineYearInput').fill(year);
@@ -941,23 +653,13 @@ test('France details flag grid previews and navigates to its child territories',
       expect(name).toBe('생마르탱');
       if(mobile)await tile.tap();
       else {
-        const previewKeys=()=>page.evaluate(async()=>{
-          const {sourceId}=window.__PANDOLAB_VIEWER__.rendererStats().highlight||{};
-          const source=sourceId&&window.__PANDOLAB_MAPLIBRE__.getSource(sourceId);
-          const features=source?(await source.getData()).features:[];
-          return [...new Set(features.map(feature=>feature.properties.objectKey))].filter(key=>key!=='territorial:entity:FRA');
-        });
         await tile.hover();
         await expect(page.locator('#uiTooltip')).toHaveText(name);
-        await expect.poll(async()=>(await previewKeys()).length).toBe(1);
-        const firstPreview=await previewKeys();
         const name2=await tiles.nth(1).getAttribute('aria-label');
         await tiles.nth(1).hover();
         await expect(page.locator('#uiTooltip')).toHaveText(name2);
-        await expect.poll(async()=>(await previewKeys()).filter(key=>!firstPreview.includes(key)).length).toBe(1);
         await heading.hover();
         await expect(page.locator('#uiTooltip')).toBeHidden();
-        await expect.poll(previewKeys).toEqual([]);
         await tiles.nth(1).focus();
         await page.keyboard.press('Shift+Tab');
         await expect(tile).toBeFocused();
@@ -967,8 +669,8 @@ test('France details flag grid previews and navigates to its child territories',
       }
       await expect(details.locator('#objectDetailObjectName')).toHaveText(name);
       await expect.poll(()=>page.evaluate(()=>{
-        const map=window.__PANDOLAB_MAPLIBRE__,{lng,lat}=map.getCenter();
-        return Math.abs(lng+63.06)<3&&Math.abs(lat-18.08)<3&&map.getZoom()>5;
+        const {center:[lng,lat],zoom}=window.__PANDOLAB_MAP_HOST__.getViewState().camera;
+        return Math.abs(lng+63.06)<3&&Math.abs(lat-18.08)<3&&zoom>5;
       })).toBe(true);
       if(mobile){
         await page.evaluate(()=>window.history.back());
@@ -982,194 +684,18 @@ test('France details flag grid previews and navigates to its child territories',
   }
 });
 
-test('external basemap preserves the dated map and restores it after failure',async({page})=>{
- test.setTimeout(180_000);await open(page);await search(page);
- const before=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,selection:window.__PANDOLAB_VIEWER__.selectionSnapshot(),camera:window.__PANDOLAB_MAP_HOST__.getViewState()}));
- const style={version:8,sources:{'external-fixture':{type:'geojson',attribution:'Fixture attribution',data:{type:'FeatureCollection',features:[]}}},layers:[{id:'external-fixture',type:'fill',source:'external-fixture'}]};
- await page.evaluate(async style=>{window.__removeBasemap=await window.__PANDOLAB_VIEWER__.previewExternalBasemap(style);},style);await ready(page);
- expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getLayer('external-fixture')?.source)).toBe('external-fixture');
- expect(await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,selection:window.__PANDOLAB_VIEWER__.selectionSnapshot(),camera:window.__PANDOLAB_MAP_HOST__.getViewState()}))).toEqual(before);
- await page.evaluate(()=>window.__removeBasemap());await ready(page);
- await page.route('**/failing-basemap/**',route=>route.fulfill({status:503,body:'fixture failure'}));
- const failing={version:8,sources:{'failing-basemap':{type:'raster',tiles:[new URL('/failing-basemap/{z}/{x}/{y}.png',page.url()).href],tileSize:256,attribution:'Fixture attribution'}},layers:[{id:'failing-basemap',type:'raster',source:'failing-basemap'}]};
- await page.evaluate(async style=>{try{window.__removeBasemap=await window.__PANDOLAB_VIEWER__.previewExternalBasemap(style);}catch(error){window.__basemapError=error.message;}},failing);
- await expect.poll(()=>page.evaluate(()=>!!window.__PANDOLAB_MAPLIBRE__.getLayer('failing-basemap')),{timeout:30000}).toBe(false);await ready(page);
- expect(await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.documentState().timelineCursor,selection:window.__PANDOLAB_VIEWER__.selectionSnapshot(),camera:window.__PANDOLAB_MAP_HOST__.getViewState()}))).toEqual(before);
- expect(await page.locator('.maplibregl-ctrl-attrib').count()).toBe(0);
-});
-
-test('dated map keeps its complete frame and locks navigation through delayed and failed requests',async({page})=>{
- test.setTimeout(180_000);
- await page.setViewportSize({width:1280,height:800});await open(page);
- await page.evaluate(()=>{window.__datedTileErrors=[];window.__PANDOLAB_MAPLIBRE__.on('error',event=>{if(String(event.error?.message).includes('queryRadius'))window.__datedTileErrors.push({source:event.sourceId,message:event.error.message,layers:window.__PANDOLAB_MAPLIBRE__.getStyle().layers.map(layer=>({id:layer.id,type:layer.type,source:layer.source}))});});});
- const date=page.locator('#timelineDateButtonText'),error=page.locator('#timelineDateError');
- const before=await date.innerText(),beforeMonth=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor);
- const controls=['timelinePreviousDecade','timelinePreviousYear','timelineNextYear','timelineNextDecade','timelineDateButton','timelineGoBtn'];
- const locked=async()=>{for(const id of controls)await expect(page.locator('#'+id)).toBeDisabled();};
- let mode='delay',release,seen;
- const requested=new Promise(resolve=>{seen=resolve;}),gate=new Promise(resolve=>{release=resolve;});
- await page.route('**/caspian-1922-water.json.gz*',async route=>{
-  if(mode==='delay'){seen();await gate;await route.fulfill({status:404,body:'injected delayed failure'});return;}
-  if(mode==='fail'){await route.fulfill({status:404,body:'injected failure'});return;}
-  await route.continue();
- });
- const selectYear=async year=>{
-  await page.locator('#timelineDateButton').click();await page.locator('#timelineViewUnit').selectOption('year');
-  await page.locator('#timelineYearInput').fill(String(year));await page.locator('#timelineGoBtn').click();
- };
- await selectYear(1922);await requested;await locked();
- expect(await date.innerText()).toBe(before);
- // Synthetic events bypass disabled-button click behavior; the UI handler
- // must still reject them. Engine-level supersession is tested separately.
- await page.evaluate(()=>{
-  document.querySelector('#timelinePreviousDecade').dispatchEvent(new MouseEvent('click',{bubbles:true}));
-  document.querySelector('#timelineDateForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
- });
- await locked();expect(await date.innerText()).toBe(before);
- mode='fail';release();
- await expect.poll(()=>error.textContent(),{timeout:60000}).not.toBe('');
- await expect(page.locator('#timelineDateButton')).toBeEnabled();
- expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe(beforeMonth);
- expect(await date.innerText()).toBe(before);
- await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(0);
- expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.dragPan.isEnabled())).toBe(true);
- mode='pass';
- // The error popover is still open and allows a fresh date.
- await page.locator('#timelineYearInput').fill('1912');await page.locator('#timelineGoBtn').click();
- await ready(page,'after rollback');await expect(date).toContainText('1912');
- await expect(page.locator('#timelinePreviousYear')).toBeEnabled();
- await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,original=map.isSourceLoaded.bind(map);
-  window.__holdDatedTiles=true;map.isSourceLoaded=id=>!(window.__holdDatedTiles&&id===window.__PANDOLAB_VIEWER__.rendererStats().datedSources.territories)&&original(id);
- });
- await page.locator('#timelinePreviousYear').click();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60000}).toBe('1911-12');
- await expect(page.locator('[data-map-preserved-frame]')).toHaveCount(1);await locked();
- expect(await date.innerText()).toContain('1912');
- await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;map.jumpTo({center:[13.84,50.77],zoom:12});map.jumpTo({center:[13.84,50.77],zoom:9});
-  window.__holdDatedTiles=false;map.triggerRepaint();
- });
- await ready(page,'released dated tiles');await expect(date).toContainText('1911');
- await expect(page.locator('#timelineDateButton')).toBeEnabled();
- await selectYear(1922);await ready(page,'retry after failure');
- expect(await date.innerText()).toContain('1922');
- expect((await camera(page)).zoom).toBeCloseTo(9,6);
- expect(await page.evaluate(()=>window.__datedTileErrors)).toEqual([]);
-});
-
-
-test('optional raster tile delay does not block a 1925 to 2025 transition',async({page})=>{
- test.setTimeout(180_000);await open(page);await month(page,'1925-12');
- let release,mark;const gate=new Promise(resolve=>{release=resolve;}),requested=new Promise(resolve=>{mark=resolve;});
- await page.route('**/optional-dated-test/**',async route=>{mark();await gate;await route.abort();});
- try{
-  await page.evaluate(()=>{const map=window.__PANDOLAB_MAPLIBRE__;map.addSource('optional-dated-test',{type:'raster',tiles:[new URL('/optional-dated-test/{z}/{x}/{y}.png',window.location.href).href],tileSize:256});map.addLayer({id:'optional-dated-test',type:'raster',source:'optional-dated-test'});});
-  await requested;await month(page,'2025-12');
-  expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.areTilesLoaded())).toBe(false);
-  expect(await page.locator('#timelineDateButtonText').innerText()).toContain('2025');
- }finally{await page.evaluate(()=>{const map=window.__PANDOLAB_MAPLIBRE__;map.removeLayer('optional-dated-test');map.removeSource('optional-dated-test');});release();}
-});
-
-
-test('dated physical water is restored across timeline changes',async({page})=>{
- await page.addInitScript(()=>{
-  const operations=new Set(['core.document-geometry-requirements','core.document-geometry-admit','place.viewport']);
-  const post=Worker.prototype.postMessage;
-  window.__datedWorkerProbe={requirements:0,admissions:0,places:0};
-  Worker.prototype.postMessage=function(payload,...rest){
-   if(payload?.type==='request'&&operations.has(payload.operation)){
-    const key=payload.operation==='place.viewport'?'places':payload.operation.endsWith('requirements')?'requirements':'admissions';
-    window.__datedWorkerProbe[key]++;
-   }
-   return post.call(this,payload,...rest);
-  };
- });
- await open(page);await month(page,'2026-11');
- const original=await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,states=window.__PANDOLAB_VIEWER__.rendererStats().datedSources;
-  window.__datedTileProbe=Object.fromEntries(Object.values(states).map(id=>{
-   const source=map.getSource(id),probe={source,requests:0};
-   const load=source.loadTile.bind(source);
-   source.loadTile=(...args)=>{probe.requests++;return load(...args);};
-   return [id,probe];
-  }));
-  return states;
- });
- const unchangedWork=()=>page.evaluate(()=>{
-  const s=window.__PANDOLAB_VIEWER__.rendererStats(),phases=s.performance.phases;
-  return {tiles:Object.values(window.__datedTileProbe).map(probe=>probe.requests),
-   geometryRequests:s.boundaryRequests,physicalLandPreparations:s.physicalLandPreparations,
-   territorialPayloads:phases['territorial.payload']?.count??0};
- });
- const unchangedBefore=await unchangedWork();
- const workerBefore=await page.evaluate(()=>window.__datedWorkerProbe);
- const unchangedDownloads=[];
- const recordDownload=request=>{
-  if(/\/(?:world-geometry\/sha256-|geometries\/sha256-|display-land\/sha256-)/.test(request.url()))unchangedDownloads.push(request.url());
- };
- page.on('request',recordDownload);
- await month(page,'2026-10');await month(page,'2026-11');
- page.off('request',recordDownload);
- expect(await unchangedWork()).toEqual(unchangedBefore);
- expect(unchangedDownloads).toEqual([]);
- expect(await page.evaluate(()=>window.__datedWorkerProbe)).toEqual({...workerBefore,requirements:workerBefore.requirements+2});
- const physical=()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,{water:id}=window.__PANDOLAB_VIEWER__.rendererStats().datedSources;
-  const water=await map.getSource(id).getData();
-  const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(water)));
-  return {water:[...new Uint8Array(bytes)].join(','),base:map.getLayer('physical-land-fill')?.source};
- });
- const modern=await physical();await month(page,'1922-12');const historical=await physical();
- expect(historical.water).not.toBe(modern.water);
- expect(historical.base).toBe('physical-land');
- const historicalSources=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().datedSources);
- const replaced=Object.keys(original).filter(kind=>historicalSources[kind]!==original[kind]);
- expect(replaced).toContain('territories');
- expect(replaced).toContain('water');
- const stayedWarm=await page.evaluate(id=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter();
-  const layer=map.getLayersOrder().find(key=>map.getLayer(key)?.source===id);
-  if(!layer)return false;
-  map.jumpTo({center:[center.lng+.01,center.lat]});
-  const visible=map.getLayoutProperty(layer,'visibility')!=='none';
-  map.jumpTo({center});
-  return visible;
- },original.territories);
- expect(stayedWarm).toBe(true);
- const hitsBefore=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().retainedSourceHits);
- const tilesBefore=await page.evaluate(()=>Object.values(window.__datedTileProbe).map(probe=>probe.requests));
- await month(page,'2026-11');expect((await physical()).water).toBe(modern.water);
- const returned=await page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,stats=window.__PANDOLAB_VIEWER__.rendererStats();
-  return {ids:stats.datedSources,hits:stats.retainedSourceHits,
-   same:Object.entries(window.__datedTileProbe).every(([id,probe])=>map.getSource(id)===probe.source),
-   requests:Object.values(window.__datedTileProbe).map(probe=>probe.requests)};
- });
- expect(returned.ids).toEqual(original);
- expect(returned.same).toBe(true);
- expect(returned.hits-hitsBefore).toBe(replaced.length);
- expect(returned.requests).toEqual(tilesBefore);
- await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[124,35],zoom:4});});
- await ready(page,'uncached viewport after returning to a retained date');
- expect(await page.evaluate(before=>Object.values(window.__datedTileProbe)
-  .some((probe,index)=>probe.requests>before[index]),tilesBefore)).toBe(true);
-});
-
 test('desktop Viewer presents the real map, changes year, searches and moves the camera',async({page})=>{
   await page.setViewportSize({width:1280,height:800});
   await open(page);
   await month(page,'2024-12');
   await search(page);
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
+  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().moving)).toBe(false);
   const before=await camera(page);
   await page.mouse.move(600,420);await page.mouse.down();
   await page.mouse.move(740,450,{steps:8});await page.mouse.up();
   await expect.poll(()=>camera(page)).not.toEqual(before);
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
+  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().moving)).toBe(false);
   await ready(page);
-  await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom:15});});
-  await ready(page,'save native zoom beyond former limit');
   const moved=await camera(page);
   await expect.poll(()=>page.evaluate(view=>new Promise((resolve,reject)=>{const request=indexedDB.open('pandolab-viewer');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,transaction=db.transaction('views','readonly');transaction.oncomplete=()=>db.close();const records=transaction.objectStore('views').getAll();records.onsuccess=()=>resolve(records.result.some(record=>Math.abs((record.center?.[0]??1000)+view.globeRotation[0])<0.001&&record.zoom===view.zoom));records.onerror=()=>reject(records.error);};}),moved)).toBe(true);
   await page.reload({waitUntil:'domcontentloaded'});await ready(page,'camera restore');
@@ -1177,113 +703,6 @@ test('desktop Viewer presents the real map, changes year, searches and moves the
   expect(restored.globeRotation[0]).toBeCloseTo(moved.globeRotation[0],3);
   expect(restored.globeRotation[1]).toBeCloseTo(moved.globeRotation[1],3);
   expect(restored.zoom).toBeCloseTo(moved.zoom,3);
-});
-
-
-test('dated Viewer renders names while flag downloads are pending',async({page})=>{
- const warnings=[];let germanFlagRequested=false,release;
- const gate=new Promise(resolve=>{release=resolve;});
- page.on('console',message=>{
-  if(/Image "pando-flag-.*could not be loaded|feature index out of bounds/.test(message.text()))warnings.push(message.text());
- });
- await page.route(/\/assets\/vendor\/(?:country-flags|flag-icons|political-flags)\/.*\/de\.svg(?:\?|$)/,async route=>{
-  germanFlagRequested=true;
-  await gate;
-  await route.continue();
- });
- const labels=()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  const data=await map.getSource('viewer-labels').getData();
-  const rows=data.features.filter(feature=>feature.properties.kind==='territorial').map(feature=>feature.properties);
-  const germany=rows.find(row=>row.objectKey==='territorial:entity:DEU');
-  return {name:germany?.primary,icon:germany?.icon,unregistered:rows.filter(row=>row.icon&&!map.hasImage(row.icon)).length};
- });
- try{
-  await open(page);
-  await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[15,48],zoom:4}));
-  await expect.poll(()=>germanFlagRequested).toBe(true);
-  await month(page,'2024-12');
-  await expect.poll(async()=>(await labels()).name).toBeTruthy();
-  expect((await labels()).icon).toBe('');
- }finally{release();}
- await expect.poll(async()=>(await labels()).icon,{timeout:30_000}).toMatch(/^pando-flag-/);
- expect((await labels()).unregistered).toBe(0);
- expect(warnings).toEqual([]);
-});
-
-test('MapLibre camera projection and map selection remain aligned after date changes',async({page})=>{
- await page.setViewportSize({width:1280,height:800});await open(page);await month(page,'2024-12');
- await page.locator('#objectSearchBtn').click();await page.getByRole('searchbox',{name:'객체 검색'}).fill('대한민국');
- await page.getByRole('button',{name:'대한민국 선택 객체로 이동',exact:true}).click();await ready(page);
- await expect.poll(()=>page.evaluate(()=>{const point=window.__PANDOLAB_MAP_HOST__.project([127.8,36.6]),map=window.__PANDOLAB_MAPLIBRE__;return !!point&&point[0]>0&&point[0]<map.getCanvas().clientWidth&&point[1]>0&&point[1]<map.getCanvas().clientHeight;})).toBe(true);
- await ready(page);
- await page.keyboard.press('Escape');
- await ready(page);
- expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().renderer)).toBe('maplibre');
- const point=await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.project([127.8,36.6]));
- const bounds=await page.locator('#map').boundingBox();
- await page.mouse.move(bounds.x+point[0],bounds.y+point[1]);
- await page.keyboard.down('Control');await page.mouse.click(bounds.x+point[0],bounds.y+point[1]);await page.keyboard.up('Control');
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).not.toContain('KOR');
- await page.mouse.click(bounds.x+point[0],bounds.y+point[1]);
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain('KOR');
- await month(page,'2025-12');
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.queryRenderedFeatures({layers:['viewer-label-country']}).length)).toBeGreaterThan(0);
- expect(await page.evaluate(()=>document.querySelectorAll('.maplibregl-canvas').length)).toBe(1);
-});
-
-test('MapLibre projection follows focused camera, horizon and high zoom after resize',async({page})=>{
- await page.setViewportSize({width:1280,height:800});await open(page);
- const fittedGlobe=async()=>{
-  const ratio=await page.evaluate(()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,width=map.getCanvas().clientWidth,height=map.getCanvas().clientHeight;
-   let low=0,high=Math.min(width,height)/2;
-   for(let i=0;i<20;i++){const radius=(low+high)/2,point={x:width/2+radius,y:height/2},actual=map.project(map.unproject(point));if(Math.hypot(actual.x-point.x,actual.y-point.y)<.01)low=radius;else high=radius;}
-   return low*2/Math.min(width,height);
-  });
-  expect(ratio,JSON.stringify(await camera(page))).toBeGreaterThan(.90);expect(ratio,JSON.stringify(await camera(page))).toBeLessThan(.92);
- };
- await fittedGlobe();
- for(const [zoom,rotation]of [[1,[0,0,0]],[1,[-90,-80,0]],[5,[-179,-45,0]],[5,[-90,-80,0]]]){
-  await page.evaluate(({zoom,rotation})=>{const host=window.__PANDOLAB_MAP_HOST__,current=host.getViewState();host.setViewState({projection:'globe',view:{zoom:zoom,globeRotation:rotation}});},{zoom,rotation});
-  await ready(page,`camera zoom=${zoom} rotation=${rotation.join(',')}`);
-  await expect.poll(()=>page.evaluate(()=>{const host=window.__PANDOLAB_MAP_HOST__,map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter(),point=host.project([center.lng,center.lat]),actual=map.project([center.lng,center.lat]);return Math.hypot(point[0]-actual.x,point[1]-actual.y);})).toBeLessThan(0.01);
-  const result=await page.evaluate(()=>{const host=window.__PANDOLAB_MAP_HOST__,map=window.__PANDOLAB_MAPLIBRE__,center=map.getCenter(),point=map.project([center.lng,center.lat]),coordinate=host.unproject([point.x,point.y]);return Math.hypot(coordinate[0]-center.lng,coordinate[1]-center.lat);});expect(result).toBeLessThan(0.001);
-  const bounded=await page.evaluate(()=>{
-   const host=window.__PANDOLAB_MAP_HOST__,view=host.getViewState(),[west,south,east,north]=view.geographicBounds;
-   for(let lat=-90;lat<=90;lat+=10)for(let lon=-180;lon<180;lon+=10){const point=host.project([lon,lat]);if(point&&point[0]>=0&&point[0]<=view.size.width&&point[1]>=0&&point[1]<=view.size.height){const offset=((lon-west)%360+360)%360;if(lat<south||lat>north||offset>east-west)return false;}}
-   return true;
-  });expect(bounded).toBe(true);
-  expect((await camera(page)).zoom).toBeCloseTo(zoom,5);
-  await page.setViewportSize({width:1024,height:768});
-  await expect.poll(async()=>{const view=await camera(page),bounds=await page.locator('#map').boundingBox();return Math.abs(view.size.width-bounds.width)+Math.abs(view.size.height-bounds.height);}).toBeLessThan(0.1);
-  await ready(page,`resize zoom=${zoom} rotation=${rotation.join(',')}`);
-  expect((await camera(page)).zoom).toBeCloseTo(zoom,5);
-  expect((await camera(page)).zoom).toBeCloseTo(zoom,5);
- }
- const before=await camera(page);
- await page.mouse.move(500,390);await page.mouse.down();await page.mouse.move(610,420,{steps:6});await page.mouse.up();
- await expect.poll(()=>camera(page)).not.toEqual(before);await ready(page);
- await page.getByRole('button',{name:'전체 지도 보기',exact:true}).click();await ready(page);
- await fittedGlobe();
-});
-
-test('visible city and dated lake clicks reach the canonical Viewer selection',async({page})=>{
- await open(page);
- await page.evaluate(()=>{const host=window.__PANDOLAB_MAP_HOST__,current=host.getViewState();host.setViewState({projection:'globe',view:{zoom:4,globeRotation:[-3.4,-6.45,0]}});});
- await ready(page,'city camera');
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.queryRenderedFeatures({layers:['viewer-label-text']}).filter(f=>f.properties.kind==='label').length)).toBeGreaterThan(0);
- const {id:cityId,name:cityName,point:cityPoint}=await page.evaluate(()=>{const map=window.__PANDOLAB_MAPLIBRE__,f=map.queryRenderedFeatures({layers:['viewer-label-text']}).find(f=>f.properties.kind==='label'),p=map.project(f.geometry.coordinates);return {id:decodeURIComponent(f.properties.objectKey.split(':').slice(2).join(':')),name:f.properties.text.split('\n')[0],point:[p.x,p.y]};});
- const cityBounds=await page.locator('#map').boundingBox();await page.mouse.click(cityBounds.x+cityPoint[0],cityBounds.y+cityPoint[1]);
- await expect.poll(async()=>await page.locator('#objectChooser').isVisible()||await page.evaluate(id=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.some(item=>item.id===id),cityId)).toBe(true);
- if(await page.locator('#objectChooser').isVisible())await page.locator('#objectChooserList [role="option"]').filter({hasText:cityName}).first().click();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain(cityId);
- await page.evaluate(()=>{const host=window.__PANDOLAB_MAP_HOST__,current=host.getViewState();host.setViewState({projection:'globe',view:{zoom:4,globeRotation:[-51,-42,0]}});});
- await ready(page,'Caspian camera');const point=await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.project([51,42])),bounds=await page.locator('#map').boundingBox();
- await page.mouse.click(bounds.x+point[0],bounds.y+point[1]);
- await expect.poll(async()=>await page.locator('#objectChooser').isVisible()||await page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.some(item=>item.id==='waterbody:caspian'))).toBe(true);
- if(await page.locator('#objectChooser').isVisible())await page.locator('#objectChooserList [role="option"]').filter({hasText:'카스피'}).first().click();
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain('waterbody:caspian');
 });
 
 const viewerChrome=element=>element.evaluate(node=>{
@@ -1295,141 +714,6 @@ const viewerFaceRgba=element=>element.evaluate(node=>{
   canvas.fillStyle=getComputedStyle(node).backgroundColor;
   canvas.fillRect(0,0,1,1);
   return [...canvas.getImageData(0,0,1,1).data];
-});
-
-test('touch Viewer searches, navigates and changes time in a mobile context',async({browser,baseURL})=>{
-  const context=await browser.newContext({baseURL,viewport:{width:390,height:844},isMobile:true,hasTouch:true});
-  try{
-    const page=await context.newPage();
-    page.setDefaultTimeout(15_000);
-    await page.emulateMedia({colorScheme:'light'});
-    await open(page);
-    expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getPixelRatio()))
-      .toBe(await page.evaluate(()=>window.devicePixelRatio));
-    const searchBar=page.getByRole('search'),dateBar=page.getByRole('group',{name:'시점 이동'});
-    const details=page.getByRole('dialog',{name:'객체 정보'}),handle=page.getByRole('slider',{name:'정보창 높이 조절'});
-    const menuButton=page.locator('#mobileMenuBtn');
-    const chrome=viewerChrome;
-    for(const viewport of [{width:320,height:690},{width:844,height:390},{width:768,height:1024},{width:390,height:844}]){
-      await page.setViewportSize(viewport);
-      await expect(page.locator('#viewer')).toHaveAttribute('data-layout',viewport.width===844?'phone-landscape':'mobile');
-      await expect(searchBar).toBeVisible();
-      const bar=await dateBar.boundingBox(),dock=await searchBar.boundingBox();
-      expect(dock.height).toBe(bar.height);
-      expect(bar.height).toBe(56);
-      expect(await chrome(searchBar)).toEqual(await chrome(dateBar));
-      expect(await viewerFaceRgba(dateBar)).toEqual([255,255,255,255]);
-      await expect(dateBar).toHaveCSS('backdrop-filter','none');
-      await expect(menuButton).toHaveCSS('width','40px');
-      await expect(menuButton).toHaveCSS('height','40px');
-      expect(bar.x).toBeGreaterThanOrEqual(0);
-      expect(bar.x+bar.width).toBeLessThanOrEqual(viewport.width);
-      if(viewport.width===844)expect(dock.x).toBeGreaterThan(bar.x+bar.width);
-    }
-    const normalMenu=await chrome(menuButton);
-    await menuButton.tap();
-    const menu=page.locator('#mobileGlobalMenu');
-    await expect(menu).toBeVisible();
-    await expect(menuButton).toHaveAttribute('aria-expanded','true');
-    await expect.poll(async()=>(await chrome(menuButton)).face).not.toBe(normalMenu.face);
-    expect(await chrome(menu)).toEqual(await chrome(dateBar));
-    await menu.getByRole('menuitem',{name:'설정'}).tap();
-    const settings=page.getByRole('dialog',{name:'설정'});
-    await expect(settings).toBeVisible();
-    expect((await chrome(settings.locator('.ui-dialog-card'))).face).toBe(normalMenu.face);
-    await expect(settings.getByRole('button',{name:'닫기'})).toHaveCSS('min-height','48px');
-    await settings.getByRole('button',{name:'닫기'}).tap();
-    const searchBounds=await searchBar.boundingBox();
-    expect(searchBounds.height).toBe((await dateBar.boundingBox()).height);
-    await search(page,true);
-    await expect(searchBar).toBeHidden();
-    await expect(handle).toHaveAttribute('aria-valuenow','0');
-    expect(await details.boundingBox()).toEqual(searchBounds);
-    expect(await chrome(details)).toEqual(await chrome(dateBar));
-    await handle.tap();
-    await expect(handle).toHaveAttribute('aria-valuenow','2');
-    expect((await details.boundingBox()).height).toBeGreaterThan(searchBounds.height);
-    const title=details.getByRole('heading',{level:2});
-    const flag=details.locator('#objectDetailFlag');
-    const infoTab=details.getByRole('tab',{name:'정보'});
-    await expect(details.getByText('객체 정보',{exact:true})).toHaveCount(0);
-    await expect(title).toHaveCSS('text-align','center');
-    await expect(flag).toBeVisible();
-    await expect(flag).toHaveCSS('height','96px');
-    await page.setViewportSize({width:320,height:690});
-    await expect.poll(()=>title.evaluate(node=>{
-      const originalTitle=node.textContent;
-      node.textContent='그레이트브리튼 및 북아일랜드 연합왕국';
-      try{
-        const box=node.getBoundingClientRect();
-        const style=getComputedStyle(node);
-        const range=document.createRange();
-        range.selectNodeContents(node);
-        const lines=[...range.getClientRects()];
-        return style.textOverflow!=='ellipsis'&&new Set(lines.map(line=>line.y)).size>1
-          &&lines.every(line=>line.left>=box.left-1&&line.right<=box.right+1&&line.bottom<=box.bottom+1);
-      }finally{node.textContent=originalTitle;}
-    })).toBe(true);
-    const flagRect=await flag.boundingBox(),titleRect=await title.boundingBox(),tabRect=await infoTab.boundingBox();
-    expect(flagRect.y+flagRect.height).toBeLessThan(titleRect.y);
-    expect(titleRect.y+titleRect.height).toBeLessThan(tabRect.y);
-    await page.setViewportSize({width:390,height:844});
-    await handle.tap();
-    await expect(handle).toHaveAttribute('aria-valuenow','0');
-    expect(await details.boundingBox()).toEqual(searchBounds);
-    await page.setViewportSize({width:1024,height:768});
-    await expect(page.locator('#viewer')).toHaveAttribute('data-layout','compact');
-    const tabletDetails=page.locator('#objectDetailSurface');
-    await expect(tabletDetails).toBeVisible();
-    await expect(tabletDetails.locator('#objectDetailFlag')).toBeVisible();
-    const tabletDetailsRect=await tabletDetails.boundingBox();
-    expect(tabletDetailsRect.x).toBeGreaterThan(512);
-    expect(tabletDetailsRect.y+tabletDetailsRect.height).toBeLessThan((await dateBar.boundingBox()).y);
-    await expect(page.locator('#objectSearchBtn')).toHaveCSS('width','40px');
-    await expect(page.locator('#preferencesBtn')).toHaveCSS('min-height','48px');
-    await expect(tabletDetails.getByRole('tab',{name:'정보'})).toHaveCSS('min-height','48px');
-    expect(await viewerFaceRgba(dateBar)).toEqual([255,255,255,255]);
-    await page.locator('#objectSearchBtn').tap();
-    const tabletInput=page.getByRole('searchbox',{name:'객체 검색'});
-    await expect(tabletInput).toBeFocused();
-    const tabletSearchRect=await tabletInput.boundingBox(),tabletDateRect=await dateBar.boundingBox();
-    expect(tabletSearchRect.y+tabletSearchRect.height).toBeLessThan(tabletDateRect.y);
-    await page.keyboard.press('Escape');
-    await page.setViewportSize({width:390,height:844});
-    await expect(page.locator('#viewer')).toHaveAttribute('data-layout','mobile');
-    await search(page,true);
-    await expect(handle).toHaveAttribute('aria-valuenow','0');
-    const reset=page.getByRole('button',{name:'전체 지도 보기'});
-    await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[127,37],zoom:3}));
-    await expect(reset).toBeVisible();
-    expect((await reset.boundingBox()).y).toBeLessThan(60);
-    const monthBeforeReset=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor);
-    await reset.tap();
-    await expect(reset).toBeHidden();
-    expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor)).toBe(monthBeforeReset);
-    expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(item=>item.id))).toContain('KOR');
-    await page.evaluate(()=>window.history.back());
-    await expect(searchBar).toBeVisible();
-    expect(await searchBar.boundingBox()).toEqual(searchBounds);
-    await expect.poll(()=>chrome(menuButton)).toEqual(normalMenu);
-    await ready(page,'mobile selection presentation');
-    await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.dragPan.isEnabled()&&!window.__PANDOLAB_VIEWER__.rendererStats().projectReplacing)).toBe(true);
-    await page.evaluate(()=>{window.__touchProbe={start:0,move:0,drag:0};const map=window.__PANDOLAB_MAPLIBRE__;map.on('touchstart',()=>window.__touchProbe.start++);map.on('touchmove',()=>window.__touchProbe.move++);map.on('dragstart',()=>window.__touchProbe.drag++);});
-    const before=await camera(page),cdp=await context.newCDPSession(page);
-    const rect=await page.locator('.maplibregl-canvas').boundingBox(),touch={x:rect.x+rect.width/2,y:rect.y+rect.height/2};
-    await expect.poll(()=>page.evaluate(point=>document.elementFromPoint(point.x,point.y)?.classList.contains('maplibregl-canvas'),touch)).toBe(true);
-    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[touch]});
-    for(let step=1;step<=6;step++){
-      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:touch.x+step*14,y:touch.y+step*5}]});
-      await page.evaluate(()=>new Promise(requestAnimationFrame));
-    }
-    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
-    await cdp.detach();
-    const touchEvidence=await page.evaluate(()=>window.__touchProbe);
-    await expect.poll(()=>camera(page),{message:JSON.stringify(touchEvidence)}).not.toEqual(before);
-    await month(page,'2025-12');
-    expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(x=>x.id))).toContain('KOR');
-  }finally{await context.close();}
 });
 
 test('built-in map opens in the read-only inspector and exports diagnostics without changing its project',async({page})=>{
@@ -1466,7 +750,7 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
   expect(download.suggestedFilename()).toMatch(/^pando-viewer-inspection-.*\.json$/);
   const diagnostics=JSON.parse(await readFile(await download.path(),'utf8'));
   expect(diagnostics.schema).toBe('pando-viewer-inspection-v2');
-  expect(diagnostics.map.renderer).toBe('maplibre');expect(diagnostics.map.frameAcknowledged).toBe(true);
+  expect(diagnostics.map.renderer).toBe('three');expect(diagnostics.map.frameAcknowledged).toBe(true);
   expect(diagnostics.data.projectId).toBe(before.project.documentId);
   expect(diagnostics.data.readOnly).toBe(true);
   await page.keyboard.press('Escape');
@@ -1488,7 +772,7 @@ test('built-in map opens in the read-only inspector and exports diagnostics with
   expect(await viewerFaceRgba(page.locator('.preferences-card'))).toEqual([23,27,32,255]);
   await page.locator('#preferencesCloseBtn').click();await ready(page);
   expect(await viewerFaceRgba(dateBar)).toEqual([23,27,32,255]);
-  expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getLayer('physical-land-fill').source)).toBe('physical-land');
+  await expect(page.locator('#map canvas')).toHaveCount(1);
   await page.keyboard.press('Delete');await page.keyboard.press('Control+z');
   expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentSnapshot())).toEqual(before.project);
   const after=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState());
@@ -1501,439 +785,4 @@ test('unsupported WebGL ends initial loading with a visible map error',async({pa
  await expect(page.locator('#viewerStatus')).toHaveAttribute('role','alert',{timeout:60000});
  await expect(page.locator('#viewerStatus')).toHaveAttribute('data-ready','false');
  await expect(page.locator('#viewer')).toHaveAttribute('data-initial-loading','false');
-});
-
-test('MapLibre context restoration preserves project, selection and camera',async({page})=>{
- const placeErrors=[];page.on('console',message=>{if(message.type()==='error'&&message.text().includes('PL-PLACE-LOAD-001'))placeErrors.push(message.text());});
- await open(page);await search(page);
- const before=await page.evaluate(()=>({project:window.__PANDOLAB_VIEWER__.documentSnapshot(),selection:window.__PANDOLAB_VIEWER__.selectionSnapshot().items,camera:window.__PANDOLAB_MAP_HOST__.getViewState().globeRotation}));
- await page.evaluate(()=>{const canvas=window.__PANDOLAB_MAPLIBRE__.getCanvas(),gl=canvas.getContext('webgl2'),extension=gl.getExtension('WEBGL_lose_context');if(!extension)throw new Error('Context loss unavailable');window.__contextLoss=extension;window.__contextLostObserved=false;canvas.addEventListener('webglcontextlost',()=>{window.__contextLostObserved=true;},{once:true});extension.loseContext();});
- await expect.poll(()=>page.evaluate(()=>window.__contextLostObserved)).toBe(true);
- await page.evaluate(()=>window.__contextLoss.restoreContext());await ready(page);
- expect(await page.evaluate(()=>({project:window.__PANDOLAB_VIEWER__.documentSnapshot(),selection:window.__PANDOLAB_VIEWER__.selectionSnapshot().items,camera:window.__PANDOLAB_MAP_HOST__.getViewState().globeRotation}))).toEqual(before);
- expect(placeErrors).toEqual([]);
-});
-
-
-test('base rivers actually draw visible pixels after source admission',async({page})=>{
- await page.setViewportSize({width:1280,height:800});await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:8,globeRotation:[-31,-26,0]}}));await ready(page);
- await expect.poll(()=>page.evaluate(async()=>{const map=window.__PANDOLAB_MAPLIBRE__,data=await map.getSource('hydro').getData();return data.features.filter(f=>f.properties.category==='river').length;}),{timeout:30000}).toBeGreaterThan(0);
- await expect.poll(()=>page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  const layers=map.getLayersOrder().filter(id=>/^rivers(?:-\d+)?$/.test(id));
-  return map.queryRenderedFeatures({layers}).length;
- }),{timeout:30000}).toBeGreaterThan(0);
- const matches=await page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=await map.getSource('hydro').getData(),canvas=map.getCanvas(),ratio=map.getPixelRatio();
-  const style=map.getPaintProperty('rivers','line-color'),color=Number.parseInt(style.replace('#',''),16),expected=[color>>16&255,color>>8&255,color&255];
-  return new Promise(resolve=>{map.once('render',()=>{const gl=canvas.getContext('webgl2'),pixels=new Uint8Array(canvas.width*canvas.height*4);gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let matches=0;
-   for(const feature of source.features.filter(f=>f.properties.category==='river'))for(const line of feature.geometry.type==='MultiLineString'?feature.geometry.coordinates:[feature.geometry.coordinates])for(const coordinate of line){const point=map.project(coordinate),x=Math.round(point.x*ratio),y=canvas.height-Math.round(point.y*ratio);if(x<2||y<2||x>=canvas.width-2||y>=canvas.height-2)continue;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const offset=((y+dy)*canvas.width+x+dx)*4;if(expected.every((value,i)=>Math.abs(value-pixels[offset+i])<12))matches++;}if(matches>3){resolve(matches);return;}}
-   resolve(matches);
-  });map.triggerRepaint();});
- });expect(matches,'the admitted base river must be visible, not merely selectable').toBeGreaterThan(0);
- await page.setViewportSize({width:390,height:844});
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getMinZoom())).toBeLessThan(1.99);
- await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({zoom:1.99});});
- await ready(page,'below native hydro minimum');
- await expect.poll(()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,source=await map.getSource('hydro').getData();
-  const rivers=map.getLayersOrder().filter(id=>/^rivers(?:-\d+)?$/.test(id));
-  return {retained:source.features.some(f=>f.properties.category==='river'),
-   hidden:rivers.every(id=>map.getLayer(id).paint.get('line-opacity').constantOr(null)===0)};
- })).toEqual({retained:true,hidden:true});
-});
-
-test('lake pixels follow area and width thresholds on the published water source',async({page})=>{
- await page.setViewportSize({width:390,height:844});
- await open(page);
- const jump=async(center,zoom)=>{
-  await page.evaluate(({center,zoom})=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom}),{center,zoom});
-  await ready(page,'lake camera '+zoom);
- };
- const superior={id:'lakes_base:1159112991',point:[-87.7,47.7],minZoom:2};
- const tahoe={id:'lakes_base:1159106907',point:[-120.02,39.09],minZoom:4};
- const champlain={id:'lakes_base:1159106953',point:[-73.34,44.49],minZoom:5};
- const sample=points=>page.evaluate(async points=>{
-   const map=window.__PANDOLAB_MAPLIBRE__;
-   const features=map.querySourceFeatures('hydro',{filter:['in',['get','logicalId'],['literal',points.map(row=>row.id)]]});
-   const color=Number.parseInt(map.getPaintProperty('lakes','fill-color').slice(1),16),expected=[color>>16&255,color>>8&255,color&255];
-   const ratio=map.getPixelRatio(),canvas=map.getCanvas();
-   return new Promise(resolve=>{
-    map.once('render',()=>{
-     const gl=canvas.getContext('webgl2'),pixels=new Uint8Array(5*5*4);
-     resolve(points.map(({id,point})=>{
-      const feature=features.find(row=>row.properties.logicalId===id);
-      const {x,y}=map.project(point);
-      gl.readPixels(Math.floor(x*ratio)-2,canvas.height-3-Math.floor(y*ratio),5,5,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
-      const painted=Array.from({length:25},(_,index)=>index*4)
-       .some(offset=>expected.every((channel,index)=>Math.abs(channel-pixels[offset+index])<=5));
-      return {painted,minZoom:feature?.properties.viewerMinZoom,stage:feature?.properties.stage};
-     }));
-    });
-    map.triggerRepaint();
-   });
- },points);
- const overview=[superior,tahoe,champlain];
- await jump([-100,44],2);
- await expect.poll(()=>sample(overview),{timeout:20000})
-  .toEqual(overview.map(({minZoom})=>({painted:minZoom===2,minZoom,stage:0})));
- await jump(tahoe.point,4);
- await expect.poll(()=>sample([tahoe]),{timeout:20000}).toEqual([{painted:true,minZoom:4,stage:0}]);
-});
-
-for(const mobile of [false,true])test(`native zoom out stops at world fit (${mobile?'touch':'desktop'})`,async({browser,baseURL})=>{
- const viewport=mobile?{width:390,height:844}:{width:1280,height:800};
- const context=await browser.newContext({baseURL,viewport,isMobile:mobile,hasTouch:mobile});
- try{
-  const page=await context.newPage();await open(page);
-  const read=()=>page.evaluate(()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,{lng,lat}=map.getCenter();
-   return {lng,lat,floor:map.getMinZoom(),equatorialZoom:map.getZoom()-Math.log2(Math.cos(lat*Math.PI/180))};
-  });
-  const world=await read();
-  expect(world.equatorialZoom).toBeCloseTo(world.floor,6);
-  await page.evaluate(zoom=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,38],zoom}),world.floor+1);
-  expect((await read()).equatorialZoom).toBeGreaterThan(world.floor+.5);
-  const bounds=await page.locator('.maplibregl-canvas').boundingBox();
-  const x=Math.round(bounds.x+bounds.width/2),y=Math.round(bounds.y+bounds.height/2);
-  if(mobile){
-   const session=await context.newCDPSession(page);
-   const touchPoints=offset=>[{x:x-offset,y,id:0},{x:x+offset,y,id:1}];
-   await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:touchPoints(120)});
-   for(const offset of [105,90,75,60,45,30,16]){
-    await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:touchPoints(offset)});
-    await page.evaluate(()=>new Promise(requestAnimationFrame));
-   }
-   await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
-  }else{
-   await page.mouse.move(x,y);
-   for(let step=0;step<4;step++){
-    const before=(await read()).equatorialZoom;
-    if(before-world.floor<1e-5)break;
-    await page.mouse.wheel(0,1500);
-    await expect.poll(async()=>(await read()).equatorialZoom).toBeLessThan(before);
-    await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.isMoving())).toBe(false);
-   }
-  }
-  await expect.poll(async()=>(await read()).equatorialZoom).toBeCloseTo(world.floor,5);
-  expect((await read()).lat).toBeCloseTo(38,0);
-  await page.setViewportSize(mobile?{width:844,height:390}:{width:900,height:620});
-  await expect.poll(async()=>(await read()).floor).not.toBeCloseTo(world.floor,3);
-  await page.locator('#resetViewBtn').click();
-  await expect.poll(async()=>{const view=await read();return view.equatorialZoom-view.floor;}).toBeCloseTo(0,6);
-  if(mobile){
-   const fitted=await read();
-   await expect(page.locator('#resetViewBtn')).toBeHidden();
-   await page.setViewportSize({width:700,height:320});
-   await expect.poll(async()=>(await read()).floor).toBeLessThan(fitted.floor-.01);
-   await expect(page.locator('#resetViewBtn')).toBeVisible();
-   expect((await read()).equatorialZoom).toBeCloseTo(fitted.equatorialZoom,6);
-  }
- }finally{await context.close();}
-});
-
-test('native world fit contains the globe at desktop, narrow and high-resolution sizes',async({page})=>{
- await open(page);
- for(const viewport of [{width:1280,height:800},{width:390,height:844},{width:3840,height:2160}]){
-  await page.setViewportSize(viewport);
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getCanvas().clientWidth)).toBe(viewport.width);
-  await page.evaluate(()=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[127,37],zoom:15});});
-  await ready(page,'regional camera above old limit');
-  expect((await camera(page)).zoom).toBe(15);
-  await page.locator('#resetViewBtn').click();
-  await ready(page,'native world fit '+viewport.width);
-  const result=await page.evaluate(()=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas(),center=map.getCenter();
-   const w=canvas.clientWidth,h=canvas.clientHeight;
-   const points=[[0,h/2],[w-1,h/2],[w/2,0],[w/2,h-1]];
-   const edgeOutside=points.map(([x,y])=>{
-    const projected=map.project(map.unproject([x,y]));
-    return Math.hypot(projected.x-x,projected.y-y)>1;
-   });
-   return {zoom:map.getZoom(),center:[center.lng,center.lat],edgeOutside};
-  });
-  expect(result.zoom).toBeLessThan(5);
-  expect(Math.abs(result.center[0])).toBeLessThan(60);
-  expect(Math.abs(result.center[1])).toBeLessThan(50);
-  expect(result.edgeOutside).toEqual([true,true,true,true]);
- }
-});
-
-for(const viewport of [{width:1280,height:800},{width:390,height:844}])test('native zoom controls label visibility and survives resize '+viewport.width,async({page})=>{
- await page.setViewportSize(viewport);await open(page);
- const initial=await page.evaluate(()=>{const map=window.__PANDOLAB_MAPLIBRE__;return {zoom:map.getZoom(),state:window.__PANDOLAB_MAP_HOST__.getViewState().zoom,cityCount:map.queryRenderedFeatures({layers:['viewer-label-dot']}).length,colors:[map.getPaintProperty('ocean','background-color'),map.getPaintProperty('lakes','fill-color'),map.getPaintProperty('rivers','line-color')]};});
- expect(initial.state).toBeCloseTo(initial.zoom,6);expect(initial.cityCount).toBe(0);expect(new Set(initial.colors).size).toBe(1);
- const layers=['viewer-label-country','viewer-label-dot','viewer-label-text'];
- const read=()=>page.evaluate(layers=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  return {minZooms:layers.map(id=>map.getLayer(id).minzoom),
-   counts:layers.map(id=>map.queryRenderedFeatures({layers:[id]}).length)};
- },layers);
- const jump=(center,zoom)=>page.evaluate(({center,zoom})=>{window.__PANDOLAB_MAPLIBRE__.jumpTo({center,zoom});},{center,zoom});
- for(const center of [[13.84,50.77],[18,0]]){
-  await jump(center,3);await ready(page,'native zoom');
-  expect(await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.getViewState().zoom)).toBeCloseTo(3,6);
-  for(const [zoom,country,places] of [[2.99,false,false],[3.02,true,false],[3.49,true,false],[3.52,true,true],[2.99,false,false]]){
-   await jump(center,zoom);await ready(page,'label threshold '+zoom);
-   const current=await read();
-   expect(current.minZooms).toEqual([3,3.5,3.5]);
-   if(country)expect(current.counts[0]).toBeGreaterThan(0);
-   else expect(current.counts[0]).toBe(0);
-   if(!places)expect(current.counts.slice(1)).toEqual([0,0]);
-  }
-  await jump(center,5.5);await ready(page,'eligible places above native threshold');
-  await expect.poll(async()=>{const {counts}=await read();return Math.min(...counts.slice(1));}).toBeGreaterThan(0);
- }
- await jump([127,37],3);await ready(page,'resize camera');
- await page.setViewportSize({width:viewport.width-20,height:viewport.height-20});await ready(page,'native resize');
- expect(await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.getZoom())).toBeCloseTo(3,6);
- expect((await read()).counts.slice(1)).toEqual([0,0]);
-});
-
-test('the city marker gains and loses its capital ring in one layer at the recorded dates',async({page})=>{
- await page.addInitScript(()=>{
-  const handler=Object.getOwnPropertyDescriptor(Worker.prototype,'onmessage');
-  Object.defineProperty(Worker.prototype,'onmessage',{...handler,set(callback){
-   handler.set.call(this,typeof callback==='function'?function(event){
-    if(event.data?.operation==='place.viewport'){
-     const city=event.data.result?.records?.find(row=>row.sourceId==='2988507');
-     if(city)city.capitalPeriods=[{countryId:'historical-country:fixture',
-      fromDate:'2026-10-31',untilDateExclusive:'2026-11-30',source:'Browser test fixture'}];
-    }
-    return callback.call(this,event);
-   }:callback);
-  }});
- });
- await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[2.35,48.85],zoom:5.5}));
- const read=()=>page.evaluate(()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,layer='viewer-label-dot';
-  const markers=map.queryRenderedFeatures({layers:[layer]}).filter(row=>String(row.properties.objectKey).includes('2988507'));
-  const city=markers.find(row=>!row.properties.markerRing),ring=markers.find(row=>row.properties.markerRing);
-  return city?{id:city.id,coordinates:city.geometry.coordinates,rank:city.properties.rank,
-   ring:ring?{sameObject:ring.properties.objectKey===city.properties.objectKey,coordinates:ring.geometry.coordinates}:null,
-   minZoom:map.getLayer(layer).minzoom,markerLayers:map.getStyle().layers.filter(row=>row.source==='viewer-labels'&&row.type==='circle').map(row=>row.id)}:null;
- });
- await month(page,'2026-09');
- await expect.poll(read).toMatchObject({ring:null,minZoom:3.5,markerLayers:['viewer-label-dot']});
- const ordinary=await read();
- await month(page,'2026-10');
- await expect.poll(read).toEqual({...ordinary,ring:{sameObject:true,coordinates:ordinary.coordinates}});
- await month(page,'2026-11');
- await expect.poll(read).toEqual(ordinary);
-});
-
-test('a delayed highlight keeps the previous outline and fill until both new features draw',async({page})=>{
- await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[5,48.5],zoom:4}));
- await ready(page,'highlight camera');
- const point=coord=>page.evaluate(coord=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,p=map.project(coord),bounds=map.getCanvas().getBoundingClientRect();
-  return {x:p.x+bounds.x,y:p.y+bounds.y};
- },coord);
- const shown=()=>page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,highlight=window.__PANDOLAB_VIEWER__.rendererStats().highlight;
-  const slot=highlight?.sourceId;
-  if(!slot)return [];
-  return (await map.getSource(slot).getData()).features.map(feature=>[feature.properties.objectKey,feature.geometry.type]);
- });
- const france='territorial:entity:FRA',germany='territorial:entity:DEU';
- const visiblePair=id=>[[id,'MultiPolygon'],[id,'MultiLineString']];
- const paris=await point([2.35,48.86]);
- await page.mouse.move(paris.x,paris.y);
- await expect.poll(shown).toEqual(visiblePair(france));
- await page.evaluate(target=>{
-  const map=window.__PANDOLAB_MAPLIBRE__;
-  const proto=Object.getPrototypeOf(map.getSource(map.getLayer('territories').source));
-  const original=proto.setData;
-  proto.setData=async function(data,...args){
-   if(this.id.startsWith('interaction')&&data.features?.some(feature=>feature.properties.objectKey===target)){
-    proto.setData=original;
-    await new Promise(resolve=>{window.releaseHighlightFixture=resolve;});
-   }
-   return original.call(this,data,...args);
-  };
- },germany);
- const berlin=await point([10.2,51.12]);
- await page.mouse.move(berlin.x,berlin.y);
- await page.waitForFunction(()=>typeof window.releaseHighlightFixture==='function');
- expect(await shown()).toEqual(visiblePair(france));
- await page.evaluate(()=>window.releaseHighlightFixture());
- await expect.poll(shown).toEqual(visiblePair(germany));
-});
-
-test('large globe highlights stay within the native line vertex budget',async({page})=>{
- test.setTimeout(180_000);
- const warnings=[];
- page.on('console',message=>{if(message.text().includes('Max vertices per segment'))warnings.push(message.text());});
- await open(page);
- for(const [id,center] of [['RUS',[100,55]],['CAN',[-100,61]],['BRA',[-52,-10]]]){
-  await page.evaluate(center=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.7,globeRotation:[-center[0],-center[1],0]}}),center);
-  await ready(page,id+' highlight camera');
-  const bounds=await page.locator('#map').boundingBox(),x=bounds.x+bounds.width/2,y=bounds.y+bounds.height/2;
-  const key='territorial:entity:'+id;
-  const shown=()=>page.evaluate(async key=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,highlight=window.__PANDOLAB_VIEWER__.rendererStats().highlight;
-   if(!highlight?.sourceId||highlight.pending)return [];
-   const data=await map.getSource(highlight.sourceId).getData();
-   return data.features.filter(feature=>feature.properties.objectKey===key).map(feature=>feature.geometry.type);
-  },key);
-  await page.mouse.move(x,y);await expect.poll(shown).toEqual(['MultiPolygon','MultiLineString']);
-  if(id==='CAN')await page.keyboard.down('Control');
-  await page.mouse.click(x,y);
-  if(id==='CAN')await page.keyboard.up('Control');
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe(key);
-  await expect.poll(shown).toEqual(['MultiPolygon','MultiLineString']);
-  expect(warnings).toEqual([]);
-  if(id!=='CAN')continue;
-  const secondary='territorial:entity:RUS';
-  const seam=await page.evaluate(async key=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,{sourceId}=window.__PANDOLAB_VIEWER__.rendererStats().highlight;
-   const data=await map.getSource(sourceId).getData();
-   const {coordinates}=data.features.find(row=>row.properties.objectKey===key&&row.geometry.type==='MultiLineString').geometry;
-   return coordinates.slice(1).find((line,index)=>line[0][0]===coordinates[index].at(-1)[0]&&line[0][1]===coordinates[index].at(-1)[1]&&Math.abs(line[0][1])<80)?.[0];
-  },secondary);
-  expect(seam,'the detailed outline should contain a split').toBeDefined();
-  await page.evaluate(([longitude,latitude])=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:7,globeRotation:[-longitude,-latitude,0]}}),seam);
-  await ready(page,'detailed highlight split');
-  const sample=await page.evaluate(async({key,seam})=>{
-   const map=window.__PANDOLAB_MAPLIBRE__,viewer=window.__PANDOLAB_VIEWER__;
-   const source=map.getSource(viewer.rendererStats().highlight.sourceId),original=await source.getData();
-   const {coordinates}=original.features.find(row=>row.properties.objectKey===key&&row.geometry.type==='MultiLineString').geometry;
-   const index=coordinates.findIndex((line,i)=>i>0&&line[0][0]===seam[0]&&line[0][1]===seam[1]&&coordinates[i-1].at(-1)[0]===seam[0]&&coordinates[i-1].at(-1)[1]===seam[1]);
-   const capture=()=>new Promise(resolve=>{map.once('render',()=>{
-    const canvas=map.getCanvas(),dpr=map.getPixelRatio(),gl=canvas.getContext('webgl2'),point=map.project(seam),pixels=new Uint8Array(9*9*4);
-    gl.readPixels(Math.round(point.x*dpr)-4,canvas.height-5-Math.round(point.y*dpr),9,9,gl.RGBA,gl.UNSIGNED_BYTE,pixels);resolve([...pixels]);
-   });map.triggerRepaint();});
-   const composite=map.getLayersOrder().find(id=>id.startsWith('interaction-line-opacity-')&&map.getLayer(id).source===source.id&&map.getPaintProperty(id,'line-layer-opacity')===0.72);
-   if(!composite)throw Error('The split secondary outline did not use native opacity compositing');
-   const split=await capture(),merged=structuredClone(original);
-   const lines=merged.features.find(row=>row.properties.objectKey===key&&row.geometry.type==='MultiLineString').geometry.coordinates;
-   lines.splice(index-1,2,[...lines[index-1],...lines[index].slice(1)]);
-   try{
-    await source.setData(merged);
-    while(!map.isSourceLoaded(source.id))await new Promise(resolve=>map.once('render',resolve));
-    const continuous=await capture();
-    map.setPaintProperty(composite,'line-layer-opacity',0);
-    const background=await capture();
-    const strength=pixels=>pixels.reduce((total,value,i)=>total+Math.abs(value-background[i]),0);
-    return {centerDelta:Math.max(...split.slice(160,163).map((value,i)=>Math.abs(value-continuous[160+i]))),
-     splitStrength:strength(split),continuousStrength:strength(continuous)};
-   }finally{map.setPaintProperty(composite,'line-layer-opacity',0.72);await source.setData(original);}
-  },{key:secondary,seam});
-  // The rasterized fringes of a joined line and two round ends can differ
-  // per pixel. Check the center and the total stroke contribution separately.
-  expect(sample.continuousStrength).toBeGreaterThan(0);
-  expect(sample.centerDelta,JSON.stringify(sample)).toBeLessThanOrEqual(24);
-  expect(sample.splitStrength/sample.continuousStrength,JSON.stringify(sample)).toBeGreaterThan(0.85);
-  expect(sample.splitStrength/sample.continuousStrength,JSON.stringify(sample)).toBeLessThan(1.15);
- }
-});
-
-test('selection outlines omit the antimeridian polygon closure',async({page})=>{
- await open(page);await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[179,66],zoom:4}));await ready(page,'dateline camera');
- const point=await page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,r=m.getCanvas().getBoundingClientRect(),p=m.project([175,66]);return {x:p.x+r.x,y:p.y+r.y};});await page.mouse.click(point.x,point.y);
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe('territorial:entity:RUS');
- await ready(page,'dateline selection');
- const result=()=>page.evaluate(async()=>{
-  const m=window.__PANDOLAB_MAPLIBRE__,id=window.__PANDOLAB_VIEWER__.rendererStats().highlight?.sourceId;
-  const d=id&&await m.getSource(id)?.getData();let edges=0,closures=0;
-  for(const f of d?.features||[]){
-   if(f.properties.objectKey!=='territorial:entity:RUS'||f.geometry.type!=='MultiLineString')continue;
-   for(const line of f.geometry.coordinates)for(let i=1;i<line.length;i++){
-    edges++;const a=line[i-1],b=line[i];
-    if(Math.abs(Math.abs(a[0])-180)<1e-6&&Math.abs(Math.abs(b[0])-180)<1e-6&&Math.abs(a[1]-b[1])>1e-6)closures++;
-   }
-  }
-  return {edges,closures};
- });
- await expect.poll(async()=> (await result()).edges).toBeGreaterThan(100);
- expect((await result()).closures).toBe(0);
-});
-
-test('first Antarctic hover colors both sides of the polar handoff in one frame',async({page})=>{
- await page.setViewportSize({width:900,height:850});await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,-85],zoom:3}));await ready(page,'polar hover camera');
- const point=await page.evaluate(async()=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas(),gl=canvas.getContext('webgl2');
-  const proto=Object.getPrototypeOf(map.getSource(map.getLayer('territories').source)),setData=proto.setData;
-  proto.setData=async function(data,...args){
-   if(this.id.startsWith('interaction')&&data.features?.some(feature=>feature.properties.objectKey==='territorial:entity:ATA')){
-    proto.setData=setData;
-    await new Promise(resolve=>setTimeout(resolve,350));
-   }
-   return setData.call(this,data,...args);
-  };
-  const samples=[-84.9,-85.1].map(lat=>map.project([21,lat]));
-  await new Promise(resolve=>{
-   const read=()=>samples.map(({x,y})=>{
-    const pixel=new Uint8Array(4);
-    gl.readPixels(Math.round(x*map.getPixelRatio()),canvas.height-1-Math.round(y*map.getPixelRatio()),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
-    return pixel[0];
-   });
-   map.once('render',()=>{
-    const baseline=read();
-    const frames=[];
-    const capture=()=>{
-     const colors=read(),lit=colors.map((red,i)=>baseline[i]-red>3);
-     frames.push({colors,lit});
-     if(lit.every(Boolean))map.off('render',capture);
-    };
-    map.on('render',capture);window.__antarcticHoverFrames=frames;
-    resolve();
-   });
-   map.triggerRepaint();
-  });
-  const rect=canvas.getBoundingClientRect(),p=map.project([21,-87]);
-  return {x:p.x+rect.x,y:p.y+rect.y};
- });
- await page.mouse.move(point.x,point.y);
- await expect(page.locator('#uiTooltip')).toContainText('남극');
- await expect.poll(()=>page.evaluate(()=>window.__antarcticHoverFrames.at(-1)?.lit),{timeout:20000}).toEqual([true,true]);
- const frames=await page.evaluate(()=>window.__antarcticHoverFrames);
- expect(frames.filter(({lit:[body,cap]})=>body!==cap),'the first hover must never color just one side').toEqual([]);
-});
-
-test('selected Antarctic coastline has no Mercator-edge connection',async({page})=>{
- test.setTimeout(180000);await page.setViewportSize({width:900,height:850});await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[-157.5,-85.051129],zoom:5}));await ready(page,'coastline at the Mercator edge');
- const point=await page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,r=m.getCanvas().getBoundingClientRect(),q=m.project([-160,-85.3]);return {x:q.x+r.x,y:q.y+r.y};});await page.mouse.click(point.x,point.y);
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe('territorial:entity:ATA');await ready(page,'selected coastline at the Mercator edge');
- const sample=()=>page.evaluate(()=>new Promise(resolve=>{const m=window.__PANDOLAB_MAPLIBRE__;m.once('render',()=>{const c=m.getCanvas(),gl=c.getContext('webgl2'),pixels=new Uint8Array(c.width*c.height*4);gl.readPixels(0,0,c.width,c.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);resolve([[-157,-85.051129],[-158.67317,-85.1325]].map(coordinate=>{const p=m.project(coordinate),x=Math.round(p.x*m.getPixelRatio()),y=c.height-1-Math.round(p.y*m.getPixelRatio());let blue=0;for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const i=((y+dy)*c.width+x+dx)*4;if(pixels[i]<80&&pixels[i+1]>70&&pixels[i+1]<190&&pixels[i+2]>200)blue++;}return blue;}));});m.triggerRepaint();}));
- await expect.poll(async()=>(await sample())[1],{timeout:15000,message:'the real polar coastline must retain its selection outline'}).toBeGreaterThan(0);
- expect((await sample())[0],'the Mercator edge must not draw a blue connection across actual sea').toBe(0);
-});
-
-test('direct polar caps preserve land, selection and context recovery',async({page})=>{
- test.setTimeout(180000);
- await page.setViewportSize({width:900,height:850});await open(page);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[-160,-85.051],zoom:3}));await ready(page,'Ross Sea coastline');
- const coast=await page.evaluate(()=>new Promise(resolve=>{const m=window.__PANDOLAB_MAPLIBRE__;m.once('render',()=>{const c=m.getCanvas(),gl=c.getContext('webgl2'),pixels=new Uint8Array(c.width*c.height*4);gl.readPixels(0,0,c.width,c.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);resolve([[-157.77,-85.1],[-158.2,-85.04],[-155.6,-85.15],[-160.33,-86.35]].map(coordinate=>{const p=m.project(coordinate),x=Math.round(p.x*m.getPixelRatio()),y=c.height-1-Math.round(p.y*m.getPixelRatio()),i=(y*c.width+x)*4;return Array.from(pixels.slice(i,i+3));}));});m.triggerRepaint();}));
- expect(coast.map(rgb=>rgb.every(value=>value>245)),'real Ross Sea water must remain water on both sides of the Mercator limit').toEqual([true,true,false,false]);
- const capOutline=await page.evaluate(()=>new Promise(resolve=>{
-  const map=window.__PANDOLAB_MAPLIBRE__,canvas=map.getCanvas(),gl=canvas.getContext('webgl2');
-  map.once('render',()=>{
-   const bytes=new Uint8Array(canvas.width*canvas.height*4),ratio=map.getPixelRatio();
-   gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,bytes);
-   let dark=0;
-   for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++){
-    const i=(y*canvas.width+x)*4;
-    if(bytes[i]<170&&bytes[i+1]<170&&bytes[i+2]<170&&
-       map.unproject([x/ratio,(canvas.height-1-y)/ratio]).lat< -85)dark++;
-   }
-   resolve(dark);
-  });
-  map.triggerRepaint();
- }));
- expect(capOutline,'ordinary Antarctic coastline must not draw a country outline').toBe(0);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[0,-89],zoom:2}));await ready(page,'south cap');
- const sample=()=>page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,c=m.getCanvas(),t=document.createElement('canvas');t.width=c.width;t.height=c.height;const g=t.getContext('2d');g.drawImage(c,0,0);const data=g.getImageData(0,0,t.width,t.height).data;let tested=0,white=0;for(let y=10;y<c.clientHeight-10;y+=8)for(let x=10;x<c.clientWidth-10;x+=8){const ll=m.unproject([x,y]);if(ll.lat>=-86)continue;const i=(Math.round(y*c.height/c.clientHeight)*c.width+Math.round(x*c.width/c.clientWidth))*4;tested++;if(data[i]>245&&data[i+1]>245&&data[i+2]>245)white++;}return {tested,white,polar:window.__PANDOLAB_VIEWER__.rendererStats().polar};});
- const before=await sample();expect(before.tested).toBeGreaterThan(100);expect(before.white).toBe(0);expect(before.polar.pending).toBe(false);
- const point=await page.evaluate(()=>{const m=window.__PANDOLAB_MAPLIBRE__,r=m.getCanvas().getBoundingClientRect(),q=m.project([-160,-87]);return {x:q.x+r.x,y:q.y+r.y};});await page.mouse.click(point.x,point.y);
- await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().primaryKey)).toBe('territorial:entity:ATA');await ready(page,'polar selected');
- const prepared=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().polar.preparations);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[20,-87],zoom:2}));await ready(page,'polar pan');expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().polar.preparations)).toBe(prepared);
- await page.evaluate(()=>{const gl=window.__PANDOLAB_MAPLIBRE__.getCanvas().getContext('webgl2'),e=gl.getExtension('WEBGL_lose_context');if(!e)throw Error('context loss unavailable');e.loseContext();setTimeout(()=>e.restoreContext(),150);});await ready(page,'polar context recovery');expect((await sample()).white).toBe(0);
- await page.evaluate(()=>window.__PANDOLAB_MAPLIBRE__.jumpTo({center:[0,89],zoom:2}));await ready(page,'north cap');expect(await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().polar.pending)).toBe(false);
 });

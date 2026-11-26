@@ -9,11 +9,9 @@ import {renderProductHtml} from './product-html.mjs';
 import {buildUiBundles} from '../build-ui-bundle.mjs';
 import {buildWorkerAsset} from './worker-assets.mjs';
 import {collectViewerAssets,viewerDataEntryPaths} from './product-assets.mjs';
-import {mapLibreVendorAssets} from './maplibre-vendor.mjs';
 import {collectRuntimeDataAssets} from '../../src/data/runtime-manifest-assets.js';
 import {decodeArchiveEntries,decodeArchiveEntry,libraryCheckout,libraryConfig} from "../../tools/data/library-context.mjs";
 import {validateMapCatalogCoherence} from './map-catalog-coherence.mjs';
-import {buildPhysicalLandDisplayAssets} from './physical-land-display-assets.mjs';
 import {MAP_PROJECT_ROLES,validateMapProjectManifest,mapProjectResourcePath,mapProjectResourcePaths,mapProjectManifestSourcePath}
   from '../../src/data/map-project-manifest.js';
 
@@ -46,7 +44,7 @@ function pinnedContext(root){
   const bytes=new Map();
   const entry=path=>{assert.ok(index.files[path],'Missing pinned input: '+path);return index.files[path];};
   pinnedContexts.set(key,{revision:configuration.revision,index,dataPaths:Object.keys(index.files).filter(p=>p.startsWith('assets/data/')),
-   read:path=>{if(!bytes.has(path))bytes.set(path,decodeArchiveEntry(checkout,entry(path),configuration.revision,{fetch:process.env.CI==='true'}));return bytes.get(path);},
+   read:path=>{if(!bytes.has(path))bytes.set(path,decodeArchiveEntry(checkout,entry(path),configuration.revision));return bytes.get(path);},
    readBatch:paths=>{
     const missing=new Map(paths.filter(path=>!bytes.has(path)).map(path=>[path,entry(path)]));
     for(const [path,buffer] of decodeArchiveEntries(checkout,missing,configuration.revision,{fetch:process.env.CI==='true'}))bytes.set(path,buffer);
@@ -56,7 +54,7 @@ function pinnedContext(root){
  return pinnedContexts.get(key);
 }
 /** Build the one Viewer runtime shared by browser and Windows review, without output mutations. */
-export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,readPinnedData,readPinnedDataBatch,dataPaths,readSourceBytes,sourcePaths,runtimeDependencyMap,resourceProfile,projectId='default-world',externalRuntimeData=false,workerSourceTransform=(_path,source)=>source,mapLibreAssets}={}){
+export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,readPinnedData,readPinnedDataBatch,dataPaths,readSourceBytes,sourcePaths,runtimeDependencyMap,resourceProfile,projectId='default-world',externalRuntimeData=false,workerSourceTransform=(_path,source)=>source}={}){
  if(resourceProfile!==undefined&&!['map-data','test-fixture'].includes(resourceProfile))throw Error('Invalid frontend resource profile');
  root=resolve(root);const pinned=readPinnedData?null:pinnedContext(root);
  readPinnedData??=pinned.read;dataPaths??=pinned.dataPaths;
@@ -80,7 +78,6 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
   assets.set(entry.publicPath,{...entry,bytes});
  }
  const generated=(path,bytes,product='shared')=>assets.set(path,{publicPath:path,sourcePath:null,product,bytes:Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes)});
- for(const [path,bytes] of mapLibreAssets??mapLibreVendorAssets(root))generated(path,bytes,'viewer');
  const read=path=>{
   if(assets.has(path))return assets.get(path).bytes.toString('utf8');
   if(path.startsWith('assets/data/'))return readPinnedData(path).toString('utf8');
@@ -114,7 +111,7 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
  const {hydroVersion,preparedMeshesCurrent}=validateMapCatalogCoherence(
    mapProject,metadata,path=>catalogInputs[path].sha256);
  const territorialPath=resource('territorial'),territorial=catalogInputs[territorialPath];
- let startupGeometryPacks=null,historicalGeometryDeltas=null,historicalDeltaAssets=new Map();
+ let startupGeometryPacks=null;
  if(resourceProfile!=='test-fixture'){
    const {buildBuiltinGeometryPacks,readBuiltinGeometryPackInputs}=await import('./builtin-geometry-packs.mjs');
    const timestamp=Number(execFileSync('git',['show','-s','--format=%ct',sourceCommit],{cwd:root,encoding:'utf8'}).trim());
@@ -123,46 +120,35 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
      readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
    startupGeometryPacks=receipt;
    for(const [path,bytes] of packAssets)generated(path,bytes,'viewer');
-   const {buildBuiltinGeometryDeltas}=await import('./builtin-geometry-deltas.mjs');
-   const deltas=buildBuiltinGeometryDeltas({index:territorial.value,month,catalogSha256:territorial.sha256,
-     readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
-   historicalGeometryDeltas=deltas.receipt;historicalDeltaAssets=deltas.assets;
-   for(const [path,bytes]of historicalDeltaAssets)generated(path,bytes,'viewer');
  }
  const physicalCatalog=metadata[resource('physicalLand')];
- let physicalLandDisplays={},physicalLandDisplayAssets=new Map();
- if(resourceProfile!=='test-fixture'||physicalCatalog.asset){
-   // The recipe and verified compiled kernel belong to this build process, even
-   // when a performance comparison supplies a historical runtime import closure.
-   const recipePaths=['src/rendering/physical-land-display.js','src/data/physical-land-patch.js',
-     'scripts/lib/physical-land-display-assets.mjs','assets/wasm/pandoeditor-core.manifest.json'];
-   const recipe=recipePaths.map(path=>{
-     const bytes=readFileSync(resolve(root,path)),sha256=hash(bytes);
-     sourceInputs.push({sourcePath:path,sha256});return [path,sha256];
-   });
-   const {sharedCalculationCore}=await import('../../src/document/temporal.js');
-   const displays=await buildPhysicalLandDisplayAssets({catalog:physicalCatalog,readPinnedData,
-     algorithmSha256:hash(JSON.stringify(recipe)),
-     union:coordinates=>sharedCalculationCore.polygonOperation('union',[coordinates],false)});
-   physicalLandDisplays=displays.specs;physicalLandDisplayAssets=displays.assets;
-   for(const [path,bytes]of physicalLandDisplayAssets)generated(path,bytes,'viewer');
- }
  const projectCatalogs=Object.fromEntries(MAP_PROJECT_ROLES.map(role=>{
    const path=resource(role),receipt=catalogInputs[path];
    return [role,{catalog:path,sha256:receipt.sha256,bytes:receipt.bytes,
      ...(role==='rivers'||role==='lakes'?{version:hydroVersion}:{}),
      ...(role==='preparedMeshes'?{current:preparedMeshesCurrent}:{})}];
  }));
- let countryBoundarySeed;
+ let countryBoundarySeed,globePreview,globeAssetPaths=[];
  if(startupGeometryPacks&&resourceProfile!=='test-fixture'){
   const {readBuiltinGeometryPackInputs}=await import('./builtin-geometry-packs.mjs');
   const recipe=['scripts/lib/country-boundary-seed.mjs','src/geometry/boundary-topology.js','src/geometry/country-contact-core.js','src/geometry/country-contact-row-pruning.js','src/geometry/geographic-boundary.js','src/geometry/boundary-spatial-index.js','src/rendering/workers/label-anchor-worker.js','assets/js-vendor/d3.min.js'];
   const {sharedCalculationCore}=await import('../../src/document/temporal.js');
-  const algorithmSha256=hash(JSON.stringify([recipe.map(path=>[path,hash(readSourceBytes(path))]),workerAssets['assets/js/workers/map-geometry-worker.js'].url,hash(read('assets/wasm/pandoeditor-core.manifest.json')),sharedCalculationCore.polygonMeshAlgorithmRevision]));
+  const algorithmSha256=hash(JSON.stringify([recipe.map(path=>[path,hash(readSourceBytes(path))]),hash(read('assets/wasm/pandoeditor-core.manifest.json')),sharedCalculationCore.polygonMeshAlgorithmRevision]));
+  const computeLabelAnchor=createCountryLabelAnchorComputer({d3Source:readSourceBytes('assets/js-vendor/d3.min.js'),workerSource:readSourceBytes('src/rendering/workers/label-anchor-worker.js')});
   const prepared=buildCountryBoundarySeed({index:metadata[resource('territorial')],month:startupGeometryPacks.month,catalogSha256:projectCatalogs.territorial.sha256,algorithmSha256,
-   computeLabelAnchor:createCountryLabelAnchorComputer({d3Source:readSourceBytes('assets/js-vendor/d3.min.js'),workerSource:readSourceBytes('src/rendering/workers/label-anchor-worker.js')}),
+   computeLabelAnchor,
    readGeometryAssets:files=>readBuiltinGeometryPackInputs(resource('territorial'),files,readPinnedData,readPinnedDataBatch)});
   countryBoundarySeed={...prepared.spec,worldCatalogSha256:projectCatalogs.world.sha256};generated(prepared.spec.url,prepared.bytes,'viewer');
+  const {buildGlobePreviewAssets}=await import('./globe-preview-assets.mjs');
+  const globe=await buildGlobePreviewAssets({territorial:territorial.value,physical:physicalCatalog,
+   prepared:metadata[resource('preparedMeshes')],hydro:metadata[resource('rivers')],hydroPath:resource('rivers'),
+   month:startupGeometryPacks.month,readPinnedData,boundarySeed:prepared,computeLabelAnchor,
+   readGeometryAssets:files=>readBuiltinGeometryPackInputs(territorialPath,files,readPinnedData,readPinnedDataBatch)});
+  globePreview={...globe.preview,moduleUrl:'assets/vendor/three/three.module.js'};
+  for(const [path,bytes] of globe.assets)generated(path,bytes,'viewer');
+  globeAssetPaths=[...globe.assets.keys()];
+  for(const path of ['build/three.module.js','build/three.core.js','LICENSE'])
+   generated('assets/vendor/three/'+path.replace(/^build\//,''),readFileSync(resolve(root,'node_modules/three',path)),'viewer');
  }
  let externalData;
  if(externalRuntimeData){
@@ -200,7 +186,8 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
  const buildMeta={appVersion,buildId,assetRevision,dataRevision,sourceCommit,dataCommit:pinned?.revision||null,...resourceProfile?{resourceProfile}:{},
    ...(externalData?{externalRuntimeData:externalData}:{}),
    mapProject,mapProjectManifest,projectCatalogs,
-   workerAssets,physicalLandDisplays,startupGeometryPacks,historicalGeometryDeltas,...countryBoundarySeed?{countryBoundarySeed}:{}};
+   workerAssets,startupGeometryPacks,...countryBoundarySeed?{countryBoundarySeed}:{},
+   ...(globePreview?{globePreview}:{})};
  generated('assets/js/build-meta.js','// Generated product identity.\nglobalThis.PANDOLAB_BUILD_META = Object.freeze('+JSON.stringify(buildMeta,null,2)+');\n');
  const templates=renderProductHtml(sourceText),moduleImports=Object.fromEntries([...assets.keys()].filter(p=>p.startsWith('assets/js/')&&p.endsWith('.js')).map(p=>['./'+p,'./'+p+'?v='+encodeURIComponent(assetRevision)]));
  const render=(template,imports)=>{
@@ -211,10 +198,9 @@ export async function buildFrontendSnapshot({root=process.cwd(),sourceCommit,rea
  };
  generated('index.html',render(templates.web,moduleImports),'viewer');generated('.nojekyll','', 'viewer');
  const viewerPaths=await collectViewerAssets({root,availablePaths:[...assets.keys(),...dataPaths],readSource:read,workerAssets,runtimeDependencyMap});
- for(const path of physicalLandDisplayAssets.keys())viewerPaths.add(path);
  for(const pack of startupGeometryPacks?.packs??[])viewerPaths.add(pack.url);
- for(const path of historicalDeltaAssets.keys())viewerPaths.add(path);
  if(countryBoundarySeed)viewerPaths.add(countryBoundarySeed.url);
+ for(const path of globeAssetPaths)viewerPaths.add(path);
  const viewerImports=Object.fromEntries(Object.entries(moduleImports).filter(([path])=>viewerPaths.has(path.slice(2))));
  const html={viewer:render(templates.web,viewerImports)};
  generated('index.html',html.viewer,'viewer');

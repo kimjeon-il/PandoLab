@@ -73,6 +73,9 @@ import {hasWholeOriginalBatch,assertWholeOriginalBatch} from './whole-original-s
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
+import {gunzipSync} from 'node:zlib';
+import {coordinateBounds} from '../../src/geometry/coordinate-bounds.js';
+import {historicalWorldClipper} from './historical-world-territories.mjs';
 import {isDeepStrictEqual} from 'node:util';
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
 // Same payload as the canonical prepared-polygon digest; GeoJSON key order is metadata.
@@ -717,13 +720,253 @@ export function assertHistoricalSourceStorageChanges(next,previous,{prefixes,rea
  }else if(review.subgeometryChanges!==undefined||v.modernBoundarySupplement.adoptionMode==='lossless-original-subgeometry')fail('partial source cannot claim original whole feature');
  return 1;
 }
+const worldPolygonsDisplays=new WeakMap();
+
+export function worldPolygonsViewerGeometry(source,{detachedHoles=[],coveredPolygons=[]}={}){
+ if(!['Polygon','MultiPolygon'].includes(source?.type))throw Error('Invalid World Polygons geometry type');
+ const limit=(value,bound)=>{
+  if(!Number.isFinite(value)||Math.abs(value)>bound+1e-10)
+   throw Error('Invalid World Polygons geographic coordinate');
+  return Math.max(-bound,Math.min(bound,value));
+ };
+ const polygon=rings=>rings.map(ring=>ring.map(coordinate=>{
+  if(coordinate.length!==2)throw Error('Invalid World Polygons geographic coordinate');
+  return [limit(coordinate[0],180),limit(coordinate[1],90)];
+ }));
+ const single=source.type==='Polygon';
+ let polygons=(single?[source.coordinates]:source.coordinates).map(polygon);
+ if(!Array.isArray(detachedHoles))throw Error('Invalid detached World Polygons hole selection');
+ if(detachedHoles.length){
+  const shells=polygons.map(([ring])=>({ring,bounds:coordinateBounds(ring)}));
+  const omit=new Set();
+  for(const {polygon:index,ring} of detachedHoles){
+   const hole=polygons[index]?.[ring],key=index+':'+ring;
+   if(!Number.isInteger(index)||!Number.isInteger(ring)||ring<1||!hole||omit.has(key))
+    throw Error('Invalid detached World Polygons hole selection');
+   const [west,south,east,north]=coordinateBounds(hole);
+   if(shells.some(({ring,bounds})=>bounds[0]<=east&&bounds[1]<=north&&bounds[2]>=west&&bounds[3]>=south
+     &&historicalWorldClipper.intersection([[ring]],[[hole]]).length))
+    throw Error('Selected hole overlaps a World Polygons exterior');
+   omit.add(key);
+  }
+  for(const [i,rings] of polygons.entries())polygons[i]=rings.filter((_,j)=>!omit.has(i+':'+j));
+ }
+ if(!Array.isArray(coveredPolygons))throw Error('Invalid covered World Polygons component selection');
+ if(coveredPolygons.length){
+  const redundant=new Set(coveredPolygons.map(row=>row.polygon));
+  if(single||redundant.size!==coveredPolygons.length)throw Error('Invalid covered World Polygons component selection');
+  for(const {polygon:index,coveredBy} of coveredPolygons){
+   if(!Number.isInteger(index)||!Number.isInteger(coveredBy)||!polygons[index]||!polygons[coveredBy]||redundant.has(coveredBy))
+    throw Error('Invalid covered World Polygons component selection');
+   if(historicalWorldClipper.difference([polygons[index]],[polygons[coveredBy]]).length)
+    throw Error('Selected World Polygons component is not fully covered by its retained polygon');
+  }
+  polygons=polygons.filter((_,index)=>!redundant.has(index));
+ }
+ return {type:source.type,coordinates:single?polygons[0]:polygons};
+}
+
+const worldPolygonsSourcePath='assets/data/builtin-world/source/world-polygons-11.4-g99_5';
+export const worldPolygonsDisplayEvidencePath=(sha256=null,kind='repairs')=>sha256
+ ?worldPolygonsSourcePath+'-'+kind+'/'+sha256+'.json.gz':worldPolygonsSourcePath+'.json.gz';
+
+const palestineWorldPolygonsSources=[
+ ['7abdd7db-fe64-4143-93b6-64a7af99b24b','Gaza Strip','XGZ'],
+ ['78a503d5-8806-4e88-b28d-0a37c6648b06','West Bank','XWB'],
+];
+const confirmedWorldPolygonsSources={
+ 'state:COL':{ids:['0d62fc32-17cb-4754-be06-a7e918ecfe3b'],codes:['COL']},
+ 'state:PHL':{ids:['4a73e5db-5386-42a6-81c9-f94f46d3fad3'],codes:['PHL']},
+ 'state:NCL':{ids:['7ed81f87-f478-4cdc-81fa-477416d70a19','f47b7581-8276-4049-a0ea-18986e8a764b'],codes:['NCL','NCL']},
+ 'state:IOA':{ids:['de540a9e-416f-43ee-ac9f-4187bd4ca9e1','0ddbd39d-1604-4f42-8446-983fcd76104a'],codes:['CCK','CXR']},
+};
+export function worldPolygonsCompositionGeometry(publication,row){
+ const ids=row.candidateIds;
+ if(row.method==='confirmed-original-features'){
+  const selection=confirmedWorldPolygonsSources[row.entityId];
+  const features=Array.isArray(ids)?ids.map(id=>publication.sourceFeatures?.[id]):[];
+  if(!selection||!features.length||new Set(ids).size!==ids.length
+   ||!isDeepStrictEqual(ids,selection.ids)
+   ||!isDeepStrictEqual(features.map(f=>f?.genc),selection.codes)
+   ||features.some(f=>!requiredHash(f?.wkbSha256))||row.detachedHoles!==undefined||row.coveredPolygons!==undefined)
+   throw Error('World Polygons display: the confirmed original feature selection differs');
+  const geometry=ids.map(id=>worldPolygonsViewerGeometry(publication.geometries[id]));
+  if(geometry.length===1)return geometry[0];
+  const polygons=geometry.map(g=>g.type==='Polygon'?[g.coordinates]:g.coordinates);
+  if(historicalWorldClipper.intersection(...polygons).length)
+   throw Error('World Polygons display: original composition features overlap');
+  return {type:'MultiPolygon',coordinates:polygons.flat()};
+ }
+ if(row.entityId!=='state:PSX'||row.method!=='west-bank-and-gaza'
+  ||!isDeepStrictEqual(ids,palestineWorldPolygonsSources.map(([id])=>id))
+  ||palestineWorldPolygonsSources.some(([id,name,genc])=>{
+   const feature=publication.sourceFeatures?.[id];
+   return feature?.name!==name||feature.genc!==genc;
+  })
+  ||row.detachedHoles!==undefined||row.coveredPolygons!==undefined)
+  throw Error('World Polygons display: the Gaza Strip and West Bank source features are required');
+ const [gaza,westBank]=ids.map(id=>{
+  const geometry=worldPolygonsViewerGeometry(publication.geometries[id]);
+  return geometry.type==='Polygon'?[geometry.coordinates]:geometry.coordinates;
+ });
+ if(!gaza.length||!westBank.length||historicalWorldClipper.intersection(gaza,westBank).length)
+  throw Error('World Polygons display: distinct, non-overlapping Palestinian regions required');
+ return {type:'MultiPolygon',coordinates:[...gaza,...westBank]};
+}
+
+export function worldPolygonsReviewedGeometry(donor,row,ownerDonor){
+ const geometry=worldPolygonsViewerGeometry(donor);
+ if(row.entityId===row.ownerSourceEntityId){
+  if(row.ownerFeatureId!==undefined)throw Error('World Polygons display: unexpected original owner');
+  return geometry;
+ }
+ if(!row.ownerFeatureId||!ownerDonor)throw Error('World Polygons display: original owner feature required');
+ const owner=worldPolygonsViewerGeometry(ownerDonor);
+ const parts=value=>value.type==='Polygon'?[value.coordinates]:value.coordinates;
+ const ownerParts=parts(owner),memberParts=parts(geometry);
+ if(historicalWorldClipper.intersection(ownerParts,memberParts).length)
+  throw Error('World Polygons display: original owner and member overlap');
+ const bounds=memberParts.map(p=>coordinateBounds(p[0]));
+ const adjoining=ownerParts.filter(part=>{
+  const [west,south,east,north]=coordinateBounds(part[0]);
+  return bounds.some(([w,s,e,n])=>w<=east&&e>=west&&s<=north&&n>=south)
+   &&historicalWorldClipper.union([part],memberParts).length<1+memberParts.length;
+ });
+ if(!adjoining.length)return {type:'MultiPolygon',coordinates:[...ownerParts,...memberParts]};
+ const joined=historicalWorldClipper.union(memberParts,...adjoining.map(p=>[p]));
+ return {type:'MultiPolygon',coordinates:ownerParts.flatMap(p=>p===adjoining[0]?joined:adjoining.includes(p)?[]:[p])};
+}
+
+export function worldPolygonsPartitionGeometry(source,region){
+ const parts=value=>value.type==='Polygon'?[value.coordinates]:value.coordinates;
+ const original=parts(worldPolygonsViewerGeometry(source));
+ const mask=parts(worldPolygonsViewerGeometry(region));
+ const bounds=mask.map(([ring])=>coordinateBounds(ring));
+ const clip=historicalWorldClipper, owner=[], member=[];
+ for(const polygon of original){
+  const [w,s,e,n]=coordinateBounds(polygon[0]);
+  const local=mask.filter((_,i)=>{
+   const [west,south,east,north]=bounds[i];
+   return west<=e&&east>=w&&south<=n&&north>=s;
+  });
+  if(!local.length){owner.push(polygon);continue;}
+  const inside=clip.intersection([polygon],local);
+  if(!inside.length){owner.push(polygon);continue;}
+  const outside=clip.difference([polygon],local);
+  const area=parts=>parts.reduce((total,rings)=>total+rings.reduce((sum,ring,i)=>{
+   const [x,y]=ring[0];
+   const twice=ring.slice(1).reduce((a,[px,py],j)=>{
+    const [qx,qy]=ring[j];
+    return a+(qx-x)*(py-y)-(px-x)*(qy-y);
+   },0);
+   return sum+Math.abs(twice)*(i===0?1:-1)/2;
+  },0),0);
+  // Exact overlay can introduce rounding along the newly inserted coast points.
+  if(clip.intersection(inside,outside).length||area(clip.xor([polygon],clip.union(inside,outside)))>1e-10)
+   throw Error('World Polygons display: partition changes the original filled area');
+  owner.push(...outside);member.push(...inside);
+ }
+ if(!owner.length||!member.length)throw Error('World Polygons display: partition requires two nonempty sides');
+ const geometry=parts=>parts.length===1?{type:'Polygon',coordinates:parts[0]}:{type:'MultiPolygon',coordinates:parts};
+ return {owner:geometry(owner),member:geometry(member)};
+}
+
+const worldPolygonsPartitions=new WeakMap();
+export function readWorldPolygonsPartition(publication,row,readEvidence){
+ let verified=worldPolygonsPartitions.get(publication);
+ if(!verified){
+  const source=publication.originalSource;
+  if(source?.reference!==worldPolygonsDisplayEvidencePath()||!requiredHash(source.sha256))
+   throw Error('World Polygons display: original partition source required');
+  const bytes=readEvidence(source.reference);
+  if(!Buffer.isBuffer(bytes)||createHash('sha256').update(bytes).digest('hex')!==source.sha256)
+   throw Error('World Polygons display: original partition source hash mismatch');
+  const original=JSON.parse(gunzipSync(bytes));
+  if(['sourceLayer','sourceCrs','sourcePackageSha256'].some(k=>original[k]!==publication[k]))
+   throw Error('World Polygons display: original partition edition differs');
+  verified={original,results:new Map()};worldPolygonsPartitions.set(publication,verified);
+ }
+ if(verified.results.has(row))return verified.results.get(row);
+ const candidates=verified.original.current.filter(r=>r.entityId===row.ownerEntityId&&r.outcome==='candidate');
+ if(candidates.length!==1||!isDeepStrictEqual(candidates[0].candidateIds,[row.featureId])
+  ||!verified.original.geometries[row.featureId]||!Array.isArray(row.references)||row.references.length<2
+  ||new Set(row.references.map(ref=>ref.reference)).size!==row.references.length
+  ||row.references.some(ref=>!/^https:\/\//.test(ref.reference)||!requiredHash(ref.sha256)))
+  throw Error('World Polygons display: original feature and distinct boundary evidence required');
+ const result=worldPolygonsPartitionGeometry(verified.original.geometries[row.featureId],row.mask);
+ verified.results.set(row,result);
+ return result;
+}
+
+function assertWorldPolygonsDisplay({binding,previousGeometry,geometry,sourceEntityId,claim,readDisplayEvidence}){
+ const fail=message=>{throw Error('World Polygons display: '+message);};
+ if(!previousGeometry||digest(previousGeometry.geojson)!==claim.previousGeometrySha256||digest(geometry.geojson)!==claim.geometrySha256)
+  fail('stale Viewer geometry');
+ const repair=claim.source?.reference===worldPolygonsDisplayEvidencePath(claim.source?.sha256);
+ const composition=claim.source?.reference===worldPolygonsDisplayEvidencePath(claim.source?.sha256,'compositions');
+ const reviewed=claim.source?.reference===worldPolygonsDisplayEvidencePath(claim.source?.sha256,'reviewed');
+ const partition=claim.source?.reference===worldPolygonsDisplayEvidencePath(claim.source?.sha256,'partitions');
+ if((!repair&&!composition&&!reviewed&&!partition&&claim.source?.reference!==worldPolygonsDisplayEvidencePath())
+  ||!requiredHash(claim.source?.sha256)||typeof readDisplayEvidence!=='function')fail('scoped source evidence required');
+ const bytes=readDisplayEvidence(claim.source.reference);
+ if(!Buffer.isBuffer(bytes))fail('source evidence unavailable');
+ const evidenceHash=createHash('sha256').update(bytes).digest('hex');
+ if(evidenceHash!==claim.source.sha256)fail('source evidence hash mismatch');
+ let evidence=worldPolygonsDisplays.get(bytes);
+ if(evidence?.sha256!==evidenceHash){
+  const data=JSON.parse(gunzipSync(bytes));
+  if(data.sourceLayer!=='DoS_WP_11_4_G99_5'||data.sourceCrs!=='EPSG:4326'
+   ||data.sourcePackageSha256!=='55fab422ef09e35eb48d68141b9ece0ace86d4276dfe332a04dfd401c0bfc80c')
+   fail('unexpected World Polygons edition');
+  evidence={data,sha256:evidenceHash};worldPolygonsDisplays.set(bytes,evidence);
+ }
+ if(partition){
+  const {data}=evidence;
+  const matches=data.partitions.filter(row=>row.ownerEntityId===sourceEntityId||row.memberEntityId===sourceEntityId);
+  const row=matches[0];
+  if(binding.validTo||binding.validFrom!==data.displayValidFrom||matches.length!==1||claim.featureId!==row.featureId)
+   fail('compiled partition binding differs from its source evidence');
+  const side=row.ownerEntityId===sourceEntityId?'owner':'member';
+  if(!isDeepStrictEqual(geometry.geojson,readWorldPolygonsPartition(data,row,readDisplayEvidence)[side]))
+   fail('compiled geometry differs from the verified partition');
+  return;
+ }
+ const rows=binding.validTo?evidence.data.historical:evidence.data.current;
+ const selectedEntity=reviewed?(claim.sourceMemberEntityId??sourceEntityId):sourceEntityId;
+ const matches=rows.filter(row=>row.entityId===selectedEntity&&row.versionId===binding.sourceVersionId&&row.outcome==='candidate');
+ if(composition){
+  if(binding.validTo||matches.length!==1||claim.featureId!==undefined
+   ||(matches[0].method==='confirmed-original-features'&&binding.validFrom!==evidence.data.displayValidFrom)
+   ||!isDeepStrictEqual(matches[0].candidateIds,claim.featureIds)
+   ||!isDeepStrictEqual(worldPolygonsCompositionGeometry(evidence.data,matches[0]),geometry.geojson))
+   fail('compiled geometry differs from selected World Polygons composition');
+  return;
+ }
+ const donor=evidence.data.geometries[claim.featureId];
+ const row=matches[0],holes=row?.detachedHoles,components=row?.coveredPolygons;
+ if(matches.length!==1||claim.featureIds!==undefined||!isDeepStrictEqual(matches[0].candidateIds,[claim.featureId])
+  ||(repair?binding.validTo||!(holes?.length||components?.length):holes!==undefined||components!==undefined)
+  ||(reviewed&&(binding.validTo||row.ownerSourceEntityId!==sourceEntityId))
+  ||!donor||!isDeepStrictEqual(reviewed?worldPolygonsReviewedGeometry(donor,row,evidence.data.geometries[row.ownerFeatureId]):worldPolygonsViewerGeometry(donor,row),geometry.geojson))
+  fail('compiled geometry differs from selected World Polygons feature');
+}
+
 /** Compiled-only writes must cover each changed dated binding, including derivatives. */
-export function assertHistoricalCompiledChanges(next,previous){
+export function assertHistoricalCompiledChanges(next,previous,{readDisplayEvidence}={}){
  if(previous&&next.entityId!==previous.entityId)throw Error('Historical compiled identity changed');
  const oldGeometries=new Map((previous?.geometries||[]).map(g=>[g.id+':'+g.version,g])),digests=new WeakMap(),content=g=>{if(!digests.has(g))digests.set(g,digest(g.geojson));return digests.get(g);};let checked=0;
  for(const binding of next.sourceBindings){const geometry=next.geometries.find(g=>g.id===binding.geometryRef.id&&g.version===binding.geometryRef.version);if(!geometry)throw Error('Missing reviewed compiled geometry');const geometryDigest=content(geometry);
   const unchanged=(previous?.sourceBindings||[]).some(b=>{if(b.sourceVersionId!==binding.sourceVersionId)return false;const old=oldGeometries.get(b.geometryRef.id+':'+b.geometryRef.version);if(!old)throw Error('Missing previous compiled geometry');return content(old)===geometryDigest;});if(unchanged)continue;
-  const timeline=next.identity.properties.metadata.historicalTimeline,version=timeline.geometryVersions.find(v=>v.versionId===binding.sourceVersionId);if(!version)throw Error('Missing compiled source version metadata');if(!historical(version)&&binding.validTo==null)continue;
+  const timeline=next.identity.properties.metadata.historicalTimeline,version=timeline.geometryVersions.find(v=>v.versionId===binding.sourceVersionId);if(!version)throw Error('Missing compiled source version metadata');
+  const wp=version.historicalProvenance?.worldPolygonsDisplay?.find(r=>r.validFrom===binding.validFrom&&r.validTo===binding.validTo);
+  if(wp){
+   const cutover=['partitions','compositions'].some(kind=>wp.source?.reference===worldPolygonsDisplayEvidencePath(wp.source?.sha256,kind));
+   const old=previous?.sourceBindings.find(b=>b.sourceVersionId===binding.sourceVersionId&&b.validTo===binding.validTo
+    &&(b.validFrom===binding.validFrom||cutover&&(!b.validFrom||b.validFrom<binding.validFrom)));
+   assertWorldPolygonsDisplay({binding,previousGeometry:old&&oldGeometries.get(old.geometryRef.id+':'+old.geometryRef.version),
+    geometry,sourceEntityId:timeline.entityId,claim:wp,readDisplayEvidence});checked++;continue;
+  }
+  if(!historical(version)&&binding.validTo==null)continue;
   const sourceReview=version.historicalProvenance?.displayDetailReview,reviews=sourceReview?[sourceReview,...(sourceReview.compiledDerivatives||[])]:[],review=reviews.find(r=>r.entityId===next.entityId&&r.versionId===binding.sourceVersionId&&r.validFrom===binding.validFrom&&r.validTo===binding.validTo&&r.geometrySha256===geometryDigest);
   assertHistoricalDisplayReview(next.entityId,{...version,validFrom:binding.validFrom,validTo:binding.validTo,geometry:geometry.geojson,historicalProvenance:{...version.historicalProvenance,displayDetailReview:review}});checked++;
  }

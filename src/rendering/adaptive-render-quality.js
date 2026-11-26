@@ -46,7 +46,7 @@ export function renderQualityProfile(tier, {
   const nativeDpr=Number(devicePixelRatio);
   const admittedDpr=Number.isFinite(nativeDpr)&&nativeDpr>0?nativeDpr:1;
   // Only live Viewer consumers own quality fields. Old mesh LOD, GPU upload
-  // and cache budgets no longer control MapLibre rendering.
+  // and cache budgets do not change the base globe.
   return Object.freeze({
     tier:normalized,
     phase:phase==='interaction'?'interaction':'settle',

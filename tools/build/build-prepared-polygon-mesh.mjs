@@ -17,7 +17,7 @@ import { resolveWorld } from "../../src/document/timeline-resolver.js";
 import { createTerritorialScopeResolver } from "../../src/document/territorial-scope.js";
 import {assembleBuiltinWorld,selectBuiltinCountries} from "../../src/data/builtin-world-loader.js";
 import {resolvePhysicalWaterObjects,composePhysicalWaterGeometry} from "../../src/data/physical-water-model.js";
-import {applyPhysicalLandPatch,regionalLandLayout} from '../../src/data/physical-land-patch.js';
+import {applyPhysicalLandPatch,regionalLandLayout,selectPhysicalLandAsset} from '../../src/data/physical-land-patch.js';
 import {applyPreparedMeshDelta,preparedMeshDeltaLayout} from '../../src/data/prepared-mesh-delta.js';
 import {builtinSubunitId} from "../../src/document/territorial-display-identity.js";
 import {decodeTerritorialSource} from '../data/territorial-source-codec.mjs';
@@ -84,10 +84,12 @@ if(physicalMonth){
  const manifestPath=physicalManifestPath,manifest=readJson(manifestPath);
  inputHashes[manifestPath]=sha256(readFileSync(resolve(root,manifestPath)));
  const selected=resolvePhysicalWaterObjects(manifest.waterObjects,physicalMonth).sort((a,b)=>timelineObjectKey(a.objectRef).localeCompare(timelineObjectKey(b.objectRef)));
- if(!selected.length)throw Error('No physical-water context is selected for '+physicalMonth);
- const land=selected[0].assets.land;
+ const land=selected[0]?.assets.land??manifest.asset;
  if(selected.some(row=>row.assets.land.sha256!==land.sha256))throw Error('Selected waters require one coherent land derivative.');
- collect(readPhysicalLand(land));collect(composePhysicalWaterGeometry(selected.map(row=>readPhysicalAsset(row.assets.asset))));
+ const current=selectPhysicalLandAsset(manifest.asset,manifest.modernCoast,land,physicalMonth);
+ if(!selected.length&&current===manifest.asset)throw Error('No dated physical context is selected for '+physicalMonth);
+ collect(readPhysicalLand(current));
+ if(selected.length)collect(composePhysicalWaterGeometry(selected.map(row=>readPhysicalAsset(row.assets.asset))));
 }else{
 const indexBytes=readFileSync(resolve(root,indexPath)),index=JSON.parse(indexBytes);
 inputHashes[indexPath]=sha256(indexBytes);
@@ -136,7 +138,9 @@ if(!selectedIds){
  if(project)collect(readPhysicalLand(readJson(physicalManifestPath).asset));
  else source('assets/data/physical-land/v1/geometry.json.gz');
  inputHashes[physicalManifestPath]=sha256(readFileSync(resolve(root,physicalManifestPath)));
- for(const context of readJson(physicalManifestPath).waterObjects?.geometries||[]){
+ const physicalCatalog=readJson(physicalManifestPath);
+ if(physicalCatalog.modernCoast)collect(readPhysicalLand(physicalCatalog.modernCoast.asset));
+ for(const context of physicalCatalog.waterObjects?.geometries||[]){
   collect(readPhysicalLand(context.land));collect(readPhysicalAsset(context.asset));
  }
  for(const entity of sourceIndex.entities)source('assets/data/territorial-entities/generated/v2/'+entity.file,entity);

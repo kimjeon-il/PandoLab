@@ -30,7 +30,7 @@ function sequenceChanges(before,after,keyFor=digest,onMatch=()=>{}){
 /** Factor an existing approved result without normalization or GIS computation. */
 export function createPhysicalLandPatch(base,target,{validFrom,validTo}){
  if(base?.type!=='MultiPolygon'||target?.type!=='MultiPolygon'||!Array.isArray(base.coordinates)||!Array.isArray(target.coordinates)
-   ||typeof validFrom!=='string'||typeof validTo!=='string'||validFrom>validTo)throw Error('Approved land inputs and an unambiguous validity window are required');
+   ||typeof validFrom!=='string'||(validTo!==null&&(typeof validTo!=='string'||validFrom>validTo)))throw Error('Approved land inputs and an unambiguous validity window are required');
  const points=new Map();
  base.coordinates.forEach((polygon,p)=>polygon.forEach((ring,r)=>ring.forEach((point,i)=>{
   const key=JSON.stringify(point);if(!points.has(key))points.set(key,[]);points.get(key).push([p,r,i]);

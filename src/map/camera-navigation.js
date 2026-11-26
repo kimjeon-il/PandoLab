@@ -22,8 +22,12 @@ export function createCameraNavigation() {
   }
 
   function fitMapToFeature(feature) {
-    if (!feature?.geometry && feature?.type !== 'FeatureCollection') return;
-    dependencies.rendering.mapRenderer.fitGeometry(feature,dependencies.mapView.projectionLayoutMetrics().safe);
+    const safe=dependencies.mapView.projectionLayoutMetrics().safe;
+    if(feature?.geometry||feature?.type==='FeatureCollection')dependencies.rendering.mapRenderer.fitGeometry(feature,safe);
+    else if(feature?.__awBounds?.length===4&&feature.__awBounds.every(Number.isFinite)){
+      const [west,south,east,north]=feature.__awBounds;
+      dependencies.rendering.mapRenderer.fitMapBounds([[west,south],[east,north]],safe);
+    }else return;
     dependencies.domains.renderingDomain.invalidateView('focus-object');
   }
 

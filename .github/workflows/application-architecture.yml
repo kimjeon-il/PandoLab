@@ -6,7 +6,7 @@ on:
         type: choice
         options:
           - node
-          - maplibre
+
           - browser
           - lint
         default: node
@@ -34,7 +34,7 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - if: inputs.group == 'browser'
         run: node tools/data/library-data.mjs --prepare-metadata
-      - if: inputs.group == 'browser' || inputs.group == 'maplibre'
+      - if: inputs.group == 'browser'
         run: pnpm exec playwright install --with-deps chromium
       - env:
           CHECK_GROUP: ${{ inputs.group }}

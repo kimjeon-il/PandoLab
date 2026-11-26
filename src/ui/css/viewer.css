@@ -10,7 +10,6 @@
     + 2 * (var(--ui-toolbar-padding) + var(--ui-border-width))
   );
 }
-.viewer-root .maplibre-map-surface { position: absolute; inset: 0; z-index: 1; }
 .viewer-root .viewer-map-tools { position: absolute; z-index: 18; inset: auto max(var(--ui-space-4), env(safe-area-inset-right)) var(--viewer-desktop-tools-bottom) max(var(--ui-space-4), env(safe-area-inset-left)); min-height: calc(var(--ui-icon-control-size) + var(--ui-space-2) * 2); pointer-events: none; }
 .app-root.viewer-root .map-command-toolbar { z-index: 18; bottom: 0; left: 50%; right: auto; transform: translateX(-50%); pointer-events: auto; }
 .viewer-root .timeline-controls { position: absolute; z-index: 20; right: 0; bottom: 0; width: min(23rem, 100%); pointer-events: auto; overflow: visible; }
@@ -111,9 +110,8 @@
   --projection-safe-right: calc(var(--phone-panel-width) + var(--viewer-dock-right));
 }
 
-/* The loading surface is the real MapLibre globe with its dated physical land.
-   Pulse its pixels only; no screen-space imitation of continents or projection. */
-.viewer-root[data-initial-loading='true'] :is(.maplibregl-canvas, [data-map-preserved-frame] canvas) {
+/* Pulse the Viewer canvas while the first frame is being prepared. */
+.viewer-root[data-initial-loading='true'] #map canvas {
   animation: viewer-map-skeleton-pulse 2.4s ease-in-out infinite;
 }
 @keyframes viewer-map-skeleton-pulse {
@@ -121,7 +119,7 @@
   50% { filter: brightness(1.02); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .viewer-root[data-initial-loading='true'] :is(.maplibregl-canvas, [data-map-preserved-frame] canvas) { animation: none; }
+  .viewer-root[data-initial-loading='true'] #map canvas { animation: none; }
 }
 
 /* E4: independent read-only review, no map-viewport ownership or edit gestures. */

@@ -34,13 +34,10 @@ void validateExchangeMetadata(const ProjectDocument&);
 bool presentationGroup(const std::string& key) {
     return std::set<std::string>{"objects","distributions","rivers","lakes","hydro","genericFeatures","labels","objectLabels","terrain"}.count(key);
 }
-bool presentationSymbol(const std::string& key) {
-    return std::set<std::string>{"objectNames","objectFlags"}.count(key);
-}
 // Current web project-state.js has distinct layer/item/style namespaces.
 // Native presentation retains its broader key set for native-only documents.
 bool webLayerVisibilityKey(const std::string& key) {
-    static const std::set<std::string> keys={"objects","distributions","rivers","lakes","genericFeatures","labels","objectNames","objectFlags"};
+    static const std::set<std::string> keys={"objects","distributions","rivers","lakes","genericFeatures","labels","objectNames"};
     return keys.count(key);
 }
 bool webItemVisibilityKey(const std::string& key) {

@@ -6,7 +6,7 @@ import {defaultRoot,git,libraryConfig,libraryReportRoot,libraryReportEditRoot} f
 import {centralizeLibraryReports} from "./library-reports.mjs";
 import {prepareLibraryData,prepareLibraryMetadata,mountLibraryInputs,beginLibraryWrite,endLibraryWrite,withLibraryWrite} from "./library-runtime.mjs";
 import {organizeLibraryReports,publishLibraryReports,checkLibraryReports} from "./library-report-publication.mjs";
-import {storeLibraryData,publishLibraryRuntime} from "./library-store.mjs";
+import {storeLibraryData,storeLocalTerritorialRetirement,publishLibraryRuntime} from "./library-store.mjs";
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv[2] === '--publish-runtime') {
@@ -14,6 +14,18 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const prefixes=process.argv.filter(arg=>arg.startsWith('--include-prefix=')).map(arg=>arg.slice(17));
     const expectedRemote=process.argv.find(arg=>arg.startsWith('--expected-remote='))?.slice(18);
     console.log(JSON.stringify(publishLibraryRuntime({root,prefixes,expectedRemote})));
+  } else if (process.argv[2] === '--store-local-retirement') {
+    const root=process.argv.find(arg=>arg.startsWith('--root='))?.slice(7)||defaultRoot;
+    const manifestPath=process.argv.find(arg=>arg.startsWith('--retirement-manifest='))?.slice('--retirement-manifest='.length);
+    if(!manifestPath)throw Error('An explicit retirement manifest is required');
+    const retirement=JSON.parse(readFileSync(resolve(manifestPath),'utf8'));
+    const {sphericalCore}=await import('../build/load-spherical-core.mjs');
+    await import('../../src/rendering/workers/polygon-mesh-core.js');
+    const engine=globalThis.PandoLabPolygonMeshCore;
+    engine.setSharedCore(sphericalCore);
+    const replacementPath=process.argv.find(arg=>arg.startsWith('--replacement-source='))?.slice('--replacement-source='.length);
+    const replacementSource=replacementPath&&readFileSync(resolve(replacementPath));
+    console.log(JSON.stringify(await storeLocalTerritorialRetirement({root,retirement,engine,replacementSource})));
   } else if (process.argv[2] === '--prepare-metadata') {
     const root = process.argv.find(arg => arg.startsWith('--root='))?.slice(7) || defaultRoot;
     const { repository, revision } = prepareLibraryMetadata({ root });

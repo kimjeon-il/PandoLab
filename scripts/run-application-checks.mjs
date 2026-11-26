@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const repository=fileURLToPath(new URL('../',import.meta.url));
-export function executeChecks({groups=['node','maplibre','browser','lint'],root=repository,catalog=JSON.parse(readFileSync(new URL('./contracts/application-checks.json',import.meta.url),'utf8')),run=(argv,options)=>spawnSync(argv[0],argv.slice(1),{...options,stdio:'inherit',windowsHide:true}),testNamePattern,files}={}) {
+export function executeChecks({groups=['node','browser','lint'],root=repository,catalog=JSON.parse(readFileSync(new URL('./contracts/application-checks.json',import.meta.url),'utf8')),run=(argv,options)=>spawnSync(argv[0],argv.slice(1),{...options,stdio:'inherit',windowsHide:true}),testNamePattern,files}={}) {
  if(!Array.isArray(groups)||!groups.length||groups.some(id=>typeof id!=='string')||new Set(groups).size!==groups.length)throw Error('Expected distinct check groups');
  const selected=groups.map(id=>{const group=catalog.groups.find(group=>group.id===id);if(!group||!Array.isArray(group.argv)||!group.argv.length)throw Error('Unknown check group: '+id);return group;});
  if(files&&(!Array.isArray(files)||!files.length||new Set(files).size!==files.length||files.some(file=>!selected.some(group=>group.argv.includes(file)))))throw Error('Selected files must be registered in the selected groups');

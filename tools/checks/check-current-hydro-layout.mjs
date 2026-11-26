@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// Read-only validation of the current Web hydro package and real Worker.
+// Read-only validation of the current Web hydro package and shared format.
 import {libraryMaterializedRoot} from "../data/library-context.mjs";
-import {buildFrontendIndex,frontendAsset} from "../../scripts/lib/frontend-layout.mjs";
-import {createHash,webcrypto} from 'node:crypto';
+import {decodeHydroIndex,decodeHydroMetadata} from '../../src/data/hydro-pack.js';
+import {createHash} from 'node:crypto';
 import {readFileSync,readdirSync,lstatSync,realpathSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {dirname,join,resolve,relative,isAbsolute,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {gunzipSync} from 'node:zlib';
-import vm from 'node:vm';
 
 const DATA='assets/data/hydro';
 export const CURRENT_MANIFEST=DATA+'/v0.13.4/manifest.json';
@@ -69,36 +68,22 @@ function listFiles(dir,root=dir) {
   }
   return rows.sort();
 }
-export async function verifyWorker(root,manifest,packed,{supportsRange}) {
-  const requests=[],messages=[],baseUrl='https://hydro-audit.invalid/current/';
-  const scope={fflate:{gunzipSync:bytes=>new Uint8Array(gunzipSync(bytes))},
-    crypto:webcrypto,TextDecoder,Uint8Array,Response,URL,AbortSignal,Map,setTimeout,clearTimeout,onmessage:null,
-    performance:{now:()=>0},importScripts(){},postMessage:message=>messages.push(message),
-    async fetch(input,init={}) {
-      const url=new URL(input),expected=new URL(manifest.container.url,baseUrl);
-      ensure(url.origin===expected.origin&&url.pathname===expected.pathname,'Worker requested undeclared hydro resource');
-      const range=init.headers?.Range||null;requests.push(range);
-      if(!supportsRange||!range)return new Response(packed.slice(),{status:200});
-      const match=/^bytes=(\d+)-(\d+)$/.exec(range);ensure(match,'Invalid Worker Range request');
-      const first=Number(match[1]),last=Number(match[2]);
-      ensure(Number.isSafeInteger(first)&&Number.isSafeInteger(last)&&first>=0&&last>=first&&last<packed.length,'Worker Range outside container');
-      return new Response(packed.subarray(first,last+1),{status:206,headers:{'Content-Range':'bytes '+first+'-'+last+'/'+packed.length}});
-    }};
-  scope.self=scope;
-  const context=vm.createContext(scope);
-  const frontend=buildFrontendIndex(root);
-  for(const file of ['hydro-shard-store.js','hydro-tile-worker.js'])vm.runInContext(
-    frontendAsset(root,'assets/js/workers/'+file,{index:frontend}).bytes.toString('utf8'),context,{filename:file,timeout:5000});
-  await scope.onmessage({data:{type:'init',manifest,baseUrl,dataRevision:manifest.version}});
-  ensure(messages.at(-1)?.type==='ready','Current hydro Worker rejected package: '+(messages.at(-1)?.message||'missing ready result'));
-  await vm.runInContext('rangeSupportPromise',context);
-  const initialRequests=[...requests];
-  const detail=JSON.parse(new TextDecoder().decode(await vm.runInContext('fetchGzip(manifest.metadata.detail)',context)));
+export function verifyPackedIndex(manifest,packed){
+  const section=spec=>gunzipSync(packed.subarray(spec.offset,spec.offset+spec.bytes));
+  const logicalPacks=new Map();
+  const {packSpecs}=decodeHydroIndex(section(manifest.index),{logicalPacks});
+  const metadata=decodeHydroMetadata(section(manifest.metadata.core));
+  const detail=JSON.parse(section(manifest.metadata.detail));
   ensure(detail?.version===5&&Array.isArray(detail.features),'Invalid hydro detail metadata');
-  if(supportsRange)for(const spec of [manifest.index,manifest.metadata.core,manifest.metadata.detail])
-    ensure(requests.includes('bytes='+spec.offset+'-'+(spec.offset+spec.bytes-1)),'Worker did not read the declared subresource range');
-  else ensure(requests.length===1,'Worker did not reuse its validated whole-container response');
-  return {ready:true,initialRequests,requests};
+  ensure(detail.features.length===metadata.size&&new Set(detail.features.map(row=>row.fid)).size===metadata.size
+    &&detail.features.every(row=>metadata.has(row.fid)),'Hydro detail identities differ from core');
+  const shards=new Map(manifest.shards.map(spec=>[spec.id,spec]));
+  for(const spec of packSpecs.values()){
+    const shard=shards.get(spec.shard);
+    ensure(shard&&spec.length>0&&spec.offset+spec.length<=shard.bytes,'Hydro pack outside shard');
+  }
+  for(const ids of logicalPacks.values())ensure(ids.every(id=>packSpecs.has(id)),'Missing logical Hydro pack');
+  return {packs:packSpecs.size,features:metadata.size,logicalFeatures:logicalPacks.size};
 }
 
 export async function auditLayout(root,{allowRetired=false}={}) {
@@ -130,13 +115,13 @@ export async function auditLayout(root,{allowRetired=false}={}) {
   }
   const old=RETIRED.filter(v=>resolve(root,DATA,v)!==dir).flatMap(v=>listFiles(join(root,DATA,v),join(root,DATA)));
   if(!allowRetired)ensure(old.length===0,'Retired production hydro files remain: '+old.slice(0,12).join(', '));
-  const before=hash(packed),range=await verifyWorker(root,manifest,packed,{supportsRange:true}),whole=await verifyWorker(root,manifest,packed,{supportsRange:false});
+  const before=hash(packed),index=verifyPackedIndex(manifest,packed);
   ensure(hash(readFileSync(inside(dir,manifest.container.url)))===before,'Hydro audit mutated the package');
   return {schema:'pandolab-current-hydro-audit',version:3,passed:true,productionVersion:manifest.version,
     manifestPath:webPath,activeFiles:current.length,activeFilePaths:current,packedContainerBytes:packed.length,
     packedContainerSha256:hash(packed),manifestBytes:manifestBuffer.length,manifestSha256:hash(manifestBuffer),
     roles,previousFiles:old,previousFileCount:old.length,strictRetirement:!allowRetired,
-    runtime:{range,whole},note:'Read-only manifest, exact bytes and current Worker validation; no data generation.'};
+    index,note:'Read-only manifest, exact bytes and shared Hydro format validation; no data generation.'};
 }
 const invoked=process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url);
 if(invoked)try{
