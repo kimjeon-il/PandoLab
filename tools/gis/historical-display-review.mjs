@@ -1,45 +1,5 @@
-import {hasRusLtuSeam,assertRusLtuSeam} from './rus-ltu-seam-source-review.mjs';
-import {hasItaAutSeam,assertItaAutSeam} from './ita-aut-seam-source-review.mjs';
-import {hasKgzKazSeam,assertKgzKazSeam} from './kgz-kaz-seam-source-review.mjs';
-import {hasKgzUzbSeam,assertKgzUzbSeam} from './kgz-uzb-seam-source-review.mjs';
-import {hasAfgTjkSeam,assertAfgTjkSeam} from './afg-tjk-seam-source-review.mjs';
-import {hasChnKgzSeam,assertChnKgzSeam} from './chn-kgz-seam-source-review.mjs';
-import {hasChnTjkSeam,assertChnTjkSeam} from './chn-tjk-seam-source-review.mjs';
-import {hasTjkUzbSeam,assertTjkUzbSeam} from './tjk-uzb-seam-source-review.mjs';
-import {hasItaSvnSeam,assertItaSvnSeam} from './ita-svn-seam-source-review.mjs';
-import {hasDeuPolSeam,assertDeuPolSeam} from './deu-pol-seam-source-review.mjs';
-import {hasDeuCzeSeam,assertDeuCzeSeam} from './deu-cze-seam-source-review.mjs';
-import {hasDeuAutSeam,assertDeuAutSeam} from './deu-aut-seam-source-review.mjs';
-import {hasDeuCheSeam,assertDeuCheSeam} from './deu-che-seam-source-review.mjs';
-import {hasEgyBrtSeam,assertEgyBrtSeam} from './egy-brt-seam-source-review.mjs';
-import {hasFinSweSeam,assertFinSweSeam} from './fin-swe-seam-source-review.mjs';
-import {hasChnMacSeam,assertChnMacSeam} from './chn-mac-seam-source-review.mjs';
-import {hasChnHkgSeam,assertChnHkgSeam} from './chn-hkg-seam-source-review.mjs';
-import {hasSomEthSeam,assertSomEthSeam} from './som-eth-seam-source-review.mjs';
-import {hasSdsUgaSeam,assertSdsUgaSeam} from './sds-uga-seam-source-review.mjs';
-import {hasPakIrnSeam,assertPakIrnSeam} from './pak-irn-seam-source-review.mjs';
-import {hasSdsEthSeam,assertSdsEthSeam} from './sds-eth-seam-source-review.mjs';
-import {hasChnAfgSeam,assertChnAfgSeam} from './chn-afg-seam-source-review.mjs';
-import {hasUkrSvkSeam,assertUkrSvkSeam} from './ukr-svk-seam-source-review.mjs';
-import {hasUkrHunSeam,assertUkrHunSeam} from './ukr-hun-seam-source-review.mjs';
-import {hasRusPolSeam,assertRusPolSeam} from './rus-pol-seam-source-review.mjs';
-import {hasRusLvaSeam,assertRusLvaSeam} from './rus-lva-seam-source-review.mjs';
-import {hasEgyLbySeam,assertEgyLbySeam} from './egy-lby-seam-source-review.mjs';
-import {hasRusEstSeam,assertRusEstSeam} from './rus-est-seam-source-review.mjs';
-import {hasRusAzeSeam,assertRusAzeSeam} from './rus-aze-seam-source-review.mjs';
-import {hasUkrPolSeam,assertUkrPolSeam} from './ukr-pol-seam-source-review.mjs';
-import {hasSdnEriSeam,assertSdnEriSeam} from './sdn-eri-seam-source-review.mjs';
-import {hasSdnTcdSeam,assertSdnTcdSeam} from './sdn-tcd-seam-source-review.mjs';
-import {hasUkrMdaSeam,assertUkrMdaSeam} from './ukr-mda-seam-source-review.mjs';
-import {hasUkrBlrSeam,assertUkrBlrSeam} from './ukr-blr-seam-source-review.mjs';
-import {hasRusBlrSeam,assertRusBlrSeam} from './rus-blr-seam-source-review.mjs';
-import {hasIndMmrSeam,assertIndMmrSeam} from './ind-mmr-seam-source-review.mjs';
-import {hasChnKazSeam,assertChnKazSeam} from './chn-kaz-seam-source-review.mjs';
-import {hasCafCodSeam,assertCafCodSeam} from './caf-cod-seam-source-review.mjs';
-import {hasRusMngTermination,assertRusMngTermination} from './rus-mng-termination-source-review.mjs';
-import {hasChnMngSeam,assertChnMngSeam} from './chn-mng-seam-source-review.mjs';
+import {assertCommonSeamSourceChanges,sourceGeometryChanges} from './seam-source-admission.mjs';
 import {hasRussiaSeam,assertRussiaSeam} from './russia-common-seam-source-review.mjs';
-import {hasIndBgdSeam,assertIndBgdSeam} from './ind-bgd-seam-source-review.mjs';
 import {hasPrkOffshore,assertPrkOffshore} from './prk-offshore-original-source-review.mjs';
 import {hasJpnRyukyuOriginal,assertJpnRyukyuOriginal} from './jpn-ryukyu-original-source-review.mjs';
 import {hasKorSouthwestOriginal,assertKorSouthwestOriginal} from './kor-southwest-original-source-review.mjs';
@@ -511,53 +471,15 @@ function assertOriginalExistingComponents(next,previous,review,{prefixes,archive
 // Ordered rules retain the original first-match precedence and distinguish
 // a new-marker-only test, an old-or-new-marker test, and a paired test.
 const sourceStorageReviewRules=[
- [hasSdnEriSeam,assertSdnEriSeam],
- [hasSdnTcdSeam,assertSdnTcdSeam],
- [hasUkrSvkSeam,assertUkrSvkSeam],
- [hasUkrHunSeam,assertUkrHunSeam],
- [hasUkrPolSeam,assertUkrPolSeam],
- [hasUkrMdaSeam,assertUkrMdaSeam],
- [hasUkrBlrSeam,assertUkrBlrSeam],
- [hasEgyBrtSeam,assertEgyBrtSeam,"next","base"],
- [hasEgyLbySeam,assertEgyLbySeam],
- [hasRusLtuSeam,assertRusLtuSeam],
- [hasRusPolSeam,assertRusPolSeam],
- [hasRusLvaSeam,assertRusLvaSeam],
- [hasRusEstSeam,assertRusEstSeam],
- [hasRusAzeSeam,assertRusAzeSeam],
- [hasRusBlrSeam,assertRusBlrSeam],
- [hasIndMmrSeam,assertIndMmrSeam],
- [hasPakIrnSeam,assertPakIrnSeam],
- [hasSomEthSeam,assertSomEthSeam],
- [hasSdsUgaSeam,assertSdsUgaSeam],
- [hasSdsEthSeam,assertSdsEthSeam],
- [hasTjkUzbSeam,assertTjkUzbSeam,"both","sourceDataRevision"],
- [hasChnTjkSeam,assertChnTjkSeam,"next","sourceDataRevision"],
- [hasChnKgzSeam,assertChnKgzSeam,"next","sourceDataRevision"],
- [hasChnMacSeam,assertChnMacSeam],
- [hasChnHkgSeam,assertChnHkgSeam],
- [hasChnAfgSeam,assertChnAfgSeam],
- [hasChnKazSeam,assertChnKazSeam],
- [hasCafCodSeam,assertCafCodSeam],
- [hasRusMngTermination,assertRusMngTermination],
- [hasChnMngSeam,assertChnMngSeam],
  [hasRussiaSeam,assertRussiaSeam],
- [hasIndBgdSeam,assertIndBgdSeam],
  [hasPrkOffshore,assertPrkOffshore],
  [hasJpnRyukyuOriginal,assertJpnRyukyuOriginal],
  [hasKorSouthwestOriginal,assertKorSouthwestOriginal],
  [hasSdsPairedOriginal,assertSdsPairedOriginal],
- [hasFinSweSeam,assertFinSweSeam,"next","base"],
  [hasFinDetachedOriginal,assertFinDetachedOriginal],
  [hasEuropeReviewedOriginal,assertEuropeReviewedOriginal],
  [hasEspRetainedOriginal,assertEspRetainedOriginal],
  [hasRusKurilOriginal,assertRusKurilOriginal],
- [hasItaAutSeam,assertItaAutSeam,"next","base"],
- [hasItaSvnSeam,assertItaSvnSeam,"next","base"],
- [hasDeuPolSeam,assertDeuPolSeam,"next","base"],
- [hasDeuCzeSeam,assertDeuCzeSeam,"next","base"],
- [hasDeuAutSeam,assertDeuAutSeam,"next","base"],
- [hasDeuCheSeam,assertDeuCheSeam,"next","base"],
  [hasEuropePairedCoast,assertEuropePairedCoast,"both","getSourceSnapshot"],
  [hasIrnGulfLiteral,assertIrnGulfLiteral,"both","getSourceSnapshot"],
  [hasArcticLiteral,assertArcticLiteral,"both","getSourceSnapshot"],
@@ -565,9 +487,6 @@ const sourceStorageReviewRules=[
  [hasDeu1914Combined,assertDeu1914Combined,"both","getSourceSnapshot"],
  [hasProtectedSsrCopy,assertProtectedSsrCopy,"both","getSourceSnapshot"],
  [hasRegisteredCurrentOutlineReuse,assertRegisteredCurrentOutlineCopy,"both","getSourceSnapshot"],
- [hasAfgTjkSeam,assertAfgTjkSeam,"next","sourceDataRevision"],
- [hasKgzUzbSeam,assertKgzUzbSeam,"both","sourceDataRevision"],
- [hasKgzKazSeam,assertKgzKazSeam,"next","sourceDataRevision"],
  [hasProtectedOriginalArcs,assertProtectedOriginalArcs,"both","getSourceSnapshot"],
  [hasFixedFourOriginal,assertFixedFourOriginal,"next","getSourceSnapshot"],
  [hasJpnScopeCorrection,assertJpnScopeCorrection,"pair","getSourceSnapshot"],
@@ -590,14 +509,34 @@ const sourceStorageReviewRules=[
  * A dated current-source proxy needs its existing archived adoption evidence;
  * this does not approve historical reconstruction or derived display geometry.
  */
-export function assertHistoricalSourceStorageChanges(next,previous,{prefixes,readEvidence,getSourceSnapshot,sourceDataRevision}={}){
+export function assertHistoricalSourceStorageChanges(next,previous,options={}){
+ const {prefixes,readEvidence,getSourceSnapshot,sourceDataRevision}=options;
+ const changes=sourceGeometryChanges(next,previous);
+ // No old country proof is replayed for names, flags, dates or other
+ // metadata-only edits that leave the geometry and source claims unchanged.
+ if(!changes.length)return 0;
+ const seamVersions=assertCommonSeamSourceChanges(next,previous,options,changes);
+ if(seamVersions.size){
+  const other=changes.filter(row=>!seamVersions.has(row.version.versionId));
+  // Independently changed historical geometry still requires its display
+  // review; unrelated source adoption claims must use their own admission.
+  const unrelatedNext={...next,geometryVersions:other.map(row=>row.version)};
+  const unrelatedPrevious=previous&&{...previous,geometryVersions:other.map(row=>row.prior).filter(Boolean)};
+  const separate=other.length&&(other.some(row=>row.sourceChanged&&(row.version.modernBoundarySupplement||row.prior?.modernBoundarySupplement))
+   ||sourceStorageReviewRules.some(([match,,scope='both'])=>scope==='pair'?match(unrelatedNext,unrelatedPrevious):match(unrelatedNext)||(scope==='both'&&match(unrelatedPrevious))));
+  if(other.length&&separate)throw Error('GIS source admission: separate independent source-adoption methods for one entity');
+  const reviewed=assertHistoricalDisplayChanges({...next,geometryVersions:other.map(row=>row.version)},previous);
+  return seamVersions.size+reviewed;
+ }
+ const affectedNext={...next,geometryVersions:changes.map(row=>row.version)};
+ const affectedPrevious=previous&&{...previous,geometryVersions:changes.map(row=>row.prior).filter(Boolean)};
  const reviewOptions={
   base:{prefixes,readEvidence},
   sourceDataRevision:{prefixes,readEvidence,sourceDataRevision},
   getSourceSnapshot:{prefixes,readEvidence,getSourceSnapshot},
  };
  for(const [match,validate,scope='both',options='base'] of sourceStorageReviewRules){
-  const matched=scope==='pair'?match(next,previous):match(next)||(scope==='both'&&match(previous));
+  const matched=scope==='pair'?match(next,previous):match(affectedNext)||(scope==='both'&&match(affectedPrevious));
   if(matched)return validate(next,previous,reviewOptions[options]);
  }
  const appendMarked=v=>v?.modernBoundarySupplement&&(Object.hasOwn(v.modernBoundarySupplement,'detachedComponentAppend')||Object.hasOwn(v.modernBoundarySupplement,'initialPreparedAppend')||v.modernBoundarySupplement.adoptionMode==='lossless-original-detached-component-append');

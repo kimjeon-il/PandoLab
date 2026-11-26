@@ -599,7 +599,8 @@ export function storeOwnedLibraryData({ root, push, prefixes, removePaths, repor
     assertOriginalAuthoringSourceStorageChanges(raw,previous,{prefixes,readEvidence:readSourceEvidence});
     const metadataCorrection=retirementPlan?.mixed&&retirementPlan.metadataUpdates.get(raw.entityId);
     if(metadataCorrection){if(!isDeepStrictEqual(JSON.parse(newBytes(p)),metadataCorrection.afterDescriptor))throw Error('Territorial retirement: source differs from verified metadata-only correction');}
-    else assertHistoricalSourceStorageChanges(raw,previous,{prefixes,readEvidence:readSourceEvidence,getSourceSnapshot});
+    else assertHistoricalSourceStorageChanges(raw,previous,{prefixes,readEvidence:readSourceEvidence,getSourceSnapshot,
+      sourceDataRevision:pinnedRevision,readCandidateDescriptor:path=>JSON.parse(newBytes(path)),readPreviousDescriptor:path=>JSON.parse(oldBytes(path))});
   }
   const reviewScopes=['assets/data/territorial-entities','assets/data/builtin-world'];
   if(prefixes.some(p=>reviewScopes.some(s=>p===s||p.startsWith(s+'/')||s.startsWith(p+'/')))){
