@@ -69,20 +69,22 @@ rpc.install({handlers:{
   },
   'globe.decode-packet-batch':async({packets},context) => {
     if (!Array.isArray(packets)||packets.length<2||packets.length>8)throw Error('Invalid globe spatial packet batch');
-    const rows = [];
-    for (const packet of packets) {
+    // Start independent decompression jobs together. Spatial trees are
+    // built immediately after each packet is decoded, before any result is
+    // transferred back to the main thread.
+    const rows = await Promise.all(packets.map(async packet => {
       context.throwIfCancelled();
-      if (!['mesh','stroke'].includes(packet.kind)||packet.ownerCount!==undefined||packet.outlineOwners)
-        throw Error('Unsupported globe packet in spatial batch');
       try {
+        if (!['mesh','stroke'].includes(packet.kind)||packet.ownerCount!==undefined||packet.outlineOwners)
+          throw Error('Unsupported globe packet in spatial batch');
         const {value,transferable} = await decodePacket(packet,context);
         if (!transferable)throw Error('Spatial packet batch must contain transferable packets');
-        rows.push({ok:true,value});
+        return {ok:true,value};
       }catch(error) {
         context.throwIfCancelled();
-        rows.push({ok:false,error:{name:error?.name||'Error',message:error?.message||String(error)}});
+        return {ok:false,error:{name:error?.name||'Error',message:error?.message||String(error)}};
       }
-    }
+    }));
     context.throwIfCancelled();
     return transfer(rows);
   },
