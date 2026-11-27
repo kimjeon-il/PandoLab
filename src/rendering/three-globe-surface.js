@@ -102,7 +102,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const hydroCopier = createGlobeTextureCopier(THREE, renderer), hydroDirtySlots = new Set();
   let hydroUploaded = false;
   const hydroUploadStats = {fullUploads:0, partialUploads:0, fullBytes:0, partialBytes:0};
-  hydroTexture.onUpdate = () => {hydroUploaded=true;hydroPendingFull=false;hydroUploadStats.fullUploads++;hydroUploadStats.fullBytes+=hydroBytes.byteLength;};
+  hydroTexture.onUpdate = () => {hydroUploaded=true;hydroPendingFull=false;hydroDirtySlots.clear();hydroUploadStats.fullUploads++;hydroUploadStats.fullBytes+=hydroBytes.byteLength;};
   let hydroPendingFull=true;
   const hydroTint = new THREE.Color(), hydroStyles = Array.from({length:5}, () => new THREE.Vector3());
   const hydroUniforms = {hydroRoles:{value:hydroTexture}, hydroSize:{value:new THREE.Vector2(hydroWidth, hydroHeight)},
@@ -393,7 +393,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         dynamicGeometry=replacement.geometry;drawIndex=replacement.index;capacity=needed;mesh.geometry=dynamicGeometry;
         if (!gpuFrameBudget.admitUpload(geometryUploadBytes(dynamicGeometry),1)) {
           dynamicGeometry=previous;drawIndex=previousIndex;capacity=previousCapacity;mesh.geometry=previous??sourceGeometry;
-          dynamicGeometry?.dispose();return false;
+          replacement.geometry.dispose();return false;
         }
         stageGpuMesh(mesh);warmedGeometries.add(dynamicGeometry);
         if (previous) {for (const key of Object.keys(attributes))previous.deleteAttribute(key);previous.dispose();}
@@ -633,32 +633,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (palette.labels.text!==next.labels.text||palette.labels.halo!==next.labels.halo)labels.setPalette(next.labels);
     palette = next;
   }
-  function activateTerritorialChunks(view, rows) {
-    if (activeTerritoryInput===rows&&view===activeView)return;
-    // Reconcile resources by stable chunk identity. Do not toggle unchanged
-    // meshes on every camera plan or temporal metadata update.
-    const previous = new Set([...activeBase, ...activeBorders]);
-    const countries = rows.filter(row => row.role==='country'), borders = rows.filter(row => row.role==='border');
-    const groups = registerGpuGroups(countries,'territory', () => 'country', packet => register(null, packet, palette.defaultLand, 1, -2,'country'));
-    activeBase = groups.map(({resource}, i) => {
-      resource.setOrder(1+.5*i/Math.max(1,groups.length));resource.visible=true;previous.delete(resource);return resource;
-    });
-    activeBorders = borders.map((row, i) => {
-      const resource = useMesh('border', row.key, () => spatialStrokes(row.packet, {...strokeOptions, order:5, baseBorder:row.baseBorder===true}));
-      resource.setOrder(5+.4*i/Math.max(1,borders.length),.4/Math.max(1,borders.length));resource.visible=showBorders;
-      previous.delete(resource); return resource;
-    });
-    for (const resource of previous) {resource.visible = false; meshLedger.protect(resource, false);}
-    activeTerritoryInput = rows;
-    if (view!==activeView) {
-      activeView = view;
-      const hidden = new Set(view?.hiddenBorders??[]);
-      for (let slot = 0; slot<borderBytes.length; slot++) {
-        const next = hidden.has(slot)?0:255;
-        if (borderBytes[slot]!==next) {borderBytes[slot] = next; borderSlotRevisions[slot] = ++borderVisibilityRevision;}
-      }
-    }
-  }
+
 
   // Only called after successful visual publication. Never dispose the
   // previously published scene while a replacement is still being drawn.
@@ -703,11 +678,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function prepareGpuFrame(globeCamera,width,height) {updateGpuCamera(globeCamera,width,height);}
   function prepareGpuResource(resource) {return !resource||resource.warmGpu();}
   function prepareStaticGpuResources() {
-    for (const name of ['objects','graticule'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
+    for (const name of ['objects','graticule','borders'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
     return true;
   }
   function draw(globeCamera,width,height,activeLimits=null) {
     updateGpuCamera(globeCamera,width,height);
+    const {frame,view}=globeCamera;
     if (globeCamera!==cullingCamera||width!==cullingWidth||height!==cullingHeight) {
       cullingCamera = globeCamera; cullingWidth = width; cullingHeight = height; cullers = new Map();
     }
