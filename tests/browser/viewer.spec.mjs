@@ -480,11 +480,68 @@ async function openGeographicSampleMap(page){
  return {go,paint};
 }
 
+// Source coordinates, not a previously rendered image, define the coast.
+// Choose points clear of the stroke and antialiasing on opposite sides of
+// the current pinned boundary in the original test region.
+function coastSamples(geometry,near){
+ const polygons=geometry.type==='Polygon'?[geometry.coordinates]:geometry.coordinates;
+ const segments=polygons.flatMap(p=>p.flatMap(r=>r.slice(1).map((b,i)=>[r[i],b])));
+ const containsRing=([x,y],ring)=>{
+  let inside=false;
+  for(let i=1;i<ring.length;i++){
+   const [ax,ay]=ring[i-1],[bx,by]=ring[i];
+   if((ay>y)!==(by>y)&&x<ax+(bx-ax)*(y-ay)/(by-ay))inside=!inside;
+  }
+  return inside;
+ };
+ const inside=point=>polygons.some(p=>containsRing(point,p[0])&&!p.slice(1).some(r=>containsRing(point,r)));
+ const closest=([x,y],[[ax,ay],[bx,by]])=>{
+  const dx=bx-ax,dy=by-ay,t=Math.max(0,Math.min(1,((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy||1)));
+  return [ax+t*dx,ay+t*dy];
+ };
+ const distance=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+ const nearby=segments.map(segment=>({segment,center:closest(near,segment)}))
+  .map(row=>({...row,distance:distance(row.center,near)}))
+  .filter(row=>row.distance<0.25).sort((a,b)=>a.distance-b.distance);
+ for(const {segment:[a,b],center} of nearby.slice(0,64)){
+  const dx=b[0]-a[0],dy=b[1]-a[1],length=Math.hypot(dx,dy);
+  if(!length)continue;
+  for(const offset of [0.008,0.015]){
+   const pair=[1,-1].map(sign=>[center[0]-sign*dy*offset/length,center[1]+sign*dx*offset/length]);
+   if(inside(pair[0])===inside(pair[1]))continue;
+   if(pair.some(point=>segments.some(segment=>distance(point,closest(point,segment))<0.003)))continue;
+   return {center,land:inside(pair[0])?pair[0]:pair[1],ocean:inside(pair[0])?pair[1]:pair[0]};
+  }
+ }
+ throw Error('No clear source coastline samples near '+near.join(','));
+}
+
 test('Three globe uses territorial coastlines for coastal fill',async({page})=>{
  const {go,paint}=await openGeographicSampleMap(page);
- // Samples in the ocean just beyond the territory polygons on these coasts.
- await go([166.32,-22.17],10);await paint([166.216213,-22.126016],'#ffffff');
- await go([-73.86,-43.07],10);await paint([-74.209291,-42.942997],'#ffffff');
+ const meta=await page.evaluate(()=>window.PANDOLAB_BUILD_META);
+ const url=new URL(meta.projectCatalogs.territorial.catalog,page.url());
+ const response=await page.request.get(url.href);
+ expect(response.ok()).toBe(true);
+ const index=await response.json();
+ for(const [code,near,color] of [
+  ['NCL',[166.216213,-22.126016],COUNTRY_DEFAULT_COLORS.FRA],
+  ['CHL',[-74.209291,-42.942997],COUNTRY_DEFAULT_COLORS.CHL],
+ ]){
+  const identity=index.sourceIdentities.find(row=>row.sourceEntityIds.includes('state:'+code));
+  expect(identity,'source identity '+code).toBeDefined();
+  const slot=meta.globePreview.countrySlots.find(row=>row.id===identity.projectEntityId);
+  expect(slot,'current territory '+code).toBeDefined();
+  const asset=index.geometryAssets.find(row=>row.id===slot.geometry.id&&row.version===slot.geometry.version);
+  expect(asset.contentSha256).toBe(slot.geometry.contentSha256);
+  const source=await page.request.get(new URL(asset.file,url).href);
+  expect(source.ok()).toBe(true);
+  const bytes=await source.body();
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(asset.sha256);
+  const geometry=JSON.parse(gunzipSync(bytes,{maxOutputLength:asset.decodedBytes}).toString('utf8'));
+  const {center,land,ocean}=coastSamples(geometry,near);
+  await go(center,10);
+  await paint(land,color);await paint(ocean,'#ffffff');
+ }
 });
 
 test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{

@@ -17,7 +17,7 @@ import { createGlobeTemporalPresentation } from './globe-temporal-presentation.j
 import { createGlobePacketTasks, globePacketWorkerCount } from './globe-packet-tasks.js';
 import { createGlobeWorkScheduler, estimateGlobeWorkingBytes } from './globe-work-scheduler.js';
 import { createGlobePacketIndex } from './globe-picking.js';
-import { createGlobeObjectQuery } from './globe-object-query.js';
+import { createGlobeObjectQuery, sameGlobePickScene } from './globe-object-query.js';
 import { createMapPresentationSession } from './map-presentation-session.js';
 import { createThreeGlobeSurface } from './three-globe-surface.js';
 import { createRenderingMetrics } from './rendering-metrics.js';
@@ -691,7 +691,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!submitted)return {...base, deferred:true};
     drawCount++;
     drawnFrame = {frame, camera, viewport, territories, basePrepared, physical, visibleSlots:paint.visibleSlots(), riverChunks:riverDetail.activeEntries(),
-      labelHit:surface.labels.hitSnapshot(), lakesVisible:state.layerVisibility.lakes!==false, riversVisible:showRivers, generation};
+      labelHit:surface.labels.hitSnapshot(), lakesVisible:state.layerVisibility.lakes!==false, riversVisible:showRivers, generation,
+      contextRevision, month:state.timelineCursor, hydroVisibilityKey:JSON.stringify([presentationInputs.hydroItems,presentationInputs.hydroLayers,presentationInputs.builtinHydro])};
     input.advanceInertia();
     return {...base, succeeded:true, presentationReady:true};
   }
@@ -700,10 +701,11 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const sameRivers = previous&&riverChunks.length===previous.riverChunks.length&&riverChunks.every((row, i) => row.packet===previous.riverChunks[i].packet);
     const sameCountries = previous&&draw.basePrepared===previous.basePrepared;
     const samePhysical = previous&&draw.physical===previous.physical;
-    if (!pickingChanged&&previous&&previous.generation===draw.generation&&previous.camera===draw.camera&&sameCountries&&samePhysical&&sameRivers&&
-        previous.visibleSlots===draw.visibleSlots&&previous.labelHit===draw.labelHit&&previous.lakesVisible===draw.lakesVisible&&previous.riversVisible===draw.riversVisible)return;
+    const sameScene = sameGlobePickScene(previous,draw);
+    if (!pickingChanged&&sameScene&&sameCountries&&samePhysical&&sameRivers&&previous.labelHit===draw.labelHit)return;
     const active = draw.physical;
-    cancelRequest('pick-click'); cancelRequest('pick-hover');
+    if (!sameScene)cancelRequest('pick-click');
+    cancelRequest('pick-hover');
     acceptedPick = {...draw,
       countryIndex:sameCountries?previous.countryIndex:createGlobePacketIndex(draw.basePrepared.parts.filter(row => row.role==='country').map(row => row.mesh), row => row.packet.spatialBounds),
       waterIndex:samePhysical?previous.waterIndex:createGlobePacketIndex(active.waters, row => row.mesh.packet.spatialBounds),

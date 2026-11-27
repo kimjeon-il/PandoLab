@@ -7,6 +7,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {decodeTerritorialSource} from '../../../tools/data/territorial-source-codec.mjs';
+import {normalizeTerritorialLibraryEntity} from '../../../tools/gis/territorial-library.js';
 import {assertHistoricalSourceStorageChanges,assertHistoricalDisplayChanges} from '../../../tools/gis/historical-display-review.mjs';
 const hash=x=>createHash('sha256').update(x).digest('hex'),digest=g=>hash(JSON.stringify([g.type,g.coordinates])),json=x=>Buffer.from(JSON.stringify(x)+'\n');
 const base='assets/data/territorial-entities/source/',sourcePath='reports/completion/original.json',reviewPath='reports/completion/admission.json';
@@ -117,18 +118,28 @@ test('completion rejects substituted new raw source reference',()=>{const f=fixt
 const immutableCompletedMutations={
  'source geometry hash':e=>{e.sourceInfo.geometrySha256=hash('other');},
  'source version binding':e=>{e.sourceInfo.geometryVersionId='other';},
- 'parent':e=>{e.parentEntityId='state:BBB';},
- 'instantiation':e=>{e.instantiation.mode='dependent';},
- 'country updates':e=>{e.instantiation.countryUpdates={BBB:true};},
- 'current date':e=>{e.geometryVersions[0].validFrom='2000';},
  'provenance':e=>{e.geometryVersions[0].historicalProvenance.status='replaced';},
- 'representative version':e=>{e.metadata.representativeGeometryVersionId='other';},
- 'lifetime':e=>{e.lifetime.validFrom='2000';},
- 'source title':e=>{e.sourceInfo.title='Unreviewed';},
  'version source ID':e=>{e.geometryVersions[0].sourceId='other';},
  'geometry extra property':e=>{e.geometryVersions[0].geometry.extra='other';},
 };
 for(const [name,mutate]of Object.entries(immutableCompletedMutations))test('completed immutable metadata rejects '+name,()=>{const f=fixture();assert.equal(run(f),1);const next=structuredClone(f.next);mutate(next);assert.throws(()=>assertHistoricalSourceStorageChanges(next,f.next,{prefixes:[f.prefixes[0]]}),/whole-feature completion/);});
+test('completed source allows ordinary metadata updates without replaying archived geometry evidence',()=>{
+ const f=fixture();assert.equal(run(f),1);const next=structuredClone(f.next);
+ next.names.en='Revised name';next.parentEntityId='state:BBB';
+ next.instantiation={mode:'territory-replacement',countryUpdates:{BBB:true}};
+ next.lifetime.validFrom='2000';next.geometryVersions[0].validFrom='2000';
+ next.sourceInfo.title='Corrected source title';
+ assert.equal(assertHistoricalSourceStorageChanges(next,f.next,{prefixes:[f.prefixes[0]],readEvidence:()=>assert.fail('metadata edit replayed geometry proof')}),0);
+ assert.deepEqual(next.geometryVersions[0].geometry,f.next.geometryVersions[0].geometry);
+ assert.deepEqual(next.geometryVersions[0].modernBoundarySupplement,f.next.geometryVersions[0].modernBoundarySupplement);
+});
+test('territorial domain still rejects invalid instantiation and dangling representative references',()=>{
+ const f=fixture(),next=structuredClone(f.next);
+ next.metadata.representativeGeometryVersionId='other';
+ assert.throws(()=>normalizeTerritorialLibraryEntity(next),/Missing representative geometry version/);
+ next.metadata.representativeGeometryVersionId='modern';next.instantiation.mode='dependent';
+ assert.throws(()=>normalizeTerritorialLibraryEntity(next),/Invalid territorial instantiation mode/);
+});
 test('completion explicitly rejects missing prior supplement object',()=>{const f=fixture();delete f.before.geometryVersions[0].modernBoundarySupplement;delete f.next.geometryVersions[0].modernBoundarySupplement.priorPreparedAttribution;f.refresh();assert.throws(()=>run(f),/whole-feature completion: explicit false-to-true/);});
 
 for(const [name,mutate]of Object.entries({empty:e=>{e.geometryVersions=[];},missing:e=>{delete e.geometryVersions;},renamed:e=>{e.geometryVersions[0].versionId='renamed';},markerRemoved:e=>{delete e.geometryVersions[0].modernBoundarySupplement.wholeFeatureCompletion;}}))test('completed version inventory rejects '+name,()=>{const f=fixture();assert.equal(run(f),1);const changed=structuredClone(f.next);mutate(changed);assert.throws(()=>assertHistoricalSourceStorageChanges(changed,f.next,{prefixes:[f.prefixes[0]]}),/whole-feature completion: (completed version inventory cannot change|unchanged geometry cannot alter completion attribution)/);});

@@ -91,7 +91,8 @@ test('accepted-frame river picking admits Core identities and discards supersede
  const empty=createGlobePacketIndex([],()=>null);
  let sample={camera,waterIndex:empty,lakeIndex:empty,countryIndex:empty,
   riverIndex:createGlobePacketIndex([{packet,index,minZoom:5}],row=>row.index.rootBounds),
-  labelHit:()=>null,lakesVisible:true,riversVisible:true,physical:{spec:{riverMinZoom:3}},visibleSlots:new Set()};
+  labelHit:()=>null,lakesVisible:true,riversVisible:true,physical:{spec:{identity:'physical-fixture',riverMinZoom:3}},visibleSlots:new Set(),
+  generation:1,contextRevision:0,month:'2026-11',territories:{key:'base'},viewport:{width:800,height:600},hydroVisibilityKey:'all'};
  const feature={id:'river:fixture',properties:{category:'river'},__awBounds:[-.1,0,.1,0]};
  let hold=null,started=null,completed=0,published=[];
  const query=createGlobeObjectQuery({
@@ -110,8 +111,22 @@ test('accepted-frame river picking admits Core identities and discards supersede
  assert.deepEqual(refs.map(row=>[row.domain,row.id]),[['hydro',feature.id]]);
  assert.deepEqual(published,[feature.id]);
  hold=Promise.withResolvers();started=Promise.withResolvers();
- const stale=query.queryObjectRefs(point,{includeLabels:false});
- const rejected=assert.rejects(stale,{name:'AbortError'});
- await started.promise;sample={...sample};hold.resolve();await rejected;
- assert.deepEqual(published,[feature.id]);assert.equal(completed,2);
+ const refreshing=query.queryObjectRefs(point,{includeLabels:false});
+ await started.promise;
+ sample={...sample,labelHit:()=>null,physical:{...sample.physical},riverChunks:[]};
+ hold.resolve();
+ assert.deepEqual((await refreshing).map(row=>row.id),[feature.id]);
+ assert.deepEqual(published,[feature.id,feature.id]);
+ for(const change of [
+  {month:'1923-11'}, {generation:2}, {hydroVisibilityKey:'hidden'},
+  {camera:createGlobeCamera({center:[1,0],zoom:12},{width:800,height:600})},
+ ]){
+  const accepted=sample;
+  hold=Promise.withResolvers();started=Promise.withResolvers();
+  const stale=query.queryObjectRefs(point,{includeLabels:false});
+  const rejected=assert.rejects(stale,{name:'AbortError'});
+  await started.promise;sample={...sample,...change};hold.resolve();await rejected;
+  sample=accepted;
+ }
+ assert.deepEqual(published,[feature.id,feature.id]);assert.equal(completed,6);
 });

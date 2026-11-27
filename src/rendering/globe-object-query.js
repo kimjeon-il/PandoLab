@@ -5,6 +5,16 @@ import {
   pickGlobeSlotsCooperative, pickGlobeStrokeSlotsCooperative,
 } from './globe-picking.js';
 
+// A click belongs to the scene that was actually displayed at pointer-up.
+// Optional packet arrivals, label rasterization and paint refreshes must not
+// cancel a valid click while its lazily loaded identity is admitted to Core.
+export function sameGlobePickScene(a,b){
+  return !!a&&!!b&&a.generation===b.generation&&a.contextRevision===b.contextRevision&&a.month===b.month
+    &&a.camera===b.camera&&a.viewport===b.viewport&&a.territories===b.territories
+    &&a.physical?.spec.identity===b.physical?.spec.identity&&a.visibleSlots===b.visibleSlots
+    &&a.lakesVisible===b.lakesVisible&&a.riversVisible===b.riversVisible&&a.hydroVisibilityKey===b.hydroVisibilityKey;
+}
+
 /** Resolves map hits against the last accepted frame and admits visible hydro identities. */
 export function createGlobeObjectQuery({
   getAcceptedPick, canPickFrame, cancelNeighborPrefetch, startRequest, finishRequest, refs,
@@ -18,7 +28,8 @@ export function createGlobeObjectQuery({
     const controller = startRequest(requestName);
     const detachAbort = forwardAbort(consumerSignal, controller);
     const {signal} = controller;
-    const isCurrent = () => !signal.aborted&&canPickFrame()&&getAcceptedPick()===sample;
+    const isCurrent = () => !signal.aborted&&canPickFrame()&&(requestName==='pick-click'
+      ?sameGlobePickScene(sample,getAcceptedPick()):getAcceptedPick()===sample);
     const assertCurrent = () => {
       signal.throwIfAborted();
       if (!isCurrent())throw new DOMException('Picking frame superseded','AbortError');
