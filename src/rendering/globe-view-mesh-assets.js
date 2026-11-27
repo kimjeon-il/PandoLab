@@ -125,6 +125,7 @@ export function createGlobeTerritorialAssets(spec, {
       let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
       group.push(row);
     }
+    const maxBatchBytes = baseBorder?Math.floor(cacheBudget.borderBatchBytes/2):cacheBudget.borderBatchBytes;
     for (const [cell, group] of groups) {
       let sources = [], decodedBytes = 0;
       const flush = () => {
@@ -145,7 +146,7 @@ export function createGlobeTerritorialAssets(spec, {
       };
       for (const row of group) {
         const bytes = Number(row.spec.decodedBytes)||0;
-        if (sources.length&&(sources.length>=32||decodedBytes+bytes>cacheBudget.borderBatchBytes))flush();
+        if (sources.length&&(sources.length>=32||decodedBytes+bytes>maxBatchBytes))flush();
         sources.push(row); decodedBytes+=bytes;
       }
       flush();

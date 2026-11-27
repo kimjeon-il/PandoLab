@@ -185,7 +185,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     loadMesh, loadStroke:(row, signal, priority = 20, descriptor = null) => descriptor?.sources
       ?loadTerritorialStroke(row,signal,priority,descriptor,'하천')
       :load(row,'stroke',{signal,priority}),
-    byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:cacheBudget.borderBatchBytes, residency,
+    byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:Math.floor(cacheBudget.borderBatchBytes/2), residency,
   });
   let planCamera = null, planViewport = null; const cullCache = new Map(), territoryPlans = new Map(), physicalPlans = new Map(), planKeys = new WeakMap();
   function clearViewPlans() {planCamera = null; planViewport = null; cullCache.clear(); territoryPlans.clear(); physicalPlans.clear();}
