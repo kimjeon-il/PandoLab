@@ -230,3 +230,53 @@ test('physical catalog selects lake and base/detail river chunks through Cartesi
  assert.deepEqual(assets.detailPlan('world',{zoom:5,strokeCull:cull}).map(row=>row.id),['d1']);
  assets.dispose();
 });
+
+
+test('detail river retries wake a stationary viewport, back off and stop at exhaustion', async () => {
+  const {createGlobeRiverDetail} = await import('../../../src/rendering/three-globe-rivers.js');
+  const row = {id:'river'};
+  let clock = 0, timer = null, attempts = 0, wakes = 0, errors = 0, succeed = false;
+  const detail = createGlobeRiverDetail({
+    byteBudget:20, now:() => clock,
+    setTimer(fn, delay) {assert.equal(timer, null); return timer = {fn, at:clock+delay};},
+    clearTimer(handle) {assert.equal(timer, handle); timer = null;},
+    load:async () => {attempts++; if (!succeed)throw Error('river unavailable'); return {count:7};},
+    attach:() => ({residentBytes:10, setVisible(){}, dispose(){}}),
+    invalidate:() => {wakes++;}, onError:() => {errors++;},
+  });
+  async function settle() {await new Promise(setImmediate);}
+  async function advance(delay) {
+    assert.ok(timer); assert.equal(timer.at-clock, delay);
+    clock = timer.at;
+    const fn = timer.fn; timer = null; fn();
+    assert.equal(detail.retryDue(), true);
+    // Renderer reuses the same plan without a camera movement.
+    detail.update([row]); await settle();
+  }
+  detail.update([row]); await settle();
+  assert.equal(detail.retryDue(), false);
+  for (const delay of [1500,3000,6000])await advance(delay);
+  assert.equal(attempts,4); assert.equal(wakes,3); assert.equal(errors,1);
+  assert.equal(timer,null); assert.equal(detail.stats().retryExhausted,1);
+  assert.equal(detail.update([row]),false);
+  detail.update([]); detail.update([row]); await settle();
+  assert.ok(timer);
+  detail.update([]); assert.equal(timer,null);
+  succeed = true; detail.update([row]); await settle();
+  assert.equal(detail.stats().activeSegments,7); assert.equal(detail.stats().retryExhausted,0);
+  detail.dispose(); assert.equal(timer,null);
+});
+
+test('detail river retry timer is cancelled when the owner is disposed', async () => {
+  const {createGlobeRiverDetail} = await import('../../../src/rendering/three-globe-rivers.js');
+  let timer = null;
+  const detail = createGlobeRiverDetail({
+    byteBudget:20, now:() => 0, setTimer(fn) {return timer = {fn};},
+    clearTimer(handle) {assert.equal(timer, handle); timer = null;},
+    load:async () => {throw Error('offline');}, attach:assert.fail,
+    invalidate:assert.fail, onError:assert.fail,
+  });
+  detail.update([{id:'river'}]); await new Promise(setImmediate);
+  assert.ok(timer); detail.dispose(); assert.equal(timer,null);
+  assert.equal(detail.retryDue(),false);
+});

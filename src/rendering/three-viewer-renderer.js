@@ -690,7 +690,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (paint.needsUpdate())metrics.run('three.paint', () => paint.updatePaint(surface, {activeSlots, activeSlotByKey, features, bordersNeeded}));
     requestOutlines();
     const showRivers = state.layerVisibility.rivers!==false;
-    if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical) {
+    if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical||riverDetail.retryDue()) {
       riverCamera = camera; riverVisible = showRivers; riverContext = physical;
       if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom, strokeCull:viewCull(strokePadding())}):[])) {refreshRiverLedger(); residencyDirty = true;}
     }
@@ -799,7 +799,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     waitForTemporalPresentation:presentation.waitForTemporalPresentation, getProjectGeneration:() => generation,
     preserveTemporalFrame() {cancelNeighborPrefetch(); framePreserved = true;}, isFramePreserved:() => framePreserved,
     resetProjectRenderState(options) {generation = options.generation; features = null; ready = false; error = null;
-        drawnFrame = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey = null; publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; clearViewPlans(); presentation.resetForProject(options);},
+        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey = null; publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; clearViewPlans(); presentation.resetForProject(options);},
     measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation, retryMapPreparation, getRuntimeState,
     getStats:() => ({...getRuntimeState(), mapReadiness:readyState(), displayedRevision:ready?revision:0, sourceRevision:revision,
       generation, certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
