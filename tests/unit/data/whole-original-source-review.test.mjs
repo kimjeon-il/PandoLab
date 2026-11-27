@@ -155,3 +155,11 @@ test('whole scope normalization changes serialization only, preserving duplicate
 test('unchanged already-completed whole object remains a no-op without new proof',()=>{const f=fixture();assert.equal(assertHistoricalSourceStorageChanges(f.next,f.next,f),0);});
 
 test('scope comparison ignores only consecutive identical points, never modifies input',()=>{const r=[[0,0],[2,0],[2,2],[0,2],[0,0]],g={type:'Polygon',coordinates:[r]},repeated=structuredClone(g);repeated.coordinates[0].splice(1,0,[0,0],[0,0]);repeated.coordinates[0].push([0,0]);const before=structuredClone(repeated);assert.deepEqual(normalizedWholeScope(g),normalizedWholeScope(repeated));assert.deepEqual(repeated,before);const different=structuredClone(g);different.coordinates[0].splice(2,0,[2,1]);assert.notDeepEqual(normalizedWholeScope(g),normalizedWholeScope(different));});
+
+// Direct chunked proof validator: the storage dispatcher is exercised above.
+import {assertWholeOriginalBatch} from '../../../tools/gis/whole-original-source-review.mjs';
+import{buildChunkedBlobEvidence}from'../../../tools/data/chunked-original-source.mjs';
+function chunkFixture(){const f=fixture(),blob=Buffer.from(f.source.rawBlobBase64,'base64'),{manifest,files}=buildChunkedBlobEvidence(blob,{prefix:'reports/aaa/blob/',chunkBytes:32});delete f.source.geometry;delete f.source.rawBlobBase64;Object.assign(f.source,manifest);for(const[p,b]of files)f.archive.set(p,b);f.refresh();return f;}
+test('chunked source layout keeps source method and proves candidate WKB without duplicated geometry',()=>{const f=chunkFixture();assert.equal(f.source.method,'exact-gpkg-original-feature');assert.equal(f.source.storageLayout,'gpkg-blob-chunks-v1');assert.equal(assertWholeOriginalBatch(f.next,f.previous,f),1);});
+test('chunked source geometry copy and alternate layout cannot bypass proof',()=>{for(const mutation of [s=>s.geometry={},s=>s.storageLayout='other']){const f=chunkFixture();mutation(f.source);f.refresh();assert.throws(()=>assertWholeOriginalBatch(f.next,f.previous,f));}});
+test('chunked source cannot admit a different candidate geometry with recomputed review hash',()=>{const f=chunkFixture();f.next.geometryVersions[0].geometry.coordinates[0][0][1][0]=1.5;f.proof.geometrySha256=digest(f.next.geometryVersions[0].geometry);f.refresh();assert.throws(()=>assertWholeOriginalBatch(f.next,f.previous,f));});

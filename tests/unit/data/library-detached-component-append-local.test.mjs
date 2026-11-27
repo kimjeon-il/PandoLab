@@ -1,13 +1,12 @@
 // Actual source-only store boundary, confined to finite synthetic OS-temp repositories.
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {tmpdir} from 'node:os';import {execFileSync} from 'node:child_process';
-import {fixture,base,hash,json,multi,poly} from './library-detached-component-append.test.mjs';
+import {fixture,base,hash,json,multi,poly} from './helpers/source-append-fixture.mjs';
 import {encodeTerritorialSource,decodeTerritorialSource} from '../../../tools/data/territorial-source-codec.mjs';
 import {prepareLibraryData,withLibraryWrite} from '../../../tools/data/library-runtime.mjs';
 import {storeLibraryData} from '../../../tools/data/library-store.mjs';
 import {decodeArchiveEntry,libraryCheckout} from '../../../tools/data/library-context.mjs';
 const GENERATED=base.replace('/source/','/generated/v2/')+'index.json',SOURCE=base+'countries/state-AAA.json',SENTINEL='assets/data/detached-sentinel.json';
-const put=(root,p,b)=>{const f=path.join(root,p);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,b);};
-const git=(root,...args)=>execFileSync('git',['-c','core.autocrlf=false',...args],{cwd:root,encoding:'utf8',stdio:'pipe'}).trim();
+import {put,git,rejected} from './helpers/isolated-library-store.mjs';
 function isolated(t,{mutate,headChange,omitReview=false,stripReceipt=false}={}){
  for(const k of ['PANDOLAB_LIBRARY_DATA_ROOT','GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE'])assert(!process.env[k],'unset '+k+' for isolated store');
  const parent=fs.mkdtempSync(path.join(tmpdir(),'pando-detached-store-')),root=path.join(parent,'app'),data=path.join(root,'.library-data/repository');
@@ -24,7 +23,6 @@ function isolated(t,{mutate,headChange,omitReview=false,stripReceipt=false}={}){
  withLibraryWrite({root,prefixes:f.prefixes},()=>{put(root,SOURCE,json(enc.descriptor));for(const [p,b]of enc.geometries)put(root,base+p,b);});
  return {f,root,data,pin,head,index,config,store:()=>storeLibraryData({root,prefixes:f.prefixes,push:false}),read:(p,rev)=>{const i=JSON.parse(git(data,'show',rev+':archive/index.json'));return decodeArchiveEntry(data,i.files[p],rev,{fetch:false});}};
 }
-const rejected=(s,pattern)=>{assert.throws(s.store,pattern);assert.equal(git(s.data,'rev-parse','HEAD'),s.head);assert.deepEqual(fs.readFileSync(path.join(s.data,'archive/index.json')),s.index);assert.deepEqual(fs.readFileSync(path.join(s.root,'config/library-data.json')),s.config);};
 test('detached actual store admits exactly two source paths after report-only advance',t=>{const s=isolated(t),rev=s.store(),after=JSON.parse(git(s.data,'show',rev+':archive/index.json')),before=JSON.parse(s.index);assert.notEqual(rev,s.head);const changed=Object.keys(after.files).filter(p=>JSON.stringify(after.files[p])!==JSON.stringify(before.files[p]));assert.deepEqual(changed.sort(),s.f.prefixes.slice().sort());assert(Object.keys(before.files).every(p=>after.files[p]));for(const [p,b]of s.f.sourceMap)assert.deepEqual(s.read(p,s.pin),b);const decoded=decodeTerritorialSource(JSON.parse(s.read(SOURCE,rev)),p=>s.read(base+p,rev));assert.deepEqual(decoded,s.f.next);assert.equal(JSON.parse(fs.readFileSync(path.join(s.root,'config/library-data.json'))).revision,rev);});
 test('detached actual store rejects hidden authoritative country',t=>{const s=isolated(t,{headChange:({f,add,commit})=>{const d=JSON.parse(f.sourceMap.get(base+'countries/state-BBB.json'));d.entityId='state:CCC';add(base+'countries/state-CCC.json',json(d));commit('unreviewed country');}});rejected(s,/source pin\/HEAD country sets differ/);});
 test('detached actual store rejects rehashed omitted census member',t=>{const s=isolated(t,{mutate:f=>f.universe.countries.pop()});rejected(s,/authoritative census membership mismatch/);});

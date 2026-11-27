@@ -1,14 +1,12 @@
 // Finite synthetic repositories exercise the production pinned-evidence reader.
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {tmpdir} from 'node:os';import {execFileSync} from 'node:child_process';
-import {fixture} from './library-initial-prepared-append.test.mjs';
-import {base,hash,json} from './library-detached-component-append.test.mjs';
+import {initialPreparedFixture as fixture,base,hash,json} from './helpers/source-append-fixture.mjs';
 import {encodeTerritorialSource,decodeTerritorialSource} from '../../../tools/data/territorial-source-codec.mjs';
 import {prepareLibraryData,withLibraryWrite} from '../../../tools/data/library-runtime.mjs';
 import {storeLibraryData} from '../../../tools/data/library-store.mjs';
 import {decodeArchiveEntry,libraryCheckout} from '../../../tools/data/library-context.mjs';
 const SOURCE=base+'countries/state-AAA.json',GENERATED=base.replace('/source/','/generated/v2/')+'index.json';
-const put=(root,p,b)=>{const f=path.join(root,p);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,b);};
-const git=(root,...args)=>execFileSync('git',['-c','core.autocrlf=false',...args],{cwd:root,encoding:'utf8',stdio:'pipe'}).trim();
+import {put,git,rejected} from './helpers/isolated-library-store.mjs';
 function isolated(t,{omitPinned=false,mutateAfterPin,rawFileOnly=false}={}){
  for(const k of ['PANDOLAB_LIBRARY_DATA_ROOT','GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE'])assert(!process.env[k],'unset '+k+' for isolated store');
  const parent=fs.mkdtempSync(path.join(tmpdir(),'pando-initial-append-')),root=path.join(parent,'app'),data=path.join(root,'.library-data/repository');
@@ -25,7 +23,6 @@ function isolated(t,{omitPinned=false,mutateAfterPin,rawFileOnly=false}={}){
  withLibraryWrite({root,prefixes:f.prefixes},()=>{put(root,SOURCE,json(enc.descriptor));for(const [p,b]of enc.geometries)put(root,base+p,b);});
  return {f,root,data,pin,head,index,config,store:()=>storeLibraryData({root,prefixes:f.prefixes,push:false}),read:(p,rev)=>{const i=JSON.parse(git(data,'show',rev+':archive/index.json'));return decodeArchiveEntry(data,i.files[p],rev,{fetch:false});}};
 }
-const rejected=(s,pattern)=>{assert.throws(s.store,pattern);assert.equal(git(s.data,'rev-parse','HEAD'),s.head);assert.deepEqual(fs.readFileSync(path.join(s.data,'archive/index.json')),s.index);assert.deepEqual(fs.readFileSync(path.join(s.root,'config/library-data.json')),s.config);};
 test('initial prepared actual store uses pinned anchors and writes exactly two source paths',t=>{const s=isolated(t),rev=s.store(),after=JSON.parse(git(s.data,'show',rev+':archive/index.json')),before=JSON.parse(s.index);assert.notEqual(rev,s.head);assert.deepEqual(Object.keys(after.files).filter(p=>JSON.stringify(after.files[p])!==JSON.stringify(before.files[p])).sort(),s.f.prefixes.slice().sort());assert(Object.keys(before.files).every(p=>after.files[p]));assert.deepEqual(decodeTerritorialSource(JSON.parse(s.read(SOURCE,rev)),p=>s.read(base+p,rev)),s.f.next);assert.equal(JSON.parse(fs.readFileSync(path.join(s.root,'config/library-data.json'))).revision,rev);});
 test('initial prepared actual store rejects anchors first introduced after source pin',t=>{const s=isolated(t,{omitPinned:true});rejected(s,/pinned.*(?:missing|absent)|(?:missing|absent).*pinned|absent or different at source pin/i);});
 test('initial prepared actual store does not substitute report HEAD for a different pinned anchor',t=>{const s=isolated(t,{mutateAfterPin:f=>{f.originalAnchor.rows[0].originalFeatures[0].name='rewritten after pin';}});rejected(s,/absent or different at source pin/);});

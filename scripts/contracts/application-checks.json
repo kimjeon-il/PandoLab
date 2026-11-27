@@ -48,7 +48,6 @@
         "tests/unit/data/esp-retained-original-source-review.test.mjs",
         "tests/unit/data/europe-reviewed-original-source-review.test.mjs",
         "tests/unit/data/fin-detached-original-source-review.test.mjs",
-        "tests/unit/data/historical-modern-copy-additional.test.mjs",
         "tests/unit/data/historical-modern-copy-source-review.test.mjs",
         "tests/unit/data/historical-partial-source-admission.test.mjs",
         "tests/unit/data/library-current-version-shared-arc.test.mjs",
@@ -67,7 +66,6 @@
         "tests/unit/data/registered-current-outline-source-review.test.mjs",
         "tests/unit/data/registered-cze-svk-union-source-review.test.mjs",
         "tests/unit/data/registered-original-proof.test.mjs",
-        "tests/unit/data/retained-coast-mar-sah.test.mjs",
         "tests/unit/data/retained-coast-source-review.test.mjs",
         "tests/unit/data/rus-kuril-original-source-review.test.mjs",
         "tests/unit/data/rus-ltu-seam-source-review.test.mjs",
@@ -76,7 +74,6 @@
         "tests/unit/data/territorial-mixed-retirement.test.mjs",
         "tests/unit/data/territorial-original-authoring-local.test.mjs",
         "tests/unit/data/territorial-original-authoring.test.mjs",
-        "tests/unit/data/whole-original-chunked-evidence.test.mjs",
         "tests/unit/data/whole-original-source-review.test.mjs"
       ]
     },
