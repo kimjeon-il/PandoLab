@@ -1,8 +1,5 @@
 name: Viewer core checks
 on:
-  push:
-    branches: [work/active]
-    paths: ['.github/workflows/application-architecture.yml']
   workflow_dispatch:
     inputs:
       group:
@@ -30,7 +27,6 @@ permissions:
   contents: read
 jobs:
   check:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -70,55 +66,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: browser-failures
-          path: test-results/
-          if-no-files-found: ignore
-          retention-days: 7
-
-  requested-globe-regression:
-    name: Requested globe regression / ${{ matrix.scope.name }}
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Recheck requested globe Node and lint repairs' && github.event.before == 'b1519e6e909a530a8adf29717cf52540d96cfaf5'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 55
-    strategy:
-      fail-fast: false
-      matrix:
-        scope:
-          - {"name":"node","group":"node","files":"tests/unit/data/globe-picking.test.mjs,tests/unit/data/globe-render-resources.test.mjs,tests/unit/data/globe-temporal-assets.test.mjs,tests/unit/data/globe-mesh.test.mjs,tests/unit/data/globe-camera.test.mjs,tests/unit/data/core-timeline-preparation.test.mjs","pattern":""}
-          - {"name":"lint","group":"lint","files":"src/rendering/globe-gpu-resources.js,src/rendering/globe-history-index.js,src/rendering/globe-object-query.js,src/rendering/globe-view-mesh-assets.js,src/rendering/render-cache-budget.js,src/rendering/three-globe-labels.js,src/rendering/three-globe-rivers.js,src/rendering/three-globe-surface.js,src/rendering/three-viewer-renderer.js,tests/unit/data/globe-picking.test.mjs,tests/unit/data/globe-render-resources.test.mjs,tests/unit/data/globe-temporal-assets.test.mjs,tests/unit/data/globe-mesh.test.mjs,tests/browser/viewer.spec.mjs","pattern":""}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-      - name: Run only the requested scope
-        shell: bash
-        env:
-          CHECK_GROUP: ${{ matrix.scope.group }}
-          CHECK_FILES: ${{ matrix.scope.files }}
-          CHECK_PATTERN: ${{ matrix.scope.pattern }}
-        run: |
-          set -euo pipefail
-          args=("--group=$CHECK_GROUP")
-          IFS=, read -ra files <<< "$CHECK_FILES"
-          for file in "${files[@]}"; do args+=("--file=$file"); done
-          if [[ -n "$CHECK_PATTERN" ]]; then args+=("--test-name-pattern=$CHECK_PATTERN"); fi
-          node scripts/run-application-checks.mjs --plan "${args[@]}"
-          pnpm install --frozen-lockfile --ignore-scripts
-          if [[ "$CHECK_GROUP" == browser ]]; then
-            node tools/data/library-data.mjs --prepare-metadata
-            pnpm exec playwright install chromium
-          fi
-          node scripts/run-application-checks.mjs "${args[@]}"
-      - name: Upload browser failure evidence
-        if: matrix.scope.group == 'browser' && failure() && !cancelled()
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-failures-${{ matrix.scope.name }}
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
