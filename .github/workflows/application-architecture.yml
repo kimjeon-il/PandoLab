@@ -1,5 +1,8 @@
 name: Viewer core checks
 on:
+  push:
+    branches: [work/active]
+    paths: ['.github/workflows/application-architecture.yml']
   workflow_dispatch:
     inputs:
       group:
@@ -27,6 +30,7 @@ permissions:
   contents: read
 jobs:
   check:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -69,3 +73,24 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  gpu-cache-recency:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Run GPU history cache recency regression' && github.event.before == 'b55b8d059532d1c37017f591ef33bf219b9e2827'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Run focused GPU cache checks and lint
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/run-application-checks.mjs --group=node --file=tests/unit/data/globe-render-resources.test.mjs
+          node scripts/run-application-checks.mjs --group=lint --file=src/rendering/globe-gpu-resources.js --file=src/rendering/three-globe-surface.js --file=tests/unit/data/globe-render-resources.test.mjs
