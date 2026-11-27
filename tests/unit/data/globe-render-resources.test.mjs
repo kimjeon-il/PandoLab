@@ -217,3 +217,62 @@ test('label SDF recovery stops after bounded local failures and resets only for 
   assert.equal(recovery.fallback, false);
   assert.equal(recovery.localFailures, 0);
 });
+
+
+test('optional globe plans retry on recovered headroom without spinning or blocking required coverage', async () => {
+  const {createGlobePlanFailures} = await import('../../../src/rendering/globe-view-mesh-assets.js');
+  const {createRenderResidencyBudget, createRenderLoadGate} = await import('../../../src/rendering/render-cache-budget.js');
+  const residency = createRenderResidencyBudget(20);
+  residency.set('visible', {protected:true, extraBytes:5});
+  const gate = createRenderLoadGate({concurrency:1, byteBudget:20, residency});
+  let wakes = 0;
+  const failures = createGlobePlanFailures({residency, onRetry:() => {wakes++;}});
+  async function failUnderPressure() {
+    const release = residency.reserve(12);
+    const cause = await gate.run({priority:5, bytes:8}, () => assert.fail('over-budget work admitted')).catch(error => error);
+    assert.equal(cause.memoryPressure, true);
+    assert.equal(cause.requestedBytes, 8);
+    assert.equal(failures.fail('margin', false, cause), 'temporary');
+    assert.equal(failures.allow('margin', false), false);
+    return release;
+  }
+  assert.equal(failures.allow('margin', false), true);
+  (await failUnderPressure())();
+  await Promise.resolve();
+  assert.equal(wakes, 1);
+  assert.equal(failures.allow('margin', false), true);
+  (await failUnderPressure())();
+  await Promise.resolve();
+  assert.equal(wakes, 1, 'same headroom must not cause an endless retry loop');
+  assert.equal(failures.allow('margin', false), false);
+  residency.set('visible', {protected:true, extraBytes:3});
+  await Promise.resolve();
+  assert.equal(wakes, 2);
+  assert.equal(failures.allow('margin', false), true);
+  assert.equal(failures.fail('margin', false, Error('corrupt packet')), 'permanent');
+  residency.remove('visible');
+  await Promise.resolve();
+  assert.equal(wakes, 2);
+  assert.equal(failures.allow('margin', false), false);
+  assert.equal(failures.allow('margin', true), true);
+  const oversize = await gate.run({priority:5, bytes:21}, () => assert.fail('oversized optional work admitted')).catch(error => error);
+  assert.equal(failures.fail('margin', false, oversize), 'over-budget');
+  assert.equal(failures.allow('margin', false), false);
+  assert.equal(failures.allow('different-margin', false), true);
+  failures.clear(); gate.dispose(); residency.dispose();
+});
+
+test('visible margin loads wait for active reservations before being declined', async () => {
+  const {createRenderResidencyBudget, createRenderLoadGate} = await import('../../../src/rendering/render-cache-budget.js');
+  const residency = createRenderResidencyBudget(10);
+  const gate = createRenderLoadGate({concurrency:2, byteBudget:20, residency});
+  const hold = Promise.withResolvers(), order = [];
+  const first = gate.run({priority:20, bytes:8}, async () => {order.push('required'); await hold.promise;});
+  const second = gate.run({priority:5, bytes:5}, () => {order.push('margin');});
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(gate.stats().queued, 1);
+  assert.equal(gate.stats().pressureSkips, 0);
+  hold.resolve(); await Promise.all([first, second]);
+  assert.deepEqual(order, ['required', 'margin']);
+  gate.dispose(); residency.dispose();
+});

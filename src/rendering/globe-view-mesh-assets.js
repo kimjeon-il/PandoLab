@@ -56,13 +56,50 @@ export function createGlobeChunkAssets(descriptors, {loadMesh, loadStroke, resid
   }
   return Object.freeze({plan, retain, prepare, warm, releaseWarm:() => packets.releaseWarm(), read, stats:packets.stats, dispose:packets.dispose, addDescriptors});
 }
-/** Optional errors cannot block a later required request. Back off only
-  * repeated optional attempts; never silently defer required coverage. */
-export function createGlobePlanFailures() {
-  const optional = new Map();
-  return {allow:(key, required) => required||!optional.has(key),
-    fail:(key, required) => {if (!required) {optional.clear(); optional.set(key, true);}},
-    clear:() => optional.clear()};
+/** Required coverage always bypasses optional failures. Retry a declined
+  * memory reservation only after actual headroom recovers. If a retry still
+  * fails, require more headroom than at that attempt to avoid self-induced
+  * release/reload loops; ordinary failures remain blocked for the same plan. */
+export function createGlobePlanFailures({residency, onRetry}) {
+  let failure = null, lastRetry = null, unsubscribe = null;
+  const headroom = () => {const {byteBudget, totalBytes} = residency.pressure(); return byteBudget-totalBytes;};
+  function forgetFailure() {
+    unsubscribe?.(); unsubscribe = null; failure = null;
+  }
+  function clear() {forgetFailure(); lastRetry = null;}
+  function canRetry(row) {
+    const available = headroom();
+    return row.temporary&&available>=row.bytes&&
+      (lastRetry?.key!==row.key||available>lastRetry.headroom);
+  }
+  function wake() {
+    const row = failure;
+    if (!row||row.notified||row.scheduled||!canRetry(row))return;
+    row.scheduled = true;
+    queueMicrotask(() => {
+      row.scheduled = false;
+      if (failure!==row||row.notified||!canRetry(row))return;
+      row.notified = true; onRetry();
+    });
+  }
+  function allow(key, required) {
+    if (required) {clear(); return true;}
+    if (lastRetry?.key!==key)lastRetry = null;
+    if (failure?.key!==key) {forgetFailure(); return true;}
+    if (!canRetry(failure)) {failure.notified = false; return false;}
+    lastRetry = {key, headroom:headroom()}; forgetFailure(); return true;
+  }
+  function fail(key, required, cause) {
+    if (required) {clear(); return 'required';}
+    forgetFailure();
+    if (lastRetry?.key!==key)lastRetry = null;
+    const bytes = Number(cause?.requestedBytes);
+    const temporary = !!cause?.memoryPressure&&Number.isFinite(bytes)&&bytes>0&&bytes<=residency.pressure().byteBudget;
+    failure = {key, bytes, temporary, notified:false, scheduled:false};
+    if (temporary) {unsubscribe = residency.onChange(wake); wake(); return 'temporary';}
+    return cause?.memoryPressure?'over-budget':'permanent';
+  }
+  return Object.freeze({allow, fail, clear});
 }
 
 

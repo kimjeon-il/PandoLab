@@ -179,7 +179,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
     }
   }
   function set(key, source) {
-    const old = rows.get(key);
+    const before = cpu+extra, old = rows.get(key);
     const buffers = source.buffers instanceof Set?source.buffers:new Set(source.buffers??[]);
     const row = {...source, buffers, extraBytes:source.extraBytes??0,
       localBytes:renderFootprintBytes({buffers, extraBytes:source.extraBytes})};
@@ -195,6 +195,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
       for (const group of row.groups??[]) {let members = standbyGroups.get(group); if (!members) {members = new Map(); standbyGroups.set(group, members);}members.set(key, row);}
     }
     updates++; peak();
+    if (cpu+extra<before)changed();
   }
   function remove(key) {
     const row = rows.get(key); if (!row)return false;
@@ -303,9 +304,11 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
         const allowOverflow = row.priority>=10&&active===0;
         const release = residency?residency.reserve(row.bytes, {kind:row.kind, optional:!allowOverflow}):() => {};
         if (!release) {
-          if (row.priority>=10&&active>0)break;
+          // Visible-margin work can wait for admitted loads to release their
+          // reservations; speculative work still yields to the foreground.
+          if (row.priority>=0&&active>0)break;
           pending.take(at); pressureSkips++;
-          row.reject(Object.assign(new Error('Render preparation memory pressure'), {name:'AbortError', memoryPressure:true})); continue;
+          row.reject(Object.assign(new Error('Render preparation memory pressure'), {name:'AbortError', memoryPressure:true, requestedBytes:row.bytes})); continue;
         }
         pending.take(at);
         const isSpeculative = row.priority<0;

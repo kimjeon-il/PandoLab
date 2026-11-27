@@ -57,7 +57,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const pendingOutlines = new Map(), requestScopes = new Map();
   let prefetchTerritoryPlan = null, prefetchPhysical = null, visiblePhysicalPlan = null, publishedPhysical = null;
   let basePrepared = null, basePreparing = null, publishedBase = null, baseJobRequired = false, physicalJobRequired = false;
-  const baseFailures = createGlobePlanFailures(), physicalFailures = createGlobePlanFailures();
+  const baseFailures = createGlobePlanFailures({residency, onRetry:() => invalidate('three-territory-memory-recovered')});
+  const physicalFailures = createGlobePlanFailures({residency, onRetry:() => invalidate('three-physical-memory-recovered')});
   let neighborTimer = null, neighborIdleOff = null, neighborKey = null, publishedMonth = null, monthDirection = 0;
   const neighborStats = {runs:0, completed:0, cancelled:0, claimedBytes:0, idleWaits:0, pressureSkips:0};
   let fontReady = false, fontPending = null, fontFailed = false, lastLabelsNeeded = false;
@@ -512,6 +513,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     // waiting until the next missing chunk enters the viewport.
     const target = covered?territorialPlan(territories, 96):required, key = context+'|'+basePlanKey(target);
     if (covered&&basePlanKey(basePrepared.plan)===basePlanKey(target)) {
+      baseFailures.clear();
       if (basePreparing&&!requestScopes.has('territory-apply')) {cancelRequest('base-view'); basePreparing = null; retainCpuResources();}
       return true;
     }
@@ -525,10 +527,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).catch (error => {
       if (!requestCurrent('base-view', controller))return;
       const now = territorialPlan(), sameRequired = context===territorialContext(territories)&&basePlanKey(now)===basePlanKey(target);
-      baseFailures.fail(key, !covered&&sameRequired);
+      const failure = baseFailures.fail(key, !covered&&sameRequired, error);
       if (!covered&&sameRequired)failMapPreparation(error);
       else if (!basePrepared||basePrepared.context!==territorialContext(territories)||!globeChunkSetContains(basePrepared.plan, now))invalidate('three-required-territory-retry');
-      else deps.feedback.reportOperationError(error,'주변 영토·국경선 형상을 불러오지 못했습니다.','PL-THREE-BASE-CHUNK-001');
+      else if (failure==='permanent')deps.feedback.reportOperationError(error,'주변 영토·국경선 형상을 불러오지 못했습니다.','PL-THREE-BASE-CHUNK-001');
     }).finally(() => {
       if (requestScopes.get('base-view')===controller) {basePreparing = null; retainCpuResources();}
       controller.abort(); finishRequest('base-view', controller);
@@ -541,6 +543,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (covered&&(!ready||framePreserved||presentation.temporalPending()))return true;
     const target = covered?physicalPlan(physical.spec.identity, 96):required;
     if (physical.plan.key===target.key) {
+      physicalFailures.clear();
       if (visiblePhysicalPlan) {cancelRequest('physical-view'); visiblePhysicalPlan = null; retainCpuResources();}
       return true;
     }
@@ -554,10 +557,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).catch (error => {
       if (!requestCurrent('physical-view', controller))return;
       const now = physicalPlan(target.spec.identity), sameRequired = now.key===target.key;
-      physicalFailures.fail(target.key, !covered&&sameRequired);
+      const failure = physicalFailures.fail(target.key, !covered&&sameRequired, error);
       if (!covered&&sameRequired)failMapPreparation(error);
       else if (!physicalAssets.covers(physical.plan, now))invalidate('three-required-physical-retry');
-      else deps.feedback.reportOperationError(error,'주변 수계 형상을 불러오지 못했습니다.','PL-THREE-HYDRO-TIER-001');
+      else if (failure==='permanent')deps.feedback.reportOperationError(error,'주변 수계 형상을 불러오지 못했습니다.','PL-THREE-HYDRO-TIER-001');
     }).finally(() => {
       if (requestScopes.get('physical-view')===controller) {visiblePhysicalPlan = null; retainCpuResources();}
       controller.abort(); finishRequest('physical-view', controller);
@@ -814,7 +817,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
       territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded, estimatedBytes:historyCatalogBytes}, historicalMetadata:historyIndex.stats(), temporalPresentation:temporalStats, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
       labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), errorMessage:error?.message??null, initialLoading}),
-    dispose() {cancelNeighborPrefetch(); disposed = true; input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
+    dispose() {cancelNeighborPrefetch(); disposed = true; baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
       acceptedPick = drawnFrame = features = basePrepared = publishedBase = basePreparing = physical = acceptedPhysical = publishedPhysical = hydroMetadata = null;
       acceptedRiverChunks = []; hydroSlots.clear(); paint.dispose(); temporalInputs.reset(); labelContent.dispose(); clearViewPlans(); surface = riverDetail = null;},
   });
