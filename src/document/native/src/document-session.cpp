@@ -320,15 +320,6 @@ DocumentSessionState DocumentSession::storageBaselineLoad(const projectcodec::We
     auto baseline = projectcodec::admitWebStorageAssetBaseline(project_.snapshot(), input, ports_);
     storageBaseline_ = std::move(baseline); storageBaselineId_ = ++storageBaselineSequence_; ++epoch_; return projectState();
 }
-DocumentSessionState DocumentSession::admitExternalBaseline(std::uint32_t expectedEpoch) {
-    requireEpoch(expectedEpoch);
-    const auto header = codecjson::parse(project_.document().exchangeMetadata);
-    if (storageBaseline_&&header.object.at("baseDataset").string==storageBaseline_->baseDataset())return projectState();
-    if (epoch_==std::numeric_limits<std::uint32_t>::max())throw std::overflow_error("CORE_SESSION_EPOCH_OVERFLOW");
-    auto baseline = projectcodec::admitWebStorageDocumentBaseline(project_.snapshot(), ports_);
-    project_.admitTerritorialDirtyIds([&](const ProjectDocument& document) {return projectcodec::initialDirtyTerritorialIds(document, baseline);});
-    activeBaseline_ = std::move(baseline); ++epoch_; return projectState();
-}
 ResolvedWorld DocumentSession::baselineWorld(std::uint32_t id, const std::string& month) const {
     if (!storageBaseline_||id!=storageBaselineId_||!storageBaseline_->sourceDocument())throw TimelineError("PL-SCHEMA-BASE","Baseline source is absent or replaced.");
     Project staged; staged.replace(*storageBaseline_->sourceDocument()); return staged.resolveWorld(month);

@@ -22,8 +22,6 @@ struct TimelineStorage {
 };
 
 // No live project, history stack or serializer is mutated by these functions.
-TimelineStorageSnapshot snapshotTimelineStorage(const TimelineRecords&, const GeometryStore&,
-                                                const std::vector<TimelineEntityIdentity>&);
 TimelineStorage restoreTimelineStorage(const TimelineStorageSnapshot&,
                                       const std::vector<TimelineEntityIdentity>&);
 }

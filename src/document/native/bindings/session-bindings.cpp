@@ -364,7 +364,6 @@ public:
             return result;
         });
     }
-    val admitExternalBaseline(std::uint32_t epoch) {return boundary([&]{return documentState(session_.admitExternalBaseline(epoch));});}
     val baselineCoverage(std::uint32_t id, const std::string& month) const {return boundary([&]{const auto resolved = session_.baselineWorld(id, month); auto result = val::object(); result.set("month", month); result.set("available", resolved.entities().size()); return result;});}
     val documentLoadBaseline(std::uint32_t id, const val& setup) {return boundary([&]{return documentState(session_.documentLoadBaseline(id, codecjson::parse(val::global("JSON").call<val>("stringify", setup).as<std::string>()), val::global("crypto").call<val>("randomUUID").as<std::string>()));});}
     val documentInitialize(val input) {
@@ -522,7 +521,7 @@ EMSCRIPTEN_BINDINGS(pandoeditor_document_session) {
         .function("temporalCandidateInspect", &WasmDocumentSession::temporalCandidateInspect)
         .function("temporalCandidateDiscard", &WasmDocumentSession::temporalCandidateDiscard)
         .function("temporalCandidateAdopt", &WasmDocumentSession::temporalCandidateAdopt)
-        .function("baselineCoverage", &WasmDocumentSession::baselineCoverage).function("documentLoadBaseline", &WasmDocumentSession::documentLoadBaseline).function("admitExternalBaseline", &WasmDocumentSession::admitExternalBaseline)
+        .function("baselineCoverage", &WasmDocumentSession::baselineCoverage).function("documentLoadBaseline", &WasmDocumentSession::documentLoadBaseline)
         .function("documentInitialize", &WasmDocumentSession::documentInitialize).function("documentSnapshot", &WasmDocumentSession::documentSnapshot)
         .function("captureReplacement", &WasmDocumentSession::captureReplacement).function("rollbackReplacement", &WasmDocumentSession::rollbackReplacement)
         .function("releaseReplacement", &WasmDocumentSession::releaseReplacement)

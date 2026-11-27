@@ -263,16 +263,12 @@ val normalizeRecords(val input,val contextInput) {
         return webRecords(normalizeTimelineRecords(records,ctx));
     });
 }
-std::string initialMonth(val input,const std::string& currentMonth) {
-    return boundary([&]{return initialTimelineMonth(readRecords(input),currentMonth);});
-}
 val resolvedWorld(val input,val contextInput,const std::string& month) {
     return boundary([&] {return webWorld(resolveWorld(readRecords(input),context(contextInput),month));});
 }
 }
 EMSCRIPTEN_BINDINGS(pandoeditor_timeline_calculations) {
     emscripten::function("timelineNormalizeRecords",&normalizeRecords);
-    emscripten::function("timelineInitialMonth",&initialMonth);
     emscripten::function("timelineResolveWorld",&resolvedWorld);
     emscripten::function("timelineVersionExistsAt",&versionExistsAt);
     emscripten::function("timelineSelectGeometryVersion",&selectGeometryVersion);

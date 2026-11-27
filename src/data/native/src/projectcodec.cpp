@@ -111,11 +111,6 @@ Validity validity(const V& v,ProjectDocument& d,const std::string& path) {
     Validity r{endpoint(field(v,"from"),d,path+"/from"),endpoint(field(v,"to"),d,path+"/to")};
     unknown(d,v,path,{"from","to"}); temporalBounds(r); return r;
 }
-V endpointValue(const std::optional<std::string>& s) {
-    if (!s) return {};
-    return object({{"text",V::str(*s)},{"precision",V::str(parseTemporal(*s).precision)}});
-}
-V validityValue(const Validity& v) { return object({{"from",endpointValue(v.from)},{"to",endpointValue(v.to)}}); }
 LibraryOrigin libraryOrigin(const V& v,ProjectDocument& d,const std::string& path) {
     LibraryOrigin origin;
     origin.libraryId=str(field(v,"libraryId"));
@@ -195,34 +190,6 @@ void validateProvenanceDigests(const ProjectDocument& d,bool wireIds) {
         require(baseline!=d.geometryProvenance.opaqueBaseline.end()&&baseline->second==opaqueSha256(value),
                 "INVALID_GEOMETRY_PROVENANCE: opaque baseline mismatch");
     }
-}
-void readGeometryProvenance(const V& value,ProjectDocument& d) {
-    unknown(d,value,"/geometryProvenance",{"schemaVersion","originalArchive","inlineAllocations","opaqueBaseline","opaqueUncertain"});
-    require(integer(field(value,"schemaVersion"))==1,"INVALID_GEOMETRY_PROVENANCE: unsupported schema version");
-    auto& provenance=d.geometryProvenance;
-    for(const auto& row:array(field(value,"originalArchive")))
-        require(provenance.originalArchive.insert(geometryRef(row,d,"/geometryProvenance/originalArchive")).second,
-                "INVALID_GEOMETRY_PROVENANCE: duplicate original ref");
-    for(const auto& row:array(field(value,"inlineAllocations"))) {
-        unknown(d,row,"/geometryProvenance/inlineAllocations",{"ref","createdFor","geometrySha256","promoted"});
-        const auto geometry=geometryRef(field(row,"ref"),d,"/geometryProvenance/inlineAllocations/ref");
-        InlineGeometryAllocation allocation{ref(field(row,"createdFor"),d,"/geometryProvenance/inlineAllocations/createdFor"),
-                                            str(field(row,"geometrySha256")),boolean(field(row,"promoted"))};
-        require(provenance.inlineAllocations.emplace(geometry,std::move(allocation)).second,
-                "INVALID_GEOMETRY_PROVENANCE: duplicate allocation ref");
-    }
-    for(const auto& row:array(field(value,"opaqueBaseline"))) {
-        unknown(d,row,"/geometryProvenance/opaqueBaseline",{"path","sha256"});
-        require(provenance.opaqueBaseline.emplace(str(field(row,"path")),str(field(row,"sha256"))).second,
-                "INVALID_GEOMETRY_PROVENANCE: duplicate opaque slot");
-    }
-    provenance.opaqueUncertain=boolean(field(value,"opaqueUncertain"));
-    validateProvenanceDigests(d);
-    // Seal only the clean slots whose digests were actually verified above.
-    // All-promoted ledgers need no omission authority and may have stale hashes;
-    // caching their unchecked current bytes could authorize a later raw demotion.
-    if(!provenance.opaqueUncertain&&hasUnpromotedInlineAllocations(provenance))
-        GeometryProvenanceCodecAccess::sealVerifiedOpaqueBaseline(d);
 }
 Validity recordInterval(const V& v,bool timelineOwned=false) {
     // Preserve endpoint spelling/precision. Timeline normalization owns date

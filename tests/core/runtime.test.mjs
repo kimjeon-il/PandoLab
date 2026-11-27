@@ -476,7 +476,7 @@ test('reference graph diagnostics share the compiled chain kernel for authoring 
 
 test('split document calculation bindings retain the compiled public ABI',async()=>{
   const {sharedCalculationCore:core}=await import('../../src/document/temporal.js');
-  for(const name of ["sphericalRingSignedArea","validateTerritorialRing","validateClippedTerritorialRing","referenceGraphDiagnostics","planGisCountryMerge","planGisCountryGeometry","gisCountryMergeCanCommit","resolveTerritorialRoot","distributionReferenceDiagnostics","sphericalRingSignedAreas","temporalParse","temporalMonthEnd","temporalCompare","temporalNormalizeInterval","temporalContains","temporalIntervalsOverlap","temporalShiftMonth","temporalCompareKeys","temporalFollowingDay","normalizePolygonGeometry","normalizePolygonRing","hasCanonicalPolygonWinding","hasCanonicalClippedPolygonWinding"])assert.equal(typeof core[name],'function',name);
+  for(const name of ["sphericalRingSignedArea","validateTerritorialRing","validateClippedTerritorialRing","referenceGraphDiagnostics","planGisCountryMerge","planGisCountryGeometry","gisCountryMergeCanCommit","resolveTerritorialRoot","sphericalRingSignedAreas","temporalParse","temporalMonthEnd","temporalCompare","temporalNormalizeInterval","temporalContains","temporalIntervalsOverlap","temporalShiftMonth","temporalCompareKeys","temporalFollowingDay","normalizePolygonGeometry","normalizePolygonRing","hasCanonicalPolygonWinding","hasCanonicalClippedPolygonWinding"])assert.equal(typeof core[name],'function',name);
   assert.equal(typeof core.DocumentSession,'function');
   assert.equal(core.coreAbiVersion,1);
   assert.equal(core.temporalCompareKeys([2020,1,1],[2020,1,2]),-1);

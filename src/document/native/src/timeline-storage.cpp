@@ -10,18 +10,6 @@ TimelineRecords validated(const TimelineRecords& records, const GeometryStore& g
 }
 }
 
-TimelineStorageSnapshot snapshotTimelineStorage(const TimelineRecords& records, const GeometryStore& geometries,
-                                                const std::vector<TimelineEntityIdentity>& entities) {
-    TimelineStorageSnapshot result;
-    result.records = validated(records, geometries, entities);
-    result.resources = geometries.resources();
-    result.geometries.reserve(geometries.versions().size());
-    // Preserve all versions, including versions used by other document domains.
-    // Only immutable allocations are shared; the snapshot's registry is independent.
-    for (const auto& [ref, geometry]:geometries.versions()) result.geometries.push_back({ref, geometry});
-    return result;
-}
-
 TimelineStorage restoreTimelineStorage(const TimelineStorageSnapshot& input,
                                       const std::vector<TimelineEntityIdentity>& entities) {
     if (input.schemaVersion!=TimelineStorageSchemaVersion)

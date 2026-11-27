@@ -77,7 +77,6 @@ add_library(pandoeditor_core STATIC
   "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/webcommands.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/webterritorial-source-codec.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/webterritorial-source-admission.cpp"
-    "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/jobs.cpp"
     "${PANDOEDITOR_REPOSITORY_ROOT}/src/document/native/src/snapshot.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/version.cpp"
 )

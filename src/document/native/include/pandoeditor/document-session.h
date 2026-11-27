@@ -91,7 +91,6 @@ public:
         std::uint32_t replacementId, std::uint32_t expectedEpoch, std::string* acceptedDelta = nullptr,
         std::shared_ptr<const ResolvedWorld>* previousWorld = nullptr);
     bool temporalCandidateDiscard(std::uint32_t candidateId, std::uint32_t expectedEpoch);
-    DocumentSessionState admitExternalBaseline(std::uint32_t expectedEpoch);
     std::uint32_t captureReplacement(std::uint32_t expectedEpoch);
     DocumentSessionState rollbackReplacement(std::uint32_t checkpointId, std::uint32_t expectedEpoch);
     bool releaseReplacement(std::uint32_t checkpointId);
