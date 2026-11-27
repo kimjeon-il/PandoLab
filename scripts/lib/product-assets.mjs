@@ -7,7 +7,6 @@ import {validateMapProjectManifest} from "../../src/data/map-project-manifest.js
 // Dependencies selected through URLs or classic Worker APIs are reviewed here;
 // static ESM edges are discovered by the same parser used by the build tooling.
 export const runtimeDependencies = Object.freeze({
-  'assets/js/modules/builtin-asset-tasks.js':['assets/js/workers/builtin-asset-worker.js'],
   'assets/js/modules/globe-packet-tasks.js':['assets/js/workers/globe-packet-worker.js'],
   'assets/js/modules/globe-label-sdf-tasks.js':['assets/js/workers/globe-label-sdf-worker.js'],
   'assets/js/modules/three-globe-labels.js':['assets/fonts/pretendard-v1.3.9/PretendardVariable.woff2'],

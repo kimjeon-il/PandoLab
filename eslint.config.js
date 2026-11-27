@@ -29,7 +29,7 @@ export default [
  {files:['**/*.{js,mjs}'],languageOptions:{ecmaVersion:'latest',sourceType:'module'},rules:{"no-undef":"error","no-unreachable":"error","no-dupe-args":"error","no-dupe-keys":"error","no-dupe-class-members":"error","no-const-assign":"error","no-import-assign":"error","no-class-assign":"error","valid-typeof":"error","constructor-super":"error","no-obj-calls":"error","no-invalid-regexp":"error"}},
  {files:['src/**/*.js'],languageOptions:{globals:{...browserGlobals,console:'readonly'}}},
  {files:['src/**/workers/**/*.js'],languageOptions:{sourceType:'script',globals:{...browserGlobals,console:'readonly',importScripts:'readonly',module:'readonly',onmessage:'writable',postMessage:'readonly',self:'readonly'}}},
- {files:['src/data/workers/builtin-asset-worker.js','src/data/workers/data-loader-worker.js','src/data/workers/place-worker.js','src/document/workers/core-viewer-session-worker.js'],languageOptions:{sourceType:'module'}},
+ {files:['src/data/workers/data-loader-worker.js','src/data/workers/place-worker.js','src/document/workers/core-viewer-session-worker.js'],languageOptions:{sourceType:'module'}},
  {files:['scripts/**/*.mjs','tools/**/*.{js,mjs}','tests/**/*.mjs','*.config.js','.pnpmfile.mjs'],languageOptions:{globals:nodeGlobals}},
  {files:['tools/gis/gis-geometry-worker.js'],languageOptions:{sourceType:'script',globals:{...browserGlobals,self:'readonly',importScripts:'readonly'}}},
  {files:['tests/browser/**/*.mjs'],languageOptions:{globals:{...nodeGlobals,...browserGlobals}}}
