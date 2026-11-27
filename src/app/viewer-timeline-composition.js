@@ -5,7 +5,7 @@ import { installTimelineControls } from '../ui/timeline-controls.js';
 
 /** Owns the Viewer date-control, C++ cursor transition, and temporal recovery flow. */
 export function createViewerTimelineComposition({
-  document, window, map, projectDomain, activeSession, owners, status, preferencePresentation,
+  document, window, map, projectDomain, activeSession, status, preferencePresentation,
   postPresentation, openBuiltinProject, search, syncStatus, report, getPresentedMonth, setPresentedMonth,
 }) {
   const applyDocumentMonth = async(month, {
@@ -20,10 +20,9 @@ export function createViewerTimelineComposition({
     if (before!==map.features()&&territorialMembershipDelta(before, map.features()).changed)
       await map.objectCatalog.pruneLayerItemVisibility();
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    await Promise.all([
-      map.update({previousMonth}),
-      waitForFrame&&map.viewState.layerVisibility.labels!==false?owners.territorialLabels.preparePlaces():null,
-    ]);
+    // Place data and its SDF atlas are refreshed in the background by the
+    // rendering domain; they must not delay the certified dated map frame.
+    await map.update({previousMonth});
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     if (admitPresentation?.()===false)return false;
     if (waitForFrame)await map.renderer.waitForMapPresentation(generation);

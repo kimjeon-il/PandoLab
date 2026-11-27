@@ -605,7 +605,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).catch (error => {
       if (!requestCurrent(name, controller))return;
       failedLineLayers.add(name);
-      if (!ready||framePreserved)failMapPreparation(error);
+      if (!ready)failMapPreparation(error);
       else deps.feedback.reportOperationError(error, label+'을 불러오지 못했습니다.','PL-THREE-LINE-LAYER-001');
     }).finally(() => finishRequest(name, controller));
     return false;
@@ -624,7 +624,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).catch (error => {
       if (disposed)return;
       fontFailed = true;
-      if (labelsNeeded()&&(!ready||framePreserved))failMapPreparation(error);
+      if (labelsNeeded()&&!ready)failMapPreparation(error);
       else deps.feedback.reportOperationError(error,'지도 글꼴을 불러오지 못했습니다.','PL-THREE-FONT-001');
     }).finally(() => {fontPending = null;});
     return false;
@@ -700,10 +700,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const baseReady = ensureVisibleBase(), physicalReady = ensureVisiblePhysical(), fontAvailable = ensureLabelFont();
     const graticuleReady = ensureLineLayer('graticule', graticuleNeeded(), surface.hasGraticule, surface.installGraticule, spec.graticule,'경위선');
     if (!baseReady||!physicalReady)return {...base, deferred:true};
-    const strict = !ready||framePreserved||presentation.temporalPending();
-    if (strict&&(!graticuleReady||!fontAvailable))return {...base, deferred:true};
+    const initialStrict = !ready;
+    if (initialStrict&&(!graticuleReady||!fontAvailable))return {...base, deferred:true};
     if (labelContent.needsUpdate())metrics.run('three.label-content', () => labelContent.update({surface, camera, view, features, activeSlots, fontReady, needed:labelsNeeded()}));
-    if (!surface.prepareLabels(camera, viewport.width, viewport.height, strict)&&strict) {
+    if (!surface.prepareLabels(camera, viewport.width, viewport.height, initialStrict)&&initialStrict) {
       const cause = surface.labels.sdfError();
       if (cause)failMapPreparation(cause);
       return {...base, deferred:true};
@@ -831,7 +831,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     preserveTemporalFrame() {cancelNeighborPrefetch(); framePreserved = true;}, isFramePreserved:() => framePreserved,
     resetProjectRenderState(options) {generation = options.generation; features = null; ready = false; error = null;
         drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; clearViewPlans(); presentation.resetForProject(options);},
-    measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation, retryMapPreparation, getRuntimeState,
+    measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation,
+    reportAncillaryError:(cause, message, code) => deps.feedback.reportOperationError(cause,message,code),
+    retryMapPreparation, getRuntimeState,
     getStats:() => ({...getRuntimeState(), mapReadiness:readyState(), displayedRevision:ready?revision:0, sourceRevision:revision,
       generation, certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,
       frameId:lastFrame?.frameId,

@@ -22,7 +22,12 @@ export function createViewerRenderingDomain(options) {
         renderer.invalidateLabelContent({countries:false});
         invalidate('settled-place-viewport');
       }else if (renderer.isFramePreserved())invalidate('settled-place-viewport');
-    }, error => {if (pendingPlaceViewport===task&&!disposed)renderer.failMapPreparation(error);});
+    }, error => {
+      if (pendingPlaceViewport!==task||disposed)return;
+      pendingPlaceViewport = null;
+      if (!renderer.getRuntimeState().mapReady)renderer.failMapPreparation(error);
+      else renderer.reportAncillaryError(error,'날짜 전환 후 지명 데이터를 불러오지 못했습니다.','PL-THREE-PLACE-001');
+    });
   }
   function render() {
     queued = false;
@@ -31,7 +36,6 @@ export function createViewerRenderingDomain(options) {
       const frame = prepareView({frameId:++frameId});
       if (contentDirty) {contentDirty = false; preparePlacesForPublication();}
       if (selectionDirty) {selectionDirty = false; renderer.setSelection(selectionDomain.snapshot());}
-      if (renderer.labelZoomVisibility().places&&renderer.isFramePreserved()&&pendingPlaceViewport!==null)return;
       const result = renderer.renderFrame(frame);
       if (result.deferred||!renderer.canPresentVisualFrame(frame, result)||!renderer.commitVisualFrame(frame))return;
       stats.visualFrameCommittedCount++;
@@ -44,7 +48,11 @@ export function createViewerRenderingDomain(options) {
     invalidateViewport:reason => {renderer.verifyLayout(); return invalidate(reason, true);},
     invalidateProject:reason => invalidate(reason, true),
     invalidateSelection:reason => {selectionDirty = true; return invalidate(reason);},
-    invalidateLabels:reason => {renderer.invalidateLabelContent({countries:reason!=='document-month-labels'&&reason!=='builtin-places-ready', places:reason!=='formal-country-name-display'}); return invalidate(reason);},
+    invalidateLabels:reason => {
+      renderer.invalidateLabelContent({countries:reason!=='document-month-labels'&&reason!=='builtin-places-ready', places:reason!=='formal-country-name-display'});
+      if (reason==='document-month-labels'&&renderer.labelZoomVisibility().places)preparePlacesForPublication();
+      return invalidate(reason);
+    },
     invalidateQuality:reason => invalidate(reason),
     invalidateOverlayStyle:reason => invalidate(reason, renderer.invalidatePresentationStyle?.()===true),
     beginInteraction() {labelResources.beginPlaceInteraction();},
