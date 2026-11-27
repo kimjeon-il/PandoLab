@@ -16,6 +16,38 @@ function transfer(value) {
   }
   visit(value); return rpc.transferResult(value, [...buffers]);
 }
+async function decodePacket({kind,bytes,spec,ownerCount,outlineOwners,identityCount,spatial = true},context) {
+  context.throwIfCancelled();
+  const decoded = await decodeStoredBuffer(bytes,spec,'worker','globe','지도 패킷',context.signal);
+  validateAssetLength(decoded,spec,'지도 패킷');
+  context.throwIfCancelled();
+  let value;
+  switch (kind) {
+    case 'mesh':value = prepareGlobeSpatialPacket(decodeGlobeMesh(decoded.buffer)); break;
+    case 'stroke':
+      value = decodeGlobeStrokes(decoded.buffer);
+      if (ownerCount!==undefined&&(value.ownerGroups.length!==value.count||value.ownerGroups.some(group => group>=ownerCount)))
+        throw Error('Invalid globe outline owners');
+      if (spatial)value = prepareGlobeSpatialPacket(value,{outline:ownerCount!==undefined});
+      if (outlineOwners) {
+        if (outlineOwners.length!==ownerCount)throw Error('Invalid outline owner table');
+        value = {...value,outlineIndex:indexGlobeOutlineChunks(value,outlineOwners)};
+      }
+      break;
+    case 'catalog':
+      value = JSON.parse(new TextDecoder().decode(decoded.buffer));
+      if (value?.version!==1||!Array.isArray(value.historicalCountries)||!Array.isArray(value.historicalBorders)||!Array.isArray(value.physicalContexts))
+        throw Error('Invalid Three.js spatial catalog');
+      break;
+    case 'hydro':
+      value = JSON.parse(new TextDecoder().decode(decoded.buffer));
+      if (!Array.isArray(value)||value.length!==identityCount)throw Error('Invalid globe hydro identities');
+      break;
+    default:throw Error('Unsupported globe packet kind: '+kind);
+  }
+  context.throwIfCancelled();
+  return {value,transferable:kind!=='hydro'&&kind!=='catalog'};
+}
 rpc.install({handlers:{
   'globe.combine-stored-strokes':async({packets}, context) => {
     const maxPoints = packets.reduce((sum, row) => sum+Math.floor(row.spec.decodedBytes/24),0);
@@ -28,38 +60,30 @@ rpc.install({handlers:{
       builder.append(decodeGlobeStrokes(decoded.buffer));
     }
     context.throwIfCancelled();
+    // The combined stroke packet receives its spatial index before it leaves the Worker.
     return transfer(prepareGlobeSpatialPacket(builder.finish()));
   },
-  'globe.decode-packet':async({kind, bytes, spec, ownerCount, outlineOwners, identityCount, spatial = true}, context) => {
-    context.throwIfCancelled();
-    const decoded = await decodeStoredBuffer(bytes, spec,'worker','globe','지도 패킷', context.signal);
-    validateAssetLength(decoded, spec,'지도 패킷');
-    context.throwIfCancelled();
-    let value;
-    switch (kind) {
-      case 'mesh':value = prepareGlobeSpatialPacket(decodeGlobeMesh(decoded.buffer)); break;
-      case 'stroke':
-        value = decodeGlobeStrokes(decoded.buffer);
-        if (ownerCount!==undefined&&(value.ownerGroups.length!==value.count||value.ownerGroups.some(group => group>=ownerCount)))
-          throw Error('Invalid globe outline owners');
-        if (spatial)value = prepareGlobeSpatialPacket(value, {outline:ownerCount!==undefined});
-        if (outlineOwners) {
-          if (outlineOwners.length!==ownerCount)throw Error('Invalid outline owner table');
-          value = {...value, outlineIndex:indexGlobeOutlineChunks(value, outlineOwners)};
-        }
-        break;
-      case 'catalog':
-        value = JSON.parse(new TextDecoder().decode(decoded.buffer));
-        if (value?.version!==1||!Array.isArray(value.historicalCountries)||!Array.isArray(value.historicalBorders)||!Array.isArray(value.physicalContexts))
-          throw Error('Invalid Three.js spatial catalog');
-        break;
-      case 'hydro':
-        value = JSON.parse(new TextDecoder().decode(decoded.buffer));
-        if (!Array.isArray(value)||value.length!==identityCount)throw Error('Invalid Three.js hydro identities');
-        break;
-      default:throw Error('Unsupported globe packet kind: '+kind);
+  'globe.decode-packet':async(packet,context) => {
+    const {value,transferable} = await decodePacket(packet,context);
+    return transferable?transfer(value):value;
+  },
+  'globe.decode-packet-batch':async({packets},context) => {
+    if (!Array.isArray(packets)||packets.length<2||packets.length>8)throw Error('Invalid globe spatial packet batch');
+    const rows = [];
+    for (const packet of packets) {
+      context.throwIfCancelled();
+      if (!['mesh','stroke'].includes(packet.kind)||packet.ownerCount!==undefined||packet.outlineOwners)
+        throw Error('Unsupported globe packet in spatial batch');
+      try {
+        const {value,transferable} = await decodePacket(packet,context);
+        if (!transferable)throw Error('Spatial packet batch must contain transferable packets');
+        rows.push({ok:true,value});
+      }catch(error) {
+        context.throwIfCancelled();
+        rows.push({ok:false,error:{name:error?.name||'Error',message:error?.message||String(error)}});
+      }
     }
     context.throwIfCancelled();
-    return kind==='hydro'||kind==='catalog'?value:transfer(value);
+    return transfer(rows);
   },
 }});
