@@ -69,3 +69,24 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  ancillary-regression:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Run focused ancillary-presentation regression checks' && github.event.before == '8349b091bb7fc6affb95ccfcd51403fe4780e653'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Run focused unit test and lint
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/run-application-checks.mjs --group=node --file=tests/unit/app/viewer-rendering-domain.test.mjs
+          node scripts/run-application-checks.mjs --group=lint --file=src/rendering/three-viewer-renderer.js --file=src/rendering/viewer-rendering-domain.js --file=src/app/viewer-timeline-composition.js --file=tests/unit/app/viewer-rendering-domain.test.mjs
