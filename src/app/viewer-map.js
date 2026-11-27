@@ -7,6 +7,7 @@ import { worldViewChange } from '../document/world-view-change.js';
 import { temporalContains, temporalMonthEnd } from '../document/temporal.js';
 import { createDistributionRenderRows } from '../ui/map-content-presentation.js';
 import { createThreeViewerRenderer } from '../rendering/three-viewer-renderer.js';
+import { prepareGlobeTimelineSources } from '../rendering/globe-temporal-presentation.js';
 import { createPhysicalSourceConfiguration, HYDRO_LAYER_META, HYDRO_CATEGORY_STYLES, PHYSICAL_DATASET } from '../data/physical-source-configuration.js';
 import '../geometry/polygon-geometry.js';
 import '../geometry/polygon-clipping-core.js';
@@ -265,11 +266,17 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
   inputPresentation.bindMapEvents();
   mapHost.startMapResizeObserver();
   const {preparePhysicalContext} = renderer;
-  async function prepareTimelineView(month, options) {
-    await preparePhysicalContext(month, options);
-    const references = await projectSourceRuntime.readWorldGeometryReferences(month, options);
-    await renderer.prepareDatedTerritories(month, references, options);
-    return renderer.measureWork('core.timeline-geometry', () => documentSession.commandOwner.prepareTimelineGeometry(month, options));
+  async function prepareTimelineView(month, options = {}) {
+    return renderer.measureWork('three.timeline-prepare', () => prepareGlobeTimelineSources({
+      isCurrent:options.isCurrent,
+      preparePhysical:isCurrent => renderer.measureWork('three.timeline-physical', () => preparePhysicalContext(month, {...options, isCurrent})),
+      prepareTerritories:isCurrent => renderer.measureWork('three.timeline-territorial', async() => {
+        const next = {...options, isCurrent};
+        const references = await projectSourceRuntime.readWorldGeometryReferences(month, next);
+        return renderer.prepareDatedTerritories(month, references, next);
+      }),
+      prepareCore:isCurrent => renderer.measureWork('core.timeline-geometry', () => documentSession.commandOwner.prepareTimelineGeometry(month, {...options, isCurrent})),
+    }));
   }
   return Object.freeze({
     async setSession(next, {view = null, prepareView = null, source = 'project'} = {}) {

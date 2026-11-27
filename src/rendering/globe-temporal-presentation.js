@@ -109,3 +109,22 @@ export function createGlobeTemporalPresentation() {
   function reset() {source = null; month = null; events = []; eventsDirty = true; rowsById.clear(); children.clear(); boundaries.clear(); uncertain.clear(); nativeDated.clear();}
   return {advance, reset, get:id => rowsById.get(String(id))};
 }
+
+
+// Core geometry preparation admits immutable resources, not the date
+// cursor. It can run alongside the independent Viewer packet preparation.
+// Preserve the original Core receipt for the later ordered cursor commit.
+export async function prepareGlobeTimelineSources({preparePhysical, prepareTerritories, prepareCore, isCurrent = () => true}) {
+  const assertCurrent = () => {if (!isCurrent())throw new DOMException('Timeline preparation superseded','AbortError');};
+  assertCurrent();
+  let live = true;
+  const current = () => live&&isCurrent();
+  try {
+    const [, , receipt] = await Promise.all([
+      Promise.resolve().then(() => {assertCurrent(); return preparePhysical(current);}),
+      Promise.resolve().then(() => {assertCurrent(); return prepareTerritories(current);}),
+      Promise.resolve().then(() => {assertCurrent(); return prepareCore(current);}),
+    ]);
+    assertCurrent(); return receipt;
+  }finally {live = false;}
+}

@@ -321,3 +321,24 @@ test('detail river residency updates only the altered resource and releases obso
   assert.equal(detail.stats().residentBytes,16);
   detail.dispose();
 });
+
+
+test('unchanged dated shapes reuse the published padded coverage but reject changed identity and missing chunks', async () => {
+  const {reuseGlobeTerritorialCoverage,reuseGlobePhysicalCoverage,globeChunkSetContains} = await import('../../../src/rendering/globe-view-mesh-assets.js');
+  const row = key => ({key});
+  const required = [row('country-a'),row('border-a')];
+  const published = {context:'base|1|1',plan:[...required,row('margin')],parts:[{}]};
+  const prepared = {context:published.context,plan:required,parts:[{}]};
+  assert.equal(reuseGlobeTerritorialCoverage(published.context,required,published,prepared),published);
+  assert.equal(reuseGlobeTerritorialCoverage('history:1|1|1',required,published),null);
+  assert.equal(reuseGlobeTerritorialCoverage('base|1|0',required,published),null);
+  assert.equal(reuseGlobeTerritorialCoverage(published.context,[row('new-border')],published),null);
+  const target = {spec:{identity:'water-a'},rivers:true,waters:[row('water-a')],lakes:[row('lake-a')],riverChunks:[row('river-a')]};
+  const physical = {plan:{...target,waters:[...target.waters,row('margin-water')]}};
+  const covers = (have,need) => have.spec.identity===need.spec.identity&&have.rivers===need.rivers&&
+    ['waters','lakes','riverChunks'].every(key=>globeChunkSetContains(have[key],need[key]));
+  assert.equal(reuseGlobePhysicalCoverage(target,covers,physical),physical);
+  assert.equal(reuseGlobePhysicalCoverage({...target,spec:{identity:'water-b'}},covers,physical),null);
+  assert.equal(reuseGlobePhysicalCoverage({...target,lakes:[row('new-lake')]},covers,physical),null);
+  assert.equal(reuseGlobePhysicalCoverage({...target,rivers:false},covers,physical),null);
+});

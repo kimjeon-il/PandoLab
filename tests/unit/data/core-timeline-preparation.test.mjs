@@ -167,3 +167,27 @@ test('failed project replacement restores the prior accepted owner and retires i
   assert.equal(project.isOpening(),false);
  }finally{project.dispose();}
 });
+
+
+test('dated Viewer and Core geometry preparations run concurrently and preserve the Core receipt', async () => {
+  const {prepareGlobeTimelineSources} = await import('../../../src/rendering/globe-temporal-presentation.js');
+  const started = [], gates = Array.from({length:3},()=>Promise.withResolvers()), receipt = Object.freeze({});
+  const run = index => async isCurrent => {started.push(index); assert.equal(isCurrent(),true); await gates[index].promise; return index===2?receipt:true;};
+  const result = prepareGlobeTimelineSources({preparePhysical:run(0),prepareTerritories:run(1),prepareCore:run(2)});
+  await Promise.resolve();
+  assert.deepEqual(started,[0,1,2]);
+  gates[2].resolve(); gates[0].resolve(); gates[1].resolve();
+  assert.equal(await result,receipt);
+});
+
+test('a failed dated preparation makes sibling preparations obsolete without committing a cursor', async () => {
+  const {prepareGlobeTimelineSources} = await import('../../../src/rendering/globe-temporal-presentation.js');
+  const gate = Promise.withResolvers(), failure = Error('physical failure');
+  let siblingCurrent;
+  const result = prepareGlobeTimelineSources({preparePhysical:()=>{throw failure;},
+    prepareTerritories:async isCurrent=>{siblingCurrent=isCurrent;await gate.promise;assert.equal(isCurrent(),false);},
+    prepareCore:()=>gate.promise});
+  await assert.rejects(result,error=>error===failure);
+  assert.equal(siblingCurrent(),false);
+  gate.resolve();
+});

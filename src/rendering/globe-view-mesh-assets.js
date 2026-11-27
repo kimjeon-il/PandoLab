@@ -14,6 +14,15 @@ export function globeChunkSetContains(have, needed) {
 }
 export const globeChunkPlanKey = rows => rows.map(row => row.key).join('|');
 
+// Reuse an already admitted plan even if it retains a padded margin.
+// Matching a date or a chunk count alone never proves coverage or identity.
+export function reuseGlobeTerritorialCoverage(context, required, ...candidates) {
+  return candidates.find(row => row?.context===context&&globeChunkSetContains(row.plan, required))??null;
+}
+export function reuseGlobePhysicalCoverage(required, covers, ...candidates) {
+  return candidates.find(row => row&&covers(row.plan, required))??null;
+}
+
 // Build the descriptor hierarchy once, not on every camera change. All
 // published chunks have Cartesian bounds; preserve descriptor order.
 export function createGlobeChunkCatalog(descriptors) {

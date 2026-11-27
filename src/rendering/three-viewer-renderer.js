@@ -11,7 +11,7 @@ import { PLACE_DISPLAY_ZOOM_FLOOR } from '../map/map-display-zoom.js';
 import { createGlobeCamera } from './globe-camera.js';
 import { COUNTRY_LABEL_MIN_ZOOM } from './three-globe-labels.js';
 import { globeTerritoryKey } from './globe-mesh.js';
-import { createGlobeTerritorialAssets, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures } from './globe-view-mesh-assets.js';
+import { createGlobeTerritorialAssets, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures, reuseGlobeTerritorialCoverage, reuseGlobePhysicalCoverage } from './globe-view-mesh-assets.js';
 import { createGlobeHistoryIndex, globeHistoryMonthKey, createGlobeNeighborPrefetchKey } from './globe-history-index.js';
 import { createGlobeTemporalPresentation } from './globe-temporal-presentation.js';
 import { createGlobePacketTasks, globePacketWorkerCount } from './globe-packet-tasks.js';
@@ -55,6 +55,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   let acceptedPick = null, drawnFrame = null, residencyDirty = true;
   const temporalInputs = createGlobeTemporalPresentation();
   let temporalStats = {};
+  const temporalReuse = {countryPreparationsSkipped:0, physicalPreparationsSkipped:0, unchangedGeometryTransitions:0};
   const pendingOutlines = new Map(), requestScopes = new Map();
   let prefetchTerritoryPlan = null, prefetchPhysical = null, visiblePhysicalPlan = null, publishedPhysical = null;
   let basePrepared = null, basePreparing = null, publishedBase = null, baseJobRequired = false, physicalJobRequired = false;
@@ -320,6 +321,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     return Boolean(valid.length)&&fitMapBounds([[Math.min(...valid.map(box => box[0])), Math.min(...valid.map(box => box[1]))],
       [Math.max(...valid.map(box => box[2])), Math.max(...valid.map(box => box[3]))]]);
   }
+  // Keep the published resources preferred over an unpublished margin plan
+  // so an unchanged date does not replace GPU groups or repeat packet reads.
+  const reuseTerritories = (context, plan) => reuseGlobeTerritorialCoverage(context, plan, publishedBase, basePrepared);
+  const reusePhysical = plan => reuseGlobePhysicalCoverage(plan, physicalAssets.covers, publishedPhysical, physical);
   async function requirePhysicalSource(month, identity, signal) {
     if (!physicalAssets.has(identity))await ensureHistoryCatalog(signal);
     if (!physicalAssets.has(identity))
@@ -334,6 +339,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     try {
       assertCurrent(); await initialize(); assertCurrent();
       target = physicalPlan(await requirePhysicalSource(month, deps.physicalResources.physicalSourceIdentityAtMonth(month), controller.signal));
+      assertCurrent();
+      if (reusePhysical(target)) {temporalReuse.physicalPreparationsSkipped++; return true;}
       prefetchPhysical = target; retainCpuResources();
       await physicalAssets.prepare(target, {signal:controller.signal});
       assertCurrent(); return true;
@@ -441,7 +448,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     try {
       const prepared = await requireTerritorialGeometry(month, references, controller.signal);
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
-      plan = territorialPlan(prepared); prefetchTerritoryPlan = plan; retainCpuResources();
+      plan = territorialPlan(prepared);
+      if (reuseTerritories(territorialContext(prepared), plan)) {temporalReuse.countryPreparationsSkipped++; return true;}
+      prefetchTerritoryPlan = plan; retainCpuResources();
       await territorialAssets.prepare(plan, {signal:controller.signal});
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
       return true;
@@ -464,15 +473,27 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       if (!requestCurrent('territory-apply', controller)||requestGeneration!==generation||month!==state.timelineCursor)return false;
       const target = physicalPlan(identity), baseTarget = territorialPlan(prepared), context = territorialContext(prepared);
       const oldPhysical = requestScopes.get('physical-view'), oldBase = requestScopes.get('base-view');
-      visiblePhysicalPlan = null; basePreparing = baseTarget; baseFailures.clear(); physicalFailures.clear();
-      prefetchTerritoryPlan = baseTarget; prefetchPhysical = target; retainCpuResources();
-      const nextBaseTask = basePrepared&&basePrepared.context===context&&basePlanKey(basePrepared.plan)===basePlanKey(baseTarget)?
-        Promise.resolve(basePrepared):territorialAssets.prepare(baseTarget, {signal:controller.signal}).then(parts => ({plan:baseTarget, parts, context}));
-      const nextPhysicalTask = physicalAssets.prepare(target, {signal:controller.signal});
-      if (oldPhysical===requestScopes.get('physical-view'))cancelRequest('physical-view');
-      if (oldBase===requestScopes.get('base-view'))cancelRequest('base-view');
-      const [nextPhysical, nextBase] = await Promise.all([nextPhysicalTask, nextBaseTask]);
+      const reusedBase = reuseTerritories(context, baseTarget), reusedPhysical = reusePhysical(target);
+      const unchangedGeometry = Boolean(ready&&features&&prepared.key===acceptedTerritories.key&&
+        reusedBase===publishedBase&&reusedPhysical===publishedPhysical&&reusedBase&&reusedPhysical);
+      visiblePhysicalPlan = null; basePreparing = reusedBase?null:baseTarget; baseFailures.clear(); physicalFailures.clear();
+      let nextBase = reusedBase, nextPhysical = reusedPhysical;
+      if (!reusedBase||!reusedPhysical) {
+        prefetchTerritoryPlan = reusedBase?.plan??baseTarget; prefetchPhysical = reusedPhysical?.plan??target;
+        retainCpuResources();
+        const nextBaseTask = reusedBase??territorialAssets.prepare(baseTarget, {signal:controller.signal}).then(parts => ({plan:baseTarget, parts, context}));
+        const nextPhysicalTask = reusedPhysical??physicalAssets.prepare(target, {signal:controller.signal});
+        if (oldPhysical&&oldPhysical===requestScopes.get('physical-view'))cancelRequest('physical-view');
+        if (oldBase&&oldBase===requestScopes.get('base-view'))cancelRequest('base-view');
+        [nextPhysical, nextBase] = await Promise.all([nextPhysicalTask, nextBaseTask]);
+      }else {
+        if (oldPhysical&&oldPhysical===requestScopes.get('physical-view'))cancelRequest('physical-view');
+        if (oldBase&&oldBase===requestScopes.get('base-view'))cancelRequest('base-view');
+      }
       if (!requestCurrent('territory-apply', controller)||request!==territorialRequest||requestGeneration!==generation||month!==state.timelineCursor)return false;
+      if (unchangedGeometry)temporalReuse.unchangedGeometryTransitions++;
+      // Even the reuse path must apply the accepted Core property changes,
+      // including dated names, territorial visibility and paint.
       const delta = temporalInputs.advance(sourceRows, month);
       const previousSlots = activeSlots, geometryChanged = prepared.key!==territories.key||!features;
       if (geometryChanged) {
@@ -496,7 +517,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       if (delta.first) {paint.markCountryBase(); labelContent.invalidate({places:false});}
       if (delta.dirtyIds.size||paint.pendingCountrySlots())paint.markCountryRoles();
       paint.markHydroRoles();
-      temporalStats = {examinedRows:delta.examined, receipt:delta.receipt, changedRows:delta.changedIds.size, dirtyPaintSlots:paint.pendingCountrySlots(), dirtyCountryLabels:labelContent.pendingCountrySlots()};
+      temporalStats = {unchangedGeometry, reusedTerritories:!!reusedBase, reusedPhysical:!!reusedPhysical,
+        examinedRows:delta.examined, receipt:delta.receipt, changedRows:delta.changedIds.size, dirtyPaintSlots:paint.pendingCountrySlots(), dirtyCountryLabels:labelContent.pendingCountrySlots()};
       labelContent.invalidate({countries:false}); return true;
     }catch (error) {
       if (controller.signal.aborted)return false;
@@ -824,7 +846,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       countryLabelCount:surface?.labels.visibleCount(false)??0,
       placeLabelCount:surface?.labels.visibleCount(true)??0, riverDetail:riverDetail?.stats()??null,
       labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
-      territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded, estimatedBytes:historyCatalogBytes}, historicalMetadata:historyIndex.stats(), temporalPresentation:temporalStats, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
+      territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded, estimatedBytes:historyCatalogBytes}, historicalMetadata:historyIndex.stats(), temporalPresentation:{...temporalStats, ...temporalReuse}, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
       labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), errorMessage:error?.message??null, initialLoading}),
     dispose() {cancelNeighborPrefetch(); disposed = true; baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
       acceptedPick = drawnFrame = features = basePrepared = publishedBase = basePreparing = physical = acceptedPhysical = publishedPhysical = hydroMetadata = null;
