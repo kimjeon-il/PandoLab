@@ -4,30 +4,49 @@ import {readFile} from 'node:fs/promises';
 
 import { COUNTRY_DEFAULT_COLORS } from '../../src/ui/country-default-colors.js';
 
-async function ready(page,stage='map presentation'){
+// Only accepted frames can certify a camera jump, timeline change or screen sample.
+// The host's current camera may already have changed while the canvas still shows the old frame.
+function readPresentedFrame({month=null,camera=null,afterFrame=null,coordinate=null}={}){
+  const viewer=window.__PANDOLAB_VIEWER__,stats=viewer?.rendererStats(),host=window.__PANDOLAB_MAP_HOST__;
+  const status=document.querySelector('#viewerStatus'),frame=stats?.presentedFrame;
+  const current=host?.getViewState({withGeographicBounds:false}),cursor=viewer?.documentState()?.timelineCursor;
+  const sameCamera=(a,b)=>Boolean(a&&b&&['projection','zoom','bearing','pitch','roll'].every(key=>a[key]===b[key])
+    &&a.center?.length===2&&b.center?.length===2&&a.center.every((value,index)=>value===b.center[index]));
+  const checks={
+    initialMapPresented:Boolean(viewer?.initialMapPresented()),
+    rendererMapReady:Boolean(stats?.mapReadiness?.mapReady),
+    projectNotBlocked:!stats?.projectRenderBlocked&&!stats?.webglContextLost,
+    viewerStatusReady:status?.dataset.ready==='true',
+    acceptedFrame:Boolean(frame&&frame.frameId>0&&frame.generation===stats.generation&&stats.displayedRevision>0
+      &&stats.certifiedRevision===stats.displayedRevision&&!stats.temporalPresentationPending),
+    currentMonth:Boolean(frame&&cursor&&frame.month===cursor),
+    currentCamera:sameCamera(frame?.camera,current?.camera),
+    currentLayout:Boolean(frame&&current&&frame.size.width===current.size.width&&frame.size.height===current.size.height&&frame.dpr===current.dpr),
+    requestedMonth:month===null||frame?.month===month,
+    requestedCamera:camera===null||sameCamera(frame?.camera,camera),
+    newerFrame:afterFrame===null||frame?.frameId>afterFrame,
+  };
+  let point=null,rect=null;
+  if(coordinate!==null){
+    const bounds=document.querySelector('#map canvas')?.getBoundingClientRect();
+    if(bounds)rect={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height};
+    if(Object.values(checks).every(Boolean))point=host.project(coordinate);
+    checks.projectedCoordinate=Boolean(rect&&Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)
+      &&point[0]>=0&&point[0]<rect.width&&point[1]>=0&&point[1]<rect.height);
+  }
+  return {blockers:Object.keys(checks).filter(key=>!checks[key]),frame:frame??null,point,rect,
+    rendererStatus:stats?.mapReadiness?.status??null,errorMessage:stats?.errorMessage??null,
+    webglContextLost:stats?.webglContextLost??null,sourceRevision:stats?.sourceRevision??null,
+    displayedRevision:stats?.displayedRevision??null,viewerStatus:status?.textContent??null,loadingKind:status?.dataset.loadingKind??null};
+}
+
+async function ready(page,stage='map presentation',expected={}){
   const started=performance.now();let lastBlockers='',lastLogAt=-Infinity;
   await expect.poll(async()=>{
-    const sample=await page.evaluate(()=>{
-      const v=window.__PANDOLAB_VIEWER__,s=v?.rendererStats();
-      const status=document.querySelector('#viewerStatus');
-      const checks={
-        initialMapPresented:Boolean(v?.initialMapPresented()),
-        rendererMapReady:Boolean(s?.mapReadiness?.mapReady),
-        projectNotBlocked:!s?.projectRenderBlocked,
-        hasDisplayedRevision:s?.displayedRevision>0,
-        viewerStatusReady:status?.dataset.ready==='true',
-      };
-      const blockers=Object.keys(checks).filter(key=>!checks[key]);
-      if(!blockers.length)return {blockers};
-      return {blockers,rendererStatus:s?.mapReadiness?.status??null,
-        webglContextLost:s?.webglContextLost??null,errorMessage:s?.errorMessage??null,
-        sourceRevision:s?.sourceRevision??null,displayedRevision:s?.displayedRevision??null,
-        viewerStatus:status?.textContent??null,loadingKind:status?.dataset.loadingKind??null,
-      };
-    });
+    const sample=await page.evaluate(readPresentedFrame,expected);
     const now=performance.now(),elapsedMs=Math.round(now-started);
     if(!sample.blockers.length){
-      console.log('[viewer-ready]',JSON.stringify({stage,elapsedMs,result:'ready'}));
+      console.log('[viewer-ready]',JSON.stringify({stage,elapsedMs,result:'ready',frameId:sample.frame.frameId}));
       return true;
     }
     const key=JSON.stringify([sample.blockers,sample.rendererStatus,sample.errorMessage]);
@@ -36,7 +55,47 @@ async function ready(page,stage='map presentation'){
       lastBlockers=key;lastLogAt=now;
     }
     return false;
-  },{timeout:90_000,message:`Viewer not ready: ${stage}`}).toBe(true);
+  },{timeout:90_000,message:'Viewer not ready: '+stage}).toBe(true);
+}
+
+async function goToCoordinate(page,center,zoom){
+  const target=await page.evaluate(({center,zoom})=>{
+    const host=window.__PANDOLAB_MAP_HOST__,before=window.__PANDOLAB_VIEWER__.rendererStats().frameId;
+    host.setViewState({projection:'globe',view:{center,zoom}});
+    return {camera:host.getViewState({withGeographicBounds:false}).camera,afterFrame:before??null};
+  },{center,zoom});
+  await ready(page,'camera '+center.join(',')+' at zoom '+zoom,target);
+}
+
+async function clickGeographicPoint(page,coordinate){
+  let sample;
+  await expect.poll(async()=>{
+    sample=await page.evaluate(readPresentedFrame,{coordinate});
+    return sample.blockers;
+  },{message:'Geographic click target not presented: '+coordinate.join(',')}).toEqual([]);
+  await page.mouse.click(sample.rect.x+sample.point[0],sample.rect.y+sample.point[1]);
+}
+
+async function readGeographicPixel(page,coordinate){
+  const before=await page.evaluate(readPresentedFrame,{coordinate});
+  if(before.blockers.length)return null;
+  const png=await page.locator('#map canvas').screenshot({scale:'device'});
+  const after=await page.evaluate(readPresentedFrame,{coordinate});
+  // Retry a sample if the accepted view changed during capture; a later
+  // draw of the same view is valid because its geographic projection is identical.
+  if(after.blockers.length||before.frame.generation!==after.frame.generation
+    ||before.frame.viewRevision!==after.frame.viewRevision||before.frame.month!==after.frame.month
+    ||JSON.stringify(before.point)!==JSON.stringify(after.point)
+    ||before.rect.width!==after.rect.width||before.rect.height!==after.rect.height)return null;
+  return page.evaluate(async({encoded,point,width,height})=>{
+    const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
+    // Use actual screenshot dimensions, not an assumed device-pixel ratio.
+    const x=Math.floor(point[0]*image.width/width),y=Math.floor(point[1]*image.height/height);
+    if(x<0||y<0||x>=image.width||y>=image.height){image.close();return null;}
+    const pixel=new OffscreenCanvas(1,1).getContext('2d');
+    pixel.drawImage(image,x,y,1,1,0,0,1,1);image.close();
+    return [...pixel.getImageData(0,0,1,1).data].slice(0,3);
+  },{encoded:png.toString('base64'),point:before.point,width:before.rect.width,height:before.rect.height});
 }
 
 async function open(page,query=''){
@@ -291,13 +350,9 @@ test('Three globe places and selects a built-in city at its geographic position'
  await page.goto('./?debug=1');
  await ready(page,'Three globe city startup');
  const paris=[2.3488,48.8534];
- await page.evaluate(([lon,lat])=>{
-  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:8,globeRotation:[-lon,-lat,0]}});
- },paris);
+ await goToCoordinate(page,paris,8);
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().placeLabelCount),{timeout:60_000}).toBeGreaterThan(0);
- const [x,y]=await page.evaluate(coordinate=>window.__PANDOLAB_MAP_HOST__.project(coordinate),paris);
- const box=await page.locator('#map canvas').boundingBox();
- await page.mouse.click(box.x+x,box.y+y);
+ await clickGeographicPoint(page,paris);
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref=>ref.domain))).toEqual(['label']);
 });
 
@@ -307,9 +362,7 @@ test('Three globe draws local detailed rivers and reuses them after hiding the l
  await page.goto('./?debug=1');
  await ready(page,'Three globe rivers startup');
  expect(detailRequests).toEqual([]);
- const go=zoom=>page.evaluate(zoom=>{
-  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom,globeRotation:[-2.3488,-48.8534,0]}});
- },zoom);
+ const go=zoom=>goToCoordinate(page,[2.3488,48.8534],zoom);
  const detail=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().riverDetail);
  await go(8);
  await expect.poll(async()=>{const state=await detail();return state.visibleChunks>0&&state.visibleChunks===state.requestedChunks;}).toBe(true);
@@ -343,7 +396,7 @@ test('Three globe switches to changed historical meshes and reuses them on retur
  });
  await page.goto('./?debug=1');
  await ready(page,'Three globe historical startup');
- await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-46.7,-39.8,0]}}));
+ await goToCoordinate(page,[46.7,39.8],2.75);
  const canvas=page.locator('#map canvas'),modernMap=await canvas.screenshot();
  const base=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.builtinMonth().month,
   count:window.__PANDOLAB_VIEWER__.rendererStats().countrySlotCount}));
@@ -383,24 +436,12 @@ async function openGeographicSampleMap(page){
  await page.goto('./?debug=1');
  await ready(page,'geographic samples startup');
  const canvas=page.locator('#map canvas');
- const go=(center,zoom)=>page.evaluate(({center,zoom})=>{
-  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{center,zoom}});
- },{center,zoom});
- const pixel=async coordinate=>{
-  const [x,y]=await page.evaluate(point=>window.__PANDOLAB_MAP_HOST__.project(point),coordinate);
-  const png=await canvas.screenshot();
-  return page.evaluate(async({encoded,x,y})=>{
-   const bitmap=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
-   const context=new OffscreenCanvas(bitmap.width,bitmap.height).getContext('2d');
-   context.drawImage(bitmap,0,0);bitmap.close();
-   return [...context.getImageData(Math.round(x*window.devicePixelRatio),Math.round(y*window.devicePixelRatio),1,1).data].slice(0,3);
-  },{encoded:png.toString('base64'),x,y});
- };
+ const go=(center,zoom)=>goToCoordinate(page,center,zoom);
  const rgb=hex=>hex.slice(1).match(/../g).map(value=>parseInt(value,16));
  const paint=async(coordinate,hex)=>expect.poll(async()=>{
-  const actual=await pixel(coordinate);
-  return Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value)));
- }).toBeLessThanOrEqual(1);
+  const actual=await readGeographicPixel(page,coordinate);
+  return actual?Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value))):Infinity;
+ },{message:'Geographic pixel: '+coordinate.join(',')+' expected '+hex}).toBeLessThanOrEqual(1);
  return {canvas,go,paint};
 }
 
@@ -412,7 +453,7 @@ test('Three globe uses territorial coastlines for coastal fill',async({page})=>{
 });
 
 test('Three globe preserves polar, date-line and microstate surfaces',async({page})=>{
- const {canvas,go,paint}=await openGeographicSampleMap(page);
+ const {go,paint}=await openGeographicSampleMap(page);
  const ant=[20,-85],north=[0,89.9];
  await go(ant,5);await paint(ant,'#f1f1f1');
  await go(north,5);await paint(north,'#ffffff');
@@ -427,9 +468,7 @@ test('Three globe preserves polar, date-line and microstate surfaces',async({pag
  const vatican=[12.45375,41.90308];
  await go([12.4534,41.9033],17);
  await paint(vatican,COUNTRY_DEFAULT_COLORS.VAT);
- const point=await page.evaluate(coordinate=>window.__PANDOLAB_MAP_HOST__.project(coordinate),vatican);
- const box=await canvas.boundingBox();
- await page.mouse.click(box.x+point[0],box.y+point[1]);
+ await clickGeographicPoint(page,vatican);
  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(row=>row.id))).toContain('VAT');
 });
 
@@ -440,20 +479,11 @@ test('Three globe switches historical territories and water in the same dated fr
   const viewer=window.__PANDOLAB_VIEWER__,stats=viewer.rendererStats();
   return {month:viewer.builtinMonth().month,water:stats.physicalWaterIds,territories:stats.countrySlotCount};
  });
- await page.evaluate(()=>window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom:2.75,globeRotation:[-58,-43,0]}}));
+ await goToCoordinate(page,[58,43],2.75);
  const initialCamera=(await camera(page)).camera,before=await state();
  // The same point in the eastern Aral basin is dry today and submerged in 1923.
- const canvas=page.locator('#map canvas'), aralPoint=[60.6,45.4];
- const colorAtAral=async()=>{
-  const [x,y]=await page.evaluate(point=>window.__PANDOLAB_MAP_HOST__.project(point),aralPoint);
-  return page.evaluate(async ({encoded,x,y})=>{
-   const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
-   const pixel=new OffscreenCanvas(1,1).getContext('2d');
-   pixel.drawImage(image,Math.round(x*window.devicePixelRatio),Math.round(y*window.devicePixelRatio),1,1,0,0,1,1);
-   image.close();
-   return [...pixel.getImageData(0,0,1,1).data].slice(0,3);
-  },{encoded:(await canvas.screenshot()).toString('base64'),x,y});
- };
+ const aralPoint=[60.6,45.4];
+ const colorAtAral=()=>readGeographicPixel(page,aralPoint);
  const land=COUNTRY_DEFAULT_COLORS.KAZ.slice(1).match(/../g).map(value=>parseInt(value,16));
  await expect.poll(colorAtAral,{timeout:15000}).toEqual(land);
  await month(page,'1923-11');
@@ -472,14 +502,8 @@ test('Three globe selects rendered rivers and dated water with Core identities',
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,selection:{color:'#ff00fd',fillStrength:1}})));
  await page.goto('./?debug=1');
  await ready(page,'Three globe hydro selection startup');
- const go=([lon,lat],zoom)=>page.evaluate(({lon,lat,zoom})=>{
-  window.__PANDOLAB_MAP_HOST__.setViewState({projection:'globe',view:{zoom,globeRotation:[-lon,-lat,0]}});
- },{lon,lat,zoom});
- const click=async coordinate=>{
-  const point=await page.evaluate(coord=>window.__PANDOLAB_MAP_HOST__.project(coord),coordinate);
-  const box=await page.locator('#map canvas').boundingBox();
-  await page.mouse.click(box.x+point[0],box.y+point[1]);
- };
+ const go=(center,zoom)=>goToCoordinate(page,center,zoom);
+ const click=coordinate=>clickGeographicPoint(page,coordinate);
  const selection=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref=>ref.id));
  // A vertex from the reviewed GRWL eastern mouth, with the retained river ID.
  const nakdong=[128.96075,35.1557],nakdongId='hydro-system:40505530';
@@ -618,11 +642,12 @@ async function month(page,value){
   await page.locator('#timelineViewUnit').selectOption('month');
   await page.locator('#timelineYearInput').fill(year);
   await page.locator('#timelineMonthInput').selectOption(String(Number(month)));
+  const before=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().presentedFrame);
   const started=performance.now();
   await page.locator('#timelineGoBtn').click();
   await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.documentState().timelineCursor),{timeout:60_000}).toBe(value);
   console.log('[viewer-ready]',JSON.stringify({stage:`month ${value}`,milestone:'cursor accepted',elapsedMs:Math.round(performance.now()-started)}));
-  await ready(page,`month ${value}`);
+  await ready(page,`month ${value}`,{month:value,afterFrame:before&&before.month!==value?before.frameId:null});
 }
 
 test('timeline displays one line and changes month through the dropdown', async ({page}) => {
