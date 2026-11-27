@@ -3,66 +3,73 @@ on:
   workflow_dispatch:
     inputs:
       group:
+        description: Select one check group
         type: choice
         options:
           - node
-
+          - gis
           - browser
           - lint
         default: node
-        description: Selected core check
+      files:
+        description: Exact repository-relative files (comma or newline separated)
+        type: string
+        default: ""
       test_name_pattern:
+        description: Optional test title pattern (Node, GIS or browser)
         type: string
         default: ""
-        description: Optional Node scenario name
-      browser_grep:
-        type: string
-        default: ""
-        description: Browser test title filter (optional)
+      whole_group:
+        description: Explicitly authorize all files in the selected group
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version-file: .nvmrc
       - uses: pnpm/action-setup@v4
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      - if: inputs.group == 'browser'
-        run: node tools/data/library-data.mjs --prepare-metadata
-      - if: inputs.group == 'browser'
-        run: pnpm exec playwright install --with-deps chromium
-      - env:
-          CHECK_GROUP: ${{ inputs.group }}
-          CHECK_PATTERN: ${{ inputs.test_name_pattern }}
-          BROWSER_GREP: ${{ inputs.browser_grep }}
-        run: |-
-          node --input-type=module <<'NODE'
-          import { spawnSync } from 'node:child_process';
-          import { executeChecks } from './scripts/run-application-checks.mjs';
-          const group = process.env.CHECK_GROUP;
-          const pattern = process.env.BROWSER_GREP;
-          executeChecks({
-            groups: [group],
-            testNamePattern: process.env.CHECK_PATTERN || undefined,
-            ...(group === 'browser' ? {
-              run: ([command, ...args], options) => spawnSync(command, [
-                ...args,
-                ...(pattern ? [`--grep=${pattern}`] : []),
-                '--trace=retain-on-failure',
-              ], { ...options, stdio: 'inherit', windowsHide: true }),
-            } : {}),
-          });
-          NODE
-      - name: Upload browser failure traces
-        if: ${{ inputs.group == 'browser' && !cancelled() }}
-        uses: actions/upload-artifact@v5
         with:
-          name: browser-failure-traces
+          run_install: false
+      - name: Run only the explicitly selected scope
+        shell: bash
+        env:
+          CHECK_GROUP: ${{ inputs.group }}
+          CHECK_FILES: ${{ inputs.files }}
+          CHECK_PATTERN: ${{ inputs.test_name_pattern }}
+          CHECK_WHOLE_GROUP: ${{ inputs.whole_group }}
+        run: |
+          set -euo pipefail
+          args=("--group=$CHECK_GROUP")
+          count=0
+          while IFS= read -r file; do
+            if [[ -n "$file" ]]; then args+=("--file=$file"); count=$((count+1)); fi
+          done < <(printf '%s\n' "$CHECK_FILES" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          if [[ -n "$CHECK_PATTERN" ]]; then args+=("--test-name-pattern=$CHECK_PATTERN"); fi
+          if [[ "$CHECK_WHOLE_GROUP" != true && "$count" == 0 && ! ( "$CHECK_GROUP" == browser && -n "$CHECK_PATTERN" ) ]]; then
+            echo 'Select exact files, a browser scenario, or explicitly authorize the whole group.' >&2
+            exit 1
+          fi
+          node scripts/run-application-checks.mjs --plan "${args[@]}"
+          pnpm install --frozen-lockfile --ignore-scripts
+          if [[ "$CHECK_GROUP" == browser ]]; then
+            node tools/data/library-data.mjs --prepare-metadata
+            pnpm exec playwright install chromium
+          fi
+          node scripts/run-application-checks.mjs "${args[@]}"
+      - name: Upload browser failure evidence
+        if: inputs.group == 'browser' && failure() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7

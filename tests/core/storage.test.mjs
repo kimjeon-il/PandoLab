@@ -364,6 +364,15 @@ test('application checks select only registered files and scenarios', async () =
  executeChecks({groups:['browser'],catalog,run,files:['tests/viewer.spec.mjs'],testNamePattern:'touch'});
  assert.deepEqual(calls[0].slice(1),['playwright.js','test','tests/viewer.spec.mjs','--grep','touch']);
  assert.throws(()=>executeChecks({groups:['node'],catalog,run,files:['tests/not-registered.mjs']}),/registered/i);
+ assert.throws(()=>executeChecks({catalog,run}),/explicit/i);
+ const {selectChecks}=await import('../../scripts/run-application-checks.mjs');
+ const lintCatalog={groups:[...catalog.groups,{id:'lint',argv:['node','eslint.js','src','tests']}]};
+ const scoped=selectChecks({groups:['node','lint'],catalog:lintCatalog,files:['src/map/input.js']});
+ assert.deepEqual(scoped.map(row=>[row.id,...row.argv.slice(1)]),[['lint','eslint.js','--','src/map/input.js']]);
+ for(const file of ['src/../private.js','src/**/*.js','src/-config.js','other.js','src/native/engine.cpp']){
+  assert.throws(()=>selectChecks({groups:['lint'],catalog:lintCatalog,files:[file]}),/registered/i);
+ }
+ assert.throws(()=>selectChecks({groups:['lint'],catalog:lintCatalog,testNamePattern:'anything'}),/scenario/i);
 });
 
 test('historical frontend indexing reads retired module identities without recreating a worktree',async()=>{
