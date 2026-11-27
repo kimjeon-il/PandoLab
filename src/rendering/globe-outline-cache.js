@@ -38,7 +38,7 @@ export function outlineInstanceCapacity(current, needed, limit) {
   return globeBufferCapacity(current, needed, limit, 32, current);
 }
 
-export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedIndex = null, strokeOptions, maxTextureSize, orderForChunk, residency, onResidencyChange = () => {}}) {
+export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex=null,strokeOptions,maxTextureSize,orderForChunk,residency,onResidencyChange=()=>{},gpuFrameBudget=null,prepareGpuMesh=null}) {
   const index = preparedIndex??indexGlobeOutlineChunks(packet, owners), partitions = packet.spatialParts;
   const packetBuffers = renderPacketBuffers(packet);
   const outlineStyles = Array.from({length:5}, () => new THREE.Vector2());
@@ -53,6 +53,11 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
   function hideMesh(chunk) {
     if (chunk.gpu?.mesh.visible) {chunk.gpu.mesh.visible = false; chunk.lastUsed = performance.now(); markChunk(chunk);}
   }
+  function disposePendingGpu(chunk) {
+    const gpu=chunk.pendingGpu;if(!gpu)return;
+    disposeGlobeGpuResources(scene,[gpu.mesh],{textures:gpu.texture&&gpu.texture!==chunk.gpu?.texture?[gpu.texture.texture]:[]});
+    chunk.pendingGpu=null;
+  }
   function disposeGpu(chunk, {keepTexture = false} = {}) {
     const gpu = chunk.gpu;
     if (!gpu)return;
@@ -60,8 +65,8 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
     chunk.gpu = null; markChunk(chunk);
   }
   function evictChunk(chunk) {
-    if (!chunk.gpu)return;
-    disposeGpu(chunk); evictedChunks++;
+    if (!chunk.gpu&&!chunk.pendingGpu)return;
+    disposeGpu(chunk);disposePendingGpu(chunk);evictedChunks++;
     chunk.selection = null; chunk.selected = null; chunk.subsets.clear();
     if (!chunk.roles.size)chunks.delete(chunk.id);
     else residency?.set(chunk, {...chunkFootprint(chunk), lastUsed:chunk.lastUsed, protected:true, groups:['outline','outlineChunk']});
@@ -70,7 +75,7 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
   function clearInactive(chunk) {
     hideMesh(chunk); activeChunks.delete(chunk);
     chunk.selection = null; chunk.selected = null;
-    if (!chunk.gpu) {chunk.subsets.clear(); chunks.delete(chunk.id);}
+    if (!chunk.gpu) {disposePendingGpu(chunk);chunk.subsets.clear();chunks.delete(chunk.id);}
     markChunk(chunk);
   }
   function paint(roles, styles, color) {
@@ -126,35 +131,42 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
     for (const name of [...names,'ownerGroup'])mesh.geometry.getAttribute(name).setUsage(THREE.DynamicDrawUsage);
     mesh.geometry.instanceCount = 0; mesh.visible = false; scene.add(mesh);
     createdChunks++;
-    return {mesh, texture, output, capacity, subset, direct, names, sourceGroups:new Set(chunk.roles.keys()), membershipRevision:chunk.membershipRevision, roleRevision:-1, ranges:null};
+    return {mesh,texture,output,capacity,subset,direct,names,sourceGroups:new Set(chunk.roles.keys()),membershipRevision:chunk.membershipRevision,roleRevision:-1,ranges:null,ready:false};
   }
-  function ensureGpu(chunk, needed) {
-    let gpu = chunk.gpu;
-    const part = partitions[chunk.id].packet, capacity = outlineInstanceCapacity(gpu?.capacity??0, needed, part.count);
-    const direct = useDirectGlobeStrokeAttributes({count:capacity});
+  function ensureGpu(chunk,needed) {
+    const gpu=chunk.gpu,part=partitions[chunk.id].packet,capacity=outlineInstanceCapacity(gpu?.capacity??0,needed,part.count);
+    const direct=useDirectGlobeStrokeAttributes({count:capacity});
     if (gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.membershipRevision===chunk.membershipRevision))return gpu;
-    const membership = [...chunk.roles.keys()].sort((a, b) => a-b).join(',');
-    // Direct attributes only need the visible source endpoints. No partial
-    // point dictionary is generated for a small outline.
-    let subset = null;
+    const membership=[...chunk.roles.keys()].sort((a,b)=>a-b).join(',');
+    let subset=null;
     if (!direct) {
-      subset = touchLruEntry(chunk.subsets, membership);
-      if (subset) {subsetHits++;}
+      subset=touchLruEntry(chunk.subsets,membership);
+      if (subset)subsetHits++;
       else {
-        const build = () => buildGlobeOutlinePointSubset(part, [...chunk.roles.values()].flatMap(({row}) => row.ranges).sort((a, b) => a[0]-b[0]));
-        subset = residency?.withTemporary(chunk.selectedCount*72+part.count*4,'outline-subset', build)??build();
-        subsetBuilds++; chunk.subsets.set(membership, subset);
-        trimLruCount(chunk.subsets, subsetLimit);
-        markChunk(chunk);
+        const build=()=>buildGlobeOutlinePointSubset(part,[...chunk.roles.values()].flatMap(({row})=>row.ranges).sort((a,b)=>a[0]-b[0]));
+        subset=residency?.withTemporary(chunk.selectedCount*72+part.count*4,'outline-subset',build)??build();
+        subsetBuilds++;chunk.subsets.set(membership,subset);trimLruCount(chunk.subsets,subsetLimit);markChunk(chunk);
       }
     }
-    if (gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.subset===subset)) {gpu.membershipRevision = chunk.membershipRevision; return gpu;}
+    if (gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.subset===subset)) {gpu.membershipRevision=chunk.membershipRevision;return gpu;}
     if (gpu&&capacity<gpu.capacity)shrunkBuffers++;
-    const reuseTexture = gpu&&!direct&&gpu.subset===subset?gpu.texture:null;
-    const create = () => newGpu(chunk, subset, capacity, reuseTexture);
-    const replacement = residency?.withTemporary(capacity*(direct?100:24)+(reuseTexture?0:(subset?.points.byteLength??0)*2),'outline-gpu', create)??create();
-    disposeGpu(chunk, {keepTexture:Boolean(reuseTexture)});
-    chunk.gpu = replacement; markChunk(chunk); return replacement;
+    const reuseTexture=gpu&&!direct&&gpu.subset===subset?gpu.texture:null;
+    const signature=membership+':'+capacity+':'+Number(direct)+':'+(subset===null?'direct':'subset');
+    let replacement=chunk.pendingGpu;
+    if (replacement&&replacement.signature!==signature) {disposePendingGpu(chunk);replacement=null;}
+    if (!replacement) {
+      const createBytes=capacity*(direct?100:24)+(reuseTexture?0:(subset?.points.byteLength??0)*2);
+      if (gpuFrameBudget&&!gpuFrameBudget.admitCreate(createBytes,1))return null;
+      const create=()=>newGpu(chunk,subset,capacity,reuseTexture);
+      replacement=residency?.withTemporary(createBytes,'outline-gpu',create)??create();
+      replacement.signature=signature;chunk.pendingGpu=replacement;
+    }
+    if (!replacement.ready) {
+      if (prepareGpuMesh&&!prepareGpuMesh(replacement.mesh))return null;
+      replacement.ready=true;
+    }
+    disposeGpu(chunk,{keepTexture:Boolean(reuseTexture)});
+    chunk.gpu=replacement;chunk.pendingGpu=null;markChunk(chunk);return replacement;
   }
   function update(getCuller, strokePadding, stats) {
     const cull = getCuller(strokePadding(options, 1));
@@ -167,10 +179,13 @@ export function createGlobeOutlineCache(THREE, {scene, packet, owners, preparedI
       if (chunk.selected?.ranges!==selected.ranges) {chunk.selected = selected; markChunk(chunk);}
       stats.submittedSegments+=selected.count; stats.visibleRanges+=selected.leaves;
       if (!selected.count) {hideMesh(chunk); continue;}
-      const gpu = ensureGpu(chunk, selected.count), {mesh, output, subset} = gpu;
+      const gpu=ensureGpu(chunk,selected.count);if(!gpu)continue;
+      const {mesh,output,subset}=gpu;
       const rangesChanged = gpu.ranges!==selected.ranges, rolesChanged = gpu.roleRevision!==chunk.roleRevision;
       if (rangesChanged||rolesChanged) {
-        const writes = planGlobeCompactionUpdates(selected.ranges, gpu.ranges??new Uint32Array());
+        const writes=planGlobeCompactionUpdates(selected.ranges,gpu.ranges??new Uint32Array());
+        const uploadBytes=writes.reduce((sum,row)=>sum+(row.end-row.first)*(gpu.direct?48:8)+selected.count*2,0);
+        if (uploadBytes&&gpuFrameBudget&&!gpuFrameBudget.admitCompaction(uploadBytes,1))continue;
         for (const {first, end, offset} of writes) {
           let dst = offset;
           for (let id = first; id<end; id++, dst++) {
