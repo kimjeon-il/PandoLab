@@ -392,6 +392,7 @@ test('network admission is handed to the Worker stage so the next download can s
  await new Promise(setImmediate);
  assert.equal(workerStarted,true);
  assert.equal(network.stats().active,0);
+ assert.equal(network.stats().handoffs,1);
  const next=network.run({bytes:12},()=> 'downloaded');
  assert.equal(await next,'downloaded');
  assert.equal(worker.stats().active,1);

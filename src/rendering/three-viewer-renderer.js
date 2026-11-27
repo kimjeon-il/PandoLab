@@ -406,8 +406,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const begin = () => {
       neighborTimer = null;
       if (!valid()) {neighborKey.clear(keyClaim); return;}
-      const gate = loadGate.stats();
-      if (gate.active||gate.queued) {
+      const gate = loadGate.stats(), worker = workerGate.stats();
+      if (gate.active||gate.queued||worker.active||worker.queued) {
         neighborStats.idleWaits++;
         neighborIdleOff = onLoadPipelineIdle(() => {
           const off = neighborIdleOff; neighborIdleOff = null; off?.();

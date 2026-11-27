@@ -279,7 +279,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
 // A required oversize packet runs alone. Queued work never acquires bytes.
 export function createRenderLoadGate({concurrency, byteBudget, residency = null}) {
   let active = 0, foreground = 0, speculative = 0, bytes = 0, closed = false, peakBytes = 0, peakActive = 0, bypasses = 0, pressureSkips = 0;
-  let pumpQueued = false, pumping = false;
+  let pumpQueued = false, pumping = false, handoffs = 0;
   const idleListeners = new Set();
   const schedule = () => {if (closed||pumpQueued)return; pumpQueued = true; queueMicrotask(() => {pumpQueued = false; pump();});};
   const pending = createWorkerAdmissionQueue(schedule), queue = pending.rows;
@@ -314,9 +314,10 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
         const isSpeculative = row.priority<0;
         active++; if (isSpeculative)speculative++; else foreground++;
         bytes+=row.bytes; peakActive = Math.max(peakActive, active); peakBytes = Math.max(peakBytes, bytes);
-        let admissionReleased = false;
+        let admissionReleased = false, taskSettled = false;
         const releaseAdmission = () => {
           if (admissionReleased)return;
+          if (!taskSettled)handoffs++;
           admissionReleased = true;
           active--; if (isSpeculative)speculative--; else foreground--;
           bytes-=row.bytes; release();
@@ -324,7 +325,7 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
           notifyIdle();
         };
         Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task({releaseAdmission});})
-          .then(row.resolve, row.reject).finally(releaseAdmission);
+          .then(row.resolve, row.reject).finally(() => {taskSettled = true; releaseAdmission();});
       }
     }finally {pumping = false; notifyIdle();}
   }
@@ -337,5 +338,5 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
     closed = true; off?.(); idleListeners.clear();
     pending.rejectAll(new DOMException('Render load gate closed','AbortError'));
   }
-  return Object.freeze({run, onIdle, dispose, stats:() => ({active, foreground, speculative, queued:queue.length, reservedBytes:bytes, peakBytes, peakActive, bypasses, pressureSkips, byteBudget, concurrency})});
+  return Object.freeze({run, onIdle, dispose, stats:() => ({active, foreground, speculative, queued:queue.length, reservedBytes:bytes, peakBytes, peakActive, bypasses, pressureSkips, handoffs, byteBudget, concurrency})});
 }
