@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   gpu-batching-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Re-run initial GPU batching and draw reduction' && github.event.before == 'f5e288b06ce25ed1da3543a5a1e8bee68c295ae6'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Measure bounded GPU batching and draw reduction' && github.event.before == 'e5b74eae788812e76936ca7479d4df8f4bd97328'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
