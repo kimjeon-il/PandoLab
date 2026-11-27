@@ -1,4 +1,4 @@
-import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourceFootprint, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
+import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourceFootprint, createGlobeGpuResidency, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
 import { createGlobeOutlineCache } from './globe-outline-cache.js';
@@ -6,7 +6,7 @@ import { planGlobeCompactionUpdates, mergeGlobeDrawRanges, copyGlobeDrawWrites, 
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges } from './globe-outline-cache.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
-import { renderCacheBudget, renderPacketBuffers, renderFootprintBytes, touchRenderCache, trimRenderCache } from './render-cache-budget.js';
+import { renderCacheBudget, renderPacketBuffers, touchRenderCache } from './render-cache-budget.js';
 import { createGlobeSpatialSelection, createGlobeRangeCuller, globeStrokeRange } from './globe-spatial-partition.js';
 
 const surfaceVertex = `
@@ -108,8 +108,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const zoom = { value: 0 };
   const cameraUniforms = { eyeHigh: { value: eyeHigh }, eyeLow: { value: eyeLow }, viewRotation: { value: viewRotation }, zoom };
   const viewport = { value: new THREE.Vector2() }, margin = { value: 0.5 };
-  let refreshMeshLedger = () => {}, refreshLabelLedger = () => {};
-  const labels = createThreeGlobeLabels(THREE, {scene, renderer, palette:palette.labels, capacity:PLACE_LIMITS.layoutCandidates, maxTextureSize:maxPointTextureSize, viewport, byteBudget:cacheBudget.labelAtlasBytes, residency, workScheduler, onReady:() => {refreshLabelLedger(); onLabelReady();}, onError:onLabelError});
+  const labels = createThreeGlobeLabels(THREE, {scene, renderer, palette:palette.labels, capacity:PLACE_LIMITS.layoutCandidates, maxTextureSize:maxPointTextureSize, viewport, byteBudget:cacheBudget.labelAtlasBytes, residency, workScheduler, onReady:onLabelReady, onError:onLabelError});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint() {
     countryTextureUploaded = false; countryPendingFull = true; texture.clearUpdateRanges(); texture.needsUpdate = true;
@@ -138,12 +137,11 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     texture.needsUpdate = true;
   }
   const layers = new Map(), residentMeshes = new Map();
-  let meshResidentBytes = 0;
+  const meshLedger = createGlobeGpuResidency(residency);
   const spatialResources = new Set(), activeSpatialResources = new Set(), dirtyOutlineOwners = new Map();
   const strokeResources = {country:new Set(), river:new Set()};
   let spatialStats = {triangles:0, submittedTriangles:0, segments:0, submittedSegments:0, ranges:0, visibleRanges:0, strokeBatches:0, strokeDrawCalls:0, directStrokeSegments:0, compactionUploadBytes:0, meshDrawCalls:0, immutableIndexTriangles:0, rewrittenBlocks:0};
   let cullingCamera = null, cullingWidth = 0, cullingHeight = 0, cullers = new Map();
-  let residencyDirty = true;
   let activePhysical = null, physicalLayers = null;
   const visibleLayers = {lakes:true, rivers:true};
   let activeView = null, activeTerritoryInput = null, activeBorders = [], activeBase = [], showBorders = true;
@@ -157,12 +155,14 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     let enabled = true, disposed = false;
     const materials = globeMeshMaterials(objects);
     if (material)materials.add(material);
-    function footprint() {
+    const immutableBuffers = renderPacketBuffers(retained);
+    function readFootprint() {
       return gpuResourceFootprint(geometries?geometries():objects.map(mesh => mesh.geometry),
-        pointResources.map(row => row.texture), [retained, workspace()]);
+        pointResources.map(row => row.texture), workspace(), immutableBuffers);
     }
     const resource = {
-      material, update, lastUsed:performance.now(), footprint,
+      material, update, lastUsed:performance.now(),
+      markFootprint:() => meshLedger.mark(resource),
       setOrder(order, span = 0) {objects.forEach((mesh, i) => {mesh.renderOrder = order+span*i/Math.max(1,objects.length);});},
       setStrokeStyle(style) {for (const material of materials) {const u = material.uniforms; if (u.radius)u.radius.value = style.width/2;if(u.strokeColor)u.strokeColor.value.set(style.color);if(u.strokeOpacity)u.strokeOpacity.value=style.opacity??style.alpha??1;}},
       get visible() {return enabled;},
@@ -174,7 +174,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       },
       dispose() {
         if (disposed)return;
-        disposed = true; activeSpatialResources.delete(resource); spatialResources.delete(resource);
+        disposed = true; activeSpatialResources.delete(resource); spatialResources.delete(resource); meshLedger.remove(resource);
         disposeGlobeGpuResources(scene, objects, {
           geometries:geometries?geometries():objects.map(mesh => mesh.geometry), materials,
           textures:pointResources.map(row => row.texture), afterGeometry:disposeExtra,
@@ -182,7 +182,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       },
     };
     for (const mesh of objects) {mesh.visible = false; scene.add(mesh);}
-    spatialResources.add(resource); activeSpatialResources.add(resource); residencyDirty = true; refreshMeshLedger();
+    spatialResources.add(resource); activeSpatialResources.add(resource); meshLedger.track(resource, readFootprint);
     return resource;
   }
   function strokePadding(options, maxWidth) {
@@ -257,7 +257,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
           }else if (!direct)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('endpointIndices'), source.endpointIndices, writes);
           if (output.widths.length)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('sourceWidth'), source.widths, writes);
           if (output.ownerGroups.length)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('ownerGroup'), source.ownerGroups, writes);
-          batch.prior = ranges; residencyDirty = true;
+          batch.prior = ranges; resource.markFootprint();
         }
         mesh.geometry.instanceCount = total; mesh.visible = total>0;
         stats.submittedSegments+=total;
@@ -309,7 +309,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       if (!dynamicGeometry)return;
       for (const key of Object.keys(attributes))dynamicGeometry.deleteAttribute(key);
       dynamicGeometry.dispose(); dynamicGeometry = null; drawIndex = null;
-      blocks.clear(); capacity = 0; residencyDirty = true; refreshMeshLedger();
+      blocks.clear(); capacity = 0; resource.markFootprint();
     }
     function setGroups(geometry, groups) {
       geometry.clearGroups(); for (const row of groups)geometry.addGroup(row.start, row.count, 0);
@@ -355,7 +355,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       });
       if (changed) {
         const {ranges} = mergeGlobeDrawRanges(selections);
-        priorSelection = ranges; submitted = count; visibleLeaves = leaves; residencyDirty = true;
+        priorSelection = ranges; submitted = count; visibleLeaves = leaves; resource.markFootprint();
         if (!count) {activeCalls = 0; mesh.visible = false;}
         else if (ranges.length<=4) {
           mesh.geometry = sourceGeometry;
@@ -393,8 +393,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function attachRiverDetail(row, packet) {
     const resource = riverMesh(packet, row.minZoom);
     const order = Math.max(0, row.order??0); resource.setOrder(4+.49*order/(order+1));
-    resource.externalOwner = true;
-    return {residentBytes:renderFootprintBytes(resource.footprint()), footprint:resource.footprint, setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
+    return {residentBytes:meshLedger.bytes(resource),
+      setResidency:options => meshLedger.configure(resource, options),
+      setProtected:value => meshLedger.protect(resource, value),
+      setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
   }
   const countryStrokeStyle = {...palette.strokes.country};
   const strokeOptions = {style:countryStrokeStyle, cameraUniforms, viewport, margin, multisampling, strokeKind:'country'};
@@ -408,17 +410,15 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   if (packets.graticule)installGraticule(packets.graticule);
   function useMesh(role, identity, prepare) {
     const key = role+':'+identity;
-    const existing = touchRenderCache(residentMeshes, key);
-    if (existing)return existing.mesh;
-    const mesh = prepare();
-    // Buffer attributes retain their CPU arrays alongside the device copy.
-    const bytes = renderFootprintBytes(mesh.footprint());
-    residentMeshes.set(key, {mesh, bytes}); meshResidentBytes+=bytes; residencyDirty = true;
+    const existing = residentMeshes.get(key);
+    if (existing) {meshLedger.protect(existing.mesh, true); return existing.mesh;}
+    const mesh = prepare(), entry = {mesh};
+    residentMeshes.set(key, entry);
+    meshLedger.configure(mesh, {group:'mesh', evict:() => evictMesh(key, entry)});
     return mesh;
   }
   function activatePhysicalContext(parts) {
     if (activePhysical===parts)return;
-    residencyDirty = true;
     const previous = new Set(Object.values(physicalLayers??{}).flat());
     const waterGroups = registerGpuGroups(parts.waters,'water', row => row.id, packet => register(null, packet, palette.ocean, 2));
     const lakeGroups = registerGpuGroups(parts.lakes,'lake', row => String(row.minZoom), (packet, row) => register(null, packet, palette.ocean, 2, row.minZoom,'lake'));
@@ -433,7 +433,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     waterGroups.forEach(({rows, resource}) => {const id = rows[0].id; let group = waterMeshes.get(id); if (!group) {group = []; waterMeshes.set(id, group);}group.push(resource);});
     activePhysical = parts; waterPaintDirty = true;
     for (const [role, meshes] of Object.entries(physicalLayers))for (const mesh of meshes) {mesh.visible = visibleLayers[role]!==false; previous.delete(mesh);}
-    for (const mesh of previous)mesh.visible = false;
+    for (const mesh of previous) {mesh.visible = false; meshLedger.protect(mesh, false);}
   }
   function setHydroPaint(slots, waters, styles, color) {
     for (const slot of new Set([...previousHydro.keys(), ...slots.keys()])) {
@@ -512,7 +512,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   function activateTerritorialChunks(view, rows) {
     if (activeTerritoryInput===rows&&view===activeView)return;
-    residencyDirty = true;
     // Reconcile resources by stable chunk identity. Do not toggle unchanged
     // meshes on every camera plan or temporal metadata update.
     const previous = new Set([...activeBase, ...activeBorders]);
@@ -526,7 +525,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       resource.setOrder(5+.4*i/Math.max(1,borders.length),.4/Math.max(1,borders.length));resource.visible=showBorders;
       previous.delete(resource); return resource;
     });
-    for (const resource of previous)resource.visible = false;
+    for (const resource of previous) {resource.visible = false; meshLedger.protect(resource, false);}
     activeTerritoryInput = rows;
     if (view!==activeView) {
       activeView = view;
@@ -540,42 +539,18 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
 
   // Only called after successful visual publication. Never dispose the
   // previously published scene while a replacement is still being drawn.
-  function activeMeshesNow() {return new Set([...activeBase, ...activeBorders, ...Object.values(physicalLayers??{}).flat()]);}
   function evictMesh(key, entry) {
     if (residentMeshes.get(key)!==entry)return;
-    residentMeshes.delete(key); meshResidentBytes-=entry.bytes; entry.mesh.dispose();
+    residentMeshes.delete(key); entry.mesh.dispose();
   }
-  function meshMemoryEntries() {
-    const rows = [], protectedMeshes = activeMeshesNow(), owned = new Set();
-    for (const [key, entry] of residentMeshes) {
-      owned.add(entry.mesh);
-      rows.push({key:entry.mesh, ...entry.mesh.footprint(), lastUsed:entry.mesh.lastUsed, protected:protectedMeshes.has(entry.mesh), evict:() => evictMesh(key, entry)});
-    }
-    for (const resource of spatialResources)if (!owned.has(resource)&&!resource.outlineOwner&&!resource.externalOwner)rows.push({key:resource, ...resource.footprint(), protected:true});
-    rows.push({key:channels, buffers:renderPacketBuffers([channels, countryVisible, hydroBytes, borderBytes, countrySlotRevisions, borderSlotRevisions]), extraBytes:channels.byteLength+hydroBytes.byteLength, protected:true});
-    return rows;
-  }
-  refreshMeshLedger = residency.register(meshMemoryEntries); refreshLabelLedger = residency.register(labels.memoryEntries);
+  residency.set(channels, {buffers:renderPacketBuffers([channels, countryVisible, hydroBytes, borderBytes, countrySlotRevisions, borderSlotRevisions]), extraBytes:channels.byteLength+hydroBytes.byteLength, protected:true});
   function evictOutline(slot, entry) {
     if (outlineCache.get(slot)!==entry)return;
     outlineCache.delete(slot); dirtyOutlineOwners.delete(entry); entry.dispose(); dirtyOutlineOwners.delete(entry);
   }
   function trimResidency() {
     const labelsChanged = labels.trim();
-    if (labelsChanged)refreshLabelLedger();
-    const meshChanged = residencyDirty, outlineChanged = dirtyOutlineOwners.size>0;
-    if (meshChanged) {
-      residencyDirty = false;
-      const activeMeshes = activeMeshesNow(), protectedMeshes = new Set();
-      meshResidentBytes = 0;
-      for (const [key, entry] of residentMeshes) {
-        if (activeMeshes.has(entry.mesh))protectedMeshes.add(key);
-        entry.bytes = renderFootprintBytes(entry.mesh.footprint()); meshResidentBytes+=entry.bytes;
-      }
-      meshResidentBytes = trimRenderCache(residentMeshes, protectedMeshes, cacheBudget.residentMeshBytes,
-        entry => entry.bytes, (_key, entry) => entry.mesh.dispose(), {entryLimit:512, residentBytes:meshResidentBytes});
-      refreshMeshLedger();
-    }
+    const meshChanged = meshLedger.flush(), outlineChanged = dirtyOutlineOwners.size>0;
     for (const [entry, slot] of dirtyOutlineOwners) {
       if (outlineCache.get(slot)===entry)entry.syncResidency({active:paintedOutlines.has(entry), evict:() => evictOutline(slot, entry)});
     }
@@ -589,7 +564,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       outlineResidentBytes+=entry.bytes();
       for (const [key, value] of Object.entries(entry.stats()))outlineChunks[key]+=value;
     }
-    return {meshes:residentMeshes.size, meshResidentBytes, outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
+    return {meshes:residentMeshes.size, meshResidentBytes:meshLedger.groupBytes('mesh'), meshLedger:meshLedger.stats(), outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
   }
 
   function resize(width, height, dpr) {
@@ -599,8 +574,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     renderer.setSize(width, height, false);
   }
   function prepareLabels(globeCamera, width, height, requireComplete = false) {
-    const complete = labels.update(globeCamera, width, height, createGlobeRangeCuller(globeCamera.frame, width, height), requireComplete);
-    refreshLabelLedger(); return complete;
+    return labels.update(globeCamera, width, height, createGlobeRangeCuller(globeCamera.frame, width, height), requireComplete);
   }
   function draw(globeCamera, width, height) {
     const {frame, view} = globeCamera;
@@ -628,8 +602,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function dispose() {
     labels.dispose();
     for (const entry of outlineCache.values())entry.dispose();
-    outlineCache.clear(); paintedOutlines.clear(); dirtyOutlineOwners.clear(); residentMeshes.clear(); meshResidentBytes = 0;
-    refreshMeshLedger.dispose(); refreshLabelLedger.dispose();
+    outlineCache.clear(); paintedOutlines.clear(); dirtyOutlineOwners.clear(); residentMeshes.clear();
+    residency.remove(channels);
     for (const resource of [...spatialResources])resource.dispose();
     layers.clear(); waterMeshes.clear(); activeBorders = []; activeBase = []; activeTerritoryInput = null; physicalLayers = activePhysical = null; graticule = null;
     texture.dispose(); hydroTexture.dispose(); hydroCopier.dispose();

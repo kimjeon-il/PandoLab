@@ -276,3 +276,33 @@ test('visible margin loads wait for active reservations before being declined', 
   assert.deepEqual(order, ['required', 'margin']);
   gate.dispose(); residency.dispose();
 });
+
+
+test('GPU residency measures only dirty resources and keeps incremental totals and protection', async () => {
+  const {createGlobeGpuResidency} = await import('../../../src/rendering/globe-gpu-resources.js');
+  const {createRenderResidencyBudget} = await import('../../../src/rendering/render-cache-budget.js');
+  const residency = createRenderResidencyBudget(100,{groups:{mesh:{byteBudget:24,entryLimit:2}}});
+  const ledger = createGlobeGpuResidency(residency), first = {}, second = {};
+  const shared = new ArrayBuffer(8);
+  let firstReads = 0, secondReads = 0, extra = 4, evictions = 0;
+  ledger.track(first, () => {firstReads++; return {buffers:new Set([shared]),extraBytes:extra};}, {group:'mesh'});
+  ledger.track(second, () => {secondReads++; return {buffers:new Set([shared]),extraBytes:4};},
+    {group:'mesh',evict:() => {evictions++;ledger.remove(second);}});
+  assert.equal(ledger.flush(),true);
+  assert.equal(ledger.groupBytes('mesh'),24);
+  assert.equal(residency.trim().residentBytes,16);
+  assert.equal(ledger.flush(),false);
+  ledger.protect(second,false); ledger.flush();
+  assert.deepEqual([firstReads,secondReads],[1,1]);
+  extra = 8; ledger.mark(first); ledger.flush();
+  assert.deepEqual([firstReads,secondReads],[2,1]);
+  assert.equal(ledger.groupBytes('mesh'),28);
+  residency.trim();
+  assert.equal(evictions,1);
+  assert.equal(ledger.groupBytes('mesh'),16);
+  assert.equal(residency.stats().residentBytes,16);
+  ledger.remove(first);
+  assert.equal(ledger.stats().bytes,0);
+  assert.equal(residency.stats().residentBytes,0);
+  residency.dispose();
+});

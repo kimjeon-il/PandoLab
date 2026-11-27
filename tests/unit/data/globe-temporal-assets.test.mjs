@@ -33,7 +33,7 @@ test('detail view replaces stale loads and reuses a recently uploaded river chun
   const chunk=id=>({id,spec:{decodedBytes:10}});
   const detail=createGlobeRiverDetail({byteBudget:20,
     load(row,signal){return new Promise(resolve=>pending.set(row.id,{signal,resolve}));},
-    attach(row){uploads.push(row.id);return {residentBytes:10,setVisible(){},dispose(){evicted.push(row.id);}};},
+    attach(row){uploads.push(row.id);return {residentBytes:10,setVisible(){},setResidency(){},setProtected(){},dispose(){evicted.push(row.id);}};},
     invalidate(){},onError:assert.fail,
   });
   detail.update([chunk('a'),chunk('stale')]);
@@ -241,7 +241,7 @@ test('detail river retries wake a stationary viewport, back off and stop at exha
     setTimer(fn, delay) {assert.equal(timer, null); return timer = {fn, at:clock+delay};},
     clearTimer(handle) {assert.equal(timer, handle); timer = null;},
     load:async () => {attempts++; if (!succeed)throw Error('river unavailable'); return {count:7};},
-    attach:() => ({residentBytes:10, setVisible(){}, dispose(){}}),
+    attach:() => ({residentBytes:10, setVisible(){}, setResidency(){}, setProtected(){}, dispose(){}}),
     invalidate:() => {wakes++;}, onError:() => {errors++;},
   });
   async function settle() {await new Promise(setImmediate);}
@@ -299,4 +299,25 @@ test('failed neighbor prefetch releases the same interval without overwriting a 
   assert.equal(key.has('interval-43'),false);
   key.claim('interval-43');
   assert.equal(key.has('interval-43'),true);
+});
+
+
+test('detail river residency updates only the altered resource and releases obsolete buffers', async () => {
+  const {createGlobeRiverDetail} = await import('../../../src/rendering/three-globe-rivers.js');
+  const policies = new Map(), evicted = [];
+  const detail = createGlobeRiverDetail({byteBudget:20,load:async()=>({count:1}),
+    attach:row=>({residentBytes:8,setVisible(){},setResidency:policy=>policies.set(row.id,policy),
+      setProtected:value=>{policies.get(row.id).protected=value;},dispose:()=>evicted.push(row.id)}),
+    invalidate(){},onError:assert.fail});
+  detail.update([{id:'a'},{id:'b'}]); await new Promise(setImmediate);
+  detail.commit(detail.activeEntries());
+  detail.update([{id:'a'}]); detail.commit(detail.activeEntries());
+  assert.equal(policies.get('a').protected,true);
+  assert.equal(policies.get('b').protected,false);
+  policies.get('a').onBytesChanged(16);
+  assert.equal(detail.stats().residentBytes,24);
+  assert.equal(detail.trim(),true);
+  assert.deepEqual(evicted,['b']);
+  assert.equal(detail.stats().residentBytes,16);
+  detail.dispose();
 });

@@ -36,10 +36,12 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     residentBytes-=entry.bytes;
   }
   function trim() {
-    for (const [id, entry] of entries) {
-      if (residentBytes<=byteBudget)return;
+    const before = residentBytes;
+    if (before>byteBudget)for (const [id, entry] of entries) {
+      if (residentBytes<=byteBudget)break;
       if (!wanted.has(id)&&!published.has(id))discard(id, entry);
     }
+    return before!==residentBytes;
   }
   async function prepare(row, entry) {
     try {
@@ -48,6 +50,11 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
       entry.resource = attach(row, packet);
       entry.packet = packet; entry.bytes = entry.resource.residentBytes; entry.lastUsed = performance.now();
       residentBytes+=entry.bytes;
+      entry.resource.setResidency({protected:wanted.has(row.id)||published.has(row.id), evict:() => discard(row.id, entry),
+        onBytesChanged:bytes => {
+          if (entries.get(row.id)!==entry)return;
+          residentBytes+=bytes-entry.bytes; entry.bytes = bytes;
+        }});
       failed.delete(row.id);
       trim(); scheduleRetry(); invalidate();
     }catch (error) {
@@ -71,14 +78,14 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     for (const id of previous) {
       if (next.has(id))continue;
       const entry = entries.get(id);
-      if (entry?.resource)entry.resource.setVisible(false);
+      if (entry?.resource) {entry.resource.setVisible(false); entry.resource.setProtected(published.has(id));}
       else if (entry)discard(id, entry);
     }
     for (const row of rows) {
       const cached = entries.get(row.id);
       if (cached) {
         if (!previous.has(row.id)) {
-          cached.resource?.setVisible(true); cached.lastUsed = performance.now();
+          cached.resource?.setVisible(true); cached.resource?.setProtected(true); cached.lastUsed = performance.now();
           touchLruEntry(entries, row.id);
         }
         continue;
@@ -90,8 +97,15 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     trim(); scheduleRetry(); return true;
   }
   const activeEntries = () => [...wanted].map(id => entries.get(id)).filter(entry => entry?.resource);
-  function commit(active) {const next = new Set(active.map(entry => entry.row.id)), changed = next.size!==published.size||[...next].some(id => !published.has(id)); published = next; const before = residentBytes; trim(); return changed||before!==residentBytes;}
-  function memoryEntries() {return [...entries].filter(([, entry]) => entry.resource).map(([id, entry]) => ({key:entry, ...entry.resource.footprint(), lastUsed:entry.lastUsed, protected:wanted.has(id)||published.has(id), evict:() => discard(id, entry)}));}
+  function commit(active) {
+    const next = new Set(active.map(entry => entry.row.id)), changed = next.size!==published.size||[...next].some(id => !published.has(id));
+    if (changed) {
+      for (const id of published)if (!next.has(id))entries.get(id)?.resource?.setProtected(wanted.has(id));
+      for (const id of next)if (!published.has(id))entries.get(id)?.resource?.setProtected(true);
+      published = next;
+    }
+    return trim()||changed;
+  }
   function stats() {
     const active = activeEntries();
     return {requestedChunks:wanted.size, visibleChunks:active.length, activeSegments:active.reduce((sum, row) => sum+row.packet.count, 0), residentBytes,
@@ -103,5 +117,5 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     for (const [id, entry] of entries)discard(id, entry);
     wanted.clear(); published.clear(); failed.clear();
   }
-  return Object.freeze({update, retryDue, commit, stats, activeEntries, memoryEntries, dispose});
+  return Object.freeze({update, retryDue, commit, trim, stats, activeEntries, dispose});
 }

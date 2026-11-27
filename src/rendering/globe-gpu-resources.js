@@ -1,4 +1,4 @@
-import { renderPacketBuffers } from './render-cache-budget.js';
+import { renderPacketBuffers, renderFootprintBytes } from './render-cache-budget.js';
 
 // Data textures and screen-space geometry use explicit culling and filter policy.
 export function createGlobeDataTexture(THREE, data, width, height, {format, type, filter = THREE.NearestFilter, upload = false} = {}) {
@@ -22,8 +22,9 @@ export function globeMeshMaterials(meshes) {
 
 // CPU backing stores are counted by identity; GPU storage by distinct
 // attributes/textures. Do not walk material uniforms (shared texture owners).
-export function gpuResourceFootprint(geometries, textures = [], retained = []) {
+export function gpuResourceFootprint(geometries, textures = [], retained = [], immutableBuffers = null) {
   const buffers = renderPacketBuffers(retained), attributes = new Set();
+  for (const buffer of immutableBuffers??[])buffers.add(buffer);
   let extraBytes = 0;
   for (const geometry of geometries) {
     for (const attribute of Object.values(geometry.attributes))attributes.add(attribute);
@@ -40,6 +41,73 @@ export function gpuResourceFootprint(geometries, textures = [], retained = []) {
     extraBytes+=data.byteLength;
   }
   return {buffers, extraBytes};
+}
+
+// Footprint data and protection are independent. Only dirty resources are
+// remeasured, and protection-only changes reuse the previous footprint.
+// The shared residency ledger owns actual eviction and backing-buffer
+// deduplication; local totals are maintained by deltas for cache diagnostics.
+export function createGlobeGpuResidency(residency = null) {
+  const rows = new Map(), dirty = new Set(), groups = new Map();
+  let total = 0, reads = 0, updates = 0;
+  function groupDelta(group, bytes) {
+    if (group)groups.set(group, (groups.get(group)??0)+bytes);
+  }
+  function track(resource, read, options = {}) {
+    if (rows.has(resource))throw Error('GPU resource already tracked');
+    rows.set(resource, {read, footprint:null, bytes:0, accounted:0, accountedGroup:null, group:null, protected:true, ...options});
+    dirty.add(resource);
+  }
+  function measure(row) {
+    if (!row.footprint) {
+      row.footprint = row.read(); row.bytes = renderFootprintBytes(row.footprint); reads++;
+    }
+    return row;
+  }
+  function mark(resource) {
+    const row = rows.get(resource); if (!row)return;
+    row.footprint = null; dirty.add(resource);
+  }
+  function configure(resource, options) {
+    const row = rows.get(resource); if (!row)throw Error('GPU resource not tracked');
+    Object.assign(row, options); dirty.add(resource);
+  }
+  function protect(resource, value) {
+    const row = rows.get(resource);
+    if (!row||row.protected===value)return;
+    row.protected = value;
+    if (value)resource.lastUsed = performance.now();
+    dirty.add(resource);
+  }
+  function flush() {
+    if (!dirty.size)return false;
+    for (const resource of [...dirty]) {
+      dirty.delete(resource);
+      const row = rows.get(resource); if (!row)continue;
+      const {footprint, bytes} = measure(row);
+      const previous = row.accounted;
+      total+=bytes-previous;
+      if (row.accountedGroup===row.group)groupDelta(row.group, bytes-previous);
+      else {groupDelta(row.accountedGroup, -previous); groupDelta(row.group, bytes);}
+      row.accounted = bytes; row.accountedGroup = row.group;
+      residency?.set(resource, {...footprint, lastUsed:resource.lastUsed, protected:row.protected,
+        groups:row.group?[row.group]:[], evict:row.evict});
+      updates++;
+      if (previous!==bytes)row.onBytesChanged?.(bytes);
+    }
+    return true;
+  }
+  function remove(resource) {
+    const row = rows.get(resource); if (!row)return;
+    rows.delete(resource); dirty.delete(resource);
+    total-=row.accounted; groupDelta(row.accountedGroup, -row.accounted);
+    residency?.remove(resource);
+  }
+  return Object.freeze({track, mark, configure, protect, flush, remove,
+    footprint:resource => measure(rows.get(resource)).footprint,
+    bytes:resource => measure(rows.get(resource)).bytes,
+    stats:() => ({bytes:total, reads, updates, entries:rows.size}),
+    groupBytes:group => groups.get(group)??0});
 }
 
 // Only explicitly owned textures are retired. Shared uniforms and retained

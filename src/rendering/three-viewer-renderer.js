@@ -42,6 +42,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const baseTerritories = historyIndex.base;
   const cacheBudget = renderCacheBudget();
   const residency = createRenderResidencyBudget(cacheBudget.totalRenderBytes, {groups:{
+    mesh:{byteBudget:cacheBudget.residentMeshBytes,entryLimit:512},
     outline:{byteBudget:cacheBudget.outlineBytes},
     outlinePacket:{entryLimit:128},
     outlineChunk:{byteBudget:Math.floor(cacheBudget.outlineBytes/4),entryLimit:64,standbyOnly:true},
@@ -50,7 +51,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const loadGate = createRenderLoadGate({concurrency:cacheBudget.concurrentLoads, byteBudget:cacheBudget.pendingBytes, residency});
   const workScheduler = createGlobeWorkScheduler({maxConcurrent:globePacketWorkerCount(), residency});
   const hydroMetadataCache = createRenderPacketCache({byteBudget:16*1024*1024, entryLimit:1});
-  let refreshRiverLedger = () => {}, refreshHydroLedger = () => {};
+  let refreshHydroLedger = () => {};
   let acceptedPick = null, drawnFrame = null, residencyDirty = true;
   const temporalInputs = createGlobeTemporalPresentation();
   let temporalStats = {};
@@ -271,10 +272,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       // Each resident detail packet has a CPU copy and one GPU copy of its arrays.
       riverDetail = createGlobeRiverDetail({byteBudget:cacheBudget.hydroBytes,
         load:physicalAssets.readDetail,
-        attach:surface.attachRiverDetail, invalidate:() => {refreshRiverLedger(); residencyDirty = true; invalidate('three-river-detail');},
+        attach:surface.attachRiverDetail, invalidate:() => {residencyDirty = true; invalidate('three-river-detail');},
         onError:cause => deps.feedback.reportOperationError(cause,'상세 하천을 불러오지 못했습니다.','PL-THREE-RIVER-001'),
       });
-      refreshRiverLedger = residency.register(riverDetail.memoryEntries);
       refreshHydroLedger = residency.register(() => hydroMetadata?[{protected:true, extraBytes:Math.max(0, Number(spec.hydroMetadata.decodedBytes)||0)*2+hydroSlots.size*64}]:[]);
       verifyLayout(); if (restored)syncCameraFromState(restored); else fitWorld();
       // Launch optional visible lines independently of the required land/water plan.
@@ -696,7 +696,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const showRivers = state.layerVisibility.rivers!==false;
     if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical||riverDetail.retryDue()) {
       riverCamera = camera; riverVisible = showRivers; riverContext = physical;
-      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom, strokeCull:viewCull(strokePadding())}):[])) {refreshRiverLedger(); residencyDirty = true;}
+      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom, strokeCull:viewCull(strokePadding())}):[]))residencyDirty = true;
     }
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height));
     if (!submitted)return {...base, deferred:true};
@@ -749,8 +749,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       }
     })) {drawnFrame = null; return false;}
     const riverChanged = riverDetail.commit(acceptedRiverChunks), surfaceChanged = surface.trimResidency();
-    if (riverChanged)refreshRiverLedger();
-    if (first||residencyDirty||riverChanged||surfaceChanged) {residencyDirty = false; residency.trim();}
+    const riverTrimmed = riverDetail.trim();
+    if (first||residencyDirty||riverChanged||surfaceChanged||riverTrimmed) {residencyDirty = false; residency.trim();}
     if (first) {metrics.publish(); notify('ready','지도 표시 준비 완료'); requestOutlines(); invalidate('three-adjacent-viewport-chunks');}
     const month = state.timelineCursor, monthChanged = publishedMonth!==null&&month!==publishedMonth;
     if (monthChanged)monthDirection = Math.sign(globeHistoryMonthKey(month)-globeHistoryMonthKey(publishedMonth));

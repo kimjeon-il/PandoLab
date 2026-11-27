@@ -1,10 +1,10 @@
 import { globeBufferCapacity } from './globe-draw-compaction.js';
-import { createGlobeDataTexture, createGlobeMesh, gpuResourceFootprint, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
+import { createGlobeDataTexture, createGlobeMesh, gpuResourceFootprint, createGlobeGpuResidency, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
 import { touchLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 import { referenceZoomPixelsPerDegree } from '../map/map-display-zoom.js';
 import { globeVector } from './globe-camera.js';
 import { territorialLabelPixelSize } from './label-layout.js';
-import { renderCacheBudget, renderFootprintBytes } from './render-cache-budget.js';
+import { renderCacheBudget } from './render-cache-budget.js';
 import { createGlobePacketIndex } from './globe-picking.js';
 import { createGlobeRangeCuller } from './globe-spatial-partition.js';
 import { createGlobeDistanceWorkspace } from './globe-label-sdf.js';
@@ -202,6 +202,8 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   const maskOnlyKeys = new Set();
   const size = Math.min(atlasSize, maxTextureSize), maxRows = Math.max(1, Math.min(maxTextureSize, capacity));
   const pages = [], cache = new Map(), metricsCache = new Map();
+  const pageLedger = createGlobeGpuResidency(residency), dirtyBatchPages = new Set(), retiredPages = new Set();
+  let protectedPages = new Set(), metadataBytes = -1;
   const metricsLimit = 4096;
   const textColor = new THREE.Color(palette.text), haloColor = new THREE.Color(0xffffff);
   // This source is never uploaded itself. It borrows the existing CPU data
@@ -246,7 +248,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     const pixels = new Uint8Array(size*size);
     const atlas = createGlobeDataTexture(THREE, pixels, size, size, {format:THREE.RedFormat, filter:THREE.LinearFilter});
     const page = {pixels, atlas, upload:textureState(atlas), batches:[], place, x:0, y:0, rowHeight:0, count:0, keys:new Set(), freeRects:[], lastUsed:performance.now(), retired:false};
-    pages.push(page); cacheDirty = true; return page;
+    pages.push(page); pageLedger.track(page, () => pageFootprint(page), {evict:() => evictPage(page)}); cacheDirty = true; return page;
   }
   function measureLabel(label) {
     const key = label.atlasKey, run = cache.get(key);
@@ -418,7 +420,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       const outcome = sdfRecovery.fail(error);
       if (outcome==='fallback'||outcome==='terminal')onError(error, {terminal:outcome==='terminal'});
     }).finally(() => {
-      rasterOwner.reset(); release();
+      rasterOwner.reset(); if (!disposed)syncLabelMemory(); release();
       if (disposed||pendingSdf!==job)return;
       pendingSdf = null; pendingMaskBytes = 0; lastCamera = null; cacheDirty = true; onReady();
     });
@@ -440,7 +442,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       uniforms:{atlas:{value:page.atlas}, atlasSize:{value:size}, boxes:{value:boxes}, capacity:{value:allocated}, viewport, textColor:{value:textColor}, haloColor:{value:haloColor}}});
     const mesh = createGlobeMesh(THREE, geometry, material, 7);
     geometry.instanceCount = 0; mesh.visible = false; scene.add(mesh);
-    cacheDirty = true; return {values, boxes, upload:textureState(boxes), mesh, capacity:allocated, count:0};
+    cacheDirty = true; dirtyBatchPages.add(page); pageLedger.mark(page); return {values, boxes, upload:textureState(boxes), mesh, capacity:allocated, count:0};
   }
   function updateBatch(batch, rows, first, count) {
     let dirtyStart = -1;
@@ -463,14 +465,14 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function hideBatches(page, first = 0) {
     for (let i = first; i<page.batches.length; i++) {
       const batch = page.batches[i];
-      if (batch.count) {batch.count = 0; batch.mesh.geometry.instanceCount = 0; batch.mesh.visible = false; cacheDirty = true;}
+      if (batch.count) {batch.count = 0; batch.mesh.geometry.instanceCount = 0; batch.mesh.visible = false; cacheDirty = true; dirtyBatchPages.add(page);}
     }
   }
   function pageFootprint(page) {
     return gpuResourceFootprint(page.batches.map(batch => batch.mesh.geometry), [page.atlas, ...page.batches.map(batch => batch.boxes)]);
   }
-  function pageBytes(page) {return renderFootprintBytes(pageFootprint(page));}
   function disposePage(page) {
+    pageLedger.remove(page); dirtyBatchPages.delete(page); retiredPages.delete(page); protectedPages.delete(page);
     for (const batch of page.batches)disposeBatch(batch);
     page.batches.length = 0; page.atlas.dispose();
     for (const key of page.keys)if (cache.get(key)?.page===page)cache.delete(key);
@@ -511,7 +513,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
           cache.set(run.atlasKey, {...run, page, uv}); page.keys.add(run.atlasKey);
         }
         page.x = layout.x; page.y = layout.y; page.rowHeight = layout.rowHeight;
-        for (const row of pair)row.page.retired = true;
+        for (const row of pair) {row.page.retired = true; retiredPages.add(row.page);}
         counters.compactedPages++; cacheDirty = true;
         return renderRows.map(row => ({...row, ...cache.get(row.atlasKey)}));
       }finally {release();}
@@ -542,13 +544,19 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function trim() {
     if (!cacheDirty)return false;
     cacheDirty = false;
-    for (const page of pages)while (page.batches.length&&page.batches.at(-1).count===0)disposeBatch(page.batches.pop());
-    let bytes = pages.reduce((sum, page) => sum+pageBytes(page), 0);
-    const preparingPages = new Set([...desiredKeys].map(key => cachedRun(key)?.page).filter(Boolean));
-    const inactive = pages.filter(page => !activePages.has(page)&&!preparingPages.has(page)).sort((a, b) => Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
-    for (const page of inactive) {
-      if (!page.retired&&bytes<=byteBudget)break;
-      bytes-=pageBytes(page); evictPage(page);
+    for (const page of dirtyBatchPages) {
+      const before = page.batches.length;
+      while (page.batches.length&&page.batches.at(-1).count===0)disposeBatch(page.batches.pop());
+      if (before!==page.batches.length)pageLedger.mark(page);
+    }
+    dirtyBatchPages.clear();
+    syncLabelMemory();
+    if (pageLedger.stats().bytes>byteBudget||retiredPages.size) {
+      const inactive = pages.filter(page => !protectedPages.has(page)).sort((a, b) => Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
+      for (const page of inactive) {
+        if (!page.retired&&pageLedger.stats().bytes<=byteBudget)break;
+        evictPage(page);
+      }
     }
     return true;
   }
@@ -568,7 +576,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     // Initial/temporal frames retain the previous label buffers until the
     // entire exact placement has a ready SDF. Moving frames may display
     // only ready runs; missing rows are not exposed to picking.
-    if (requireComplete&&!lastComplete)return false;
+    if (requireComplete&&!lastComplete) {syncLabelMemory(); return false;}
     placed = layout.filter(row => cachedRun(row.atlasKey));
     previous = new Set(placed.map(row => row.key));
     const readyKeys = new Set(placed.map(row => row.key)), hitCells = new Map();
@@ -598,7 +606,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       hideBatches(page, batchIndex); flush(page.upload);
     }
     activePages = new Set(byPage.keys()); layoutStats.placed = placed.length;
-    return lastComplete;
+    syncLabelMemory(); return lastComplete;
   }
   function cancelPending() {desiredKeys.clear(); cancelSdf(); sdfRecovery.reset(); layoutCache = null; lastCamera = null; cacheDirty = true;}
   function setPalette(next) {
@@ -608,25 +616,29 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function restoreTextures() {
     for (const page of pages) {restoreTexture(page.upload); for (const batch of page.batches)restoreTexture(batch.upload);}
   }
-  function memoryEntries() {
-    const preparingPages = new Set([...desiredKeys].map(key => cachedRun(key)?.page).filter(Boolean));
-    const rows = pages.map(page => ({key:page, ...pageFootprint(page), lastUsed:page.lastUsed, protected:activePages.has(page)||preparingPages.has(page), evict:() => evictPage(page)}));
-    rows.push({key:raster, protected:true, extraBytes:raster.width*raster.height*4+(probes?.reduce((sum, row) => sum+row.mask.byteLength, 0)??0)+metricsCache.size*224+candidateGroups.reduce((sum, group) => sum+group.rows.length*192+group.index.rows.length*160, 0)+placed.length*128});
-    return rows;
+  function syncLabelMemory() {
+    const next = new Set(activePages);
+    for (const key of desiredKeys) {const page = cachedRun(key)?.page; if (page)next.add(page);}
+    for (const page of protectedPages)if (!next.has(page))pageLedger.protect(page, false);
+    for (const page of next)if (!protectedPages.has(page))pageLedger.protect(page, true);
+    protectedPages = next; pageLedger.flush();
+    const bytes = raster.width*raster.height*4+(probes?.reduce((sum, row) => sum+row.mask.byteLength, 0)??0)+metricsCache.size*224+
+      candidateGroups.reduce((sum, group) => sum+group.rows.length*192+group.index.rows.length*160, 0)+placed.length*128;
+    if (bytes!==metadataBytes) {metadataBytes = bytes; residency?.set(raster, {protected:true, extraBytes:bytes});}
   }
   function dispose() {
     disposed = true; cancelSdf(); sdfTasks.dispose(); desiredKeys.clear();
     for (const page of pages)disposePage(page);
-    textureCopier.dispose(); pages.length = 0; cache.clear(); metricsCache.clear(); probes = null; maskOnlyKeys.clear();
+    residency?.remove(raster); textureCopier.dispose(); pages.length = 0; cache.clear(); metricsCache.clear(); probes = null; maskOnlyKeys.clear();
     for (const group of candidateGroups) {group.source = null; group.rows = []; group.index = createGlobeLabelSpatialIndex([]);}
     placed = []; previous.clear(); activePages.clear(); lastCamera = null; layoutCache = null; hitSnapshot = () => null;
     rasterOwner.reset();
   }
   function cacheStats() {
-    return {pages:pages.length, visiblePages:activePages.size, residentBytes:pages.reduce((sum, page) => sum+pageBytes(page), 0),
+    return {pages:pages.length, visiblePages:activePages.size, residentBytes:pageLedger.stats().bytes, pageLedger:pageLedger.stats(),
       batchCapacity:pages.reduce((sum, page) => sum+page.batches.reduce((n, batch) => n+batch.capacity, 0), 0),
       measuredTexts:metricsCache.size, ...counters, sdfWorker:{...sdfTasks.stats(), workerRaster, fallback:sdfRecovery.fallback, localFailures:sdfRecovery.localFailures, failed:!!sdfRecovery.error, pendingMaskBytes}, layout:{...layoutStats}};
   }
-  return Object.freeze({setCandidates, setCandidateGroups, update, trim, dispose, cancelPending, restoreTextures, setPalette, memoryEntries, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
+  return Object.freeze({setCandidates, setCandidateGroups, update, trim, dispose, cancelPending, restoreTextures, setPalette, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
     visibleCount:place => placed.filter(row => Boolean(row.place)===place).length, atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
 }
