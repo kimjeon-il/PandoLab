@@ -1,0 +1,162 @@
+name: Read-only native and JS reference audit
+on:
+  push:
+    branches:
+      - audit/native-89d276a
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  js-references:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kimjeon-il/map-toolkit
+          ref: 3e109796722218b091fc96c43db2e3cd571debcb
+          path: _audit/map-toolkit
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: kimjeon-il/PandoLab-Data
+          ref: 18a885c2850b26e5642591bbed7184ff18e042af
+          path: _audit/library
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            *.js
+            *.mjs
+            *.cjs
+            *.jsx
+            *.cpp
+            *.cc
+            *.cxx
+            *.h
+            *.hpp
+            *.hxx
+            *.cmake
+            CMakeLists.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+          run_install: false
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node audit/js-reference-audit.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: js-reference-audit
+          path: audit-results/
+  native-ast-link:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: 3.31.6
+      - name: Native compiler and library prerequisites (runner preinstalled)
+        run: |
+          command -v clang++
+          command -v ninja
+          command -v nm
+          clang++ --version
+          cmake --version
+      - name: Compile all native core translation units
+        run: |
+          cmake --preset pando-core -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build --preset pando-core
+      - name: Whole-archive link (all objects, no undefined project symbols)
+        run: |
+          set -euo pipefail
+          mkdir -p audit-results
+          archive=$(find build-native/cmake/pando-core -name libpandoeditor_core.a)
+          printf 'int main() {return 0;}\n' > audit-results/link-probe.cpp
+          clang++ audit-results/link-probe.cpp -Wl,--no-undefined -Wl,--whole-archive "$archive" -Wl,--no-whole-archive -lz -pthread -o audit-results/link-probe
+          audit-results/link-probe
+          echo "Whole-archive link and executable probe: passed"
+      - name: Clang AST and symbol inventory
+        run: python3 audit/native-ast-audit.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-ast-link-audit
+          path: audit-results/
+  wasm-link:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: 3.31.6
+      - run: command -v ninja
+      - uses: actions/checkout@v4
+        with:
+          repository: emscripten-core/emsdk
+          ref: db04e88298d9916fc51fcd3743045ca3eb695127
+          path: build-native/emsdk
+          persist-credentials: false
+      - name: Build and link exact pinned WASM
+        shell: bash
+        run: |
+          set -euo pipefail
+          build-native/emsdk/emsdk install 6.0.3
+          build-native/emsdk/emsdk activate 6.0.3
+          source build-native/emsdk/emsdk_env.sh
+          emcc --version | sed -n '1p' | grep -F '6.0.3'
+          port_file=build-native/emsdk/upstream/emscripten/tools/ports/zlib.py
+          original='https://github.com/madler/zlib/archive/refs/tags/v{VERSION}.tar.gz'
+          canonical='https://codeload.github.com/madler/zlib/tar.gz/refs/tags/v{VERSION}'
+          grep -Fq "$original" "$port_file"
+          sed -i "s|$original|$canonical|" "$port_file"
+          grep -Fq "$canonical" "$port_file"
+          node --input-type=module <<'NODE'
+          import {readFileSync,writeFileSync} from 'node:fs';
+          const file='build-native/emsdk/upstream/emscripten/tools/ports/__init__.py';
+          const input=readFileSync(file,'utf8');
+          const old="    ext = url_filename.split('.', 1)[1]";
+          if(input.split(old).length!==2)throw Error('Unexpected pinned Emscripten port loader');
+          const next="    ext = 'tar.gz' if name == 'zlib' and url.startswith('https://codeload.github.com/madler/zlib/tar.gz/refs/tags/v') else url_filename.split('.', 1)[1]";
+          writeFileSync(file,input.replace(old,next));
+          NODE
+          emcmake cmake --preset pando-wasm
+          cmake --build --preset pando-wasm
+      - name: Instantiate and verify actual public exports
+        run: |
+          mkdir -p audit-results
+          node --input-type=module <<'NODE'
+          import {readFileSync,writeFileSync} from 'node:fs';
+          import {resolve} from 'node:path';
+          import {pathToFileURL} from 'node:url';
+          import {sharedSourceManifest} from './tools/build/package-shared-core-assets.mjs';
+          const path=resolve('build-native/cmake/pando-wasm/shared/wasm/pandoeditor-core.js');
+          const {default:create}=await import(pathToFileURL(path).href);
+          const core=await create({wasmBinary:readFileSync(path.replace(/\.js$/,'.wasm'))});
+          const retired=['timelineInitialMonth','distributionReferenceDiagnostics'];
+          const reference=['referenceImageCalculate','referenceImagePlacement','referenceGradientField','referenceSnapAnchor','referenceTraceTree','referenceTracePath','referenceSimplifyTrace','referenceRefineTrace','referenceBoundaryGraph','PreparedReferenceImageWarp'];
+          const removed={...Object.fromEntries(retired.map(n=>[n,typeof core[n]])),admitExternalBaseline:typeof core.DocumentSession.prototype.admitExternalBaseline};
+          const preserved=Object.fromEntries(reference.map(n=>[n,typeof core[n]]));
+          const result={abi:core.coreAbiVersion,compiler:core.coreCompilerVersion,source:core.coreSourceSha256,expectedSource:sharedSourceManifest(process.cwd()).sourceSha256,removed,preserved};
+          writeFileSync('audit-results/wasm-exports.json',JSON.stringify(result,null,2)+'\n');console.log(result);
+          if(result.abi!==1||result.compiler!=='6.0.3'||result.source!==result.expectedSource||Object.values(removed).some(v=>v!=='undefined')||Object.values(preserved).some(v=>v!=='function'))process.exitCode=1;
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-link-audit
+          path: audit-results/
