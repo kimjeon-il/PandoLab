@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { globeVector } from '../../src/rendering/globe-camera.js';
+import { GLOBE_LODS, GLOBE_FINE_LOD, GLOBE_LOD_VERSION, validateGlobeLodChunks } from '../../src/rendering/globe-lod.js';
+import { createGlobeRiverJunctionGuard, simplifyGlobeRiverPacket } from './globe-lod-assets.mjs';
 import {encodeGlobeHistoricalViews} from '../../src/rendering/globe-history-index.js';
 import {globeSpatialPrimitiveOrder,globePrimitiveBounds,globePrimitiveOwner} from '../../src/rendering/globe-spatial-partition.js';
 import { decodeGlobeMesh, decodeGlobeStrokes, packGlobeMesh, GLOBE_MESH_HEADER_BYTES, GLOBE_MESH_MAGIC,
@@ -124,13 +126,13 @@ const emptyChunkBounds=()=>[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infi
 // original painter order when their displayed colors can differ. A large
 // primitive may itself exceed the span; isolate it instead of weakening
 // the spatial rule for every following primitive.
-export function* globeSpatialChunkRanges(packet,{maxPrimitives=65_536,span=.45,preserveOwnerOrder=true}={}){
+export function* globeSpatialChunkRanges(packet,{maxPrimitives=65_536,span=.45,cellDivisions=8,preserveOwnerOrder=true}={}){
   const order=globeSpatialPrimitiveOrder(packet,{preserveOwnerOrder});
   let first=0,bounds=emptyChunkBounds();
   const primitive=emptyChunkBounds();
   const descriptor=(end)=>{
     const center=[0,1,2].map(axis=>(bounds[axis]+bounds[axis+3])/2);
-    const cell=center.map(value=>Math.max(0,Math.min(7,Math.floor((value+1)*4)))).join(':');
+    const cell=center.map(value=>Math.max(0,Math.min(cellDivisions-1,Math.floor((value+1)*cellDivisions/2)))).join(':');
     return {ids:order.subarray(first,end),bounds,first,end,cell};
   };
   for(let i=0;i<order.length;i++){
@@ -146,10 +148,10 @@ export function* globeSpatialChunkRanges(packet,{maxPrimitives=65_536,span=.45,p
   }
   if(first<order.length)yield descriptor(order.length);
 }
-export function* globeMeshChunks(buffer,{maxTriangles=65_536,span=.45}={}){
+export function* globeMeshChunks(buffer,{maxTriangles=65_536,span=.45,cellDivisions=8}={}){
   const mesh=decodeGlobeMesh(buffer),{positions,residuals,indices,slots}=mesh;
   const oldHigh=new Uint32Array(positions.buffer,positions.byteOffset,positions.length),oldLow=new Uint32Array(residuals.buffer,residuals.byteOffset,residuals.length);
-  for(const {ids,bounds,first,end,cell} of globeSpatialChunkRanges(mesh,{maxPrimitives:maxTriangles,span})){
+  for(const {ids,bounds,first,end,cell} of globeSpatialChunkRanges(mesh,{maxPrimitives:maxTriangles,span,cellDivisions})){
     const remap=new Map(),vertices=[],local=new Uint32Array(ids.length*3);
     let at=0;
     for(const triangle of ids)for(let i=triangle*3;i<triangle*3+3;i++){
@@ -172,10 +174,10 @@ export function* globeMeshChunks(buffer,{maxTriangles=65_536,span=.45}={}){
     yield {buffer:result,bounds,first,end,cell,slots:[...owners].sort((a,b)=>a-b)};
   }
 }
-export function* globeStrokeChunks(buffer,{maxSegments=65_536,span=.45,preserveOwnerOrder=true}={}){
+export function* globeStrokeChunks(buffer,{maxSegments=65_536,span=.45,cellDivisions=8,preserveOwnerOrder=true}={}){
   const packet=decodeGlobeStrokes(buffer);
   const sourceWords=new Uint32Array(packet.points.buffer,packet.points.byteOffset,packet.points.length);
-  for(const {ids,bounds,first,end,cell} of globeSpatialChunkRanges(packet,{maxPrimitives:maxSegments,span,preserveOwnerOrder})){
+  for(const {ids,bounds,first,end,cell} of globeSpatialChunkRanges(packet,{maxPrimitives:maxSegments,span,cellDivisions,preserveOwnerOrder})){
     const table=createGlobeStrokePointTable(ids.length*2),remap=new Map(),owners=new Set();
     const endpointIndices=new Uint32Array(ids.length*2),widths=new Float32Array(packet.widths.length?ids.length:0),ownerGroups=new Uint16Array(packet.ownerGroups.length?ids.length:0);
     let maxWidth=1;
@@ -233,12 +235,12 @@ function buildGraticule(){
   return encodeGlobeStrokes(coordinates);
 }
 
-export function buildGlobeOutlineStrokes(geometries,slotOffset=0) {
+export function buildGlobeOutlineStrokes(geometries,slotOffset=0,maxEdgeDegrees=undefined) {
   const edgeIndex = new Map(), coordinates = [], edgeOwners = [];
   const pointKey = ([lon,lat]) => `${lon === 180 ? -180 : lon},${lat}`;
   for (const [index,geometry] of geometries.entries()) {
     const slot=index+slotOffset;
-    const segments = densifyBoundarySegmentsForProjection(buildRenderableBoundarySegments(geometry));
+    const segments = densifyBoundarySegmentsForProjection(buildRenderableBoundarySegments(geometry),maxEdgeDegrees);
     for (const [start,end] of segments) {
       const a = pointKey(start), b = pointKey(end);
       if(a===b)continue;
@@ -276,19 +278,24 @@ function borderGroups(boundaries){
   return [...groups].map(([key,segments])=>borderGroup(key,segments));
 }
 
-function borderGroup(key,segments){
+function borderCoordinates(segments,maxEdgeDegrees){
   const rounded=point=>point.map(value=>Math.round(value*1e6)*1e-6);
   const compare=(a,b)=>a[0]-b[0]||a[1]-b[1]||(a.length===4&&(a[2]-b[2]||a[3]-b[3]))||0;
-  const coordinates=densifyBoundarySegmentsForProjection(segments).map(([start,end])=>{
+  return densifyBoundarySegmentsForProjection(segments,maxEdgeDegrees).map(([start,end])=>{
     const a=rounded(start),b=rounded(end);
     return compare(a,b)<=0?[...a,...b]:[...b,...a];
   }).sort(compare).flat();
-  return {key,coordinates,hash:sha256(JSON.stringify(coordinates))};
 }
 
-function packBorders(groups,withOwners=false){
+function borderGroup(key,segments){
+  const coordinates=borderCoordinates(segments);
+  return {key,segments,coordinates,hash:sha256(JSON.stringify(coordinates))};
+}
+
+function packBorders(groups,withOwners=false,lod=GLOBE_LODS[GLOBE_FINE_LOD]){
   const coordinates=[],owners=[];
-  for(const {key,coordinates:points} of groups){
+  for(const group of groups){
+    const {key}=group,points=lod.id===GLOBE_FINE_LOD?group.coordinates:borderCoordinates(group.segments,lod.maxEdgeDegrees);
     const first=coordinates.length/4;
     for(const value of points)coordinates.push(value);
     const count=points.length/4;
@@ -438,55 +445,70 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     return decodePolygonMesh(packet, { algorithmVersion: prepared.algorithmVersion, includeStrokeEndpoints: false });
   }
   const emitPackedMesh = (buffer, dir) => emit(packGlobeMesh(buffer), dir, 7);
-  const emitMeshChunks=(buffer,dir='')=>{
+  const emitMeshChunks=(buffer,dir,lod)=>{
     const rows=[];
-    for(const {buffer:part,...row} of globeMeshChunks(buffer))rows.push({...row,spec:emitPackedMesh(part,dir)});
+    for(const {buffer:part,...row} of globeMeshChunks(buffer,{maxTriangles:lod.maxPrimitives,span:lod.span,cellDivisions:lod.cellDivisions}))
+      rows.push({...row,lod:lod.id,spec:emitPackedMesh(part,dir)});
     return rows;
   };
-  const emitStrokeChunks=(buffer,dir='',preserveOwnerOrder=true)=>{
+  const emitStrokeChunks=(buffer,dir,lod,preserveOwnerOrder=true)=>{
     const rows=[];
-    for(const {buffer:part,...row} of globeStrokeChunks(buffer,{preserveOwnerOrder}))rows.push({...row,spec:emit(part,dir)});
+    for(const {buffer:part,...row} of globeStrokeChunks(buffer,{maxSegments:lod.maxPrimitives,span:lod.span,cellDivisions:lod.cellDivisions,preserveOwnerOrder}))
+      rows.push({...row,lod:lod.id,spec:emit(part,dir)});
     return rows;
   };
+  const lodChunks=build=>validateGlobeLodChunks(GLOBE_LODS.flatMap(build),GLOBE_LOD_VERSION);
+  const emitBorderLods=(groups,dir,withOwners=false,exactBuffer=null)=>lodChunks(lod=>
+    emitStrokeChunks(lod.id===GLOBE_FINE_LOD&&exactBuffer?exactBuffer:packBorders(groups,withOwners,lod).buffer,dir,lod,false));
+  const emitRiverLods=(buffer,packet,guard,dir)=>lodChunks(lod=>{
+    const simplified=simplifyGlobeRiverPacket(packet,lod,guard);
+    return emitStrokeChunks(simplified===packet?buffer:encodeIndexedGlobeStrokes(simplified),dir,lod);
+  });
 
 
   await import('../../src/rendering/workers/polygon-mesh-core.js');
   const engine = globalThis.PandoLabPolygonMeshCore;
-  const physicalMesh=(geometry,id)=>{
-    const packet=preparedMesh(preparedMeshSpec(geometry));
+  const physicalMesh=(geometry,id,lod)=>{
+    const packet=lod.id===GLOBE_FINE_LOD?preparedMesh(preparedMeshSpec(geometry)):null;
     if(packet)return packet;
-    const mesh=engine.buildPolygonMeshFeatures([{id,geometry}],{validate:true});
+    const mesh=engine.buildPolygonMeshFeatures([{id,geometry}],{validate:true,maxEdgeDegrees:lod.maxEdgeDegrees});
     return {positions:Float64Array.from(mesh.positions,value=>value*1e-6),indices:mesh.triangleIndices};
   };
   const read=validateBuiltinReadIndex(territorial);
   const resolve=target=>resolveBuiltinWorldGeometry(territorial,read,target).sort((a,b)=>a.owner.localeCompare(b.owner));
   const baseRows=resolve(month);
   const features=readBuiltinGeometryRows(baseRows,readGeometryAssets);
-  const countryMeshRow=(feature,spec)=>{
+  const countryMeshRow=(feature,spec,lod=GLOBE_LODS[GLOBE_FINE_LOD])=>{
     const {id,version,contentSha256} = feature.asset;
     const geometry = {id,version,contentSha256};
-    const packet = preparedMesh(spec);
+    const packet = lod.id===GLOBE_FINE_LOD?preparedMesh(spec):null;
     if (packet) return {id:feature.id,geometry,vertices:packet.positions,indices:packet.indices};
-    const mesh = engine.buildPolygonMeshFeatures([feature],{validate:true});
+    const mesh = engine.buildPolygonMeshFeatures([feature],{validate:true,maxEdgeDegrees:lod.maxEdgeDegrees});
     return {id:feature.id,geometry,vertices:mesh.positions,indices:mesh.triangleIndices,units:1e-6};
   };
+  const emitCountryLods=(rows,specs,exactBuffer,dir,slotOffset=0)=>lodChunks(lod=>{
+    const buffer=lod.id===GLOBE_FINE_LOD?exactBuffer:
+      combineGlobeCountryMeshes(rows.map((feature,index)=>countryMeshRow(feature,specs[index],lod)),{slotOffset}).buffer;
+    return emitMeshChunks(buffer,dir,lod);
+  });
   const baseMeshSpecs = readCountryMeshInputs(features);
   const preparedCountries = combineGlobeCountryMeshes(features.map((feature,index)=>countryMeshRow(feature,baseMeshSpecs[index])));
   const {countrySlots} = preparedCountries;
-  const countryChunks=emitMeshChunks(preparedCountries.buffer,'countries/');
-  const emitOutlineChunks=({buffer,owners},directory)=>{
+  const countryChunks=emitCountryLods(features,baseMeshSpecs,preparedCountries.buffer,'countries/');
+  const emitOutlineLods=(geometries,directory,slotOffset=0)=>lodChunks(lod=>{
+    const {buffer,owners}=buildGlobeOutlineStrokes(geometries,slotOffset,lod.maxEdgeDegrees);
     const rows=[];
-    for(const {buffer:part,slots:groupIds,...row} of globeStrokeChunks(buffer,{maxSegments:8192,span:.30,preserveOwnerOrder:false})){
+    for(const {buffer:part,slots:groupIds,...row} of globeStrokeChunks(buffer,{maxSegments:8192,span:Math.min(.6,lod.span),cellDivisions:lod.cellDivisions,preserveOwnerOrder:false})){
       const packet=decodeGlobeStrokes(part),remap=new Map(groupIds.map((group,i)=>[group,i]));
       const localOwners=groupIds.map(group=>owners[group]);
       const ownerGroups=Uint16Array.from(packet.ownerGroups,group=>remap.get(group));
       const local=encodeIndexedGlobeStrokes({...packet,ownerGroups});
-      rows.push({...row,owners:localOwners,ownerSlots:[...new Set(localOwners.flat())].sort((a,b)=>a-b),spec:emit(local,directory)});
+      rows.push({...row,lod:lod.id,owners:localOwners,ownerSlots:[...new Set(localOwners.flat())].sort((a,b)=>a-b),spec:emit(local,directory)});
     }
     return rows;
-  };
+  });
   const countryLabels = countryLabelMetadata(decodeGlobeMesh(preparedCountries.buffer),countrySlots,boundarySeed.spec.labelAnchors,features);
-  const outlineChunks=emitOutlineChunks(buildGlobeOutlineStrokes(features.map(feature=>feature.geometry)),'outlines/');
+  const outlineChunks=emitOutlineLods(features.map(feature=>feature.geometry),'outlines/');
   const readGeometry = async spec => JSON.parse(source(spec));
   const physicalContexts=new Map(),waterParts=new Map(),hydroParts=new Map();
   let skeleton;
@@ -521,8 +543,12 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     for(const row of selected){
       const asset=row.assets.asset,id=row.objectRef.id;
       if(!waterParts.has(asset.sha256)){
-        const geometry=await readGeometry(asset),{positions,indices}=physicalMesh(geometry,id);
-        waterParts.set(asset.sha256,{chunks:emitMeshChunks(encodeGlobeMesh({coordinates:positions,indices}),'waters/'),bounds:coordinateBounds(geometry.coordinates)});
+        const geometry=await readGeometry(asset);
+        const chunks=lodChunks(lod=>{
+          const {positions,indices}=physicalMesh(geometry,id,lod);
+          return emitMeshChunks(encodeGlobeMesh({coordinates:positions,indices}),'waters/',lod);
+        });
+        waterParts.set(asset.sha256,{chunks,bounds:coordinateBounds(geometry.coordinates)});
       }
       const {chunks,bounds}=waterParts.get(asset.sha256);
       const {entityKind:category,layerId:layer_id,name,source,sourceId}=row.identity;
@@ -534,13 +560,20 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       const {lakesByZoom,base,detail,riverMinZoom}=readGlobeHydro({hydro,hydroPath,readPinnedData,waterVisibility:visibility,slotFor:hydroSlot});
       const lakes=[];
       for(const [minZoom,features] of lakesByZoom){
-        const mesh=engine.buildPolygonMeshFeatures(features,{validate:true});
-        const objectSlots=features.map(hydroSlot),slots=Uint16Array.from(mesh.countryIndices,slot=>objectSlots[slot]);
-        const chunks=emitMeshChunks(encodeGlobeMesh({coordinates:mesh.positions,indices:mesh.triangleIndices,slots,units:1e-6}),'lakes/');
+        const objectSlots=features.map(hydroSlot);
+        const chunks=lodChunks(lod=>{
+          const mesh=engine.buildPolygonMeshFeatures(features,{validate:true,maxEdgeDegrees:lod.maxEdgeDegrees});
+          const slots=Uint16Array.from(mesh.countryIndices,slot=>objectSlots[slot]);
+          return emitMeshChunks(encodeGlobeMesh({coordinates:mesh.positions,indices:mesh.triangleIndices,slots,units:1e-6}),'lakes/',lod);
+        });
         lakes.push({chunks,minZoom});
       }
-      const riverDetail=detail.flatMap(({buffer,bounds:geographicBounds,...row})=>emitStrokeChunks(buffer,'river-detail/').map((chunk,index)=>({...row,...chunk,geographicBounds,id:row.id+':'+index+':'+chunk.spec.sha256})));
-      hydroParts.set(mask,{lakes,riverChunks:emitStrokeChunks(base,'rivers/'),riverDetail,riverMinZoom});
+      const basePacket=decodeGlobeStrokes(base), detailPackets=detail.map(row=>decodeGlobeStrokes(row.buffer));
+      const guard=createGlobeRiverJunctionGuard([basePacket,...detailPackets]);
+      const riverDetail=detail.flatMap(({buffer,bounds:geographicBounds,...row},packetIndex)=>
+        emitRiverLods(buffer,detailPackets[packetIndex],guard,'river-detail/').map((chunk,index)=>
+          ({...row,...chunk,geographicBounds,id:row.id+':'+chunk.lod+':'+index+':'+chunk.spec.sha256})));
+      hydroParts.set(mask,{lakes,riverChunks:emitRiverLods(base,basePacket,guard,'rivers/'),riverDetail,riverMinZoom});
     }
     const descriptor={identity,waters,...hydroParts.get(mask)};
     physicalContexts.set(identity,descriptor);
@@ -551,7 +584,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const {segments:sharedBoundaries}=JSON.parse(gunzipSync(boundarySeed.bytes,{maxOutputLength:boundarySeed.spec.decodedBytes}));
   const baseGroups=borderGroups(sharedBoundaries);
   const {buffer:borderBuffer,owners:borderOwners}=packBorders(baseGroups,true);
-  const borderChunks=emitStrokeChunks(borderBuffer,'borders/',false);
+  const borderChunks=emitBorderLods(baseGroups,'borders/',true,borderBuffer);
   const physicalRecords=physical.waterObjects.timelineRecords;
   for(const target of globeHistoryMonths(month,physicalRecords))await preparePhysical(target);
   const keys=rows=>rows.map(({owner,asset})=>globeTerritoryKey(owner,asset));
@@ -578,10 +611,10 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     const slot=countrySlots.length+index;
     slotByKey.set(globeTerritoryKey(feature.id,feature.asset),slot);
     const packet=combineGlobeCountryMeshes([countryMeshRow(feature,historicalMeshSpecs[index])],{slotOffset:slot});
-    const extraOutlines=buildGlobeOutlineStrokes([feature.geometry],slot);
     const anchors={[feature.id]:{coordinates:computeLabelAnchor(feature)}};
     return {...packet.countrySlots[0],label:countryLabelMetadata(decodeGlobeMesh(packet.buffer),packet.countrySlots,anchors,[feature])[feature.id]??null,
-      countryChunks:emitMeshChunks(packet.buffer,historyDirectory+'countries/'),outlineChunks:emitOutlineChunks(extraOutlines,historyDirectory+'outlines/')};
+      countryChunks:emitCountryLods([feature],[historicalMeshSpecs[index]],packet.buffer,historyDirectory+'countries/',slot),
+      outlineChunks:emitOutlineLods([feature.geometry],historyDirectory+'outlines/',slot)};
   });
   // Advance the same incremental boundary preparation as the Viewer worker.
   // The partition output only re-encodes owner groups touched by changed shapes.
@@ -600,7 +633,7 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
       const group=borderGroup(id,segments.map(({start,end})=>[start,end]));
       const key=`${id}:${group.hash}`;
       if(!partitionSlots.has(key))partitionSlots.set(key,group.hash===baseHashes.get(id)?{base:true}:{historical:
-        historicalBorders.push({chunks:emitStrokeChunks(packBorders([group]).buffer,historyDirectory+'borders/',false)})-1});
+        historicalBorders.push({chunks:emitBorderLods([group],historyDirectory+'borders/')})-1});
       partitionSlots.set(id,partitionSlots.get(key));
     }
     if(signature===baseSignature)continue;
@@ -616,8 +649,8 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const hydroMetadata=emit(Buffer.from(JSON.stringify(hydroObjects)),'hydro-pick/');
   const otherPhysical=[...physicalContexts.values()].filter(row=>row!==basePhysical);
   const physicalIndex=new Map([basePhysical,...otherPhysical].map((row,index)=>[row.identity,index]));
-  const historyCatalog=emit(Buffer.from(JSON.stringify({version:1,historicalCountries,historicalBorders,physicalContexts:otherPhysical,
+  const historyCatalog=emit(Buffer.from(JSON.stringify({version:1,lodVersion:GLOBE_LOD_VERSION,historicalCountries,historicalBorders,physicalContexts:otherPhysical,
     history:encodeGlobeHistoricalViews(historicalViews),historyTimeline:timeline.map(row=>[row.month,viewBySignature.get(row.signature),physicalIndex.get(row.physicalIdentity)])})),'catalog/');
-  return {assets,skeleton,preview:{countryChunks,countrySlots,countryLabels,outlineChunks,borderChunks,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
+  return {assets,skeleton,preview:{lodVersion:GLOBE_LOD_VERSION,countryChunks,countrySlots,countryLabels,outlineChunks,borderChunks,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:basePhysical,physicalMonth:month,historySlotCount:historicalCountries.length,historyCatalog}};
 }
