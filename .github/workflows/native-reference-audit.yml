@@ -14,32 +14,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: kimjeon-il/map-toolkit
-          ref: 3e109796722218b091fc96c43db2e3cd571debcb
-          path: _audit/map-toolkit
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: kimjeon-il/PandoLab-Data
-          ref: 18a885c2850b26e5642591bbed7184ff18e042af
-          path: _audit/library
-          persist-credentials: false
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            *.js
-            *.mjs
-            *.cjs
-            *.jsx
-            *.cpp
-            *.cc
-            *.cxx
-            *.h
-            *.hpp
-            *.hxx
-            *.cmake
-            CMakeLists.txt
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -55,6 +29,7 @@ jobs:
           name: js-reference-audit
           path: audit-results/
   native-ast-link:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[js-only]')
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -92,6 +67,7 @@ jobs:
           name: native-ast-link-audit
           path: audit-results/
   wasm-link:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[js-only]')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

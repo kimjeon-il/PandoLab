@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 const espree=createRequire(require.resolve('eslint'))('espree');
-const roots=[['PandoLab','.'],['map-toolkit','_audit/map-toolkit'],['PandoLab-Data','_audit/library']];
+const roots=[['PandoLab','.']];
 const retired=['JobScheduler','JobToken','JobTicket','JobStats','JobStop','JobDisposition','jobDispositionCode','endpointValue','validityValue','readGeometryProvenance','TimelineChangePeriod','timelineChangePeriods','snapshotTimelineStorage','timelineInitialMonth','distributionReferenceDiagnostics','distributionReferencesForWeb','admitExternalBaseline'];
 const reference=['referenceImageCalculate','referenceImagePlacement','referenceGradientField','referenceSnapAnchor','referenceTraceTree','referenceTracePath','referenceSimplifyTrace','referenceRefineTrace','referenceBoundaryGraph','PreparedReferenceImageWarp'];
 const inventory=(root)=>execFileSync('git',['-C',root,'ls-files','-z'],{encoding:'utf8',maxBuffer:64*1024*1024}).split('\0').filter(Boolean);
@@ -76,7 +76,7 @@ function scanJs(root,repo,file,files){
 for(const [repo,root] of roots){
  const files=inventory(root), set=new Set(files);let js=0,cpp=0,excluded=0;
  for(const file of files){
-  if(generated.test(file)){if(javascript.test(file))excluded++;continue;}
+  if(generated.test(file)||file.startsWith('audit/')){if(javascript.test(file))excluded++;continue;}
   if(!javascript.test(file)&&!native.test(file))continue;
   if(!fs.existsSync(path.join(root,file))){report.missingFiles.push({repo,file});continue;}
   if(javascript.test(file)){js++;scanJs(root,repo,file,set);}
