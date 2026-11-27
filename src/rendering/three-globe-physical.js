@@ -3,8 +3,42 @@ import { createGlobeChunkCatalog, globeChunkSetContains } from './globe-view-mes
 
 // The same immutable Cartesian descriptor index is used for water, lakes
 // and all river tiers.
-export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, byteBudget = renderCacheBudget().physicalCpuBytes, residency = null}) {
+export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, byteBudget = renderCacheBudget().physicalCpuBytes,
+  strokeBatchBytes = renderCacheBudget().borderBatchBytes, residency = null}) {
   const catalog = new Map(), contexts = new Map(), pending = new Map();
+  function batchRiverChunks(rows) {
+    const groups = new Map(), result = [];
+    for (const row of rows) {
+      const cell = row.cell??row.key;
+      let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
+      group.push(row);
+    }
+    for (const [cell, group] of groups) {
+      let sources = [], decodedBytes = 0;
+      const flush = () => {
+        if (sources.length===1)result.push(sources[0]);
+        else if (sources.length) {
+          const key = 'river-batch:'+sources.map(row => row.key).join(',');
+          const compressedBytes = sources.reduce((sum,row) => sum+(Number(row.spec.compressedBytes)||0),0);
+          const bounds = [Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+          for (const row of sources)for (let axis=0;axis<3;axis++) {
+            bounds[axis]=Math.min(bounds[axis],row.bounds[axis]);
+            bounds[axis+3]=Math.max(bounds[axis+3],row.bounds[axis+3]);
+          }
+          result.push({role:'river',kind:'stroke',cell,minZoom:group[0].minZoom,key,sources,bounds,
+            spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
+        }
+        sources=[]; decodedBytes=0;
+      };
+      for (const row of group) {
+        const bytes=Number(row.spec.decodedBytes)||0;
+        if (sources.length&&(sources.length>=32||decodedBytes+bytes>strokeBatchBytes))flush();
+        sources.push(row); decodedBytes+=bytes;
+      }
+      flush();
+    }
+    return result;
+  }
   let retained = [], disposed = false;
   function chunks(list, role) {
     return list.flatMap((row, i) => row.chunks.map((chunk, j) => ({
@@ -16,8 +50,8 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
     for (const spec of rows) {
       if (catalog.has(spec.identity))continue;
       const waters = chunks(spec.waters,'water'), lakes = chunks(spec.lakes,'lake');
-      const rivers = spec.riverChunks.map((row, i) => ({...row, role:'river', kind:'stroke',
-        minZoom:spec.riverMinZoom, key:'river:'+i+':'+row.spec.sha256}));
+      const rivers = batchRiverChunks(spec.riverChunks.map((row, i) => ({...row, role:'river', kind:'stroke',
+        minZoom:spec.riverMinZoom, key:'river:'+i+':'+row.spec.sha256})));
       const details = spec.riverDetail.map(row => ({...row, role:'detail', kind:'stroke', key:'detail:'+row.id}));
       catalog.set(spec.identity, {spec, meshes:createGlobeChunkCatalog([...waters, ...lakes]),
         strokes:createGlobeChunkCatalog(rivers), detail:createGlobeChunkCatalog(details)});
@@ -30,7 +64,7 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
   }});
   function read(row, signal, priority) {
     return files.read(keyOf(row), (readSignal, readPriority) => row.kind==='stroke'?
-      loadStroke(row.spec, readSignal, readPriority):loadMesh(row.spec, readSignal, readPriority), signal, {priority});
+      loadStroke(row.spec, readSignal, readPriority, row):loadMesh(row.spec, readSignal, readPriority), signal, {priority});
   }
   function plan(identity, {zoom = Infinity, lakesVisible = true, riversVisible = true, cull = () => true, strokeCull = cull} = {}) {
     const source = catalog.get(identity);

@@ -87,7 +87,7 @@ export function writeDirectGlobeStrokes(output, packet, writes) {
 // A few fixed source blocks bound the amount of data shifted by an insertion.
 // Keep the small-packet one-draw path, and never create a draw per leaf.
 export function globeDrawBlockSize(count) {
-  return count<=32768?Math.max(1, count):Math.max(16384, Math.ceil(count/4));
+  return count<=65536?Math.max(1, count):Math.max(32768, Math.ceil(count/2));
 }
 export function globeBufferCapacity(current, needed, limit, minimum, empty = 0) {
   if (!needed)return empty;
@@ -123,7 +123,7 @@ export function globeDrawGroups(blocks) {
 /** Merge only consecutive compatible small packets. Source order is the
   * painter order; never sort by style or move a draw across another owner.
   * Bounded groups avoid unbounded duplicate vertex/compaction memory. */
-export function groupGlobeGpuMeshes(rows, compatibility, {maxTriangles = 16384, maxVertices = 65536, maxChunks = 8} = {}) {
+export function groupGlobeGpuMeshes(rows, compatibility, {maxTriangles = 65536, maxVertices = 262144, maxChunks = 32} = {}) {
   const result = [];
   for (const row of rows) {
     const packet = row.mesh.packet, triangles = packet.indices.length/3,vertices=packet.positions.length/3;

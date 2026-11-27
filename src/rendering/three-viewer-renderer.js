@@ -182,7 +182,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const graticuleNeeded = () => state.backgroundSettings?.graticule!==false&&state.resourceCapabilities?.graticule!==false;
   const bordersNeeded = () => state.layerVisibility.objects!==false&&layerStyle(state.layerPresentation,'objects').boundaryVisible!==false;
   const physicalAssets = createGlobePhysicalAssets([spec.physical], {
-    loadMesh, loadStroke:(row, signal, priority = 20) => load(row,'stroke', {signal, priority}), byteBudget:cacheBudget.physicalCpuBytes, residency,
+    loadMesh, loadStroke:(row, signal, priority = 20, descriptor = null) => descriptor?.sources
+      ?loadTerritorialStroke(row,signal,priority,descriptor,'하천')
+      :load(row,'stroke',{signal,priority}),
+    byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:cacheBudget.borderBatchBytes, residency,
   });
   let planCamera = null, planViewport = null; const cullCache = new Map(), territoryPlans = new Map(), physicalPlans = new Map(), planKeys = new WeakMap();
   function clearViewPlans() {planCamera = null; planViewport = null; cullCache.clear(); territoryPlans.clear(); physicalPlans.clear();}

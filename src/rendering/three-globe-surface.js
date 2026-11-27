@@ -2,7 +2,7 @@ import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourc
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
 import { createGlobeOutlineCache } from './globe-outline-cache.js';
-import { planGlobeCompactionUpdates, mergeGlobeDrawRanges, copyGlobeDrawWrites, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, writeDirectGlobeStrokes, globeDrawCapacity, splitGlobeDrawRanges, globeDrawGroups, groupGlobeGpuMeshes, combineGlobeDrawMeshes } from './globe-draw-compaction.js';
+import { planGlobeCompactionUpdates, mergeGlobeDrawRanges, copyGlobeDrawWrites, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, writeDirectGlobeStrokes, globeDrawCapacity, splitGlobeDrawRanges, globeDrawGroups, globeDrawBlockSize, groupGlobeGpuMeshes, combineGlobeDrawMeshes } from './globe-draw-compaction.js';
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges } from './globe-outline-cache.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
@@ -211,10 +211,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     // Spatial leaves are query granularity, not draw-call granularity.
     // Consecutive parts sharing a dictionary and style use one instance
     // stream, in original segment order. A local dictionary remains separate.
-    const groups = [];
+    const groups = [], maxStrokeDrawSegments = 500_000;
     for (const row of packet.spatialParts) {
       const last = groups.at(-1);
-      if (last&&last.end===row.first&&last.points===packet.points&&row.packet.points===last.points&&row.end-last.first<=65_536) {
+      if (last&&last.end===row.first&&last.points===packet.points&&row.packet.points===last.points&&row.end-last.first<=maxStrokeDrawSegments) {
         last.parts.push(row); last.end = row.end;
       }else groups.push({first:row.first, end:row.end, points:row.packet.points, parts:[row]});
     }
@@ -344,7 +344,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       stats.compactionUploadBytes+=copyGlobeDrawWrites(drawIndex, packet.indices, writes, 3);
       blocks = next; mesh.geometry = dynamicGeometry;
       setGroups(dynamicGeometry, globeDrawGroups([...blocks.values()]));
-      stats.rewrittenBlocks+=new Set(writes.map(write => Math.floor(write.first/Math.max(1,primitiveCount<=32768?primitiveCount:Math.max(16384,Math.ceil(primitiveCount/4)))))).size;
+      stats.rewrittenBlocks+=new Set(writes.map(write => Math.floor(write.first/globeDrawBlockSize(primitiveCount)))).size;
     }
     const resource = spatialResource([mesh], material, (getCuller, currentZoom, stats) => {
       const cull = currentZoom>=minZoom?getCuller(0):admitNone;

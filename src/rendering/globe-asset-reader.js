@@ -21,14 +21,14 @@ export function createGlobeAssetReader({dataRevision, cacheBudget, residency, lo
       return metrics.track('three.decode-packet', () => packetTasks.decode(kind, result.value, row, {signal, priority, ...parameters}));
     });
   }
-  async function loadTerritorialStroke(row, signal, priority, descriptor) {
+  async function loadTerritorialStroke(row, signal, priority, descriptor, label = '역사 국경선') {
     if (!descriptor.sources)return load(row,'stroke', {signal, priority});
-    return loadGate.run({bytes:estimateGlobeWorkingBytes(descriptor.spec,'stroke'), priority, signal, kind:'load-border-batch'}, async({handoff}) => {
+    return loadGate.run({bytes:estimateGlobeWorkingBytes(descriptor.spec,'stroke'), priority, signal, kind:'load-stroke-batch'}, async({handoff}) => {
       // Fetch small partitions together, then hand their aggregate bytes to
       // the separately admitted Worker stage.
       const settled = await Promise.allSettled(descriptor.sources.map(async item => {
         signal.throwIfAborted();
-        const result = await loader.loadStoredAsset(item.spec,'startup', item.spec.sha256,'역사 국경선', bytes => bytes, signal);
+        const result = await loader.loadStoredAsset(item.spec,'startup', item.spec.sha256,label, bytes => bytes, signal);
         signal.throwIfAborted();
         return {bytes:result.value, spec:item.spec};
       }));
@@ -37,7 +37,7 @@ export function createGlobeAssetReader({dataRevision, cacheBudget, residency, lo
       if (failed)throw failed.reason;
       const inputs = settled.map(row => row.value);
       handoff();
-      return metrics.track('three.combine-borders', () => packetTasks.combineStoredStrokes(inputs, {signal, priority}));
+      return metrics.track('three.combine-strokes', () => packetTasks.combineStoredStrokes(inputs, {signal, priority}));
     });
   }
   return Object.freeze({load, loadTerritorialStroke, stats:() => ({

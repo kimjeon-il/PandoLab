@@ -117,10 +117,45 @@ export function createGlobeTerritorialAssets(spec, {
   baseSlots, cacheBudget, residency, loadMesh, loadStroke, load, slotCount = () => baseSlots.length,
 }) {
   const outlineBySlot = new Map();
+  function combineBorderRows(rows, baseBorder) {
+    const groups = new Map(), result = [];
+    for (const row of rows) {
+      if (row.role!=='border'||Boolean(row.baseBorder)!==baseBorder) {result.push(row); continue;}
+      const cell = row.cell??row.key;
+      let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
+      group.push(row);
+    }
+    for (const [cell, group] of groups) {
+      let sources = [], decodedBytes = 0;
+      const flush = () => {
+        if (sources.length===1)result.push(sources[0]);
+        else if (sources.length) {
+          const key = (baseBorder?'base-border-batch:':'border-batch:')+sources.map(row => row.key).join(',');
+          const compressedBytes = sources.reduce((sum, row) => sum+(Number(row.spec.compressedBytes)||0), 0);
+          const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+          for (const row of sources)for (let axis = 0; axis<3; axis++) {
+            bounds[axis] = Math.min(bounds[axis], row.bounds[axis]);
+            bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
+          }
+          const slots = [...new Set(sources.flatMap(row => row.slots??[]))].sort((a,b) => a-b);
+          result.push({role:'border',kind:'stroke',key,sources,bounds,slots,cell,baseBorder,
+            spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
+        }
+        sources = []; decodedBytes = 0;
+      };
+      for (const row of group) {
+        const bytes = Number(row.spec.decodedBytes)||0;
+        if (sources.length&&(sources.length>=32||decodedBytes+bytes>cacheBudget.borderBatchBytes))flush();
+        sources.push(row); decodedBytes+=bytes;
+      }
+      flush();
+    }
+    return result;
+  }
   function descriptorsFor(catalog = null) {
     if (!catalog) return [
       ...spec.countryChunks.map((row, i) => ({...row, role:'country', key:'base-country:'+i+':'+row.spec.sha256})),
-      ...spec.borderChunks.map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),
+      ...combineBorderRows(spec.borderChunks.map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),true),
     ];
     return [
       ...catalog.historicalCountries.flatMap((country, i) => country.countryChunks.map((row, j) => ({
@@ -135,43 +170,7 @@ export function createGlobeTerritorialAssets(spec, {
     loadMesh, loadStroke, residency, byteBudget:cacheBudget.historicalCpuBytes,
   });
   const borderPlansByView = new WeakMap();
-  function combineHistoryBorders(rows) {
-    const groups = new Map(), result = [];
-    for (const row of rows) {
-      if (row.role!=='border'||row.baseBorder) {result.push(row); continue;}
-      const cell = row.cell;
-      let group = groups.get(cell);
-      if (!group) {group = []; groups.set(cell, group);}
-      group.push(row);
-    }
-    for (const group of groups.values()) {
-      let sources = [], decodedBytes = 0;
-      const flush = () => {
-        if (sources.length===1)result.push(sources[0]);
-        else if (sources.length) {
-          const key = 'border-batch:'+sources.map(row => row.key).join(',');
-          const compressedBytes = sources.reduce((sum, row) => sum+(Number(row.spec.compressedBytes)||0), 0);
-          const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-          for (const row of sources)for (let axis = 0; axis<3; axis++) {
-            bounds[axis] = Math.min(bounds[axis], row.bounds[axis]);
-            bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
-          }
-          result.push({role:'border', kind:'stroke', key, sources, bounds,
-            spec:{sha256:key, decodedBytes, compressedBytes, estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
-        }
-        sources = [];
-        decodedBytes = 0;
-      };
-      for (const row of group) {
-        const bytes = Number(row.spec.decodedBytes)||0;
-        if (sources.length&&(sources.length>=32||decodedBytes+bytes>cacheBudget.borderBatchBytes))flush();
-        sources.push(row);
-        decodedBytes += bytes;
-      }
-      flush();
-    }
-    return result;
-  }
+
   function addOutlineDescriptors(row, slot) {
     for (let order = 0; order<row.outlineChunks.length; order++) {
       const chunk = row.outlineChunks[order];
@@ -194,7 +193,7 @@ export function createGlobeTerritorialAssets(spec, {
       const groups = new Set(view.borders);
       const allRows = assets.plan(() => true,
         row => row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder));
-      index = createGlobeChunkCatalog(combineHistoryBorders(allRows));
+      index = createGlobeChunkCatalog(combineBorderRows(allRows,false));
       borderPlansByView.set(view, index);
     }
     return index.select(cull);
