@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   startup-packet-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Run initial packet and Worker batch regression' && github.event.before == '0fd09a8cb73fa5e780f7e935aee50a1325ddbf59'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Re-run initial packet and Worker batch regression' && github.event.before == 'b08d0cfe126c78042dfb21e1186f9e499deee989'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
