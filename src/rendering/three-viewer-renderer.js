@@ -191,6 +191,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:Math.floor(cacheBudget.borderBatchBytes/2), residency, lodVersion:spec.lodVersion,
   });
   let geometryLod=null, budgetTier='medium', lastAdmission=null, activeBudgetStats=null, outlineBudgetKey=null, riverBudgetKey=null;
+  let publishedPlanRevision=0;
   let outlineBudgetCost=emptyGlobeCost(),outlineBudgetOmitted=0,detailBudgetOmitted=0,optionalPressureBlocked=false;
   const gridBudgetRows=[{role:'graticule',kind:'stroke',spec:spec.graticule}];
   let pressureWakeQueued=false;
@@ -265,7 +266,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       +Math.ceil((viewport?.width??0)*(viewport?.height??0)*(viewport?.dpr??1)**2*12);
     const key=JSON.stringify([territorialContext(prepared,visibility,requestedLod),identity,
       visibility?.lakesVisible??state.layerVisibility.lakes!==false,visibility?.riversVisible??state.layerVisibility.rivers!==false,
-      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes,publishedBase&&basePlanKey(publishedBase.plan),publishedPhysical?.plan.key]);
+      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes,publishedPlanRevision]);
     if (admissions.has(key))return admissions.get(key);
     const limits=globeActiveLimits(cacheBudget,{tier:budgetTier,otherBytes:fixedBytes});
     const build=(lod,padding=0)=>{
@@ -885,7 +886,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       acceptedTerritories = draw.territories; acceptedPhysical = draw.physical; acceptedRiverChunks = draw.riverChunks;
       publishPickSnapshot(draw); drawnFrame = null;
       if (publishedPhysical!==draw.physical||publishedBase!==draw.basePrepared||first) {
-        publishedPhysical = draw.physical; publishedBase = draw.basePrepared;
+        publishedPhysical = draw.physical; publishedBase = draw.basePrepared;publishedPlanRevision++;
         prefetchTerritoryPlan = null;
         if (prefetchPhysical?.key===publishedPhysical?.plan.key)prefetchPhysical = null;
         retainCpuResources();
