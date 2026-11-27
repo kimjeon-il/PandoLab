@@ -288,14 +288,16 @@ function borderCoordinates(segments,maxEdgeDegrees){
 }
 
 function borderGroup(key,segments){
-  const coordinates=borderCoordinates(segments);
-  return {key,segments,coordinates,hash:sha256(JSON.stringify(coordinates))};
+  const coordinatesByLod=GLOBE_LODS.map(lod=>borderCoordinates(segments,lod.maxEdgeDegrees));
+  // Equal fine tessellation alone does not prove equal coarse edges if the
+  // source segmentation of a historical partition has changed.
+  return {key,coordinatesByLod,hash:sha256(JSON.stringify(coordinatesByLod))};
 }
 
 function packBorders(groups,withOwners=false,lod=GLOBE_LODS[GLOBE_FINE_LOD]){
   const coordinates=[],owners=[];
   for(const group of groups){
-    const {key}=group,points=lod.id===GLOBE_FINE_LOD?group.coordinates:borderCoordinates(group.segments,lod.maxEdgeDegrees);
+    const {key}=group,points=group.coordinatesByLod[lod.id];
     const first=coordinates.length/4;
     for(const value of points)coordinates.push(value);
     const count=points.length/4;

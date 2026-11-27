@@ -32,7 +32,7 @@ export function selectGlobeLod({zoom, dpr = 1, pitch = 0, enabled = true, previo
   for (const lod of GLOBE_LODS) {
     if (lod.id===GLOBE_FINE_LOD)return lod.id;
     const error = Math.max(1-Math.cos(lod.maxEdgeDegrees*radians/2),lod.riverError);
-    const limit=previous!==null&&lod.id<previous?.48:.6;
+    const limit = previous!==null&&lod.id<previous ? .48 : .6;
     if (scale*error<=limit)return lod.id;
   }
   return GLOBE_FINE_LOD;
@@ -49,5 +49,17 @@ export function validateGlobeLodChunks(rows, version) {
     levels.add(globeChunkLod(row));
   }
   if (enabled&&rows.length&&levels.size!==GLOBE_LODS.length)throw Error('Incomplete globe LOD chunk family');
+  if (enabled&&rows.length) {
+    // Compare stable owner coverage, not local outline-group numbers.
+    const field=rows.every(row=>Array.isArray(row.ownerSlots))?'ownerSlots':
+      rows.every(row=>Array.isArray(row.slots))?'slots':null;
+    if (field) {
+      const owners=GLOBE_LODS.map(()=>new Set());
+      for (const row of rows)for (const owner of row[field])owners[globeChunkLod(row)].add(owner);
+      const exact=owners[GLOBE_FINE_LOD];
+      if (owners.some(set=>set.size!==exact.size||[...set].some(owner=>!exact.has(owner))))
+        throw Error('Globe LOD owner coverage differs from exact tier');
+    }
+  }
   return rows;
 }

@@ -268,3 +268,53 @@ test('optional spatial preparation failure cannot blacklist required coverage',a
  assert.deepEqual(index.select(box=>box[3]>0).map(row=>row.key),['near']);
  assert.throws(()=>createGlobeChunkCatalog([{spec:{sha256:'unbounded'}}]),/Cartesian globe chunk bounds/);
 });
+
+
+test('globe LOD selects progressively finer geometry with zoom, DPR and hysteresis', async () => {
+  const {GLOBE_LODS,GLOBE_FINE_LOD,selectGlobeLod,validateGlobeLodChunks}=await import('../../../src/rendering/globe-lod.js');
+  assert.deepEqual(GLOBE_LODS.map(row=>row.maxEdgeDegrees),[4,1.5,.499]);
+  assert.equal(selectGlobeLod({zoom:2,dpr:1}),0);
+  assert.equal(selectGlobeLod({zoom:4,dpr:1}),1);
+  assert.equal(selectGlobeLod({zoom:9,dpr:1}),GLOBE_FINE_LOD);
+  assert.equal(selectGlobeLod({zoom:3,dpr:2}),1);
+  assert.equal(selectGlobeLod({zoom:2,enabled:false}),GLOBE_FINE_LOD);
+  assert.equal(selectGlobeLod({zoom:3.5,dpr:1}),0);
+  assert.equal(selectGlobeLod({zoom:3.5,dpr:1,previous:1}),1);
+  assert.equal(selectGlobeLod({zoom:3,dpr:1,previous:1}),0);
+  assert.throws(()=>validateGlobeLodChunks([{lod:0},{lod:2}],1),/Incomplete/);
+  assert.throws(()=>validateGlobeLodChunks([{lod:0,slots:[1]},{lod:1,slots:[1]},{lod:2,slots:[1,2]}],1),/owner coverage/);
+  assert.deepEqual(validateGlobeLodChunks([{slots:[1]}],undefined),[{slots:[1]}]);
+});
+
+test('display LOD retains exact river endpoint bits and protects junctions and owner changes', async () => {
+  const {GLOBE_LODS}=await import('../../../src/rendering/globe-lod.js');
+  const {createGlobeRiverJunctionGuard,simplifyGlobeRiverPacket}=await import('../../../scripts/lib/globe-lod-assets.mjs');
+  const line=decodeGlobeStrokes(encodeGlobeStrokes([0,0,.001,0,.001,0,.002,0,.002,0,.003,0,.003,0,.004,0],null,[1,1,1,1],Uint16Array.of(7,7,7,8)));
+  const branch=decodeGlobeStrokes(encodeGlobeStrokes([.002,0,.002,.001],null,[1],Uint16Array.of(9)));
+  const guard=createGlobeRiverJunctionGuard([line,branch],{filterBytes:8192});
+  const coarse=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],guard);
+  assert.equal(coarse.count,3);
+  assert.deepEqual([...coarse.ownerGroups],[7,7,8]);
+  assert.deepEqual(globeStrokePoint(coarse,0,0),globeStrokePoint(line,0,0));
+  assert.deepEqual(globeStrokePoint(coarse,0,1),globeStrokePoint(line,1,1));
+  assert.deepEqual(globeStrokePoint(coarse,1,1),globeStrokePoint(line,2,1));
+  assert.deepEqual(globeStrokePoint(coarse,2,1),globeStrokePoint(line,3,1));
+  assert.equal(simplifyGlobeRiverPacket(line,GLOBE_LODS[2],guard),line);
+  const bend=decodeGlobeStrokes(encodeGlobeStrokes([0,0,.01,.03,.01,.03,.02,0],null,[1,1]));
+  assert.equal(simplifyGlobeRiverPacket(bend,GLOBE_LODS[0]).count,2);
+});
+
+test('globe spatial chunk levels keep exact primitive bits and choose only their own descriptor index', async () => {
+  const {GLOBE_LODS}=await import('../../../src/rendering/globe-lod.js');
+  const {createGlobeChunkCatalog}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+  const buffer=encodeGlobeMesh({coordinates:[0,0,.1,0,0,.1],indices:Uint32Array.of(0,1,2),slots:Uint16Array.of(1,1,1)});
+  const rows=GLOBE_LODS.flatMap(lod=>[...globeAssets.globeMeshChunks(buffer,{span:lod.span,cellDivisions:lod.cellDivisions})]
+    .map((row,index)=>({...row,lod:lod.id,key:lod.id+':'+index})));
+  const catalog=createGlobeChunkCatalog(rows);
+  for (const lod of GLOBE_LODS) {
+    const selected=catalog.select(()=>true,()=>true,lod.id);
+    assert.equal(selected.length,1);
+    assert.equal(selected[0].lod,lod.id);
+    assert.deepEqual(decodeGlobeMesh(selected[0].buffer).indices,Uint32Array.of(0,1,2));
+  }
+});

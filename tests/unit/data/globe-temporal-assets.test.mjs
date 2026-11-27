@@ -399,3 +399,45 @@ test('base border chunks combine by cell while retaining owner slots and base-bo
  assert.deepEqual(grouped.bounds,[-1,-1,-1,.2,0,0]);
  assets.dispose();
 });
+
+
+test('physical LOD plans retain zoom thresholds and never admit other geometry tiers', async () => {
+  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+  const reads=[];
+  const variants=(id,extra={})=>[0,1,2].map(lod=>({lod,bounds:[-1,-1,-1,1,1,1],cell:'0:0:0',
+    spec:{sha256:id+'-'+lod,decodedBytes:24},...extra}));
+  const assets=createGlobePhysicalAssets([{identity:'world',waters:[{id:'sea',chunks:variants('sea')}],
+    lakes:[{minZoom:4,chunks:variants('lake')}],riverMinZoom:2,riverChunks:variants('river'),
+    riverDetail:variants('detail',{id:'detail',minZoom:5})}],{
+    lodVersion:1,loadMesh:async spec=>{reads.push(spec.sha256);return {};},
+    loadStroke:async spec=>{reads.push(spec.sha256);return {};},
+  });
+  const coarse=assets.plan('world',{zoom:3,lod:0}),fine=assets.plan('world',{zoom:6,lod:2});
+  assert.ok(coarse.rows.every(row=>row.lod===0));
+  assert.equal(coarse.lakes.length,0);
+  assert.equal(fine.lakes.length,1);
+  assert.equal(assets.covers(coarse,fine),false);
+  assert.equal(assets.covers(fine,coarse),false);
+  await assets.prepare(coarse);
+  assert.deepEqual(reads.sort(),['river-0','sea-0']);
+  assert.deepEqual(assets.detailPlan('world',{zoom:6,lod:1}).map(row=>row.spec.sha256),['detail-1']);
+  assets.dispose();
+});
+
+test('historical border and outline selections do not mix LODs or lose owner membership',async()=>{
+  const {createGlobeTerritorialAssets}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+  const variants=(id,slots=[])=>[0,1,2].map(lod=>({lod,slots,ownerSlots:slots,bounds:[-1,-1,-1,1,1,1],cell:'0:0:0',spec:{sha256:id+'-'+lod,decodedBytes:24}}));
+  const assets=createGlobeTerritorialAssets({lodVersion:1,countryChunks:variants('base',[0]),borderChunks:variants('border',[0]),outlineChunks:variants('outline',[0])},{
+    baseSlots:[{}],cacheBudget:{historicalCpuBytes:1024,borderBatchBytes:1024},loadMesh:async()=>({}),loadStroke:async()=>({}),load:async()=>({}),slotCount:()=>2,
+  });
+  assets.addHistoryCatalog({lodVersion:1,historicalCountries:[{countryChunks:variants('historical',[1]),outlineChunks:variants('historical-outline',[1])}],
+    historicalBorders:[{chunks:variants('historical-border')}]});
+  const view={borders:[0]};
+  for (const lod of [0,1,2]) {
+    assert.ok(assets.plan(()=>true,()=>true,lod).every(row=>row.lod===lod));
+    assert.deepEqual(assets.planHistoryBorders(view,()=>true,lod).map(row=>row.spec.sha256),['historical-border-'+lod]);
+    assert.deepEqual(assets.outlineDescriptors(1,lod).map(row=>row.spec.sha256),['historical-outline-'+lod]);
+  }
+  assert.throws(()=>assets.addHistoryCatalog({historicalCountries:[],historicalBorders:[]}),/LOD version mismatch/);
+  assets.dispose();
+});

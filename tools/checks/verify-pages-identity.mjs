@@ -13,6 +13,7 @@ import {MAP_PROJECT_ROLES,mapProjectResourcePath,mapProjectResourcePaths,
   validateMapProjectManifest} from '../../src/data/map-project-manifest.js';
 import {validateMapCatalogCoherence} from '../../scripts/lib/map-catalog-coherence.mjs';
 import {resolveBuiltinGeometryPacks} from '../../src/data/builtin-geometry-pack-receipt.js';
+import {globeLodEnabled,validateGlobeLodChunks} from '../../src/rendering/globe-lod.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const HASH=/^[a-f0-9]{64}$/;
@@ -63,7 +64,10 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
     return value;
   };
   const chunks=(value,label)=>{
-    for(const row of rows(value,label)){
+    const family=rows(value,label);
+    try {validateGlobeLodChunks(family,globe.lodVersion);}
+    catch(error){invalid('Invalid Three.js '+label+' LOD: '+error.message);}
+    for(const row of family){
       if(!Array.isArray(row?.bounds)||row.bounds.length!==6||!row.bounds.every(Number.isFinite)
         ||row.bounds.slice(0,3).some((min,axis)=>min>row.bounds[axis+3]))
         invalid('Invalid Three.js '+label+' spatial bounds');
@@ -79,6 +83,8 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
   };
   if(!globe||!Array.isArray(globe.countrySlots)||!Number.isSafeInteger(globe.historySlotCount)
     ||globe.historySlotCount<0)invalid('Missing Three.js map asset manifest');
+  try {globeLodEnabled(globe.lodVersion);}
+  catch(error){invalid(error.message);}
   chunks(globe.countryChunks,'country');
   chunks(globe.borderChunks,'border');
   chunks(globe.outlineChunks,'outline');
@@ -99,7 +105,7 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
     if(error?.code?.startsWith('ARTIFACT_DEPLOY_'))throw error;
     invalid('Invalid Three.js history catalog: '+error.message);
   }
-  if(history?.version!==1||!Array.isArray(history.historicalCountries)
+  if(history?.version!==1||history.lodVersion!==globe.lodVersion||!Array.isArray(history.historicalCountries)
     ||history.historicalCountries.length!==globe.historySlotCount||!Array.isArray(history.historyTimeline)
     ||!history.history)invalid('Three.js history catalog version or slot count mismatch');
   for(const row of history.historicalCountries){

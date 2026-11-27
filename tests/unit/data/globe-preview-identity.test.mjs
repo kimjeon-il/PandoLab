@@ -49,3 +49,30 @@ test('Pages identity binds compressed history content and slot count to the stag
  f.bytes.set(f.globe.historyCatalog.url,Buffer.from('corrupt'));
  assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
 });
+
+
+test('Pages identity rejects incomplete LOD families and inconsistent history versions',()=>{
+ const f=fixture();
+ f.globe.lodVersion=1;
+ const variants=rows=>rows.flatMap(row=>[0,1,2].map(lod=>({...row,lod})));
+ const physical=context=>{
+  for(const row of [...context.waters,...context.lakes])row.chunks=variants(row.chunks);
+  context.riverChunks=variants(context.riverChunks);context.riverDetail=variants(context.riverDetail);
+ };
+ f.globe.countryChunks=variants(f.globe.countryChunks);
+ f.globe.borderChunks=variants(f.globe.borderChunks);
+ f.globe.outlineChunks=variants(f.globe.outlineChunks);
+ physical(f.globe.physical);
+ assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
+ f.history.lodVersion=1;
+ for(const row of f.history.historicalCountries){row.countryChunks=variants(row.countryChunks);row.outlineChunks=variants(row.outlineChunks);}
+ for(const row of f.history.historicalBorders)row.chunks=variants(row.chunks);
+ for(const context of f.history.physicalContexts)physical(context);
+ const decoded=Buffer.from(JSON.stringify(f.history)),compressed=gzipSync(decoded),sha256=createHash('sha256').update(compressed).digest('hex');
+ const old=f.globe.historyCatalog.url,url='assets/data/globe-preview/catalog/sha256-'+sha256+'.bin.gz';
+ f.globe.historyCatalog={url,sha256,encoding:'gzip',compressedBytes:compressed.length,decodedBytes:decoded.length};
+ f.files.delete(old);f.files.set(url,{sha256,bytes:compressed.length});f.bytes.set(url,compressed);
+ assert.equal(f.verify(),f.files.size);
+ f.globe.countryChunks=f.globe.countryChunks.filter(row=>row.lod!==1);
+ assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
+});
