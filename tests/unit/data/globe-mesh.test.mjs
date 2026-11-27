@@ -592,7 +592,7 @@ test('optional spatial preparation failure cannot blacklist required coverage',a
   {key:'far',bounds:[-1,0,0,-.9,.1,.1],spec:{sha256:'a'}},
   {key:'near',bounds:[.9,0,0,1,.1,.1],spec:{sha256:'b'}},
  ]);
- assert.deepEqual(index.select(box=>box[0]>0).map(row=>row.key),['near']);
+ assert.deepEqual(index.select(box=>box[3]>0).map(row=>row.key),['near']);
  assert.throws(()=>createGlobeChunkCatalog([{spec:{sha256:'unbounded'}}]),/Cartesian globe chunk bounds/);
 });
 
@@ -619,7 +619,7 @@ test('physical catalog selects lake and base/detail river chunks through Cartesi
   riverMinZoom:3,riverChunks:[chunk('river-near',near),chunk('river-far',far)],riverDetail:[
    {...chunk('detail-near',near),id:'d1',minZoom:5},{...chunk('detail-far',far),id:'d2',minZoom:5},
   ]}],{loadMesh:load,loadStroke:load});
- const cull=box=>box[0]>0,plan=assets.plan('world',{zoom:5,cull,strokeCull:cull});
+ const cull=box=>box[3]>0,plan=assets.plan('world',{zoom:5,cull,strokeCull:cull});
  assets.retain([plan]);const prepared=await assets.prepare(plan);
  assert.equal(prepared.lakes.length,1);assert.equal(prepared.riverChunks.length,1);
  assert.deepEqual(reads.sort(),['lake-near','river-near']);
