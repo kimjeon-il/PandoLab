@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   dated-ui-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Verify deferred date transition auxiliary UI refresh' && github.event.before == '3cd62c7bbf116f6b89e19be47871a593a06c2a4a'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Verify deferred date transition membership pruning' && github.event.before == '5ec35a24e5a42c3f0e66df636286afcd477111ee'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
