@@ -234,7 +234,7 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
     const stats = window.__PANDOLAB_VIEWER__.rendererStats(), canvas = document.querySelector('#map canvas');
     const gl = canvas.getContext('webgl2'), debug = gl.getExtension('WEBGL_debug_renderer_info');
     return {source:window.PANDOLAB_BUILD_META.sourceCommit??null, data:window.PANDOLAB_BUILD_META.dataRevision,
-     dpr:devicePixelRatio, width:canvas.width,height:canvas.height,renderer:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),
+     dpr:window.devicePixelRatio, width:canvas.width,height:canvas.height,renderer:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),
      drawCount:stats.drawCount,drawCalls:stats.drawCalls,firstPublishedAt:stats.performance.firstPublishedAt,
      phases:stats.performance.phases,spatial:stats.spatialRendering,residency:stats.residency,
      meshLedger:stats.residentCache?.meshLedger??null,labelLedger:stats.labelAtlas?.pageLedger??null,

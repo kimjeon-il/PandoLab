@@ -255,10 +255,12 @@ test('spatial download chunks isolate alternating hemispheres without losing exa
 
 test('optional spatial preparation failure cannot blacklist required coverage',async()=>{
  const {createGlobePlanFailures,createGlobeChunkCatalog}=await import('../../../src/rendering/globe-view-mesh-assets.js');
- const failures=createGlobePlanFailures();
- failures.fail('view',false);assert.equal(failures.allow('view',false),false);
+ const {createRenderResidencyBudget}=await import('../../../src/rendering/render-cache-budget.js');
+ const residency=createRenderResidencyBudget(1024);
+ const failures=createGlobePlanFailures({residency,onRetry:()=>assert.fail('permanent failure should not retry')});
+ failures.fail('view',false,Error('invalid packet'));assert.equal(failures.allow('view',false),false);
  assert.equal(failures.allow('view',true),true);
- failures.clear();assert.equal(failures.allow('view',false),true);
+ failures.clear();assert.equal(failures.allow('view',false),true);residency.dispose();
  const index=createGlobeChunkCatalog([
   {key:'far',bounds:[-1,0,0,-.9,.1,.1],spec:{sha256:'a'}},
   {key:'near',bounds:[.9,0,0,1,.1,.1],spec:{sha256:'b'}},
