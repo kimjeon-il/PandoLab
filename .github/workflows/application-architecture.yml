@@ -16,7 +16,7 @@ on:
         type: string
         default: ""
       test_name_pattern:
-        description: Optional test title pattern (Node, GIS or browser)
+        description: Focused title fragment (regular expressions require whole_group approval)
         type: string
         default: ""
       whole_group:

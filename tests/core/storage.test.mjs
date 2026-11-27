@@ -357,12 +357,19 @@ test('failed and blocked checks stop execution before any publication action',as
 test('application checks select only registered files and scenarios', async () => {
  const {executeChecks}=await import('../../scripts/run-application-checks.mjs');
  const catalog={groups:[{id:'node',argv:['node','--test','tests/a.test.mjs','tests/b.test.mjs']},{id:'browser',argv:['node','playwright.js','test','tests/viewer.spec.mjs']}]};
- const calls=[];const run=argv=>{calls.push(argv);return {status:0};};
+ const calls=[];
+ const listing=count=>JSON.stringify({suites:[{specs:[{tests:Array.from({length:count},()=>({}))}]}]});
+ const run=argv=>{
+  calls.push(argv);
+  return {status:0,...(argv.includes('--list')?{stdout:listing(argv.includes('--grep')?1:2)}:{})};
+ };
  executeChecks({groups:['node'],catalog,run,files:['tests/b.test.mjs'],testNamePattern:'chosen'});
- assert.deepEqual(calls[0].slice(1),['--test','--test-name-pattern=chosen','tests/b.test.mjs']);
+ assert.match(calls[0][2],/^--test-reporter=.*nonempty-node-reporter\.mjs$/);
+ assert.deepEqual(calls[0].slice(1).filter(arg=>!arg.startsWith('--test-reporter=')),['--test','--test-name-pattern=chosen','tests/b.test.mjs']);
  calls.length=0;
  executeChecks({groups:['browser'],catalog,run,files:['tests/viewer.spec.mjs'],testNamePattern:'touch'});
- assert.deepEqual(calls[0].slice(1),['playwright.js','test','tests/viewer.spec.mjs','--grep','touch']);
+ assert.equal(calls.length,3);
+ assert.deepEqual(calls.at(-1).slice(1),['playwright.js','test','tests/viewer.spec.mjs','--grep','touch']);
  assert.throws(()=>executeChecks({groups:['node'],catalog,run,files:['tests/not-registered.mjs']}),/registered/i);
  assert.throws(()=>executeChecks({catalog,run}),/explicit/i);
  const {selectChecks}=await import('../../scripts/run-application-checks.mjs');
@@ -378,6 +385,7 @@ test('application checks select only registered files and scenarios', async () =
   {groups:['node']},
   {groups:['node'],testNamePattern:'chosen'},
   {groups:['node'],files:['tests/a.test.mjs','tests/b.test.mjs']},
+  {groups:['node'],files:['tests/a.test.mjs','tests/b.test.mjs'],testNamePattern:'chosen'},
   {groups:['browser'],files:['tests/viewer.spec.mjs']},
   {groups:['lint']},
  ];
@@ -386,10 +394,43 @@ test('application checks select only registered files and scenarios', async () =
  }
  assert.throws(()=>selectChecks({groups:['node'],catalog,testNamePattern:' '}),/nonempty/);
  assert.throws(()=>selectChecks({groups:['node'],catalog,allowWholeGroup:'true'}),/approval/);
- assert.deepEqual(selectChecks({groups:['node'],catalog,allowWholeGroup:true})[0].argv.slice(1),
+ assert.deepEqual(selectChecks({groups:['node'],catalog,allowWholeGroup:true})[0].argv.slice(1).filter(arg=>!arg.startsWith('--test-reporter=')),
   ['--test','tests/a.test.mjs','tests/b.test.mjs']);
  assert.deepEqual(selectChecks({groups:['browser'],catalog,testNamePattern:'touch'})[0].argv.slice(1),
   ['playwright.js','test','tests/viewer.spec.mjs','--grep','touch']);
+ for(const pattern of ['.*','^','a|','[\s\S]*','/./','(?:chosen)?']){
+  assert.throws(()=>selectChecks({groups:['node'],catalog,files:['tests/b.test.mjs'],testNamePattern:pattern}),/allow-whole-group/);
+  assert.throws(()=>selectChecks({groups:['browser'],catalog,testNamePattern:pattern}),/allow-whole-group/);
+ }
+ assert.doesNotThrow(()=>selectChecks({groups:['node'],catalog,files:['tests/b.test.mjs'],testNamePattern:'Core C\\+\\+'}));
+ assert.doesNotThrow(()=>selectChecks({groups:['browser'],catalog,testNamePattern:'.*',allowWholeGroup:true}));
+ for(const [matched,error] of [[0,/No browser scenarios/],[2,/All browser scenarios/]]){
+  assert.throws(()=>executeChecks({groups:['browser'],catalog,testNamePattern:'viewer',
+   run:argv=>{assert.ok(argv.includes('--list'),'unapproved browser execution');return {status:0,stdout:listing(argv.includes('--grep')?matched:2)};}}),error);
+ }
+
+});
+
+
+test('Node scope rejects unmatched and entirely skipped scenarios instead of counting a file as a pass',t=>{
+ const root=sandbox(t),file=join(root,'scenario.test.mjs');
+ writeFileSync(file,"import test from 'node:test';test('actual scenario',()=>{});test('skipped scenario',{skip:true},()=>{});\n");
+ const reporter='--test-reporter='+new URL('../../scripts/lib/nonempty-node-reporter.mjs',import.meta.url).href;
+ const env={...process.env};delete env.NODE_TEST_CONTEXT;
+ const run=pattern=>execFileSync(process.execPath,['--test',reporter,'--test-name-pattern='+pattern,file],{cwd:root,env,encoding:'utf8',stdio:'pipe'});
+ for(const pattern of ['absent scenario','skipped scenario'])
+  assert.throws(()=>run(pattern),error=>error.status===1&&/No actual Node\/GIS scenarios passed/.test(error.stdout));
+ assert.doesNotThrow(()=>run('actual scenario'));
+});
+
+test('browser completion refuses a successful result with no executed passing scenario',async()=>{
+ const {default:Reporter}=await import('../browser/nonempty-reporter.mjs');
+ const empty=new Reporter();
+ empty.onTestEnd(null,{status:'skipped'});
+ assert.deepEqual(empty.onEnd({status:'passed'}),{status:'failed'});
+ assert.equal(empty.onEnd({status:'failed'}),undefined);
+ const actual=new Reporter();actual.onTestEnd(null,{status:'passed'});
+ assert.equal(actual.onEnd({status:'passed'}),undefined);
 });
 
 test('historical frontend indexing reads retired module identities without recreating a worktree',async()=>{
