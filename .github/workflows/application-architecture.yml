@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   network-worker-pipeline:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Run network and Worker overlap regressions' && github.event.before == '82a8f88036b24433694d2b6fa9f4c09afe191d6c'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Re-run network and Worker overlap regressions' && github.event.before == 'f4b9a7bd1aea6d9c9a5520984346c5fe5db54134'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
