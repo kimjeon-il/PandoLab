@@ -852,6 +852,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,gpuFrame:surface.gpuFrameStats(),optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height,admission.limits.hard));
     if (!submitted) {invalidate('three-gpu-upload-budget');return {...base,deferred:true};}
+    const gpuDeferred=surface.gpuFrameStats().deferred;
+    if (gpuDeferred.create||gpuDeferred.upload||gpuDeferred.compaction)invalidate('three-gpu-frame-work-pending');
+    activeBudgetStats={...activeBudgetStats,gpuFrame:surface.gpuFrameStats()};
     drawCount++;
     drawnFrame = {frame, camera, viewport, territories, basePrepared, physical, visibleSlots:paint.visibleSlots(), riverChunks:riverDetail.activeEntries(),
       pickTerritoryPlan:admission.base, pickPhysicalPlan:admission.physical,

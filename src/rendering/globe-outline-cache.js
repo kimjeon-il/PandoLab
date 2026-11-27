@@ -219,9 +219,10 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex
     }
   }
   function chunkFootprint(chunk) {
-    const gpu = chunk.gpu;
-    const row = gpuResourceFootprint(gpu?[gpu.mesh.geometry]:[], gpu?.texture?[gpu.texture.texture]:[],
-      [chunk.selection?.footprint(), chunk.selected?.ranges, ...chunk.subsets.values(), gpu?.subset, gpu?.output, gpu?.ranges]);
+    const gpu=chunk.gpu,pending=chunk.pendingGpu;
+    const row=gpuResourceFootprint([gpu?.mesh.geometry,pending?.mesh.geometry].filter(Boolean),
+      [gpu?.texture,pending?.texture].filter(Boolean).map(value=>value.texture),
+      [chunk.selection?.footprint(),chunk.selected?.ranges,...chunk.subsets.values(),gpu?.subset,pending?.subset,gpu?.output,pending?.output,gpu?.ranges,pending?.ranges]);
     row.extraBytes+=chunk.roles.size*48+96;
     return row;
   }
@@ -253,14 +254,14 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex
   }
   function dispose() {
     residency?.remove(baseKey);
-    for (const chunk of chunks.values()) {disposeGpu(chunk); residency?.remove(chunk);}
+    for (const chunk of chunks.values()) {disposeGpu(chunk);disposePendingGpu(chunk);residency?.remove(chunk);}
     for (const chunk of dirtyChunks)residency?.remove(chunk);
     dirtyChunks.clear(); chunks.clear(); activeChunks.clear(); previousGroups.clear();
   }
   function stats() {
-    let resident = 0, visible = 0;
-    for (const chunk of chunks.values())if (chunk.gpu) {resident++; if (chunk.gpu.mesh.visible)visible++;}
-    return {residentChunks:resident, visibleChunks:visible, activeChunks:activeChunks.size, evictedChunks, createdChunks, shrunkBuffers, updatedChunks, subsetHits, subsetBuilds};
+    let resident=0,visible=0,pending=0;
+    for (const chunk of chunks.values()) {if(chunk.gpu){resident++;if(chunk.gpu.mesh.visible)visible++;}if(chunk.pendingGpu)pending++;}
+    return {residentChunks:resident,pendingChunks:pending,visibleChunks:visible,activeChunks:activeChunks.size,evictedChunks,createdChunks,shrunkBuffers,updatedChunks,subsetHits,subsetBuilds};
   }
   return {paint, hide, update, dispose, bytes, syncResidency, stats, get lastUsed() {return lastUsed;}};
 }
