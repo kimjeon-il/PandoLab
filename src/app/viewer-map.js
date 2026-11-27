@@ -303,11 +303,11 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
       // packets are independent after the builtin source index is available.
       const prepareGeometry = async({isCurrent}) => {
         const references = await projectSourceRuntime.readWorldGeometryReferences(month, {isCurrent});
-        return renderer.prepareDatedTerritories(month, references, {isCurrent});
+        return renderer.prepareDatedTerritories(month, references, {isCurrent, includeAllObjects:true});
       };
       const [candidate, physical] = await Promise.allSettled([
         projectSourceRuntime.prepareProjectCandidate(month, {...options, prepareGeometry}),
-        preparePhysicalContext(month, options),
+        preparePhysicalContext(month, {...options, includeAllPhysical:true}),
       ]);
       if (candidate.status==='rejected'||physical.status==='rejected') {
         if (candidate.status==='fulfilled')await projectDomain.discardTemporalBuiltin(candidate.value);

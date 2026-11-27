@@ -200,28 +200,30 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     for (const row of paint.roleStyles())width = Math.max(width, row?.width??0);
     return Math.max(5, Math.ceil(width+2*(0.5/(viewport?.dpr||1))+2));
   };
-  function physicalPlan(identity, padding = 0) {
-    syncViewPlans(); const extra = strokePadding(), lakesVisible = state.layerVisibility.lakes!==false, riversVisible = state.layerVisibility.rivers!==false;
+  function physicalPlan(identity, padding = 0, visibility = null) {
+    syncViewPlans(); const extra = strokePadding(), lakesVisible = visibility?.lakesVisible??state.layerVisibility.lakes!==false,
+      riversVisible = visibility?.riversVisible??state.layerVisibility.rivers!==false;
     const key = JSON.stringify([identity, padding, extra, lakesVisible, riversVisible, view.zoom]);
     let plan = physicalPlans.get(key);
     if (!plan) {plan = physicalAssets.plan(identity, {zoom:view.zoom, cull:viewCull(padding), strokeCull:viewCull(padding+extra), lakesVisible, riversVisible});
       if (physicalPlans.size>=8)physicalPlans.clear(); physicalPlans.set(key, plan);}
     return plan;
   }
-  const territorialContext = prepared => prepared.key+'|'+Number(state.layerVisibility.objects!==false)+'|'+Number(bordersNeeded());
-  function territorialPlan(prepared = territories, padding = 0) {
-    syncViewPlans(); const extra = strokePadding(), key = territorialContext(prepared)+'|'+padding+'|'+extra;
+  const territorialContext = (prepared, visibility = null) => prepared.key+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
+  function territorialPlan(prepared = territories, padding = 0, visibility = null) {
+    syncViewPlans(); const extra = strokePadding(), objectsVisible = visibility?.objectsVisible??state.layerVisibility.objects!==false,
+      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility)+'|'+padding+'|'+extra;
     if (territoryPlans.has(key))return territoryPlans.get(key);
-    if (state.layerVisibility.objects===false) {const rows = []; territoryPlans.set(key, rows); return rows;}
+    if (!objectsVisible) {const rows = []; territoryPlans.set(key, rows); return rows;}
     const selectedSlots = new Set(prepared.slots), hidden = new Set(prepared.view?.hiddenBorders??[]);
     const cull = viewCull(padding);
     const rows = territorialAssets.plan(viewCull(padding+extra), row => {
       if (row.role==='country')return (!row.bounds||cull(row.bounds))&&
         (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot => selectedSlots.has(slot)));
-      if (!bordersNeeded())return false;
+      if (!boundariesVisible)return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
     });
-    if (bordersNeeded()&&prepared.view)
+    if (boundariesVisible&&prepared.view)
       rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra)));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
@@ -331,14 +333,15 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       throw Object.assign(Error(`${month}에 준비된 Three.js 물리 지도가 없습니다.`), {code:'PL-THREE-MONTH'});
     return identity;
   }
-  async function preparePhysicalContext(month, {isCurrent = () => true} = {}) {
+  async function preparePhysicalContext(month, {isCurrent = () => true, includeAllPhysical = false} = {}) {
     const controller = startRequest('physical-prefetch');
     const assertCurrent = () => {if (!requestCurrent('physical-prefetch', controller)||!isCurrent())
       throw Object.assign(new Error('Physical preparation superseded'), {name:'AbortError', cancelled:true});};
     let target;
     try {
       assertCurrent(); await initialize(); assertCurrent();
-      target = physicalPlan(await requirePhysicalSource(month, deps.physicalResources.physicalSourceIdentityAtMonth(month), controller.signal));
+      target = physicalPlan(await requirePhysicalSource(month, deps.physicalResources.physicalSourceIdentityAtMonth(month), controller.signal),0,
+        includeAllPhysical?{lakesVisible:true,riversVisible:true}:null);
       assertCurrent();
       if (reusePhysical(target)) {temporalReuse.physicalPreparationsSkipped++; return true;}
       prefetchPhysical = target; retainCpuResources();
@@ -447,14 +450,16 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     prefetchTerritoryPlan = null; prefetchPhysical = null;
     retainCpuResources();
   }
-  async function prepareDatedTerritories(month, references, {isCurrent = () => true} = {}) {
+  async function prepareDatedTerritories(month, references, {isCurrent = () => true, includeAllObjects = false} = {}) {
     const controller = startRequest('country-prefetch');
     let plan;
     try {
       const prepared = await requireTerritorialGeometry(month, references, controller.signal);
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
-      plan = territorialPlan(prepared);
-      if (reuseTerritories(territorialContext(prepared), plan)) {temporalReuse.countryPreparationsSkipped++; return true;}
+      const visibility = includeAllObjects?{objectsVisible:true,bordersVisible:true}:null;
+      const context = territorialContext(prepared,visibility);
+      plan = territorialPlan(prepared,0,visibility);
+      if (reuseTerritories(context, plan)) {temporalReuse.countryPreparationsSkipped++; return true;}
       prefetchTerritoryPlan = plan; retainCpuResources();
       await territorialAssets.prepare(plan, {signal:controller.signal});
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');

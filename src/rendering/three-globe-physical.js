@@ -71,7 +71,7 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
     }
   }
   function coversWaters(have, needed) {return !!have&&have.spec.identity===needed.spec.identity&&globeChunkSetContains(have.waters, needed.waters);}
-  function covers(have, needed) {return coversWaters(have, needed)&&have.rivers===needed.rivers&&
+  function covers(have, needed) {return coversWaters(have, needed)&&(!needed.rivers||have.rivers)&&
     globeChunkSetContains(have.lakes, needed.lakes)&&globeChunkSetContains(have.riverChunks, needed.riverChunks);}
   async function warm(target, {signal, priority = -20, claim, holdBytes = 0}) {
     for (const row of target.rows) {signal?.throwIfAborted(); if (files.has(keyOf(row))) {if (holdBytes)files.holdWarm(keyOf(row), holdBytes); continue;}if (!claim(row.spec, row.kind))continue; await read(row, signal, priority); if (holdBytes)files.holdWarm(keyOf(row), holdBytes);}
