@@ -56,6 +56,7 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
   const d3 = globalThis.d3;
   if (!d3) throw new Error('지도 투영 라이브러리를 불러오지 못했습니다.');
   let renderingDomain = null;
+  let renderer = null;
   // The admitted empty document can already display the physical substrate.
   // Historical country data replaces it only after Core accepts that source.
 
@@ -134,17 +135,13 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
       // Property-only Core snapshots may have fresh Feature wrappers. Retain
       // proven identical spatial bounds; never retain them on a geometry,
       // membership or hierarchy change, or when no index was initialized.
-      if (!propertyOnly||!spatialIndex.retainTerritorialSpatialIndex(entities))
-        spatialIndex.mapObjectGeometryRevisions.territorial++;
-      if (rootGeometryChanged)countryIndex.countryLandRevision++;
+      spatialIndex.noteTerritorialChange(entities, {propertyOnly});
+      if (rootGeometryChanged) countryIndex.noteRootGeometryChange();
     }});
   projectSession.installDocumentProjection({documentModel:documentSession.documentModel, commandOwner:documentSession.commandOwner, entityStore});
-  state.countryVisualPhase = 'canonical';
   const repository = createTerritorialEntityRepository({entityStore});
   connectOwner('renderQuality');
   renderQuality.initializeRenderQualityController();
-
-  Object.defineProperty(state, 'projectReplacing', {get: () => projectDomain.isReplacing()});
 
   connectOwner('objectPresentation');
   objectPresentation.initializeTerritorialScope();
@@ -163,7 +160,7 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
   const releaseGeometryLoader = documentSession.commandOwner.setGeometryLoader(projectSourceRuntime.loadGeometryResources);
   connectOwner('hydroSettings');
   connectOwner('physicalResources');
-  const renderer = createThreeViewerRenderer({
+  renderer = createThreeViewerRenderer({
     projectState: ports.projectState, layerPresentation: ports.layerPresentation,
     preferences: ports.preferences, colorModel: ports.colorModel, objectPresentation,
     highlightCandidates: objectPicking.highlightCandidates,
@@ -175,13 +172,6 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     readSafeInsets: reason => (reason ? mapProjection.refreshMapLayoutMetrics(reason) : mapProjection.projectionLayoutMetrics()).safe});
   territorialSceneRuntime.connect({territorialScope: objectPresentation.territorialScope,
     entityRepository: repository, state, mapRenderer: renderer});
-  let initialView = state.view;
-  Object.defineProperty(state,'view', {configurable:true, enumerable:true, get() {
-    const camera = renderer.cameraSnapshot();
-    if (!camera)return initialView;
-    initialView = null;
-    return Object.freeze({globeRotation:Object.freeze([-camera.center[0], -camera.center[1], 0]), zoom:camera.zoom});
-  }, set(view) {if (renderer.loaded)renderer.syncCameraFromState(view); else initialView = view;}});
   let initialized;
   physicalResources.initializeHydroService();
 
@@ -213,7 +203,6 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
   renderingDomain = createViewerRenderingDomain({
     mapRenderer:renderer, selectionDomain,
     labelResources:{
-      getState:() => state,
       preparePlaces:labelOwner.preparePlaces,
       beginPlaceInteraction:() => {
         labelOwner.builtinPlaces.beginInteraction();
@@ -226,7 +215,6 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
       geometryBounds:spatialIndex.geometryBounds, DISTRIBUTION_MODES, DISTRIBUTION_RENDER_MODES,
       isLayerItemVisible:objectCatalog.isLayerItemVisible,
       getCountryGeometryRevision:() => countryIndex.countryLandRevision,
-      getDistributionVisibilityRevision:() => objectPresentation.distributionVisibilityRevision,
     }),
     // Do not resize/clear visible GPU pixels during frame preparation.
     prepareView:mapHost.prepareVisualFrame,
@@ -238,7 +226,6 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     const generation = ++updateGeneration;
     const entities = entityStore.snapshot();
     const previous = presentedEntities;
-    if (!previous||previous!==entities)state.countryIndex = new Map(entities.map(feature => [String(feature.id), feature]));
     const territorialFeatures = entities.filter(feature => feature.properties.entityKind==='general');
     await initialized; if (generation!==updateGeneration)return;
     // A dated source is admitted before publishing its frame.
@@ -325,8 +312,9 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     displayState:() => ({...documentSession.documentModel.snapshot(), ...state, projection:state.projection}),
 
     applyPresentation:projectSession.applyViewingPresentation,
-    distributionPresentation:{bumpVisibilityRevision:() => {objectPresentation.distributionVisibilityRevision++;}},
     refreshAppearance(options) {
+      if (options?.reason === 'native-name-visibility') return renderingDomain.invalidateLabels(options.reason);
+      if (options?.reason === 'background-preference') return renderingDomain.invalidateProject(options.reason);
       if (options?.reason==='formal-country-name-display')renderingDomain.invalidateLabels(options.reason);
       else renderQuality.applyMapAppearanceChange(options);
       objectCatalog.invalidateObjectPresentation();
@@ -334,6 +322,6 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     },
 
     navigation, mapProjection, projectSession, renderingDomain,
-    dispose() {releaseGeometryLoader(); projectSourceRuntime.dispose(); entityStore.dispose(); inputPresentation.dispose(); pointerTargets.cancelCountryHoverPick(); countryIndex.resetCountryLabelAnchorRuntime(); mapHost.stopMapResizeObserver(); renderingDomain.dispose(); renderer.dispose();},
+    dispose() {releaseGeometryLoader(); projectSourceRuntime.dispose(); entityStore.dispose(); inputPresentation.dispose(); pointerTargets.dispose(); countryIndex.resetCountryLabelAnchorRuntime(); mapHost.stopMapResizeObserver(); renderingDomain.dispose(); renderer.dispose();},
   });
 }

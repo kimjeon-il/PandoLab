@@ -26,10 +26,11 @@ export function createCameraNavigation() {
 
   function focusCoordinate(coord, zoom = null) {
     if (!(0, dependencies.countries.validLabelAnchor)(coord)) return;
-    const state = dependencies.projectState.state, view = state.view;
-    state.view = {...view, globeRotation:[-Number(coord[0]), -Number(coord[1]), 0], zoom:zoom??view.zoom};
-    (0, dependencies.mapView.syncMapHostFromState)();
-    dependencies.domains.renderingDomain?.invalidateView?.('focus-coordinate');
+    const view = dependencies.projectState.state.view;
+    dependencies.rendering.mapRenderer.syncCameraFromState({
+      globeRotation: [-Number(coord[0]), -Number(coord[1]), 0], zoom: zoom ?? view.zoom,
+    });
+    dependencies.domains.renderingDomain.invalidateView('focus-coordinate');
   }
 
   function selectObjectSearchItem(group, id, { mode = 'replace', range = false, orderedRefs = [] } = {}) {

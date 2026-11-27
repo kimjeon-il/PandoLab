@@ -1,13 +1,14 @@
 import { coreSelectionRefToWeb } from './core-object-ref.js';
 import { projectResourceOverlay } from './project-resource-overlay.js';
-import { loadUserPreferences } from '../ui/user-preferences.js';
 import { createMapWorkScheduler } from '../runtime/map-work-scheduler.js';
 import { createEmptyTerritorialState } from './territorial-entity-store.js';
 import { createInitialDocument } from './initial-document.js';
 import { VIEWER_RESOURCE_CAPABILITIES } from '../runtime/resource-capabilities.js';
 import { viewerPolicy } from '../app/viewer-policy.js';
+import { freezeStructuredValue } from '../runtime/structured-value.js';
 const readonlyIds = ids => Object.freeze({ get size() { return ids.length; }, has: id => ids.includes(id),
   [Symbol.iterator]: () => ids[Symbol.iterator]() });
+const defaultMapSize = Object.freeze({width: 1000, height: 700});
 /** ProjectSession: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
  * Mutable bindings stay local; exported accessors retain live identity.
@@ -21,6 +22,8 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
   let state;
   let atomicMapStateController;
   let projectionInstalled = false;
+  let initialView = freezeStructuredValue({globeRotation: [-15, -25, 0], zoom: null});
+  let transitionRevision = 0;
   function connect(ports) {
     if (dependencies) throw new Error('project-session already connected');
     dependencies = ports;
@@ -48,13 +51,9 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
       objectNames: true,
     }));
 
-    const prefs = loadUserPreferences();
-    const background = prefs.backgrounds.viewer;
     (state = {
       ...createEmptyTerritorialState(),
-      countryVisualPhase: 'pending',
-
-      countryIndex: new Map(),
+      get countryVisualPhase() {return projectionInstalled ? 'canonical' : 'pending';},
       sourceInfo: null,
       labels: [],
       labelSettings: {},
@@ -68,7 +67,7 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
       get selected() { return dependencies.domains.selectionDomain?.primary() || null; },
       projection: viewerPolicy.projection,
       resourceCapabilities:VIEWER_RESOURCE_CAPABILITIES,
-      backgroundSettings:{...background},
+      get backgroundSettings() {return dependencies.preferences.userPreferences.backgrounds.viewer;},
       layerVisibility: normalizeLayerVisibility(),
       physicalSettings: {
         hydroLayers: {
@@ -77,11 +76,8 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
         },
         dataset: dependencies.physicalConfig.PHYSICAL_DATASET,
       },
-      hydroFeatureCache: new Map(),
-      hydroFeatureByFid: new Map(),
-      hydroFragmentsByLogicalId: new Map(),
-      hydroManifest: null,
-      physicalLoadState: { hydro: 'idle', hydroCache: 'idle', hydroCachePercent: 0 },
+      get hydroManifest() {return dependencies.physicalResources.hydroManifest;},
+      get physicalLoadState() {return dependencies.physicalResources.physicalLoadState;},
       itemVisibility: {
         objects: {},
         distributions: {},
@@ -90,20 +86,21 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
         labels: {},
         objectLabels: {},
       },
-      objectSearch: '',
-      spatialIndex: [],
-      mapMoving: false,
+      get projectReplacing() {return dependencies.domains.projectDomain.isReplacing();},
+      get mapMoving() {return dependencies.rendering.mapRenderer?.isMoving() === true;},
       historyDirtyEntityIds: readonlyIds(Object.freeze([])),
       stateRevision: 0,
-      transitionRevision: 0,
+      get transitionRevision() {return transitionRevision;},
       spacePanActive: false,
-      suppressNextMapClick: null,
-      view: {
-        globeRotation: [-15, -25, 0],
-        zoom: null,
+      get view() {
+        const camera = dependencies.rendering.mapRenderer?.cameraSnapshot();
+        return camera ? freezeStructuredValue({globeRotation: [-camera.center[0], -camera.center[1], 0], zoom: camera.zoom}) : initialView;
       },
-      size: { width: 1000, height: 700 },
-      objectPresentationRevision: 1,
+      get size() {
+        const layout = dependencies.mapLayout.mapLayoutMetricsSnapshot;
+        return layout ? Object.freeze({width: layout.width, height: layout.height}) : defaultMapSize;
+      },
+      get objectPresentationRevision() {return dependencies.objectDisplay.objectPresentationRevision;},
     });
 
     (atomicMapStateController = (0, dependencies.mapFactories.createAtomicMapStateController)({
@@ -111,9 +108,10 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
         const projection = snapshot.projection || state.projection;
         const view = { ...state.view, ...snapshot.view };
         viewerPolicy.assertProjection(projection);
-        state.view = view;
-        state.projection = viewerPolicy.projection;
-        state.transitionRevision = Number(snapshot.stateRevision || state.transitionRevision || 0);
+        const renderer = dependencies.rendering.mapRenderer;
+        if (renderer?.loaded) renderer.syncCameraFromState(view);
+        else initialView = freezeStructuredValue(view);
+        transitionRevision = Number(snapshot.stateRevision || transitionRevision || 0);
       },
     }));
 
@@ -123,12 +121,13 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
     if (!documentProjection)throw new Error('The accepted document projection is required.');
     for (const field of Object.keys(patch))if (!viewingFields.has(field))throw new TypeError(`Unknown viewing state: ${field}`);
     if (patch.physicalSettings)physicalSettings = structuredClone(patch.physicalSettings);
-    if (reset||!viewingPresentation)viewingPresentation = {layerVisibility:{...DEFAULT_LAYER_VISIBILITY},
+    const next = reset||!viewingPresentation ? {layerVisibility:{...DEFAULT_LAYER_VISIBILITY},
       itemVisibility:Object.fromEntries(['objects','distributions','hydro','genericFeatures','labels','objectLabels'].map(group => [group, {}])),
       distributionSettings:structuredClone(documentProjection.snapshot().distributionSettings),
-      physicalSettings:structuredClone(physicalSettings), layerPresentation:structuredClone(documentProjection.snapshot().layerPresentation)};
-    for (const [field, value] of Object.entries(patch))viewingPresentation[field] = structuredClone(value);
-    viewingPresentation.layerVisibility = normalizeLayerVisibility(viewingPresentation.layerVisibility);
+      physicalSettings:structuredClone(physicalSettings), layerPresentation:structuredClone(documentProjection.snapshot().layerPresentation)} : {...viewingPresentation};
+    for (const [field, value] of Object.entries(patch)) next[field] = structuredClone(value);
+    next.layerVisibility = normalizeLayerVisibility(next.layerVisibility);
+    viewingPresentation = freezeStructuredValue(next);
     return viewingPresentation;
   }
   function restoreViewingPresentation(viewRecord) {
@@ -226,8 +225,8 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
         maskedHydroSources = replaced.length?Object.fromEntries(replaced.map(id => [id, false])):null;
         maskedHydroRows = rows;
       }
-      return maskedHydroSources?{...viewingPresentation.itemVisibility,
-        hydro:{...viewingPresentation.itemVisibility.hydro, ...maskedHydroSources}}:viewingPresentation.itemVisibility;
+      return maskedHydroSources ? freezeStructuredValue({...viewingPresentation.itemVisibility,
+        hydro:{...viewingPresentation.itemVisibility.hydro, ...maskedHydroSources}}) : viewingPresentation.itemVisibility;
     };
     const properties = Object.fromEntries(['documentId','projectSetup','sourceInfo','labels','labelSettings','genericFeatures','hydroEdits','distributionLayers',
       'distributionEntries','distributionSettings','physicalSettings','layerVisibility','itemVisibility','layerPresentation','timelineRecords']
@@ -236,6 +235,7 @@ export function createProjectSession({resolveVisibilityGroup, onViewingChange = 
       stateRevision: { enumerable: true, get: () => coreState().stateRevision }, timelineCursor: { enumerable: true, get: () => coreState().timelineCursor },
       historyDirtyEntityIds: { enumerable: true, get: historyDirtyEntityIds } });
     Object.defineProperties(state, properties);
+    Object.freeze(state);
     projectionInstalled = true;
   }
 

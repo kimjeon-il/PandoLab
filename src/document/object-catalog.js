@@ -8,6 +8,7 @@ import { projectResourceOverlay } from './project-resource-overlay.js';
  */
 export function createObjectCatalog({ isObjectVisible } = {}) {
   let dependencies;
+  let objectPresentationRevision = 1;
 
   function connect(ports) {
     if (dependencies) throw new Error('layer-list already connected');
@@ -15,7 +16,7 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
   }
 
   function invalidateObjectPresentation() {
-    dependencies.projectState.state.objectPresentationRevision += 1;
+    objectPresentationRevision += 1;
   }
 
   function isLayerItemVisible(group, id) {
@@ -137,6 +138,7 @@ export function createObjectCatalog({ isObjectVisible } = {}) {
     get isObjectCatalogItemVisible() { return isObjectCatalogItemVisible; },
     get listObjectSearchItems() {return listObjectSearchItems;},
     get listObjectCatalogItems() { return listObjectCatalogItems; },
+    get objectPresentationRevision() {return objectPresentationRevision;},
     get invalidateObjectPresentation() { return invalidateObjectPresentation; },
     get pruneLayerItemVisibility() { return pruneLayerItemVisibility; },
     get presentationCatalog() { return presentationCatalog; },

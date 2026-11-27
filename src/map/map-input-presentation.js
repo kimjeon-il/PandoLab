@@ -3,8 +3,8 @@ export function createMapInputPresentation({renderer, initialized, ports}) {
   let disposed = false, lastPointer = null, hoverAfterMove = false, lastPickRevision = -1;
   const listeners = [];
   const report = error => ports.feedback.reportOperationError(error,'지도 입력을 적용하지 못했습니다.','PL-MAP-INPUT-001', 4200);
-  const beginMovement = () => {ports.projectState.state.mapMoving = true; ports.objectPicking.closeObjectChooser(); ports.renderQuality.renderQualityController.beginInteraction('map-move'); ports.projectState.mapWorkScheduler.setInteractionActive(true); ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch (report);};
-  const finishMovement = () => {ports.projectState.state.mapMoving = false; ports.renderQuality.renderQualityController.endInteraction('map-move'); ports.renderQuality.applyAdaptiveRenderQuality({refreshScene:false, reason:'map-move-end'}); ports.projectState.mapWorkScheduler.setInteractionActive(false); hoverAfterMove = !!lastPointer;};
+  const beginMovement = () => {ports.objectPicking.closeObjectChooser(); ports.renderQuality.renderQualityController.beginInteraction('map-move'); ports.projectState.mapWorkScheduler.setInteractionActive(true); ports.pointerInteraction.cancelCountryHoverPick({clear:true}).catch (report);};
+  const finishMovement = () => {ports.renderQuality.renderQualityController.endInteraction('map-move'); ports.renderQuality.applyAdaptiveRenderQuality({refreshScene:false, reason:'map-move-end'}); ports.projectState.mapWorkScheduler.setInteractionActive(false); hoverAfterMove = !!lastPointer;};
   const pick = point => {
     if (renderer.canPickFrame?.()===false) {hoverAfterMove = true; return;}
     lastPickRevision = renderer.getPickingRevision();
