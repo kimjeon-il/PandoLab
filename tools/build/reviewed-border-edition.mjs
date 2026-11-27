@@ -782,7 +782,7 @@ export function buildWorldPolygonsDisplayEdition({baseline,readBaseline,indexPat
    return 'verified original source feature required';
   if(!bindings.every(binding=>{
    if(historical&&!equal(binding.geometryRef,donor.before.geometryRef))return false;
-   return Boolean(findWorldPolygonsTimelineBinding(country,binding));
+   return Boolean(findReviewedTimelineBinding(country,binding));
   }))return 'Viewer geometry or interval differs from the reviewed scope';
   if(!replacements.has(country.entityId))replacements.set(country.entityId,[]);
   const selected=replacements.get(country.entityId);
@@ -805,7 +805,7 @@ export function buildWorldPolygonsDisplayEdition({baseline,readBaseline,indexPat
      fail('partition requires distinct existing Viewer objects '+sourceId);
     const country=readCountry(target.projectEntityId);
     const bindings=country.sourceBindings.filter(b=>b.validTo===null);
-    if(bindings.length!==1||!findWorldPolygonsTimelineBinding(country,bindings[0]))
+    if(bindings.length!==1||!findReviewedTimelineBinding(country,bindings[0]))
      fail('partition requires a unique current display binding '+sourceId);
     replacements.set(country.entityId,[{binding:bindings[0],geometry,featureId:row.featureId}]);
     current.set(sourceId,{before:bindings[0]});
