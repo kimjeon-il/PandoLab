@@ -401,3 +401,32 @@ test('network admission hands off its concurrency slot while retaining the full 
  assert.equal(gate.stats().reservedBytes,0);
  gate.dispose();
 });
+
+
+test('same-cell mesh batches reduce GPU geometry count without crossing style, cell or size boundaries',async()=>{
+ const {groupGlobeGpuMeshes,combineGlobeDrawMeshes,globeDrawBlockSize,splitGlobeDrawRanges,globeDrawGroups}=await import('../../../src/rendering/globe-draw-compaction.js');
+ const row=(key,cell,triangles,vertices,style='country')=>({key,cell,style,mesh:{packet:{
+  positions:{length:vertices*3},residuals:{length:vertices*3},indices:{length:triangles*3},slots:{length:vertices},
+ }}});
+ const rows=[
+  row('a','cell-a',20_000,50_000),row('b','cell-a',20_000,50_000),row('c','cell-a',20_000,50_000),
+  row('d','cell-a',10_000,20_000),row('e','cell-b',1_000,3_000),row('f','cell-b',1_000,3_000,'lake'),
+ ];
+ const groups=groupGlobeGpuMeshes(rows,row=>row.style);
+ assert.deepEqual(groups.map(group=>group.rows.map(row=>row.key)),[
+  ['a','b','c'],['d'],['e'],['f'],
+ ]);
+ const first=combineGlobeDrawMeshes([
+  {mesh:{packet:{positions:Float32Array.of(1,2,3),residuals:Float32Array.of(4,5,6),indices:Uint32Array.of(0,0,0),slots:Uint16Array.of(2),spatial:{count:1}}}},
+  {mesh:{packet:{positions:Float32Array.of(7,8,9),residuals:Float32Array.of(10,11,12),indices:Uint32Array.of(0,0,0),slots:Uint16Array.of(3),spatial:{count:1}}}},
+ ]);
+ assert.deepEqual([...first.indices],[0,0,0,1,1,1]);
+ assert.deepEqual([...first.slots],[2,3]);
+ assert.equal(first.drawParts.length,2);
+ assert.equal(globeDrawBlockSize(65_536),65_536);
+ assert.equal(globeDrawBlockSize(131_072),65_536);
+ assert.equal(globeDrawBlockSize(262_144),131_072);
+ const blocks=splitGlobeDrawRanges(Uint32Array.of(0,131_072),131_072);
+ assert.equal(blocks.length,2);
+ assert.equal(globeDrawGroups(blocks).length,2);
+});

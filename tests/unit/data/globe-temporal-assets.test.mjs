@@ -346,3 +346,56 @@ test('unchanged dated shapes reuse the published padded coverage but reject chan
   assert.equal(reuseGlobePhysicalCoverage({...target,lakes:[row('new-lake')]},covers,physical),null);
   assert.equal(reuseGlobePhysicalCoverage({...target,rivers:false},covers,physical),null);
 });
+
+
+test('physical river packets are combined by spatial cell before GPU preparation',async()=>{
+ const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+ const reads=[],chunk=(id,cell,bounds)=>({cell,bounds,spec:{sha256:id,compressedBytes:10,decodedBytes:24}});
+ const assets=createGlobePhysicalAssets([{identity:'world',waters:[],lakes:[],riverMinZoom:2,riverDetail:[],
+  riverChunks:[
+   chunk('river-a','cell-a',[-1,-1,-1,0,0,0]),
+   chunk('river-b','cell-a',[-.5,-1,-1,.2,0,0]),
+   chunk('river-c','cell-b',[0,-1,-1,1,0,0]),
+  ],
+ }],{
+  loadMesh:async spec=>({mesh:spec.sha256}),
+  loadStroke:async(spec,signal,priority,descriptor)=>{
+   reads.push(descriptor);
+   return {sourceKeys:descriptor.sources?.map(row=>row.spec.sha256)??[spec.sha256]};
+  },
+ });
+ const plan=assets.plan('world',{zoom:3});
+ assert.equal(plan.riverChunks.length,2);
+ const grouped=plan.riverChunks.find(row=>row.sources);
+ assert.deepEqual(grouped.sources.map(row=>row.spec.sha256),['river-a','river-b']);
+ assert.deepEqual(grouped.bounds,[-1,-1,-1,.2,0,0]);
+ assert.equal(grouped.spec.decodedBytes,48);
+ const prepared=await assets.prepare(plan);
+ assert.deepEqual(prepared.riverChunks.map(row=>row.packet.sourceKeys),[['river-a','river-b'],['river-c']]);
+ assert.equal(reads.length,2);
+ assets.dispose();
+});
+
+test('base border chunks combine by cell while retaining owner slots and base-border identity',async()=>{
+ const {createGlobeTerritorialAssets}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+ const border=(id,cell,slots,bounds)=>({cell,slots,bounds,spec:{sha256:id,compressedBytes:10,decodedBytes:24}});
+ const assets=createGlobeTerritorialAssets({
+  countryChunks:[],outlineChunks:[],borderGroupCount:4,
+  borderChunks:[
+   border('border-a','cell-a',[0],[-1,-1,-1,0,0,0]),
+   border('border-b','cell-a',[1],[-.5,-1,-1,.2,0,0]),
+   border('border-c','cell-b',[3],[0,-1,-1,1,0,0]),
+  ],
+ },{
+  baseSlots:[],cacheBudget:{historicalCpuBytes:1024*1024,borderBatchBytes:1024*1024},
+  loadMesh:async()=>({}),loadStroke:async()=>({}),load:async()=>({}),slotCount:()=>4,
+ });
+ const rows=assets.plan(()=>true);
+ assert.equal(rows.length,2);
+ const grouped=rows.find(row=>row.sources);
+ assert.equal(grouped.baseBorder,true);
+ assert.deepEqual(grouped.slots,[0,1]);
+ assert.equal(grouped.sources.length,2);
+ assert.deepEqual(grouped.bounds,[-1,-1,-1,.2,0,0]);
+ assets.dispose();
+});
