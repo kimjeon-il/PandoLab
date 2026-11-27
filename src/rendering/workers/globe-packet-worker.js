@@ -52,14 +52,14 @@ rpc.install({handlers:{
   'globe.combine-stored-strokes':async({packets}, context) => {
     const maxPoints = packets.reduce((sum, row) => sum+Math.floor(row.spec.decodedBytes/24),0);
     const builder = createGlobeStrokeBatchBuilder(maxPoints);
-    for (let i = 0; i<packets.length; i++) {
+    const decodedPackets = await Promise.all(packets.map(async row => {
       context.throwIfCancelled();
-      const {bytes, spec} = packets[i]; packets[i] = null;
-      const decoded = await decodeStoredBuffer(bytes, spec,'worker','border-batch','역사 국경선', context.signal);
-      validateAssetLength(decoded, spec,'역사 국경선');
-      builder.append(decodeGlobeStrokes(decoded.buffer));
-    }
+      const decoded = await decodeStoredBuffer(row.bytes,row.spec,'worker','border-batch','역사 국경선',context.signal);
+      validateAssetLength(decoded,row.spec,'역사 국경선');
+      return decodeGlobeStrokes(decoded.buffer);
+    }));
     context.throwIfCancelled();
+    for (const packet of decodedPackets)builder.append(packet);
     // The combined stroke packet receives its spatial index before it leaves the Worker.
     return transfer(prepareGlobeSpatialPacket(builder.finish()));
   },
