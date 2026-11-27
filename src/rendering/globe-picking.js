@@ -1,5 +1,5 @@
 import { globeStrokePoint } from './globe-mesh.js';
-import { walkGlobeSpatialLeaves, globePrimitiveOwner } from './globe-spatial-partition.js';
+import { globePrimitiveOwner } from './globe-spatial-partition.js';
 
 /** A sparse hierarchy is shared with GPU selection; no fixed 32^3 table or
   * per-packet grid download. Clip the ray to the exact primitive AABB. */
@@ -36,22 +36,6 @@ function intersects(mesh, first, ray) {
   return t>=start-1e-12&&t<end;
 }
 
-export function pickGlobeSlots(mesh, index, ray, visible = () => true, {firstHit = false, signal} = {}) {
-  if (!ray)return [];
-  const hits = new Set();
-  const ownerVisible = owner => owner<0||visible(owner);
-  walkGlobeSpatialLeaves(index, (bounds, at) => globeRayIntersectsBounds(ray, bounds, at), (first, end, owner) => {
-    signal?.throwIfAborted();
-    for (let i = first; i<end; i++) {
-      const triangle = index.order[i], slot = globePrimitiveOwner(mesh, triangle);
-      const id = slot<0?0:slot;
-      if (hits.has(id)||!visible(id))continue;
-      if (intersects(mesh, triangle*3, ray)) {hits.add(id); if (firstHit)return true;}
-    }
-    return false;
-  }, ownerVisible);
-  return [...hits].sort((a, b) => b-a);
-}
 
 const pointSegmentDistance = ([x, y], [[ax, ay], [bx, by]]) => {
   const dx = bx-ax, dy = by-ay, fraction = Math.min(1, Math.max(0, ((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy||1)));
@@ -81,21 +65,6 @@ export function globeStrokePickPredicate(camera, point, tolerance = 5) {
     }
     return true;
   };
-}
-export function pickGlobeStrokeSlots(packet, index, camera, point, tolerance = 5, {predicate = globeStrokePickPredicate(camera, point, tolerance), signal} = {}) {
-  const hits = new Map();
-  walkGlobeSpatialLeaves(index, predicate, (first, end) => {
-    signal?.throwIfAborted();
-    for (let i = first; i<end; i++) {
-      const segment = index.order[i], slot = packet.ownerGroups[segment];
-      const line = camera.projectStroke(globeStrokePoint(packet, segment, 0), globeStrokePoint(packet, segment, 1));
-      if (!line)continue;
-      const distance = pointSegmentDistance(point, line);
-      if (distance<=tolerance&&distance<(hits.get(slot)??Infinity))hits.set(slot, distance);
-    }
-    return false;
-  });
-  return [...hits].sort((a, b) => a[1]-b[1]).map(([slot]) => slot);
 }
 
 /** A single budget spans all packets for one accepted-frame pick. Yield to

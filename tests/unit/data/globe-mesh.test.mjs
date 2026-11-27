@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes, globeStrokePoint, combineGlobeStrokePackets, compactGlobeStrokeRange } from '../../../src/rendering/globe-mesh.js';
+import { decodeGlobeMesh, packGlobeMesh, decodeGlobeStrokes, globeStrokePoint, createGlobeStrokeBatchBuilder, compactGlobeStrokeRange } from '../../../src/rendering/globe-mesh.js';
 import { combineGlobeCountryMeshes, encodeGlobeMesh, encodeGlobeStrokes } from '../../../scripts/lib/globe-preview-assets.mjs';
 import { globeVector } from '../../../src/rendering/globe-camera.js';
 import * as globeAssets from '../../../scripts/lib/globe-preview-assets.mjs';
@@ -339,7 +339,9 @@ test('physical plans defer hidden and higher-zoom lake and river packets',async(
 test('historical stroke batches deduplicate point words without changing primitive and owner order',()=>{
   const a=decodeGlobeStrokes(encodeGlobeStrokes([0,0,1,0,1,0,2,0],null,[1,2],Uint16Array.of(7,8)));
   const b=decodeGlobeStrokes(encodeGlobeStrokes([2,0,1,0,1,0,3,0],null,[3,4],Uint16Array.of(9,10)));
-  const batch=combineGlobeStrokePackets([a,b]);
+  const builder=createGlobeStrokeBatchBuilder((a.points.length+b.points.length)/6);
+  builder.append(a);builder.append(b);
+  const batch=builder.finish();
   assert.equal(batch.points.length/6,4);
   assert.equal(batch.count,4);
   assert.deepEqual([...batch.endpointIndices],[0,1,1,2,2,1,1,3]);
@@ -495,7 +497,7 @@ test('accepted temporal receipts resolve changed objects and dated labels withou
 
 test('view mesh chunks preserve all primitive coordinate bits, owners and source order',async()=>{
  const {globeMeshChunks}=await import('../../../scripts/lib/globe-preview-assets.mjs');
- const {selectGlobeMeshChunks,globeChunkSetContains}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+ const {createGlobeChunkCatalog,globeChunkSetContains}=await import('../../../src/rendering/globe-view-mesh-assets.js');
  const rows=[0,180].map((lon,i)=>({id:String(i),geometry:{id:String(i),version:1},
   vertices:Float64Array.of(lon,0,lon+.1,0,lon,.1),indices:Uint32Array.of(0,1,2)}));
  const source=combineGlobeCountryMeshes(rows).buffer;
@@ -509,7 +511,9 @@ test('view mesh chunks preserve all primitive coordinate bits, owners and source
  assert.deepEqual(chunks.flatMap(row=>bits(decodeGlobeMesh(row.buffer))),bits(decodeGlobeMesh(source)));
  assert.deepEqual(chunks.map(row=>row.slots),[[0],[1]]);
  const descriptors=chunks.map((row,index)=>({...row,key:String(index)}));
- assert.deepEqual(selectGlobeMeshChunks(descriptors,bounds=>bounds[3]>0,new Set([0])).map(row=>row.key),['0']);
+ const catalog=createGlobeChunkCatalog(descriptors);
+ assert.deepEqual(catalog.select(bounds=>bounds[3]>0,row=>row.slots.includes(0)).map(row=>row.key),['0']);
+ assert.deepEqual(catalog.select(bounds=>bounds[3]>0,row=>row.slots.includes(1)),[]);
  assert.equal(globeChunkSetContains(descriptors,[descriptors[0]]),true);
  assert.equal(globeChunkSetContains([descriptors[0]],descriptors),false);
 });

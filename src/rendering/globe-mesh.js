@@ -213,11 +213,6 @@ export function createGlobeStrokeBatchBuilder(maxPoints) {
  }
  return {append, finish};
 }
-export function combineGlobeStrokePackets(packets) {
- const builder = createGlobeStrokeBatchBuilder(packets.reduce((sum, packet) => sum+packet.points.length/6,0));
- for (const packet of packets)builder.append(packet);
- return builder.finish();
-}
 
 export function compactGlobeStrokeRange(packet, first, end) {
  const count = end-first, table = createGlobeStrokePointTable(count*2);

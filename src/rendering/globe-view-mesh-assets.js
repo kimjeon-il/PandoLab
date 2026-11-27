@@ -6,9 +6,6 @@ const all = () => true;
 export function globeViewChunkCuller(camera, viewport, padding = 0) {
   return camera&&viewport?createGlobeRangeCuller(camera.frame, viewport.width, viewport.height, padding):all;
 }
-export function selectGlobeMeshChunks(chunks, cull, slots = null) {
-  return chunks.filter(row => (!row.bounds||cull(row.bounds))&&(!slots||!row.slots?.length||row.slots.some(slot => slots.has(slot))));
-}
 const chunkKeys = new WeakMap();
 export function globeChunkSetContains(have, needed) {
   if (have===needed)return true;
