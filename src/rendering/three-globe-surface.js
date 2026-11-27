@@ -566,7 +566,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       outlineResidentBytes+=entry.bytes();
       for (const [key, value] of Object.entries(entry.stats()))outlineChunks[key]+=value;
     }
-    return {meshes:residentMeshes.size, meshResidentBytes:meshLedger.groupBytes('mesh'), meshLedger:meshLedger.stats(), meshCache:{...meshCacheStats}, outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
+    return {meshes:residentMeshes.size, meshResidentBytes:meshLedger.groupBytes('mesh'), meshLedger:meshLedger.stats(), meshCache:{...meshCacheStats}, gpuObjects:{geometries:renderer.info.memory.geometries,textures:renderer.info.memory.textures}, outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
   }
 
   function resize(width, height, dpr) {
