@@ -211,7 +211,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   const textureCopier = createGlobeTextureCopier(THREE, renderer);
   const candidateGroups = [{source:null, rows:[], index:createGlobeLabelSpatialIndex([])}, {source:null, rows:[], index:createGlobeLabelSpatialIndex([])}];
   const sdfTasks = createSdfTasks({scheduler:workScheduler});
-  let placed = [], previous = new Set(), lastCamera = null, cacheDirty = true, lastComplete = true, lastStrict = false, disposed = false;
+  let placed = [], previous = new Set(), lastCamera = null, cacheDirty = true, lastComplete = true, lastStrict = false, lastCandidateLimit=Infinity,disposed = false;
   let layoutCache = null, candidateRevision = 0;
   let pendingSdf = null, desiredKeys = new Set(), pendingMaskBytes = 0;
   const sdfRecovery = createGlobeLabelSdfRecovery();
@@ -566,15 +566,16 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     }
     return true;
   }
-  function update(camera, width, height, cull = createGlobeRangeCuller(camera.frame, width, height), requireComplete = false) {
-    if (camera===lastCamera&&lastStrict===requireComplete)return lastComplete;
-    lastCamera = camera; lastStrict = requireComplete;
-    if (!layoutCache||layoutCache.camera!==camera||layoutCache.width!==width||layoutCache.height!==height||layoutCache.revision!==candidateRevision) {
+  function update(camera, width, height, cull = createGlobeRangeCuller(camera.frame, width, height), requireComplete = false, candidateLimit = Infinity) {
+    if (camera===lastCamera&&lastStrict===requireComplete&&lastCandidateLimit===candidateLimit)return lastComplete;
+    lastCamera = camera; lastStrict = requireComplete;lastCandidateLimit=candidateLimit;
+    if (!layoutCache||layoutCache.camera!==camera||layoutCache.width!==width||layoutCache.height!==height||layoutCache.revision!==candidateRevision||layoutCache.candidateLimit!==candidateLimit) {
       const visible = camera.view.zoom>=COUNTRY_LABEL_MIN_ZOOM?candidateGroups.flatMap(group => group.index.query(cull)):[];
       const stats = {candidates:candidateGroups.reduce((sum, group) => sum+group.rows.length, 0), spatialCandidates:visible.length, projectedCandidates:0, collisionComparisons:0, duplicateCollisionSkips:0};
       let hitGrid = null;
-      const layout = placeGlobeLabels(visible, camera, {width, height}, previous, (cells, columns, cellSize) => {hitGrid = {cells, columns, cellSize};}, measureLabel, stats);
-      layoutCache = {camera, width, height, revision:candidateRevision, layout, hitGrid, stats};
+      stats.budgetCandidates=Math.min(visible.length,candidateLimit);stats.budgetOmitted=visible.length-stats.budgetCandidates;
+      const layout = placeGlobeLabels(visible.slice(0,candidateLimit), camera, {width, height}, previous, (cells, columns, cellSize) => {hitGrid = {cells, columns, cellSize};}, measureLabel, stats);
+      layoutCache = {camera, width, height,revision:candidateRevision,candidateLimit,layout,hitGrid,stats};
     }
     const {layout, hitGrid, stats} = layoutCache; layoutStats = {...stats};
     lastComplete = prepareMissing(layout);

@@ -1,3 +1,4 @@
+import { globeBudgetError, globeCostFits } from './globe-active-budget.js';
 import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourceFootprint, createGlobeGpuResidency, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
@@ -575,10 +576,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     renderer.setPixelRatio(dpr);
     renderer.setSize(width, height, false);
   }
-  function prepareLabels(globeCamera, width, height, requireComplete = false) {
-    return labels.update(globeCamera, width, height, createGlobeRangeCuller(globeCamera.frame, width, height), requireComplete);
+  function prepareLabels(globeCamera, width, height, requireComplete = false, candidateLimit = Infinity) {
+    return labels.update(globeCamera, width, height, createGlobeRangeCuller(globeCamera.frame, width, height), requireComplete,candidateLimit);
   }
-  function draw(globeCamera, width, height) {
+  function draw(globeCamera, width, height, activeLimits = null) {
     const {frame, view} = globeCamera;
     zoom.value = view.zoom;
     eyeHigh.fromArray(frame.eye.map(Math.fround));
@@ -599,6 +600,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     for (const resource of activeSpatialResources)resource.update(getCuller, view.zoom, stats);
     for (const outline of paintedOutlines)outline.update(getCuller, strokePadding, stats);
     spatialStats = stats;
+    // Reject a misestimated or malformed packet plan before submitting
+    // excessive primitives to WebGL. The previously published canvas stays.
+    if (activeLimits) {
+      const actual={triangles:stats.triangles,segments:stats.segments,drawCalls:stats.meshDrawCalls+stats.strokeDrawCalls,bytes:0,chunks:0};
+      if (!globeCostFits(actual,activeLimits))throw globeBudgetError(actual,activeLimits);
+    }
     renderer.render(scene, camera); return true;
   }
   function dispose() {

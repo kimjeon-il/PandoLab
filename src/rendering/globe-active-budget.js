@@ -18,7 +18,7 @@ export function globeBudgetViolations(cost,limit) {
 }
 export function globeActiveLimits(cacheBudget,{tier='medium',otherBytes=0}={}) {
   const memoryFactor=Math.max(.25,Math.min(1,cacheBudget.totalRenderBytes/(320*MiB)));
-  const quality=tier==='coarse'?.65:tier==='high'?1.2:1;
+  const quality=tier==='coarse' ? .65 : tier==='high' ? 1.2 : 1;
   // Leave shared headroom for labels, transient decoding/upload, frame
   // buffers and metadata. The global residency ledger still counts these.
   const bytes=Math.max(0,Math.floor(cacheBudget.totalRenderBytes-cacheBudget.labelAtlasBytes-

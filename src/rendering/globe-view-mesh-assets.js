@@ -192,7 +192,7 @@ export function createGlobeTerritorialAssets(spec, {
     }
     for (const [lod,level] of byLod)for (let order=0;order<level.length;order++) {
       const chunk=level[order];
-      const descriptor={...chunk,key:'outline:'+lod+':'+(slot??'base')+':'+order+':'+chunk.spec.sha256,slot,order,count:level.length};
+      const descriptor={...chunk,role:'outline',kind:'stroke',key:'outline:'+lod+':'+(slot??'base')+':'+order+':'+chunk.spec.sha256,slot,order,count:level.length};
       for (const owner of chunk.ownerSlots) {
         const key=lod+':'+owner;
         let rows=outlineBySlot.get(key);

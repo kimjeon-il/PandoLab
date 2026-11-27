@@ -273,7 +273,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
     const byKind = {}; for (const row of reservations.values())byKind[row.kind] = (byKind[row.kind]??0)+row.size;
     return {residentBytes:cpu+extra, cpuBytes:cpu, deviceAndOtherBytes:extra, workingBytes, totalBytes:cpu+extra+workingBytes,
       protectedBytes:protectedCpu+protectedExtra, protectedCpuBytes:protectedCpu, protectedDeviceAndOtherBytes:protectedExtra,protectedEntries,
-      reclaimableBytes:cpu+extra-protectedCpu-protectedExtra,
+      unprotectedBytes:cpu+extra-protectedCpu-protectedExtra,
       peakWorkingBytes, peakTotalBytes, overflowCount, workingByKind:byKind, evicted, byteBudget, entries:rows.size, standby:standby.size, updates, ownerRefreshes};
   }
   function dispose() {owners.clear(); dirtyOwners.clear(); rows.clear(); refs.clear(); standby.clear(); standbyGroups.clear(); totals.clear(); reservations.clear(); listeners.clear(); cpu = extra = workingBytes = protectedCpu = protectedExtra = protectedEntries = 0;}

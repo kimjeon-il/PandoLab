@@ -25,6 +25,8 @@ import { createGlobeRiverDetail } from './three-globe-rivers.js';
 import { createRenderPacketCache, renderCacheBudget, createRenderResidencyBudget, createRenderLoadGate } from './render-cache-budget.js';
 import { createGlobePhysicalAssets } from './three-globe-physical.js';
 import { GLOBE_FINE_LOD, globeLodEnabled, selectGlobeLod } from './globe-lod.js';
+import { emptyGlobeCost, sumGlobeCosts, globeCostFits, globeBudgetError, globeActiveLimits,
+  estimateGlobePlanCost, chooseGlobeActivePlan, admitGlobeOptional } from './globe-active-budget.js';
 
 const copyCamera = (view, backup) => ({...backup, ...view, center:view?.center??(view?.globeRotation&&view.globeRotation.slice(0, 2).map(v => -v))??backup.center});
 
@@ -188,13 +190,15 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       :load(row,'stroke',{signal,priority}),
     byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:Math.floor(cacheBudget.borderBatchBytes/2), residency, lodVersion:spec.lodVersion,
   });
-  let geometryLod=null;
+  let geometryLod=null, budgetTier='medium', lastAdmission=null, activeBudgetStats=null, outlineBudgetKey=null, riverBudgetKey=null;
+  let outlineBudgetCost=emptyGlobeCost(), outlineBudgetOmitted=0, detailBudgetOmitted=0;
+  const gridBudgetRows=[{role:'graticule',kind:'stroke',spec:spec.graticule}];
   function currentGeometryLod() {
     geometryLod=selectGlobeLod({zoom:view.zoom,pitch:view.pitch??0,dpr:viewport?.dpr??1,enabled:lodEnabled,previous:geometryLod});
     return geometryLod;
   }
-  let planCamera = null, planViewport = null; const cullCache = new Map(), territoryPlans = new Map(), physicalPlans = new Map(), planKeys = new WeakMap();
-  function clearViewPlans() {planCamera = null; planViewport = null; cullCache.clear(); territoryPlans.clear(); physicalPlans.clear();}
+  let planCamera = null, planViewport = null; const cullCache = new Map(), territoryPlans = new Map(), physicalPlans = new Map(), admissions = new Map(), planKeys = new WeakMap();
+  function clearViewPlans() {planCamera = null; planViewport = null; cullCache.clear(); territoryPlans.clear(); physicalPlans.clear(); admissions.clear();}
   function syncViewPlans() {
     if (planCamera===camera&&planViewport===viewport)return;
     clearViewPlans(); planCamera = camera; planViewport = viewport;
@@ -209,19 +213,19 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     for (const row of paint.roleStyles())width = Math.max(width, row?.width??0);
     return Math.max(5, Math.ceil(width+2*(0.5/(viewport?.dpr||1))+2));
   };
-  function physicalPlan(identity, padding = 0, visibility = null) {
+  function physicalPlan(identity, padding = 0, visibility = null, lod = currentGeometryLod()) {
     syncViewPlans(); const extra = strokePadding(), lakesVisible = visibility?.lakesVisible??state.layerVisibility.lakes!==false,
       riversVisible = visibility?.riversVisible??state.layerVisibility.rivers!==false;
-    const lod=currentGeometryLod(),key=JSON.stringify([identity,lod,padding,extra,lakesVisible,riversVisible,view.zoom]);
+    const key=JSON.stringify([identity,lod,padding,extra,lakesVisible,riversVisible,view.zoom]);
     let plan = physicalPlans.get(key);
     if (!plan) {plan = physicalAssets.plan(identity, {zoom:view.zoom,lod,cull:viewCull(padding), strokeCull:viewCull(padding+extra), lakesVisible, riversVisible});
       if (physicalPlans.size>=8)physicalPlans.clear(); physicalPlans.set(key, plan);}
     return plan;
   }
-  const territorialContext = (prepared, visibility = null) => prepared.key+'|'+currentGeometryLod()+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
-  function territorialPlan(prepared = territories, padding = 0, visibility = null) {
+  const territorialContext = (prepared, visibility = null, lod = currentGeometryLod()) => prepared.key+'|'+lod+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
+  function territorialPlan(prepared = territories, padding = 0, visibility = null, lod = currentGeometryLod()) {
     syncViewPlans(); const extra = strokePadding(), objectsVisible = visibility?.objectsVisible??state.layerVisibility.objects!==false,
-      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility)+'|'+padding+'|'+extra;
+      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility,lod)+'|'+padding+'|'+extra;
     if (territoryPlans.has(key))return territoryPlans.get(key);
     if (!objectsVisible) {const rows = []; territoryPlans.set(key, rows); return rows;}
     const selectedSlots = new Set(prepared.slots), hidden = new Set(prepared.view?.hiddenBorders??[]);
@@ -231,11 +235,48 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot => selectedSlots.has(slot)));
       if (!boundariesVisible)return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
-    },currentGeometryLod());
+    },lod);
     if (boundariesVisible&&prepared.view)
-      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),currentGeometryLod()));
+      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
+  function activeCost(basePlan, physicalTarget) {
+    return sumGlobeCosts(estimateGlobePlanCost(basePlan),estimateGlobePlanCost(physicalTarget.rows),
+      graticuleNeeded()?estimateGlobePlanCost(gridBudgetRows):emptyGlobeCost());
+  }
+  function admitView(prepared,identity,visibility = null) {
+    syncViewPlans();
+    const requestedLod=currentGeometryLod();
+    // Include fixed framebuffers and pinned metadata in the common budget.
+    // Browser/driver memory remains estimated, never presented as an exact
+    // hardware allocation count.
+    const fixedBytes=historyCatalogBytes+(hydroMetadata?spec.hydroMetadata.decodedBytes*2+hydroSlots.size*64:0)
+      +Math.ceil((viewport?.width??0)*(viewport?.height??0)*(viewport?.dpr??1)**2*12);
+    const key=JSON.stringify([territorialContext(prepared,visibility,requestedLod),identity,
+      visibility?.lakesVisible??state.layerVisibility.lakes!==false,visibility?.riversVisible??state.layerVisibility.rivers!==false,
+      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes]);
+    if (admissions.has(key))return admissions.get(key);
+    const limits=globeActiveLimits(cacheBudget,{tier:budgetTier,otherBytes:fixedBytes});
+    const build=(lod,padding=0)=>{
+      const base=territorialPlan(prepared,padding,visibility,lod),physical=physicalPlan(identity,padding,visibility,lod);
+      return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical)};
+    };
+    const selected=chooseGlobeActivePlan({requestedLod,minLod:lodEnabled?0:GLOBE_FINE_LOD,limits,build});
+    // Keep the existing margin prefetch only if the complete combined margin
+    // (not each layer in isolation) fits the soft active workload target.
+    let margin=selected;
+    if (!selected.targetExceeded) {
+      const padded=build(selected.lod,96);
+      if (globeCostFits(padded.cost,limits.target))margin=padded;
+    }
+    const result={...selected,requestedLod,limits,margin};
+    if (admissions.size>=6)admissions.clear();
+    admissions.set(key,result); return result;
+  }
+  const baseWithinAdmission=(candidate,admission)=>candidate?.context===admission.context&&
+    globeChunkSetContains(candidate.plan,admission.base)&&globeChunkSetContains(admission.margin.base,candidate.plan);
+  const physicalWithinAdmission=(candidate,admission)=>!!candidate&&physicalAssets.covers(candidate.plan,admission.physical)&&
+    physicalAssets.covers(admission.margin.physical,candidate.plan);
   function installHistoryCatalog(catalog) {
     if (historyLoaded)return;
     if (catalog?.version!==1||catalog.lodVersion!==spec.lodVersion||!Array.isArray(catalog.historicalCountries)||catalog.historicalCountries.length!==countryCount-baseSlots.length
@@ -334,32 +375,27 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }
   // Keep the published resources preferred over an unpublished margin plan
   // so an unchanged date does not replace GPU groups or repeat packet reads.
-  const reuseTerritories = (context, plan) => reuseGlobeTerritorialCoverage(context, plan, publishedBase, basePrepared);
-  const reusePhysical = plan => reuseGlobePhysicalCoverage(plan, physicalAssets.covers, publishedPhysical, physical);
+  const reuseTerritories = admission => reuseGlobeTerritorialCoverage(admission.context,admission.base,
+    ...[publishedBase,basePrepared].filter(candidate=>baseWithinAdmission(candidate,admission)));
+  const reusePhysical = admission => reuseGlobePhysicalCoverage(admission.physical,physicalAssets.covers,
+    ...[publishedPhysical,physical].filter(candidate=>physicalWithinAdmission(candidate,admission)));
   async function requirePhysicalSource(month, identity, signal) {
     if (!physicalAssets.has(identity))await ensureHistoryCatalog(signal);
     if (!physicalAssets.has(identity))
       throw Object.assign(Error(`${month}에 준비된 Three.js 물리 지도가 없습니다.`), {code:'PL-THREE-MONTH'});
     return identity;
   }
-  async function preparePhysicalContext(month, {isCurrent = () => true, includeAllPhysical = false} = {}) {
-    const controller = startRequest('physical-prefetch');
-    const assertCurrent = () => {if (!requestCurrent('physical-prefetch', controller)||!isCurrent())
-      throw Object.assign(new Error('Physical preparation superseded'), {name:'AbortError', cancelled:true});};
-    let target;
+  // Resolve the physical source independently of Core/territorial references.
+  // Actual packet downloads wait for the joint active-plan admission below.
+  async function preparePhysicalContext(month, {isCurrent = () => true} = {}) {
+    const controller=startRequest('physical-prefetch');
     try {
-      assertCurrent(); await initialize(); assertCurrent();
-      target = physicalPlan(await requirePhysicalSource(month, deps.physicalResources.physicalSourceIdentityAtMonth(month), controller.signal),0,
-        includeAllPhysical?{lakesVisible:true,riversVisible:true}:null);
-      assertCurrent();
-      if (reusePhysical(target)) {temporalReuse.physicalPreparationsSkipped++; return true;}
-      prefetchPhysical = target; retainCpuResources();
-      await physicalAssets.prepare(target, {signal:controller.signal});
-      assertCurrent(); return true;
-    }catch (error) {
-      if (requestCurrent('physical-prefetch', controller)&&prefetchPhysical===target) {prefetchPhysical = null; retainCpuResources();}
-      throw error;
-    }finally {controller.abort(); finishRequest('physical-prefetch', controller);}
+      await initialize();
+      if (!requestCurrent('physical-prefetch',controller)||!isCurrent())throw new DOMException('Physical preparation superseded','AbortError');
+      const identity=await requirePhysicalSource(month,deps.physicalResources.physicalSourceIdentityAtMonth(month),controller.signal);
+      if (!requestCurrent('physical-prefetch',controller)||!isCurrent())throw new DOMException('Physical preparation superseded','AbortError');
+      return identity;
+    }finally {controller.abort();finishRequest('physical-prefetch',controller);}
   }
   async function requireTerritorialGeometry(month, references, signal = lifetime.signal) {
     const find = () => {
@@ -386,7 +422,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   // Warm only verified neighboring geometry/physical states after a
   // committed stable frame. No speculative result changes the active scene.
   function scheduleNeighborPrefetch(month) {
-    if (disposed||lost||input.isMoving()||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical)return;
+    if (disposed||lost||input.isMoving()||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical||lastAdmission?.targetExceeded||residency.pressure().protectedBytes>cacheBudget.totalRenderBytes*.75)return;
     const interval = historyLoaded?historyIndex.intervalKey(month):'catalog';
     const key = interval+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
     if (neighborKey.has(key)||neighborTimer!==null||neighborIdleOff||requestScopes.has('neighbor-prefetch'))return;
@@ -435,8 +471,12 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
           signal.throwIfAborted(); if (!valid())break;
           // The nearest state in the travel direction receives most of the
           // available transfer/work budget; cached hits require no reservation.
-          await territorialAssets.warm(territorialPlan(target.territories), {signal, priority:-20, claim, holdBytes:territorialHold});
-          if (physicalAssets.has(target.physicalIdentity))await physicalAssets.warm(physicalPlan(target.physicalIdentity), {signal, priority:-20, claim, holdBytes:physicalHold});
+          if (!physicalAssets.has(target.physicalIdentity))continue;
+          let admitted;
+          try {admitted=admitView(target.territories,target.physicalIdentity);}
+          catch (cause) {if (cause.code==='PL-THREE-ACTIVE-BUDGET')continue;throw cause;}
+          await territorialAssets.warm(admitted.base,{signal,priority:-20,claim,holdBytes:territorialHold});
+          await physicalAssets.warm(admitted.physical,{signal,priority:-20,claim,holdBytes:physicalHold});
           if (remaining<=0)break;
         }
         if (requestCurrent('neighbor-prefetch', controller)&&valid()) {residency.trim(); neighborStats.completed++; completed = true;}
@@ -461,24 +501,38 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }
   async function prepareDatedTerritories(month, references, {isCurrent = () => true, includeAllObjects = false} = {}) {
     const controller = startRequest('country-prefetch');
-    let plan;
+    let plan, physicalTarget;
     try {
       // Establish the initial camera/viewport before spatially selecting the
       // startup chunks; a null camera would otherwise admit the whole catalog.
       await initialize();
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
-      const prepared = await requireTerritorialGeometry(month, references, controller.signal);
+      const [prepared,identity]=await Promise.all([
+        requireTerritorialGeometry(month,references,controller.signal),
+        requirePhysicalSource(month,deps.physicalResources.physicalSourceIdentityAtMonth(month),controller.signal),
+      ]);
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
-      const visibility = includeAllObjects?{objectsVisible:true,bordersVisible:true}:null;
-      const context = territorialContext(prepared,visibility);
-      plan = territorialPlan(prepared,0,visibility);
-      if (reuseTerritories(context, plan)) {temporalReuse.countryPreparationsSkipped++; return true;}
-      prefetchTerritoryPlan = plan; retainCpuResources();
-      await territorialAssets.prepare(plan, {signal:controller.signal});
+      const visibility=includeAllObjects?{objectsVisible:true,bordersVisible:true,lakesVisible:true,riversVisible:true}:null;
+      const admission=admitView(prepared,identity,visibility);
+      plan=admission.base;physicalTarget=admission.physical;
+      const baseHit=reuseTerritories(admission),physicalHit=reusePhysical(admission);
+      if (baseHit)temporalReuse.countryPreparationsSkipped++;
+      if (physicalHit)temporalReuse.physicalPreparationsSkipped++;
+      prefetchTerritoryPlan=plan;prefetchPhysical=physicalTarget;retainCpuResources();
+      // Both geometry owners may now load concurrently within the same
+      // admitted precision and combined active-work budget.
+      await Promise.all([
+        baseHit??territorialAssets.prepare(plan,{signal:controller.signal}),
+        physicalHit??physicalAssets.prepare(physicalTarget,{signal:controller.signal}),
+      ]);
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
       return true;
     }catch (error) {
-      if (requestCurrent('country-prefetch', controller)&&prefetchTerritoryPlan===plan) {prefetchTerritoryPlan = null; retainCpuResources();}
+      if (requestCurrent('country-prefetch',controller)) {
+        if (prefetchTerritoryPlan===plan)prefetchTerritoryPlan=null;
+        if (prefetchPhysical===physicalTarget)prefetchPhysical=null;
+        retainCpuResources();
+      }
       throw error;
     }finally {controller.abort(); finishRequest('country-prefetch', controller);}
   }
@@ -494,9 +548,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         requireTerritorialGeometry(month, featureRefs(rows), controller.signal),
       ]);
       if (!requestCurrent('territory-apply', controller)||requestGeneration!==generation||month!==state.timelineCursor)return false;
-      const target = physicalPlan(identity), baseTarget = territorialPlan(prepared), context = territorialContext(prepared);
+      const admission=admitView(prepared,identity),target=admission.physical,baseTarget=admission.base,context=admission.context;
       const oldPhysical = requestScopes.get('physical-view'), oldBase = requestScopes.get('base-view');
-      const reusedBase = reuseTerritories(context, baseTarget), reusedPhysical = reusePhysical(target);
+      const reusedBase = reuseTerritories(admission), reusedPhysical = reusePhysical(admission);
       const unchangedGeometry = Boolean(ready&&features&&prepared.key===acceptedTerritories.key&&
         reusedBase===publishedBase&&reusedPhysical===publishedPhysical&&reusedBase&&reusedPhysical);
       visiblePhysicalPlan = null; basePreparing = reusedBase?null:baseTarget; baseFailures.clear(); physicalFailures.clear();
@@ -553,14 +607,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       controller.abort(); finishRequest('territory-apply', controller);
     }
   }
-  function ensureVisibleBase() {
-    const required = territorialPlan(), context = territorialContext(territories);
-    const covers = plan => !!plan&&plan.context===context&&globeChunkSetContains(plan.plan, required);
-    const covered = covers(basePrepared);
+  function ensureVisibleBase(admission) {
+    const required=admission.base,context=admission.context;
+    const covered=baseWithinAdmission(basePrepared,admission);
     if (covered&&(!ready||framePreserved||presentation.temporalPending()))return true;
     // During motion, keep common requests and warm a margin rather than
     // waiting until the next missing chunk enters the viewport.
-    const target = covered?territorialPlan(territories, 96):required, key = context+'|'+basePlanKey(target);
+    const target = covered?admission.margin.base:required, key = context+'|'+basePlanKey(target);
     if (covered&&basePlanKey(basePrepared.plan)===basePlanKey(target)) {
       baseFailures.clear();
       if (basePreparing&&!requestScopes.has('territory-apply')) {cancelRequest('base-view'); basePreparing = null; retainCpuResources();}
@@ -575,10 +628,12 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       basePrepared = {plan:target, parts, context}; baseFailures.clear(); pickingChanged = true; invalidate('three-territory-chunks-ready');
     }).catch (error => {
       if (!requestCurrent('base-view', controller))return;
-      const now = territorialPlan(), sameRequired = context===territorialContext(territories)&&basePlanKey(now)===basePlanKey(target);
+      let current;
+      try {current=physical&&admitView(territories,physical.spec.identity);}catch {invalidate('three-active-budget-recheck');return;}
+      const sameRequired=current&&context===current.context&&basePlanKey(current.base)===basePlanKey(target);
       const failure = baseFailures.fail(key, !covered&&sameRequired, error);
       if (!covered&&sameRequired)failMapPreparation(error);
-      else if (!basePrepared||basePrepared.context!==territorialContext(territories)||!globeChunkSetContains(basePrepared.plan, now))invalidate('three-required-territory-retry');
+      else if (current&&!baseWithinAdmission(basePrepared,current))invalidate('three-required-territory-retry');
       else if (failure==='permanent')deps.feedback.reportOperationError(error,'주변 영토·국경선 형상을 불러오지 못했습니다.','PL-THREE-BASE-CHUNK-001');
     }).finally(() => {
       if (requestScopes.get('base-view')===controller) {basePreparing = null; retainCpuResources();}
@@ -586,11 +641,11 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     });
     return covered;
   }
-  function ensureVisiblePhysical() {
+  function ensureVisiblePhysical(admission) {
     if (!physical)return false;
-    const required = physicalPlan(physical.spec.identity), covered = physicalAssets.covers(physical.plan, required);
+    const required=admission.physical,covered=physicalWithinAdmission(physical,admission);
     if (covered&&(!ready||framePreserved||presentation.temporalPending()))return true;
-    const target = covered?physicalPlan(physical.spec.identity, 96):required;
+    const target = covered?admission.margin.physical:required;
     if (physical.plan.key===target.key) {
       physicalFailures.clear();
       if (visiblePhysicalPlan) {cancelRequest('physical-view'); visiblePhysicalPlan = null; retainCpuResources();}
@@ -605,10 +660,12 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       physical = next; physicalFailures.clear(); paint.markHydroStyle(); pickingChanged = true; invalidate('three-physical-chunks-ready');
     }).catch (error => {
       if (!requestCurrent('physical-view', controller))return;
-      const now = physicalPlan(target.spec.identity), sameRequired = now.key===target.key;
+      let current;
+      try {current=physical&&admitView(territories,physical.spec.identity);}catch {invalidate('three-active-budget-recheck');return;}
+      const sameRequired=current?.physical.key===target.key;
       const failure = physicalFailures.fail(target.key, !covered&&sameRequired, error);
       if (!covered&&sameRequired)failMapPreparation(error);
-      else if (!physicalAssets.covers(physical.plan, now))invalidate('three-required-physical-retry');
+      else if (current&&!physicalWithinAdmission(physical,current))invalidate('three-required-physical-retry');
       else if (failure==='permanent')deps.feedback.reportOperationError(error,'주변 수계 형상을 불러오지 못했습니다.','PL-THREE-HYDRO-TIER-001');
     }).finally(() => {
       if (requestScopes.get('physical-view')===controller) {visiblePhysicalPlan = null; retainCpuResources();}
@@ -652,10 +709,14 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).finally(() => {fontPending = null;});
     return false;
   }
-  function requestOutlines() {
-    if (!ready||!camera||!surface)return;
-    const lod=currentGeometryLod();
-    if (lastOutlineCamera!==camera||lastOutlineLod!==lod||outlinePlanDirty) {
+  function optionalDistance(row) {
+    const bounds=row.bounds,eye=camera.frame.eye;
+    return bounds?eye.reduce((sum,value,axis)=>sum+(value-(bounds[axis]+bounds[axis+3])/2)**2,0):Infinity;
+  }
+  function requestOutlines(admission,requiredCost,allowOptional) {
+    if (!ready||!camera||!surface)return emptyGlobeCost();
+    const lod=admission.lod,key=JSON.stringify([requiredCost,admission.limits.optional,allowOptional]);
+    if (lastOutlineCamera!==camera||lastOutlineLod!==lod||outlinePlanDirty||outlineBudgetKey!==key) {
       const cull = viewCull(strokePadding()+32), targets = new Map();
       const roleStyles = paint.roleStyles();
       for (const [slot, code] of paint.countryRoles()) {
@@ -667,6 +728,12 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
           target.roles.set(slot, code);
         }
       }
+      const ranked=[...targets.values()].sort((a,b)=>Math.max(...b.roles.values())-Math.max(...a.roles.values())||
+        optionalDistance(a.descriptor)-optionalDistance(b.descriptor));
+      const admitted=admitGlobeOptional(allowOptional?ranked.map(row=>row.descriptor):[],{required:requiredCost,limits:admission.limits});
+      const kept=new Set(admitted.rows.map(row=>row.key));
+      outlineBudgetCost=admitted.cost;outlineBudgetOmitted=targets.size-kept.size;outlineBudgetKey=key;
+      for (const id of targets.keys())if (!kept.has(id))targets.delete(id);
       const changed = targets.size!==outlineTargets.size||[...targets].some(([key, row]) => {
         const previous = outlineTargets.get(key);
         return !previous||previous.roles.size!==row.roles.size||[...row.roles].some(([slot, code]) => previous.roles.get(slot)!==code);
@@ -694,6 +761,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       surface.setOutlinePaint(new Map([...outlineTargets].map(([key, row]) => [key, row.roles])), paint.roleStyles(), paint.outlineColor());
       outlinePaintDirty = false;
     }
+    return outlineBudgetCost;
   }
   function syncPresentationInputs(force = false) {
     const next = readPresentationInputs(state, deps.preferences.userPreferences, {force}), old = presentationInputs;
@@ -721,34 +789,48 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const base = {frameId:frame.frameId, viewRevision:frame.viewRevision, projectionRevision:frame.projectionRevision};
     if (!features||lost||error||frame.projectGeneration!==generation||requestScopes.has('territory-apply')||!presentation.countrySourceAdmitted(territories.key))return {...base, deferred:true};
     syncPresentationInputs(); paint.refreshPalette(surface);
-    const baseReady = ensureVisibleBase(), physicalReady = ensureVisiblePhysical(), fontAvailable = ensureLabelFont();
+    if (!physical)return {...base,deferred:true};
+    const admission=admitView(territories,physical.spec.identity);
+    lastAdmission=admission;
+    const baseReady = ensureVisibleBase(admission), physicalReady = ensureVisiblePhysical(admission), fontAvailable = ensureLabelFont();
     const graticuleReady = ensureLineLayer('graticule', graticuleNeeded(), surface.hasGraticule, surface.installGraticule, spec.graticule,'경위선');
     if (!baseReady||!physicalReady)return {...base, deferred:true};
     const initialStrict = !ready;
     if (initialStrict&&(!graticuleReady||!fontAvailable))return {...base, deferred:true};
     if (labelContent.needsUpdate())metrics.run('three.label-content', () => labelContent.update({surface, camera, view, features, activeSlots, fontReady, needed:labelsNeeded()}));
-    if (!surface.prepareLabels(camera, viewport.width, viewport.height, initialStrict)&&initialStrict) {
+    if (!surface.prepareLabels(camera, viewport.width, viewport.height, initialStrict,admission.limits.labelCandidates)&&initialStrict) {
       const cause = surface.labels.sdfError();
       if (cause)failMapPreparation(cause);
       return {...base, deferred:true};
     }
     presentation.markTemporalFrame(frame);
     if (!presentation.canPresentVisualFrame(frame))return {...base, deferred:true};
+    const requiredCost=activeCost(basePrepared.plan,physical.plan);
+    if (!globeCostFits(requiredCost,admission.limits.hard))throw globeBudgetError(requiredCost,admission.limits.hard);
     surface.activateTerritorialChunks(territories.view, basePrepared.parts);
     surface.activatePhysicalContext(physical);
     pickingChanged||=lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
     if (paint.needsUpdate())metrics.run('three.paint', () => paint.updatePaint(surface, {activeSlots, activeSlotByKey, features, bordersNeeded}));
-    requestOutlines();
-    const showRivers = state.layerVisibility.rivers!==false;
-    if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical||riverDetail.retryDue()) {
-      riverCamera = camera; riverVisible = showRivers; riverContext = physical;
-      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom,lod:physical.plan.lod,strokeCull:viewCull(strokePadding())}):[]))residencyDirty = true;
+    const pressure=residency.pressure(),allowOptional=pressure.protectedBytes+pressure.workingBytes<pressure.byteBudget*.9;
+    const usedOutline=requestOutlines(admission,requiredCost,allowOptional);
+    const showRivers=state.layerVisibility.rivers!==false,detailKey=JSON.stringify([requiredCost,usedOutline,admission.limits.optional,allowOptional]);
+    if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical||riverBudgetKey!==detailKey||riverDetail.retryDue()) {
+      riverCamera=camera;riverVisible=showRivers;riverContext=physical;riverBudgetKey=detailKey;
+      const candidates=showRivers?physicalAssets.detailPlan(physical.spec.identity,{zoom:view.zoom,lod:admission.lod,strokeCull:viewCull(strokePadding())}):[];
+      const ranked=allowOptional?[...candidates].sort((a,b)=>optionalDistance(a)-optionalDistance(b)):[];
+      const selected=admitGlobeOptional(ranked,{required:requiredCost,limits:admission.limits,optionalUsed:usedOutline});
+      const keys=new Set(selected.rows.map(row=>row.key));
+      detailBudgetOmitted=candidates.length-keys.size;
+      if (riverDetail.update(candidates.filter(row=>keys.has(row.key))))residencyDirty=true;
     }
-    const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height));
+    activeBudgetStats={requestedLod:admission.requestedLod,admittedLod:admission.lod,
+      budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
+      required:admission.cost,active:requiredCost,optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
+    const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height,admission.limits.hard));
     if (!submitted)return {...base, deferred:true};
     drawCount++;
     drawnFrame = {frame, camera, viewport, territories, basePrepared, physical, visibleSlots:paint.visibleSlots(), riverChunks:riverDetail.activeEntries(),
-      pickTerritoryPlan:territorialPlan(), pickPhysicalPlan:physicalPlan(physical.spec.identity),
+      pickTerritoryPlan:admission.base, pickPhysicalPlan:admission.physical,
       labelHit:surface.labels.hitSnapshot(), lakesVisible:state.layerVisibility.lakes!==false, riversVisible:showRivers, generation,
       contextRevision, month:state.timelineCursor, hydroVisibilityKey:JSON.stringify([presentationInputs.hydroItems,presentationInputs.hydroLayers,presentationInputs.builtinHydro])};
     input.advanceInertia();
@@ -797,7 +879,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const riverChanged = riverDetail.commit(acceptedRiverChunks), surfaceChanged = surface.trimResidency();
     const riverTrimmed = riverDetail.trim();
     if (first||residencyDirty||riverChanged||surfaceChanged||riverTrimmed) {residencyDirty = false; residency.trim();}
-    if (first) {metrics.publish(); notify('ready','지도 표시 준비 완료'); requestOutlines(); invalidate('three-adjacent-viewport-chunks');}
+    if (first) {metrics.publish(); notify('ready','지도 표시 준비 완료'); invalidate('three-adjacent-viewport-chunks');}
     const month = state.timelineCursor, monthChanged = publishedMonth!==null&&month!==publishedMonth;
     if (monthChanged)monthDirection = Math.sign(globeHistoryMonthKey(month)-globeHistoryMonthKey(publishedMonth));
     publishedMonth = month;
@@ -821,7 +903,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function invalidatePhysicalStyle() {paint.markPhysicalStyle(); invalidate('three-physical-style');}
   function invalidateHydroVisibility() {paint.markHydroInputs(); syncPresentationInputs(true); paint.markLayers(); invalidate('three-hydro-visibility');}
   function invalidatePresentationStyle() {const placesChanged = syncPresentationInputs(true); paint.markPalette(); invalidate('three-presentation-style'); return placesChanged;}
-  function setRenderQuality(value) {const key = JSON.stringify([value?.tier, value?.phase, value?.revision]); if (key===qualityKey)return; qualityKey = key; invalidate('three-quality');}
+  function setRenderQuality(value) {const key=JSON.stringify([value?.tier,value?.phase,value?.revision]);if (key===qualityKey)return;qualityKey=key;budgetTier=value?.tier??'medium';admissions.clear();invalidate('three-quality');}
   const canPickFrame = () => !!acceptedPick&&ready&&!disposed&&!lost&&!framePreserved&&acceptedPick.generation===generation&&acceptedPick.viewport===viewport;
   const objectQuery = createGlobeObjectQuery({
     getAcceptedPick:() => acceptedPick, canPickFrame, cancelNeighborPrefetch, startRequest, finishRequest, refs,
@@ -854,7 +936,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     waitForTemporalPresentation:presentation.waitForTemporalPresentation, getProjectGeneration:() => generation,
     preserveTemporalFrame() {cancelNeighborPrefetch(); framePreserved = true;}, isFramePreserved:() => framePreserved,
     resetProjectRenderState(options) {generation = options.generation; features = null; ready = false; error = null;
-        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; clearViewPlans(); presentation.resetForProject(options);},
+        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; lastAdmission=activeBudgetStats=null;outlineBudgetKey=riverBudgetKey=null;outlineBudgetCost=emptyGlobeCost();outlineBudgetOmitted=detailBudgetOmitted=0;clearViewPlans();presentation.resetForProject(options);},
     measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation,
     reportAncillaryError:(cause, message, code) => deps.feedback.reportOperationError(cause,message,code),
     retryMapPreparation, getRuntimeState,
@@ -867,6 +949,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         riverDetailSegments:acceptedRiverChunks.reduce((count,row) => count+row.packet.count,0)}:null,
       drawCount, drawCalls:surface?.drawCalls()??0, spatialRendering:surface?.spatialStats()??null, performance:metrics.snapshot(),
       geometryLod:{requested:currentGeometryLod(),displayed:acceptedPhysical?.plan.lod??null,finest:GLOBE_FINE_LOD,enabled:lodEnabled},
+      activeRenderBudget:activeBudgetStats,
       countrySlotCount:acceptedTerritories.slots.length, activeHistoricalTerritories:acceptedTerritories.slots.filter(slot => slot>=baseSlots.length).length,
       physicalWaterIds:acceptedPhysical?.spec.waters.map(row => row.id)??[], visibleWaterChunks:acceptedPhysical?.waters.length??0,
       baseChunks:publishedBase?.parts.filter(row => row.role==='country'&&row.historySlot===undefined).length??0, territorialChunks:publishedBase?.parts.length??0, neighborPrefetch:{...neighborStats},
