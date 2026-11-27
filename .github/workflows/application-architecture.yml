@@ -1,5 +1,8 @@
 name: Viewer core checks
 on:
+  push:
+    branches: [work/active]
+    paths: ['.github/workflows/application-architecture.yml']
   workflow_dispatch:
     inputs:
       group:
@@ -27,6 +30,7 @@ permissions:
   contents: read
 jobs:
   check:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -69,3 +73,28 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  gpu-batching-regression:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Verify initial GPU batching and draw reduction' && github.event.before == '3768774c2e1ea19a28324cb576f48138dc969020'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Run focused Node regressions, lint and startup/navigation browser test
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/run-application-checks.mjs --group=node --file=tests/unit/data/globe-render-resources.test.mjs --file=tests/unit/data/globe-temporal-assets.test.mjs --file=tests/unit/data/globe-mesh.test.mjs
+          node scripts/run-application-checks.mjs --group=lint --file=src/rendering/globe-draw-compaction.js --file=src/rendering/three-globe-surface.js --file=src/rendering/globe-view-mesh-assets.js --file=src/rendering/three-globe-physical.js --file=src/rendering/globe-asset-reader.js --file=src/rendering/three-viewer-renderer.js --file=tests/unit/data/globe-render-resources.test.mjs --file=tests/unit/data/globe-temporal-assets.test.mjs --file=tests/browser/viewer.spec.mjs
+          node scripts/run-application-checks.mjs --plan --group=browser --file=tests/browser/viewer.spec.mjs --test-name-pattern="keeps its map ready and reuses loaded spatial chunks while navigating"
+          node tools/data/library-data.mjs --prepare-metadata
+          pnpm exec playwright install chromium
+          node scripts/run-application-checks.mjs --group=browser --file=tests/browser/viewer.spec.mjs --test-name-pattern="keeps its map ready and reuses loaded spatial chunks while navigating"
