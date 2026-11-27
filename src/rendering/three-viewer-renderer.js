@@ -802,16 +802,25 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function renderFrame(frame) {
     const base = {frameId:frame.frameId, viewRevision:frame.viewRevision, projectionRevision:frame.projectionRevision};
     if (!features||lost||error||frame.projectGeneration!==generation||requestScopes.has('territory-apply')||!presentation.countrySourceAdmitted(territories.key))return {...base, deferred:true};
-    syncPresentationInputs(); paint.refreshPalette(surface);
+    syncPresentationInputs();paint.refreshPalette(surface);
     if (!physical)return {...base,deferred:true};
+    surface.beginGpuFrame(frame.frameId);
+    if (!surface.prepareGpuFrame(camera,viewport.width,viewport.height)) {
+      invalidate('three-gpu-shared-texture-budget');return {...base,deferred:true};
+    }
     const admission=admitView(territories,physical.spec.identity);
     lastAdmission=admission;
     const baseReady = ensureVisibleBase(admission), physicalReady = ensureVisiblePhysical(admission), fontAvailable = ensureLabelFont();
     const graticuleReady = ensureLineLayer('graticule', graticuleNeeded(), surface.hasGraticule, surface.installGraticule, spec.graticule,'경위선');
-    if (!baseReady||!physicalReady)return {...base, deferred:true};
-    const initialStrict = !ready;
-    if (initialStrict&&(!graticuleReady||!fontAvailable))return {...base, deferred:true};
-    if (labelContent.needsUpdate())metrics.run('three.label-content', () => labelContent.update({surface, camera, view, features, activeSlots, fontReady, needed:labelsNeeded()}));
+    if (!baseReady||!physicalReady)return {...base,deferred:true};
+    const initialStrict=!ready;
+    if (initialStrict&&(!graticuleReady||!fontAvailable))return {...base,deferred:true};
+    if (!surface.prepareStaticGpuResources()) {invalidate('three-gpu-static-stage');return {...base,deferred:true};}
+    const territoryGpuReady=surface.activateTerritorialChunks(territories.view,basePrepared.parts);
+    const physicalGpuReady=territoryGpuReady&&surface.activatePhysicalContext(physical);
+    if (!territoryGpuReady||!physicalGpuReady) {invalidate('three-gpu-geometry-stage');return {...base,deferred:true};}
+    surface.commitGpuActivations();
+    if (labelContent.needsUpdate())metrics.run('three.label-content',()=>labelContent.update({surface,camera,view,features,activeSlots,fontReady,needed:labelsNeeded()}));
     if (!surface.prepareLabels(camera, viewport.width, viewport.height, initialStrict,admission.limits.labelCandidates)&&initialStrict) {
       const cause = surface.labels.sdfError();
       if (cause)failMapPreparation(cause);
@@ -821,8 +830,6 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!presentation.canPresentVisualFrame(frame))return {...base, deferred:true};
     const requiredCost=activeCost(basePrepared.plan,physical.plan);
     if (!globeCostFits(requiredCost,admission.limits.hard))throw globeBudgetError(requiredCost,admission.limits.hard);
-    surface.activateTerritorialChunks(territories.view, basePrepared.parts);
-    surface.activatePhysicalContext(physical);
     pickingChanged||=lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
     if (paint.needsUpdate())metrics.run('three.paint', () => paint.updatePaint(surface, {activeSlots, activeSlotByKey, features, bordersNeeded}));
     const pressure=residency.pressure(),protectedAndWorking=pressure.protectedBytes+pressure.workingBytes;
@@ -841,9 +848,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }
     activeBudgetStats={requestedLod:admission.requestedLod,admittedLod:admission.lod,
       budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
-      required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
+      required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,gpuFrame:surface.gpuFrameStats(),optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height,admission.limits.hard));
-    if (!submitted)return {...base, deferred:true};
+    if (!submitted) {invalidate('three-gpu-upload-budget');return {...base,deferred:true};}
     drawCount++;
     drawnFrame = {frame, camera, viewport, territories, basePrepared, physical, visibleSlots:paint.visibleSlots(), riverChunks:riverDetail.activeEntries(),
       pickTerritoryPlan:admission.base, pickPhysicalPlan:admission.physical,
@@ -969,7 +976,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         generation:lastFrame.projectGeneration, month:publishedMonth, camera:lastCamera.view, size:lastFrame.size, dpr:lastFrame.dpr,
         territorialSlots:acceptedTerritories.slots, riverDetailChunks:acceptedRiverChunks.length,
         riverDetailSegments:acceptedRiverChunks.reduce((count,row) => count+row.packet.count,0)}:null,
-      drawCount, drawCalls:surface?.drawCalls()??0, spatialRendering:surface?.spatialStats()??null, performance:metrics.snapshot(),
+      drawCount,drawCalls:surface?.drawCalls()??0,spatialRendering:surface?.spatialStats()??null,gpuFrame:surface?.gpuFrameStats()??null,performance:metrics.snapshot(),
       geometryLod:{requested:currentGeometryLod(),displayed:acceptedPhysical?.plan.lod??null,finest:GLOBE_FINE_LOD,enabled:lodEnabled},
       activeRenderBudget:activeBudgetStats,
       countrySlotCount:acceptedTerritories.slots.length, activeHistoricalTerritories:acceptedTerritories.slots.filter(slot => slot>=baseSlots.length).length,
