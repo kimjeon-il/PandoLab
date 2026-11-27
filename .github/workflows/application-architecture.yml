@@ -1,8 +1,5 @@
 name: Viewer core checks
 on:
-  push:
-    branches: [work/active]
-    paths: ['.github/workflows/application-architecture.yml']
   workflow_dispatch:
     inputs:
       group:
@@ -30,7 +27,6 @@ permissions:
   contents: read
 jobs:
   check:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -73,24 +69,3 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
-
-  ancillary-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Fix ancillary presentation test fixture' && github.event.before == '7c35bf02c2724ccc600164ae7567e2f2b1845f4a'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-      - name: Run focused unit test and lint
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile --ignore-scripts
-          node scripts/run-application-checks.mjs --group=node --file=tests/unit/app/viewer-rendering-domain.test.mjs
-          node scripts/run-application-checks.mjs --group=lint --file=src/rendering/three-viewer-renderer.js --file=src/rendering/viewer-rendering-domain.js --file=src/app/viewer-timeline-composition.js --file=tests/unit/app/viewer-rendering-domain.test.mjs
