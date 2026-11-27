@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   ancillary-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Fix scoped ancillary check trigger' && github.event.before == 'c15ccaacdee85098ec8ab847ca7d8d0b4c0b2a27'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Fix ancillary presentation test fixture' && github.event.before == '7c35bf02c2724ccc600164ae7567e2f2b1845f4a'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

@@ -9,6 +9,7 @@ function harness() {
     getRuntimeState:() => ({webglContextLost:false,mapReady:true}),
     labelZoomVisibility:() => ({places:true}),
     isFramePreserved:() => true,
+    setSelection:() => {},
     invalidateLabelContent:options => events.push(['labels-invalidated',options]),
     renderFrame:frame => {events.push(['render',frame.frameId]); return {succeeded:true};},
     canPresentVisualFrame:() => true,
