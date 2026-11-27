@@ -1,8 +1,5 @@
 name: Viewer core checks
 on:
-  push:
-    branches: [work/active]
-    paths: ['.github/workflows/application-architecture.yml']
   workflow_dispatch:
     inputs:
       group:
@@ -30,7 +27,6 @@ permissions:
   contents: read
 jobs:
   check:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -73,28 +69,3 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
-
-  network-worker-pipeline:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Re-run network and Worker overlap regressions' && github.event.before == 'f4b9a7bd1aea6d9c9a5520984346c5fe5db54134'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-      - name: Run focused Node regressions, lint and startup/navigation browser test
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile --ignore-scripts
-          node scripts/run-application-checks.mjs --group=node --file=tests/unit/data/globe-render-resources.test.mjs
-          node scripts/run-application-checks.mjs --group=lint --file=src/rendering/render-cache-budget.js --file=src/rendering/globe-work-scheduler.js --file=src/rendering/globe-asset-reader.js --file=src/rendering/three-viewer-renderer.js --file=tests/unit/data/globe-render-resources.test.mjs --file=tests/browser/viewer.spec.mjs
-          node scripts/run-application-checks.mjs --plan --group=browser --file=tests/browser/viewer.spec.mjs --test-name-pattern="keeps its map ready and reuses loaded spatial chunks while navigating"
-          node tools/data/library-data.mjs --prepare-metadata
-          pnpm exec playwright install chromium
-          node scripts/run-application-checks.mjs --group=browser --file=tests/browser/viewer.spec.mjs --test-name-pattern="keeps its map ready and reuses loaded spatial chunks while navigating"
