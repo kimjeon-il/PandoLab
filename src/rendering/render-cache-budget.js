@@ -284,7 +284,7 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
   const schedule = () => {if (closed||pumpQueued)return; pumpQueued = true; queueMicrotask(() => {pumpQueued = false; pump();});};
   const pending = createWorkerAdmissionQueue(schedule), queue = pending.rows;
   const off = residency?.onChange(schedule);
-  function notifyIdle() {if (!active&&!queue.length)for (const listener of [...idleListeners])listener();}
+  function notifyIdle() {if (!active&&!queue.length&&!bytes)for (const listener of [...idleListeners])listener();}
   function pump() {
     if (closed||pumping)return;
     pumping = true;
@@ -294,19 +294,19 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
         const head = queue[0];
         if (head.priority<0&&(foreground||speculative))break;
         let at = 0;
-        if (active>0&&bytes+head.bytes>byteBudget) {
+        if (bytes>0&&bytes+head.bytes>byteBudget) {
           if (head.bypassed>=2||head.priority<0)break;
           at = queue.findIndex((row, i) => i>0&&row.priority===head.priority&&bytes+row.bytes<=byteBudget);
           if (at<0)break; head.bypassed++; bypasses++;
         }
         const row = queue[at];
         if (row.signal?.aborted) {pending.take(at); row.reject(row.signal.reason); continue;}
-        const allowOverflow = row.priority>=10&&active===0;
+        const allowOverflow = row.priority>=10&&active===0&&bytes===0;
         const release = residency?residency.reserve(row.bytes, {kind:row.kind, optional:!allowOverflow}):() => {};
         if (!release) {
           // Visible-margin work can wait for admitted loads to release their
           // reservations; speculative work still yields to the foreground.
-          if (row.priority>=0&&active>0)break;
+          if (row.priority>=0&&(active>0||bytes>0))break;
           pending.take(at); pressureSkips++;
           row.reject(Object.assign(new Error('Render preparation memory pressure'), {name:'AbortError', memoryPressure:true, requestedBytes:row.bytes})); continue;
         }
@@ -314,18 +314,24 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
         const isSpeculative = row.priority<0;
         active++; if (isSpeculative)speculative++; else foreground++;
         bytes+=row.bytes; peakActive = Math.max(peakActive, active); peakBytes = Math.max(peakBytes, bytes);
-        let admissionReleased = false, taskSettled = false;
-        const releaseAdmission = () => {
-          if (admissionReleased)return;
-          if (!taskSettled)handoffs++;
-          admissionReleased = true;
+        let slotReleased = false, reservationReleased = false;
+        const releaseSlot = () => {
+          if (slotReleased)return;
+          slotReleased = true;
           active--; if (isSpeculative)speculative--; else foreground--;
+          if (residency)schedule(); else pump();
+          notifyIdle();
+        };
+        const handoff = () => {if (!slotReleased)handoffs++; releaseSlot();};
+        const releaseAdmission = () => {
+          if (reservationReleased)return;
+          reservationReleased = true; releaseSlot();
           bytes-=row.bytes; release();
           if (residency)schedule(); else pump();
           notifyIdle();
         };
-        Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task({releaseAdmission});})
-          .then(row.resolve, row.reject).finally(() => {taskSettled = true; releaseAdmission();});
+        Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task({handoff, releaseSlot});})
+          .then(row.resolve, row.reject).finally(releaseAdmission);
       }
     }finally {pumping = false; notifyIdle();}
   }
@@ -333,7 +339,7 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
     if (closed||signal?.aborted)return Promise.reject(signal?.reason??new DOMException('Render load gate closed','AbortError'));
     return pending.enqueue({bytes:Math.max(1, Number(estimate)||1), priority, signal, kind, bypassed:0}, task, residency?schedule:pump);
   }
-  function onIdle(callback) {idleListeners.add(callback); if (!active&&!queue.length)schedule(); return () => idleListeners.delete(callback);}
+  function onIdle(callback) {idleListeners.add(callback); if (!active&&!queue.length&&!bytes)schedule(); return () => idleListeners.delete(callback);}
   function dispose() {
     closed = true; off?.(); idleListeners.clear();
     pending.rejectAll(new DOMException('Render load gate closed','AbortError'));

@@ -377,35 +377,27 @@ test('Worker spatial preparation attaches primitive indexes before mesh and stro
 });
 
 
-test('network admission is handed to the Worker stage so the next download can start during decode',async()=>{
+test('network admission hands off its concurrency slot while retaining the full memory reservation through Worker decode',async()=>{
  const {createRenderLoadGate}=await import('../../../src/rendering/render-cache-budget.js');
- const network=createRenderLoadGate({concurrency:1,byteBudget:16});
- const worker=createRenderLoadGate({concurrency:1,byteBudget:16});
+ const gate=createRenderLoadGate({concurrency:1,byteBudget:16});
  const decode=Promise.withResolvers();let workerStarted=false;
- const first=network.run({bytes:12},async({releaseAdmission})=>{
-  try {
-   return await worker.run({bytes:12},async()=>{
-    releaseAdmission();workerStarted=true;await decode.promise;return 'decoded';
-   });
-  }finally{releaseAdmission();}
+ const first=gate.run({bytes:6},async({handoff})=>{
+  handoff();workerStarted=true;await decode.promise;return 'decoded';
  });
  await new Promise(setImmediate);
  assert.equal(workerStarted,true);
- assert.equal(network.stats().active,0);
- assert.equal(network.stats().handoffs,1);
- const next=network.run({bytes:12},()=> 'downloaded');
+ assert.equal(gate.stats().active,0);
+ assert.equal(gate.stats().reservedBytes,6);
+ assert.equal(gate.stats().handoffs,1);
+ const next=gate.run({bytes:6},()=> 'downloaded');
  assert.equal(await next,'downloaded');
- assert.equal(worker.stats().active,1);
+ assert.equal(gate.stats().reservedBytes,6);
+ const blocked=gate.run({bytes:12},()=> 'must wait for the Worker reservation');
+ await Promise.resolve();
+ assert.equal(gate.stats().queued,1);
  decode.resolve();
  assert.equal(await first,'decoded');
- assert.equal(network.stats().active,0);
- assert.equal(worker.stats().active,0);
- network.dispose();worker.dispose();
-});
-
-test('network transfer reservation is smaller than the decoded Worker working reservation',async()=>{
- const {estimateGlobeTransferBytes,estimateGlobeWorkingBytes}=await import('../../../src/rendering/globe-work-scheduler.js');
- const spec={compressedBytes:128*1024,decodedBytes:2*1024*1024};
- assert.equal(estimateGlobeTransferBytes(spec),3*128*1024+64*1024);
- assert.ok(estimateGlobeTransferBytes(spec)<estimateGlobeWorkingBytes(spec,'mesh'));
+ assert.equal(await blocked,'must wait for the Worker reservation');
+ assert.equal(gate.stats().reservedBytes,0);
+ gate.dispose();
 });

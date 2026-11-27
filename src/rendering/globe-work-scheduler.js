@@ -47,12 +47,6 @@ export function createGlobeWorkScheduler({maxConcurrent = 2, residency = null, n
   return {run, dispose, stats};
 }
 
-export function estimateGlobeTransferBytes(spec) {
-  const stored = Math.max(0, Number(spec.compressedBytes)||0);
-  const decoded = Math.max(0, Number(spec.decodedBytes)||0);
-  return Math.ceil((stored||decoded)*3+64*1024);
-}
-
 export function estimateGlobeWorkingBytes(spec, kind = 'mesh') {
   if (Number.isFinite(spec.estimatedBytes))return Math.max(1, spec.estimatedBytes);
   const stored = Math.max(0, Number(spec.compressedBytes)||0), decoded = Math.max(1, Number(spec.decodedBytes)||0);
