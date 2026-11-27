@@ -49,10 +49,28 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }});
   const historyCatalogCache = createRenderPacketCache({byteBudget:Infinity, entryLimit:1});
   const loadGate = createRenderLoadGate({concurrency:cacheBudget.concurrentLoads, byteBudget:cacheBudget.pendingBytes, residency});
+  const workerGate = createRenderLoadGate({concurrency:cacheBudget.concurrentLoads, byteBudget:cacheBudget.pendingBytes, residency});
   const workScheduler = createGlobeWorkScheduler({maxConcurrent:globePacketWorkerCount(), residency});
   const hydroMetadataCache = createRenderPacketCache({byteBudget:16*1024*1024, entryLimit:1});
   let refreshHydroLedger = () => {};
   let acceptedPick = null, drawnFrame = null, residencyDirty = true;
+  function onLoadPipelineIdle(callback) {
+    let active = true, scheduled = false;
+    const check = () => {
+      if (!active||scheduled)return;
+      const network = loadGate.stats(), worker = workerGate.stats();
+      if (network.active||network.queued||worker.active||worker.queued)return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        if (!active)return;
+        const nextNetwork = loadGate.stats(), nextWorker = workerGate.stats();
+        if (!nextNetwork.active&&!nextNetwork.queued&&!nextWorker.active&&!nextWorker.queued)callback();
+      });
+    };
+    const offNetwork = loadGate.onIdle(check), offWorker = workerGate.onIdle(check);
+    return () => {active = false; offNetwork(); offWorker();};
+  }
   const temporalInputs = createGlobeTemporalPresentation();
   let temporalStats = {};
   const temporalReuse = {countryPreparationsSkipped:0, physicalPreparationsSkipped:0, unchangedGeometryTransitions:0};
@@ -171,7 +189,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     listen('webglcontextrestored', () => {lost = false; contextRevision++; surface?.restoreCountryPaint(); pickingChanged = true; presentation.rebaseContext(); invalidate('three-context-restored');});
   }
   const assetReader = createGlobeAssetReader({
-    dataRevision:meta.dataRevision, cacheBudget, residency, loadGate, packetTasks, metrics, lifetime,
+    dataRevision:meta.dataRevision, cacheBudget, residency, loadGate, workerGate, packetTasks, metrics,
     resolveUrl:row => new URL(row.url, document.baseURI).href,
   });
   const {load, loadTerritorialStroke} = assetReader;
@@ -391,7 +409,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       const gate = loadGate.stats();
       if (gate.active||gate.queued) {
         neighborStats.idleWaits++;
-        neighborIdleOff = loadGate.onIdle(() => {
+        neighborIdleOff = onLoadPipelineIdle(() => {
           const off = neighborIdleOff; neighborIdleOff = null; off?.();
           if (!valid()) {neighborKey.clear(keyClaim); return;}
           neighborTimer = setTimeout(begin, 100);
@@ -863,8 +881,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       placeLabelCount:surface?.labels.visibleCount(true)??0, riverDetail:riverDetail?.stats()??null,
       labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
       territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded, estimatedBytes:historyCatalogBytes}, historicalMetadata:historyIndex.stats(), temporalPresentation:{...temporalStats, ...temporalReuse}, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
-      labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), errorMessage:error?.message??null, initialLoading}),
-    dispose() {cancelNeighborPrefetch(); disposed = true; baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
+      labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), workerGate:workerGate.stats(), errorMessage:error?.message??null, initialLoading}),
+    dispose() {cancelNeighborPrefetch(); disposed = true; baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); workerGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
       acceptedPick = drawnFrame = features = basePrepared = publishedBase = basePreparing = physical = acceptedPhysical = publishedPhysical = hydroMetadata = null;
       acceptedRiverChunks = []; hydroSlots.clear(); paint.dispose(); temporalInputs.reset(); labelContent.dispose(); clearViewPlans(); surface = riverDetail = null;},
   });

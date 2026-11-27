@@ -314,10 +314,17 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
         const isSpeculative = row.priority<0;
         active++; if (isSpeculative)speculative++; else foreground++;
         bytes+=row.bytes; peakActive = Math.max(peakActive, active); peakBytes = Math.max(peakBytes, bytes);
-        Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task();}).then(row.resolve, row.reject).finally(() => {
+        let admissionReleased = false;
+        const releaseAdmission = () => {
+          if (admissionReleased)return;
+          admissionReleased = true;
           active--; if (isSpeculative)speculative--; else foreground--;
-          bytes-=row.bytes; release(); if (residency)schedule(); else pump();
-        });
+          bytes-=row.bytes; release();
+          if (residency)schedule(); else pump();
+          notifyIdle();
+        };
+        Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task({releaseAdmission});})
+          .then(row.resolve, row.reject).finally(releaseAdmission);
       }
     }finally {pumping = false; notifyIdle();}
   }
