@@ -1,4 +1,5 @@
 import { globeBudgetError, globeCostFits } from './globe-active-budget.js';
+import { createGlobeGpuFrameBudget } from './globe-gpu-frame-budget.js';
 import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourceFootprint, createGlobeGpuResidency, disposeGlobeGpuResources, createGlobeTextureCopier } from './globe-gpu-resources.js';
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
@@ -75,6 +76,10 @@ export function globeHydroTextureRects(slots, width) {
 
 export function createThreeGlobeSurface(THREE, { canvas, context, palette, packets, countryCount, baseCountryCount = countryCount, hydroCount, cacheBudget = renderCacheBudget(), residency, workScheduler = null, onLabelReady = () => {}, onLabelError = () => {} }) {
   const renderer = new THREE.WebGLRenderer({ canvas, context });
+  const gpuFrameBudget=createGlobeGpuFrameBudget({totalRenderBytes:cacheBudget.totalRenderBytes});
+  const uploadScene=new THREE.Scene(),uploadTarget=new THREE.WebGLRenderTarget(1,1);
+  const warmedGeometries=new WeakSet(),warmedTextures=new WeakSet();
+  let gpuCamera=null,gpuViewport=null;
   const maxPointTextureSize = renderer.capabilities.maxTextureSize;
   renderer.setClearColor(palette.ocean);
   renderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
@@ -91,15 +96,14 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   let countryTextureUploaded = false, countryPendingFull = true;
   const countryDirtySlots = new Set();
   texture.onUpdate = () => {countryTextureUploaded = true; countryPendingFull = false; countryDirtySlots.clear();};
-  texture.needsUpdate = true;
   const hydroWidth = Math.min(1024, Math.max(1, hydroCount)), hydroHeight = Math.ceil(Math.max(1, hydroCount)/hydroWidth);
   const hydroBytes = new Uint8Array(hydroWidth*hydroHeight);
   const hydroTexture = createGlobeDataTexture(THREE, hydroBytes, hydroWidth, hydroHeight, {format:THREE.RedFormat});
   const hydroCopier = createGlobeTextureCopier(THREE, renderer), hydroDirtySlots = new Set();
   let hydroUploaded = false;
   const hydroUploadStats = {fullUploads:0, partialUploads:0, fullBytes:0, partialBytes:0};
-  hydroTexture.onUpdate = () => {hydroUploaded = true; hydroUploadStats.fullUploads++; hydroUploadStats.fullBytes+=hydroBytes.byteLength;};
-  hydroTexture.needsUpdate = true;
+  hydroTexture.onUpdate = () => {hydroUploaded=true;hydroPendingFull=false;hydroUploadStats.fullUploads++;hydroUploadStats.fullBytes+=hydroBytes.byteLength;};
+  let hydroPendingFull=true;
   const hydroTint = new THREE.Color(), hydroStyles = Array.from({length:5}, () => new THREE.Vector3());
   const hydroUniforms = {hydroRoles:{value:hydroTexture}, hydroSize:{value:new THREE.Vector2(hydroWidth, hydroHeight)},
     hydroTint:{value:hydroTint}, hydroStyles:{value:hydroStyles}, hasHydroHighlight:{value:false}};
@@ -112,8 +116,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const labels = createThreeGlobeLabels(THREE, {scene, renderer, palette:palette.labels, capacity:PLACE_LIMITS.layoutCandidates, maxTextureSize:maxPointTextureSize, viewport, byteBudget:cacheBudget.labelAtlasBytes, residency, workScheduler, onReady:onLabelReady, onError:onLabelError});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint() {
-    countryTextureUploaded = false; countryPendingFull = true; texture.clearUpdateRanges(); texture.needsUpdate = true;
-    hydroUploaded = false; hydroDirtySlots.clear(); hydroTexture.needsUpdate = true; labels.restoreTextures();
+    countryTextureUploaded=false;countryPendingFull=true;texture.clearUpdateRanges();
+    hydroUploaded=false;hydroPendingFull=true;hydroDirtySlots.clear();labels.restoreTextures();
   }
   function setCountryPaint(paint, {full = false} = {}) {
     // Keep unconsumed full and partial writes across deferred frames.
@@ -130,12 +134,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     }
   }
   function flushCountryPaint() {
-    if (!countryPendingFull&&!countryDirtySlots.size)return;
+    if (!countryPendingFull&&!countryDirtySlots.size)return true;
+    const full=countryPendingFull,bytes=full?channels.byteLength:countryDirtySlots.size*4;
+    if (!gpuFrameBudget.admitUpload(bytes,1))return false;
     texture.clearUpdateRanges();
-    if (countryTextureUploaded&&!countryPendingFull) {
-      for (const slot of countryDirtySlots)texture.addUpdateRange(slot*4, 4);
-    }
-    texture.needsUpdate = true;
+    if (countryTextureUploaded&&!full)for (const slot of countryDirtySlots)texture.addUpdateRange(slot*4,4);
+    texture.needsUpdate=true;renderer.initTexture(texture);return true;
   }
   const layers = new Map(), residentMeshes = new Map();
   const meshLedger = createGlobeGpuResidency(residency);
@@ -151,6 +155,41 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (!layers.has(name))layers.set(name, []);
     layers.get(name).push(mesh);
   }
+  function geometryUploadBytes(geometry) {
+    const attributes=new Set(Object.values(geometry.attributes??{}));let bytes=0;
+    for (const attribute of attributes)bytes+=attribute.array?.byteLength??0;
+    if (geometry.index)bytes+=geometry.index.array?.byteLength??0;
+    return bytes;
+  }
+  function stageGpuMesh(mesh) {
+    const geometry=mesh.geometry,parent=mesh.parent,visible=mesh.visible;
+    const drawRange={...geometry.drawRange},instanceCount=geometry.instanceCount;
+    const previousTarget=renderer.getRenderTarget(),previousAutoClear=renderer.autoClear;
+    parent?.remove(mesh);uploadScene.add(mesh);mesh.visible=true;
+    if (instanceCount!==undefined)geometry.instanceCount=1;
+    if (geometry.setDrawRange) {
+      const available=geometry.index?.count??geometry.getAttribute?.('position')?.count??3;
+      geometry.setDrawRange(0,Math.min(3,available));
+    }
+    try {
+      renderer.setRenderTarget(uploadTarget);renderer.autoClear=true;renderer.clear(true,true,true);
+      renderer.render(uploadScene,camera);
+    } finally {
+      uploadScene.remove(mesh);parent?.add(mesh);mesh.visible=visible;
+      if (geometry.setDrawRange)geometry.setDrawRange(drawRange.start,drawRange.count);
+      if (instanceCount!==undefined)geometry.instanceCount=instanceCount;
+      renderer.setRenderTarget(previousTarget);renderer.autoClear=previousAutoClear;
+    }
+  }
+  function updateGpuCamera(globeCamera,width,height) {
+    const {frame,view}=globeCamera;
+    zoom.value=view.zoom;eyeHigh.fromArray(frame.eye.map(Math.fround));
+    eyeLow.set(frame.eye[0]-eyeHigh.x,frame.eye[1]-eyeHigh.y,frame.eye[2]-eyeHigh.z);
+    viewRotation.set(...frame.right,...frame.up,...frame.forward.map(value=>-value));
+    camera.near=frame.distance*.01;camera.far=frame.distance+4;
+    camera.setViewOffset(width,height,width/2-frame.center[0],height/2-frame.center[1],width,height);
+    gpuCamera=globeCamera;gpuViewport={width,height};
+  }
   // The logical visibility/ownership of a packet is independent of which
   // spatial ranges its current camera actually submits.
   function spatialResource(objects, material, update, pointResources = [], retained = null, {geometries = null, workspace = () => [], disposeExtra = () => {}} = {}) {
@@ -165,6 +204,20 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const resource = {
       material, update, lastUsed:performance.now(),
       markFootprint:() => meshLedger.mark(resource),
+      warmGpu() {
+        for (const mesh of objects) {
+          const geometry=mesh.geometry,texture=mesh.material?.uniforms?.pointCoordinates?.value??null;
+          if (texture&&!warmedTextures.has(texture)) {
+            const bytes=texture.image?.data?.byteLength??0;
+            if (!gpuFrameBudget.admitUpload(bytes,1))return false;
+            texture.needsUpdate=true;renderer.initTexture(texture);warmedTextures.add(texture);
+          }
+          if (warmedGeometries.has(geometry))continue;
+          if (!gpuFrameBudget.admitUpload(geometryUploadBytes(geometry),1))return false;
+          stageGpuMesh(mesh);warmedGeometries.add(geometry);
+        }
+        return true;
+      },
       setOrder(order, span = 0) {objects.forEach((mesh, i) => {mesh.renderOrder = order+span*i/Math.max(1,objects.length);});},
       setStrokeStyle(style) {for (const material of materials) {const u = material.uniforms; if (u.radius)u.radius.value = style.width/2;if(u.strokeColor)u.strokeColor.value.set(style.color);if(u.strokeOpacity)u.strokeOpacity.value=style.opacity??style.alpha??1;}},
       get visible() {return enabled;},
@@ -252,7 +305,9 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
           selections.push({ranges:selected.ranges, offset:row.offset});
         }
         if (changed) {
-          const {ranges} = mergeGlobeDrawRanges(selections), writes = planGlobeCompactionUpdates(ranges, batch.prior);
+          const {ranges}=mergeGlobeDrawRanges(selections),writes=planGlobeCompactionUpdates(ranges,batch.prior);
+          const bytes=writes.reduce((sum,row)=>sum+(row.end-row.first)*(direct?48:8)+(output.widths.length?4:0)+(output.ownerGroups.length?2:0),0);
+          if (bytes&&!gpuFrameBudget.admitCompaction(bytes,1)) {mesh.visible=Boolean(batch.prior.length);continue;}
           if (direct&&writes.length) {
             writeDirectGlobeStrokes(output, source, writes);
             for (const name of ['start','startLow','end','endLow'])stats.compactionUploadBytes+=applyGlobeDrawWrites(mesh.geometry.getAttribute(name), writes);
@@ -329,12 +384,19 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       }
       if (next.size!==blocks.size||needed!==capacity)layoutChanged = true;
       if (layoutChanged) {
-        const replacement = residency.withTemporary(needed*12*2,'gpu-index-growth', () => {
-          const index = new THREE.BufferAttribute(new Uint32Array(needed*3), 1).setUsage(THREE.DynamicDrawUsage);
-          return {geometry:makeGeometry(index), index};
+        if (!gpuFrameBudget.admitCreate(needed*12,1))return false;
+        const replacement=residency.withTemporary(needed*12*2,'gpu-index-growth',()=>{
+          const index=new THREE.BufferAttribute(new Uint32Array(needed*3),1).setUsage(THREE.DynamicDrawUsage);
+          return {geometry:makeGeometry(index),index};
         });
-        releaseDynamic();
-        dynamicGeometry = replacement.geometry; drawIndex = replacement.index; capacity = needed;
+        const previous=dynamicGeometry,previousIndex=drawIndex,previousCapacity=capacity;
+        dynamicGeometry=replacement.geometry;drawIndex=replacement.index;capacity=needed;mesh.geometry=dynamicGeometry;
+        if (!gpuFrameBudget.admitUpload(geometryUploadBytes(dynamicGeometry),1)) {
+          dynamicGeometry=previous;drawIndex=previousIndex;capacity=previousCapacity;mesh.geometry=previous??sourceGeometry;
+          dynamicGeometry?.dispose();return false;
+        }
+        stageGpuMesh(mesh);warmedGeometries.add(dynamicGeometry);
+        if (previous) {for (const key of Object.keys(attributes))previous.deleteAttribute(key);previous.dispose();}
       }
       for (const row of next.values()) {
         const old = layoutChanged?null:blocks.get(row.id);
@@ -342,8 +404,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
           writes.push({...write, offset:write.offset+row.offset});
         }
       }
-      stats.compactionUploadBytes+=copyGlobeDrawWrites(drawIndex, packet.indices, writes, 3);
-      blocks = next; mesh.geometry = dynamicGeometry;
+      const writeBytes=writes.reduce((sum,row)=>sum+(row.end-row.first)*12,0);
+      if (writeBytes&&!gpuFrameBudget.admitCompaction(writeBytes,1))return false;
+      stats.compactionUploadBytes+=copyGlobeDrawWrites(drawIndex,packet.indices,writes,3);
+      blocks=next;mesh.geometry=dynamicGeometry;
       setGroups(dynamicGeometry, globeDrawGroups([...blocks.values()]));
       stats.rewrittenBlocks+=new Set(writes.map(write => Math.floor(write.first/globeDrawBlockSize(primitiveCount)))).size;
     }
@@ -357,14 +421,15 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       });
       if (changed) {
         const {ranges} = mergeGlobeDrawRanges(selections);
-        priorSelection = ranges; submitted = count; visibleLeaves = leaves; resource.markFootprint();
-        if (!count) {activeCalls = 0; mesh.visible = false;}
+        if (!count) {priorSelection=ranges;submitted=count;visibleLeaves=leaves;resource.markFootprint();activeCalls=0;mesh.visible=false;}
         else if (ranges.length<=4) {
+          priorSelection=ranges;submitted=count;visibleLeaves=leaves;resource.markFootprint();
           mesh.geometry = sourceGeometry;
           const groups = []; for (let i = 0; i<ranges.length; i+=2)groups.push({start:ranges[i]*3, count:(ranges[i+1]-ranges[i])*3});
           setGroups(sourceGeometry, groups);
         }else {
-          stableDirectFrames = 0; prepareDynamic(ranges, stats);
+          stableDirectFrames=0;
+          if (prepareDynamic(ranges,stats)) {priorSelection=ranges;submitted=count;visibleLeaves=leaves;resource.markFootprint();}
         }
       }
       if (mesh.geometry===sourceGeometry&&dynamicGeometry&&++stableDirectFrames>=16) {releaseDynamic(); stableDirectFrames = 0;}
@@ -377,15 +442,19 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (name)addLayer(name, resource);
     return resource;
   }
-  function registerGpuGroups(rows, role, compatibility, create) {
-    return groupGlobeGpuMeshes(rows, compatibility).map(group => {
-      const resource = useMesh(role, group.key, () => {
-        const packet = group.rows.length===1?group.rows[0].mesh.packet:
-          residency.withTemporary(group.vertices*52+group.triangles*24,'gpu-mesh-batch', () => combineGlobeDrawMeshes(group.rows));
-        return create(packet, group.rows[0]);
-      });
-      return {resource, rows:group.rows};
-    });
+  function registerGpuGroups(rows,role,compatibility,create) {
+    const groups=groupGlobeGpuMeshes(rows,compatibility),result=[];
+    for (const group of groups) {
+      const estimate=group.vertices*24+group.triangles*4+group.vertices*2+4096;
+      const resource=useMesh(role,group.key,()=>{
+        const packet=group.rows.length===1?group.rows[0].mesh.packet:
+          residency.withTemporary(group.vertices*52+group.triangles*24,'gpu-mesh-batch',()=>combineGlobeDrawMeshes(group.rows));
+        return create(packet,group.rows[0]);
+      },estimate);
+      if (!resource||!resource.warmGpu())return {rows:result,complete:false};
+      result.push({resource,rows:group.rows});
+    }
+    return {rows:result,complete:true};
   }
   if (packets.countries)register('objects', packets.countries, palette.defaultLand, 1, -2,'country');
   const multisampling = Boolean(context.getContextAttributes().antialias);
@@ -410,33 +479,81 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     addLayer('graticule', graticule); graticule.visible = graticuleVisible;
   }
   if (packets.graticule)installGraticule(packets.graticule);
-  function useMesh(role, identity, prepare) {
-    const key = role+':'+identity;
-    const existing = residentMeshes.get(key);
-    if (existing) {meshCacheStats.hits++; meshLedger.protect(existing.mesh, true); return existing.mesh;}
+  function useMesh(role,identity,prepare,estimatedBytes=0) {
+    const key=role+':'+identity,existing=residentMeshes.get(key);
+    if (existing) {meshCacheStats.hits++;meshLedger.protect(existing.mesh,true);return existing.mesh;}
+    if (!gpuFrameBudget.admitCreate(estimatedBytes,1))return null;
     meshCacheStats.misses++;
-    const mesh = prepare(), entry = {mesh};
-    residentMeshes.set(key, entry);
-    meshLedger.configure(mesh, {group:'mesh', evict:() => evictMesh(key, entry)});
+    const mesh=prepare(),entry={mesh};residentMeshes.set(key,entry);
+    meshLedger.configure(mesh,{group:'mesh',evict:()=>evictMesh(key,entry)});
     return mesh;
   }
+  let pendingPhysicalActivation=null,pendingTerritoryActivation=null;
   function activatePhysicalContext(parts) {
-    if (activePhysical===parts)return;
-    const previous = new Set(Object.values(physicalLayers??{}).flat());
-    const waterGroups = registerGpuGroups(parts.waters,'water', row => row.id, packet => register(null, packet, palette.ocean, 2));
-    const lakeGroups = registerGpuGroups(parts.lakes,'lake', row => String(row.minZoom), (packet, row) => register(null, packet, palette.ocean, 2, row.minZoom,'lake'));
-    physicalLayers = {
-      waters:waterGroups.map(({resource}, i) => {resource.setOrder(1.6+.3*i/Math.max(1,waterGroups.length));return resource;}),
-      lakes:lakeGroups.map(({resource}, i) => {resource.setOrder(2+.9*i/Math.max(1,lakeGroups.length));return resource;}),
-      rivers:parts.riverChunks.map((row, i, rows) => {
-        const resource = useMesh('river', row.key, () => riverMesh(row.packet, row.minZoom)); resource.setOrder(3+.9*i/Math.max(1,rows.length));return resource;
-      }),
+    if (activePhysical===parts) {pendingPhysicalActivation=null;return true;}
+    const water=registerGpuGroups(parts.waters,'water',row=>row.id,packet=>register(null,packet,palette.ocean,2));
+    if (!water.complete)return false;
+    const lakes=registerGpuGroups(parts.lakes,'lake',row=>String(row.minZoom),(packet,row)=>register(null,packet,palette.ocean,2,row.minZoom,'lake'));
+    if (!lakes.complete)return false;
+    const rivers=[];
+    for (const row of parts.riverChunks) {
+      const packet=row.packet,estimate=(packet.points?.byteLength??0)+(packet.endpointIndices?.byteLength??0)+
+        (packet.start?.byteLength??0)+(packet.startLow?.byteLength??0)+(packet.end?.byteLength??0)+(packet.endLow?.byteLength??0)+
+        (packet.widths?.byteLength??0)+(packet.ownerGroups?.byteLength??0)+4096;
+      const resource=useMesh('river',row.key,()=>riverMesh(packet,row.minZoom),estimate);
+      if (!resource||!resource.warmGpu())return false;
+      rivers.push(resource);
+    }
+    const physicalLayers={
+      waters:water.rows.map(({resource},i)=>{resource.setOrder(1.6+.3*i/Math.max(1,water.rows.length));return resource;}),
+      lakes:lakes.rows.map(({resource},i)=>{resource.setOrder(2+.9*i/Math.max(1,lakes.rows.length));return resource;}),
+      rivers:rivers.map((resource,i)=>{resource.setOrder(3+.9*i/Math.max(1,rivers.length));return resource;}),
     };
-    waterMeshes = new Map();
-    waterGroups.forEach(({rows, resource}) => {const id = rows[0].id; let group = waterMeshes.get(id); if (!group) {group = []; waterMeshes.set(id, group);}group.push(resource);});
-    activePhysical = parts; waterPaintDirty = true;
-    for (const [role, meshes] of Object.entries(physicalLayers))for (const mesh of meshes) {mesh.visible = visibleLayers[role]!==false; previous.delete(mesh);}
-    for (const mesh of previous) {mesh.visible = false; meshLedger.protect(mesh, false);}
+    const waterMeshes=new Map();
+    water.rows.forEach(({rows,resource})=>{const id=rows[0].id;let group=waterMeshes.get(id);if(!group){group=[];waterMeshes.set(id,group);}group.push(resource);});
+    pendingPhysicalActivation={parts,physicalLayers,waterMeshes};return true;
+  }
+  function activateTerritorialChunks(view,rows) {
+    if (activeTerritoryInput===rows&&view===activeView) {pendingTerritoryActivation=null;return true;}
+    const countries=rows.filter(row=>row.role==='country'),borders=rows.filter(row=>row.role==='border');
+    const groups=registerGpuGroups(countries,'territory',()=> 'country',packet=>register(null,packet,palette.defaultLand,1,-2,'country'));
+    if (!groups.complete)return false;
+    const nextBase=groups.rows.map(({resource},i)=>{resource.setOrder(1+.5*i/Math.max(1,groups.rows.length));return resource;});
+    const nextBorders=[];
+    for (const row of borders) {
+      const packet=row.packet,estimate=(packet.points?.byteLength??0)+(packet.endpointIndices?.byteLength??0)+
+        (packet.start?.byteLength??0)+(packet.startLow?.byteLength??0)+(packet.end?.byteLength??0)+(packet.endLow?.byteLength??0)+
+        (packet.widths?.byteLength??0)+(packet.ownerGroups?.byteLength??0)+4096;
+      const resource=useMesh('border',row.key,()=>spatialStrokes(packet,{...strokeOptions,order:5,baseBorder:row.baseBorder===true}),estimate);
+      if (!resource||!resource.warmGpu())return false;
+      nextBorders.push(resource);
+    }
+    nextBorders.forEach((resource,i)=>resource.setOrder(5+.4*i/Math.max(1,nextBorders.length),.4/Math.max(1,nextBorders.length)));
+    pendingTerritoryActivation={view,rows,activeBase:nextBase,activeBorders:nextBorders};return true;
+  }
+  function commitGpuActivations() {
+    if (pendingTerritoryActivation) {
+      const {view,rows,activeBase:nextBase,activeBorders:nextBorders}=pendingTerritoryActivation;
+      for (const resource of [...activeBase,...activeBorders])if (!nextBase.includes(resource)&&!nextBorders.includes(resource)) {resource.visible=false;meshLedger.protect(resource,false);}
+      activeBase=nextBase;activeBorders=nextBorders;activeTerritoryInput=rows;
+      if (view!==activeView) {
+        activeView=view;const hidden=new Set(view?.hiddenBorders??[]);
+        for (let slot=0;slot<borderBytes.length;slot++) {
+          const next=hidden.has(slot)?0:255;
+          if (borderBytes[slot]!==next) {borderBytes[slot]=next;borderSlotRevisions[slot]=++borderVisibilityRevision;}
+        }
+      }
+      for (const resource of [...activeBase,...activeBorders])resource.visible=true;
+      pendingTerritoryActivation=null;
+    }
+    if (pendingPhysicalActivation) {
+      const {parts,physicalLayers:nextLayers,waterMeshes:nextWaterMeshes}=pendingPhysicalActivation;
+      const previous=new Set(Object.values(physicalLayers??{}).flat());
+      for (const [role,meshes] of Object.entries(nextLayers))for (const resource of meshes) {resource.visible=visibleLayers[role]!==false;previous.delete(resource);}
+      for (const resource of previous) {resource.visible=false;meshLedger.protect(resource,false);}
+      physicalLayers=nextLayers;waterMeshes=nextWaterMeshes;activePhysical=parts;waterPaintDirty=true;
+      pendingPhysicalActivation=null;
+    }
   }
   function setHydroPaint(slots, waters, styles, color) {
     for (const slot of new Set([...previousHydro.keys(), ...slots.keys()])) {
@@ -457,17 +574,20 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     previousWaters = waters; previousWaterTint = tint; previousWaterStyles = fills; waterPaintDirty = false;
   }
   function flushHydroPaint() {
-    if (!hydroDirtySlots.size)return;
-    const rects = globeHydroTextureRects(hydroDirtySlots, hydroWidth);
-    hydroDirtySlots.clear();
-    if (!hydroUploaded)return; // initial/restore upload reads the current CPU buffer
-    const area = rects.reduce((sum, row) => sum+row.width*row.height, 0);
-    if (rects.length>64||area>=hydroBytes.length*.6||!renderer.copyTextureToTexture) {
-      hydroUploaded = false; hydroTexture.needsUpdate = true; return;
+    if (hydroPendingFull) {
+      if (!gpuFrameBudget.admitUpload(hydroBytes.byteLength,1))return false;
+      hydroTexture.needsUpdate=true;renderer.initTexture(hydroTexture);return true;
     }
-    // RedFormat is one component; Three.js generic updateRanges assumes
-    // RGBA, so use its supported CPU rectangular copy path instead.
-    hydroCopier.copy(hydroTexture, rects, pixels => {hydroUploadStats.partialUploads++; hydroUploadStats.partialBytes+=pixels;});
+    if (!hydroDirtySlots.size)return true;
+    const rects=globeHydroTextureRects(hydroDirtySlots,hydroWidth),area=rects.reduce((sum,row)=>sum+row.width*row.height,0);
+    if (!hydroUploaded) {hydroPendingFull=true;return flushHydroPaint();}
+    if (rects.length>64||area>=hydroBytes.length*.6||!renderer.copyTextureToTexture) {
+      if (!gpuFrameBudget.admitUpload(hydroBytes.byteLength,1))return false;
+      hydroPendingFull=true;hydroTexture.needsUpdate=true;renderer.initTexture(hydroTexture);return true;
+    }
+    if (!gpuFrameBudget.admitUpload(area,rects.length))return false;
+    hydroCopier.copy(hydroTexture,rects,pixels=>{hydroUploadStats.partialUploads++;hydroUploadStats.partialBytes+=pixels;});
+    hydroDirtySlots.clear();return true;
   }
   const borderBytes = new Uint8Array(Math.max(1, packets.borderGroupCount)).fill(255);
 
@@ -576,18 +696,18 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     renderer.setPixelRatio(dpr);
     renderer.setSize(width, height, false);
   }
-  function prepareLabels(globeCamera, width, height, requireComplete = false, candidateLimit = Infinity) {
-    return labels.update(globeCamera, width, height, createGlobeRangeCuller(globeCamera.frame, width, height), requireComplete,candidateLimit);
+  function prepareLabels(globeCamera,width,height,requireComplete=false,candidateLimit=Infinity) {
+    return labels.update(globeCamera,width,height,createGlobeRangeCuller(globeCamera.frame,width,height),requireComplete,candidateLimit);
   }
-  function draw(globeCamera, width, height, activeLimits = null) {
-    const {frame, view} = globeCamera;
-    zoom.value = view.zoom;
-    eyeHigh.fromArray(frame.eye.map(Math.fround));
-    eyeLow.set(frame.eye[0] - eyeHigh.x, frame.eye[1] - eyeHigh.y, frame.eye[2] - eyeHigh.z);
-    viewRotation.set(...frame.right, ...frame.up, ...frame.forward.map(value => -value));
-    camera.near = frame.distance * 0.01;
-    camera.far = frame.distance + 4;
-    camera.setViewOffset(width, height, width / 2 - frame.center[0], height / 2 - frame.center[1], width, height);
+  function beginGpuFrame(frameId) {gpuFrameBudget.beginFrame(frameId);}
+  function prepareGpuFrame(globeCamera,width,height) {updateGpuCamera(globeCamera,width,height);}
+  function prepareGpuResource(resource) {return !resource||resource.warmGpu();}
+  function prepareStaticGpuResources() {
+    for (const name of ['objects','graticule'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
+    return true;
+  }
+  function draw(globeCamera,width,height,activeLimits=null) {
+    updateGpuCamera(globeCamera,width,height);
     if (globeCamera!==cullingCamera||width!==cullingWidth||height!==cullingHeight) {
       cullingCamera = globeCamera; cullingWidth = width; cullingHeight = height; cullers = new Map();
     }
@@ -595,7 +715,9 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       if (!cullers.has(padding))cullers.set(padding, createGlobeRangeCuller(frame, width, height, padding));
       return cullers.get(padding);
     };
-    flushCountryPaint(); flushHydroPaint();
+    const countryReady=flushCountryPaint(),hydroReady=flushHydroPaint();
+    if (!countryReady||!hydroReady)return false;
+    labels.flushUploads();
     const stats = {triangles:0, submittedTriangles:0, segments:0, submittedSegments:0, ranges:0, visibleRanges:0, strokeBatches:0, strokeDrawCalls:0, directStrokeSegments:0, compactionUploadBytes:0, meshDrawCalls:0, immutableIndexTriangles:0, rewrittenBlocks:0};
     for (const resource of activeSpatialResources)resource.update(getCuller, view.zoom, stats);
     for (const outline of paintedOutlines)outline.update(getCuller, strokePadding, stats);
@@ -606,10 +728,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       const actual={triangles:stats.triangles,segments:stats.segments,drawCalls:stats.meshDrawCalls+stats.strokeDrawCalls+labels.drawCalls(),bytes:0,chunks:0};
       if (!globeCostFits(actual,activeLimits))throw globeBudgetError(actual,activeLimits);
     }
-    renderer.render(scene, camera); return true;
+    renderer.render(scene,camera);return true;
   }
   function dispose() {
-    labels.dispose();
+    labels.dispose();uploadTarget.dispose();
     for (const entry of outlineCache.values())entry.dispose();
     outlineCache.clear(); paintedOutlines.clear(); dirtyOutlineOwners.clear(); residentMeshes.clear();
     residency.remove(channels);
@@ -618,6 +740,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     texture.dispose(); hydroTexture.dispose(); hydroCopier.dispose();
     renderer.dispose();
   }
-  return Object.freeze({resize, draw, setPalette, setCountryPaint, restoreCountryPaint, installGraticule, hasGraticule:() => graticule!==null, installBaseBorders, hasBaseBorders:() => baseBordersInstalled, installOutlines, hasOutlines:slot => outlineCache.has(slot), setOutlinePaint, setHydroPaint, setLayerVisibility, attachRiverDetail, activateTerritorialChunks, activatePhysicalContext, prepareLabels, trimResidency, cacheStats, labels, dispose,
+  return Object.freeze({resize,draw,beginGpuFrame,prepareGpuFrame,prepareGpuResource,prepareStaticGpuResources,
+    activateTerritorialChunks,activatePhysicalContext,commitGpuActivations,gpuFrameStats:()=>gpuFrameBudget.stats(),setPalette, setCountryPaint, restoreCountryPaint, installGraticule, hasGraticule:() => graticule!==null, installBaseBorders, hasBaseBorders:() => baseBordersInstalled, installOutlines, hasOutlines:slot => outlineCache.has(slot), setOutlinePaint, setHydroPaint, setLayerVisibility, attachRiverDetail, prepareLabels, trimResidency, cacheStats, labels, dispose,
     drawCalls:() => renderer.info.render.calls, hydroUploadStats:() => ({...hydroUploadStats}), spatialStats:() => ({...spatialStats})});
 }
