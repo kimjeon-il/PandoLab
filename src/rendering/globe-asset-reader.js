@@ -25,12 +25,18 @@ export function createGlobeAssetReader({dataRevision, cacheBudget, residency, lo
   async function loadTerritorialStroke(row, signal, priority, descriptor) {
     if (!descriptor.sources)return load(row,'stroke', {signal, priority});
     return loadGate.run({bytes:estimateGlobeWorkingBytes(descriptor.spec,'stroke'), priority, signal, kind:'border-batch'}, async() => {
-      const inputs = [];
-      for (const item of descriptor.sources) {
+      // These small spatial partitions share one aggregate reservation and
+      // are fetched concurrently; the Worker combines and indexes them once.
+      const settled = await Promise.allSettled(descriptor.sources.map(async item => {
         signal.throwIfAborted();
         const result = await loader.loadStoredAsset(item.spec,'startup', item.spec.sha256,'역사 국경선', bytes => bytes, signal);
-        inputs.push({bytes:result.value, spec:item.spec});
-      }
+        signal.throwIfAborted();
+        return {bytes:result.value, spec:item.spec};
+      }));
+      signal.throwIfAborted();
+      const failed = settled.find(row => row.status==='rejected');
+      if (failed)throw failed.reason;
+      const inputs = settled.map(row => row.value);
       return metrics.track('three.combine-borders', () => packetTasks.combineStoredStrokes(inputs, {signal, priority}));
     });
   }
