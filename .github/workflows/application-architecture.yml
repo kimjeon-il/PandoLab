@@ -1,5 +1,8 @@
 name: Viewer core checks
 on:
+  push:
+    branches: [work/active]
+    paths: [.github/workflows/application-architecture.yml]
   workflow_dispatch:
     inputs:
       group:
@@ -27,6 +30,7 @@ permissions:
   contents: read
 jobs:
   check:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -66,6 +70,67 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: browser-failures
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+  requested-regression:
+    if: github.event_name == 'push' && github.event.head_commit.message == 'Run requested scoped GIS repair regressions'
+    name: Requested regression / ${{ matrix.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "gis-repair"
+            group: "gis"
+            files: "tests/unit/data/library-detached-component-append.test.mjs,tests/unit/data/library-detached-component-append-local.test.mjs,tests/unit/data/library-initial-prepared-append-local.test.mjs,tests/unit/data/library-omitted-component-restoration.test.mjs,tests/unit/data/library-omitted-component-restoration-local.test.mjs,tests/unit/data/library-whole-feature-completion.test.mjs"
+            pattern: ""
+          - label: "gis-repair-lint"
+            group: "lint"
+            files: "tests/unit/data/library-detached-component-append.test.mjs,tests/unit/data/library-detached-component-append-local.test.mjs,tests/unit/data/library-initial-prepared-append-local.test.mjs,tests/unit/data/library-omitted-component-restoration.test.mjs,tests/unit/data/library-omitted-component-restoration-local.test.mjs,tests/unit/data/library-whole-feature-completion.test.mjs,tools/gis/historical-display-review.mjs,tests/unit/data/helpers/isolated-library-store.mjs"
+            pattern: ""
+          - label: "seam-admission"
+            group: "node"
+            files: "tests/unit/data/seam-source-admission.test.mjs"
+            pattern: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Run only the explicitly selected scope
+        shell: bash
+        env:
+          CHECK_GROUP: ${{ matrix.group }}
+          CHECK_FILES: ${{ matrix.files }}
+          CHECK_PATTERN: ${{ matrix.pattern }}
+          CHECK_WHOLE_GROUP: false
+        run: |
+          set -euo pipefail
+          args=("--group=$CHECK_GROUP")
+          while IFS= read -r file; do
+            if [[ -n "$file" ]]; then args+=("--file=$file"); fi
+          done < <(printf '%s\n' "$CHECK_FILES" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          if [[ -n "$CHECK_PATTERN" ]]; then args+=("--test-name-pattern=$CHECK_PATTERN"); fi
+          if [[ "$CHECK_WHOLE_GROUP" == true ]]; then args+=(--allow-whole-group); fi
+          node scripts/run-application-checks.mjs --plan "${args[@]}"
+          pnpm install --frozen-lockfile --ignore-scripts
+          if [[ "$CHECK_GROUP" == browser ]]; then
+            node tools/data/library-data.mjs --prepare-metadata
+            pnpm exec playwright install chromium
+          fi
+          node scripts/run-application-checks.mjs "${args[@]}"
+      - name: Upload browser failure evidence
+        if: matrix.group == 'browser' && failure() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures-${{ matrix.label }}
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
