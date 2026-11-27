@@ -13,7 +13,7 @@ const SMALL_BATCH_ITEMS = 8;
 // Each caller keeps an independent promise; the shared Worker is retired only
 // when every member of its current batch has been cancelled.
 export function createGlobeDecodeBatcher(dispatch, {
-  schedule = queueMicrotask, maxItemBytes = SMALL_PACKET_BYTES, maxBytes = SMALL_BATCH_BYTES,
+  schedule = callback => setTimeout(callback,0), maxItemBytes = SMALL_PACKET_BYTES, maxBytes = SMALL_BATCH_BYTES,
   maxDecodedBytes = SMALL_BATCH_DECODED_BYTES, maxItems = SMALL_BATCH_ITEMS,
 } = {}) {
   const queue = [], running = new Set();

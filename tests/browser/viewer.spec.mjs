@@ -237,6 +237,8 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
      dpr:window.devicePixelRatio, width:canvas.width,height:canvas.height,renderer:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),
      drawCount:stats.drawCount,drawCalls:stats.drawCalls,firstPublishedAt:stats.performance.firstPublishedAt,
      phases:stats.performance.phases,spatial:stats.spatialRendering,residency:stats.residency,
+     packetWorker:stats.packetWorker?{decodeBatches:stats.packetWorker.decodeBatches,decodeBatchPackets:stats.packetWorker.decodeBatchPackets,
+      spatialIndexedPackets:stats.packetWorker.spatialIndexedPackets,decodeBatcher:stats.packetWorker.decodeBatcher}:null,
      meshLedger:stats.residentCache?.meshLedger??null,labelLedger:stats.labelAtlas?.pageLedger??null,
      bufferWrites:window.globeBufferWrites};
    });
