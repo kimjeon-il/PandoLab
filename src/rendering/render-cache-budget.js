@@ -159,7 +159,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
 // pressure. A snapshot owner is refreshed explicitly, not every hover.
 export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
   const rows = new Map(), refs = new Map(), standby = new Map(), standbyGroups = new Map(), owners = new Set(), dirtyOwners = new Set(), totals = new Map();
-  let cpu = 0, extra = 0, evicted = 0, updates = 0, ownerRefreshes = 0;
+  let cpu = 0, extra = 0, protectedCpu = 0, protectedExtra = 0, protectedEntries = 0, evicted = 0, updates = 0, ownerRefreshes = 0;
   const reservations = new Map(), listeners = new Set(); let workingBytes = 0, peakWorkingBytes = 0, peakTotalBytes = 0, overflowCount = 0;
   function peak() {peakTotalBytes = Math.max(peakTotalBytes, cpu+extra+workingBytes);}
   function changed() {for (const listener of listeners)listener();}
@@ -173,8 +173,10 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
   function detach(key, row) {
     standby.delete(key); for (const group of row.groups??[])standbyGroups.get(group)?.delete(key);
     extra-=row.extraBytes; groupDelta(row, -1);
+    if (row.protected) {protectedExtra-=row.extraBytes;protectedEntries--;}
     for (const buffer of row.buffers) {
       const entry = refs.get(buffer); if (!entry)continue;
+      if (row.protected&&--entry.protectedCount===0)protectedCpu-=entry.bytes;
       if (--entry.count===0) {refs.delete(buffer); cpu-=entry.bytes;}
     }
   }
@@ -185,10 +187,12 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
       localBytes:renderFootprintBytes({buffers, extraBytes:source.extraBytes})};
     if (old)detach(key, old);
     rows.set(key, row); extra+=row.extraBytes; groupDelta(row, 1);
+    if (row.protected) {protectedExtra+=row.extraBytes;protectedEntries++;}
     for (const buffer of buffers) {
       let entry = refs.get(buffer);
-      if (!entry) {entry = {count:0, bytes:buffer.byteLength}; refs.set(buffer, entry); cpu+=entry.bytes;}
+      if (!entry) {entry = {count:0,protectedCount:0,bytes:buffer.byteLength}; refs.set(buffer, entry); cpu+=entry.bytes;}
       entry.count++;
+      if (row.protected&&entry.protectedCount++===0)protectedCpu+=entry.bytes;
     }
     if (!row.protected&&typeof row.evict==='function') {
       standby.set(key, row);
@@ -268,11 +272,13 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
   function stats() {
     const byKind = {}; for (const row of reservations.values())byKind[row.kind] = (byKind[row.kind]??0)+row.size;
     return {residentBytes:cpu+extra, cpuBytes:cpu, deviceAndOtherBytes:extra, workingBytes, totalBytes:cpu+extra+workingBytes,
+      protectedBytes:protectedCpu+protectedExtra, protectedCpuBytes:protectedCpu, protectedDeviceAndOtherBytes:protectedExtra,protectedEntries,
+      reclaimableBytes:cpu+extra-protectedCpu-protectedExtra,
       peakWorkingBytes, peakTotalBytes, overflowCount, workingByKind:byKind, evicted, byteBudget, entries:rows.size, standby:standby.size, updates, ownerRefreshes};
   }
-  function dispose() {owners.clear(); dirtyOwners.clear(); rows.clear(); refs.clear(); standby.clear(); standbyGroups.clear(); totals.clear(); reservations.clear(); listeners.clear(); cpu = extra = workingBytes = 0;}
+  function dispose() {owners.clear(); dirtyOwners.clear(); rows.clear(); refs.clear(); standby.clear(); standbyGroups.clear(); totals.clear(); reservations.clear(); listeners.clear(); cpu = extra = workingBytes = protectedCpu = protectedExtra = protectedEntries = 0;}
   return Object.freeze({register, set, remove, trim, reserve, withTemporary, onChange, stats, dispose,
-    pressure:() => ({totalBytes:cpu+extra+workingBytes, byteBudget})});
+    pressure:() => ({totalBytes:cpu+extra+workingBytes, protectedBytes:protectedCpu+protectedExtra, workingBytes, byteBudget})});
 }
 
 // Admit a bounded number of downloads + Worker inputs, not only Worker calls.
