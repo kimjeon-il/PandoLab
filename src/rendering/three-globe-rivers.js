@@ -97,6 +97,15 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     trim(); scheduleRetry(); return true;
   }
   const activeEntries = () => [...wanted].map(id => entries.get(id)).filter(entry => entry?.resource);
+  function prepareGpuUploads() {
+    let ready=true;
+    for (const entry of activeEntries()) {
+      const available=entry.resource.warmGpu?.()??true;
+      entry.resource.setVisible(available);
+      if (!available)ready=false;
+    }
+    return ready;
+  }
   function commit(active) {
     const next = new Set(active.map(entry => entry.row.id)), changed = next.size!==published.size||[...next].some(id => !published.has(id));
     if (changed) {
@@ -117,5 +126,5 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     for (const [id, entry] of entries)discard(id, entry);
     wanted.clear(); published.clear(); failed.clear();
   }
-  return Object.freeze({update, retryDue, commit, trim, stats, activeEntries, dispose});
+  return Object.freeze({update,retryDue,commit,trim,stats,activeEntries,prepareGpuUploads,dispose});
 }

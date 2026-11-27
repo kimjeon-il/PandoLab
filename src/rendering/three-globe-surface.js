@@ -466,10 +466,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function attachRiverDetail(row, packet) {
     const resource = riverMesh(packet, row.minZoom);
     const order = Math.max(0, row.order??0); resource.setOrder(4+.49*order/(order+1));
-    return {residentBytes:meshLedger.bytes(resource),
-      setResidency:options => meshLedger.configure(resource, options),
-      setProtected:value => meshLedger.protect(resource, value),
-      setVisible:visible => {resource.visible = visible;}, dispose:() => resource.dispose()};
+    return {residentBytes:meshLedger.bytes(resource),warmGpu:()=>resource.warmGpu(),
+      setResidency:options=>meshLedger.configure(resource,options),
+      setProtected:value=>meshLedger.protect(resource,value),
+      setVisible:visible=>{resource.visible=visible;},dispose:()=>resource.dispose()};
   }
   const countryStrokeStyle = {...palette.strokes.country};
   const strokeOptions = {style:countryStrokeStyle, cameraUniforms, viewport, margin, multisampling, strokeKind:'country'};

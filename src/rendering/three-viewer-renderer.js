@@ -846,6 +846,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       detailBudgetOmitted=candidates.length-keys.size;
       if (riverDetail.update(candidates.filter(row=>keys.has(row.key))))residencyDirty=true;
     }
+    if (!riverDetail.prepareGpuUploads())invalidate('three-river-gpu-stage');
     activeBudgetStats={requestedLod:admission.requestedLod,admittedLod:admission.lod,
       budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
       required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,gpuFrame:surface.gpuFrameStats(),optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
