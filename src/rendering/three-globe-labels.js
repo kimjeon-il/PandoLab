@@ -203,7 +203,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   const size = Math.min(atlasSize, maxTextureSize), maxRows = Math.max(1, Math.min(maxTextureSize, capacity));
   const pages = [], cache = new Map(), metricsCache = new Map();
   const pageLedger = createGlobeGpuResidency(residency), dirtyBatchPages = new Set(), retiredPages = new Set();
-  let protectedPages = new Set(), metadataBytes = -1;
+  let protectedPages = new Set(), metadataBytes = -1, ledgerChanged = false;
   const metricsLimit = 4096;
   const textColor = new THREE.Color(palette.text), haloColor = new THREE.Color(0xffffff);
   // This source is never uploaded itself. It borrows the existing CPU data
@@ -420,9 +420,13 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       const outcome = sdfRecovery.fail(error);
       if (outcome==='fallback'||outcome==='terminal')onError(error, {terminal:outcome==='terminal'});
     }).finally(() => {
-      rasterOwner.reset(); if (!disposed)syncLabelMemory(); release();
-      if (disposed||pendingSdf!==job)return;
-      pendingSdf = null; pendingMaskBytes = 0; lastCamera = null; cacheDirty = true; onReady();
+      try {rasterOwner.reset(); if (!disposed)syncLabelMemory();}
+      finally {
+        release();
+        if (!disposed&&pendingSdf===job) {
+          pendingSdf = null; pendingMaskBytes = 0; lastCamera = null; cacheDirty = true; onReady();
+        }
+      }
     });
     return false;
   }
@@ -542,15 +546,17 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   }
   function setCandidates(rows) {return setCandidateGroups(rows.filter(row => !row.place), rows.filter(row => row.place));}
   function trim() {
-    if (!cacheDirty)return false;
-    cacheDirty = false;
+    if (!cacheDirty&&!ledgerChanged)return false;
+    cacheDirty = false; ledgerChanged = false;
     for (const page of dirtyBatchPages) {
       const before = page.batches.length;
       while (page.batches.length&&page.batches.at(-1).count===0)disposeBatch(page.batches.pop());
       if (before!==page.batches.length)pageLedger.mark(page);
     }
     dirtyBatchPages.clear();
-    syncLabelMemory();
+    // The layout/SDF owner already reconciled protection and metadata.
+    // Trimming only changes GPU buffers on the affected pages.
+    pageLedger.flush();
     if (pageLedger.stats().bytes>byteBudget||retiredPages.size) {
       const inactive = pages.filter(page => !protectedPages.has(page)).sort((a, b) => Number(b.retired)-Number(a.retired)||a.lastUsed-b.lastUsed);
       for (const page of inactive) {
@@ -608,7 +614,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     activePages = new Set(byPage.keys()); layoutStats.placed = placed.length;
     syncLabelMemory(); return lastComplete;
   }
-  function cancelPending() {desiredKeys.clear(); cancelSdf(); sdfRecovery.reset(); layoutCache = null; lastCamera = null; cacheDirty = true;}
+  function cancelPending() {desiredKeys.clear(); cancelSdf(); sdfRecovery.reset(); layoutCache = null; lastCamera = null; cacheDirty = true; syncLabelMemory();}
   function setPalette(next) {
     if (next.text)textColor.set(next.text);
     if (next.halo) {const color = String(next.halo).replace(/^rgba\(([^,]+,[^,]+,[^,]+),[^)]+\)$/,'rgb($1)');haloColor.set(color);}
@@ -621,10 +627,11 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     for (const key of desiredKeys) {const page = cachedRun(key)?.page; if (page)next.add(page);}
     for (const page of protectedPages)if (!next.has(page))pageLedger.protect(page, false);
     for (const page of next)if (!protectedPages.has(page))pageLedger.protect(page, true);
-    protectedPages = next; pageLedger.flush();
+    protectedPages = next;
+    if (pageLedger.flush())ledgerChanged = true;
     const bytes = raster.width*raster.height*4+(probes?.reduce((sum, row) => sum+row.mask.byteLength, 0)??0)+metricsCache.size*224+
       candidateGroups.reduce((sum, group) => sum+group.rows.length*192+group.index.rows.length*160, 0)+placed.length*128;
-    if (bytes!==metadataBytes) {metadataBytes = bytes; residency?.set(raster, {protected:true, extraBytes:bytes});}
+    if (bytes!==metadataBytes) {metadataBytes = bytes; ledgerChanged = true; residency?.set(raster, {protected:true, extraBytes:bytes});}
   }
   function dispose() {
     disposed = true; cancelSdf(); sdfTasks.dispose(); desiredKeys.clear();
