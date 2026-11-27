@@ -14,6 +14,26 @@ import { createGlobeLabelSdfTasks } from './globe-label-sdf-tasks.js';
 export const COUNTRY_LABEL_MIN_ZOOM = 3;
 const fontSize = GLOBE_LABEL_FONT_SIZE, outlineRange = GLOBE_LABEL_OUTLINE_RANGE, padding = GLOBE_LABEL_PADDING, atlasSize = 2048;
 
+// One Worker failure switches to local calculation; two consecutive local
+// failures stop automatic attempts until an explicit retry or project reset.
+export function createGlobeLabelSdfRecovery() {
+  let fallback = false, localFailures = 0, error = null;
+  return Object.freeze({
+    get fallback() {return fallback;},
+    get localFailures() {return localFailures;},
+    get error() {return error;},
+    fail(cause) {
+      if (error)return 'terminal';
+      if (!fallback) {fallback = true; return 'fallback';}
+      if (++localFailures<2)return 'retry';
+      error = cause instanceof Error?cause:new Error('Label SDF calculation failed', {cause});
+      return 'terminal';
+    },
+    succeed() {localFailures = 0;},
+    reset() {fallback = false; localFailures = 0; error = null;},
+  });
+}
+
 export function placeGlobeLabels(candidates, camera, viewport, previous, onGrid = null, measureLabel = null, stats = null) {
   const placed = [], cells = new Map(), checked = new Uint32Array(candidates.length);
   let stamp = 0;
@@ -191,7 +211,8 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   const sdfTasks = createSdfTasks({scheduler:workScheduler});
   let placed = [], previous = new Set(), lastCamera = null, cacheDirty = true, lastComplete = true, lastStrict = false, disposed = false;
   let layoutCache = null, candidateRevision = 0;
-  let pendingSdf = null, desiredKeys = new Set(), sdfFallback = false, pendingMaskBytes = 0;
+  let pendingSdf = null, desiredKeys = new Set(), pendingMaskBytes = 0;
+  const sdfRecovery = createGlobeLabelSdfRecovery();
   let activePages = new Set(), hitSnapshot = () => null, layoutStats = {};
   const counters = {rasterizedRuns:0, textMeasurements:0, fullUploadBytes:0, partialUploadBytes:0, partialUploads:0, fullUploads:0, evictedPages:0, compactedPages:0, shrunkBatches:0, workerRasterRuns:0, documentRasterRuns:0, rasterFallbacks:0, reusedRects:0, reclaimedRuns:0, compactionDeferrals:0};
 
@@ -328,7 +349,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     const missing = new Map();
     for (const row of layout)if (!cachedRun(row.atlasKey))missing.set(row.atlasKey, row);
     if (!missing.size)return true;
-    if (pendingSdf)return false;
+    if (pendingSdf||sdfRecovery.error)return false;
     const labels = new Map(); let bytes = 0;
     for (const label of missing.values()) {
       const estimate = label.width*label.height;
@@ -348,7 +369,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     }
     const execute = async() => {
       const priority = lastStrict?25:8;
-      if (sdfFallback) {
+      if (sdfRecovery.fallback) {
         const workspace = createGlobeDistanceWorkspace(), result = [];
         // Bound local fallback to one label at a time and yield to input.
         for (const label of labels.values()) {
@@ -391,11 +412,11 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
         if (!label||label.width!==row.width||label.height!==row.height)throw Error('Unexpected SDF response');
         if (desiredKeys.has(row.key))installText(label, row.pixels);
       }
+      sdfRecovery.succeed();
     }).catch (error => {
       if (disposed||pendingSdf!==job||controller.signal.aborted)return;
-      // The exact same transform is available as a last-resort local
-      // path if Worker creation or execution is unsupported.
-      sdfFallback = true; onError(error);
+      const outcome = sdfRecovery.fail(error);
+      if (outcome==='fallback'||outcome==='terminal')onError(error, {terminal:outcome==='terminal'});
     }).finally(() => {
       rasterOwner.reset(); release();
       if (disposed||pendingSdf!==job)return;
@@ -579,7 +600,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     activePages = new Set(byPage.keys()); layoutStats.placed = placed.length;
     return lastComplete;
   }
-  function cancelPending() {desiredKeys.clear(); cancelSdf(); layoutCache = null; lastCamera = null; cacheDirty = true;}
+  function cancelPending() {desiredKeys.clear(); cancelSdf(); sdfRecovery.reset(); layoutCache = null; lastCamera = null; cacheDirty = true;}
   function setPalette(next) {
     if (next.text)textColor.set(next.text);
     if (next.halo) {const color = String(next.halo).replace(/^rgba\(([^,]+,[^,]+,[^,]+),[^)]+\)$/,'rgb($1)');haloColor.set(color);}
@@ -604,8 +625,8 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   function cacheStats() {
     return {pages:pages.length, visiblePages:activePages.size, residentBytes:pages.reduce((sum, page) => sum+pageBytes(page), 0),
       batchCapacity:pages.reduce((sum, page) => sum+page.batches.reduce((n, batch) => n+batch.capacity, 0), 0),
-      measuredTexts:metricsCache.size, ...counters, sdfWorker:{...sdfTasks.stats(), workerRaster, fallback:sdfFallback, pendingMaskBytes}, layout:{...layoutStats}};
+      measuredTexts:metricsCache.size, ...counters, sdfWorker:{...sdfTasks.stats(), workerRaster, fallback:sdfRecovery.fallback, localFailures:sdfRecovery.localFailures, failed:!!sdfRecovery.error, pendingMaskBytes}, layout:{...layoutStats}};
   }
-  return Object.freeze({setCandidates, setCandidateGroups, update, trim, dispose, cancelPending, restoreTextures, setPalette, memoryEntries, hitSnapshot:() => hitSnapshot, cacheStats,
+  return Object.freeze({setCandidates, setCandidateGroups, update, trim, dispose, cancelPending, restoreTextures, setPalette, memoryEntries, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
     visibleCount:place => placed.filter(row => Boolean(row.place)===place).length, atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
 }

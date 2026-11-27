@@ -145,7 +145,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     presentation.rejectMapPresentationWaiters(cause); presentation.failTemporalPresentation(cause);
     deps.feedback.reportOperationError(cause,'Three.js 지도를 표시하지 못했습니다.','PL-THREE-001');
   }
-  function retryMapPreparation() {error = null; baseFailures.clear(); physicalFailures.clear(); failedLineLayers.clear(); fontFailed = false; outlineFailed.clear(); outlinePlanDirty = true; riverCamera = null; return invalidate('map-retry');}
+  function retryMapPreparation() {error = null; surface?.labels.cancelPending(); baseFailures.clear(); physicalFailures.clear(); failedLineLayers.clear(); fontFailed = false; outlineFailed.clear(); outlinePlanDirty = true; riverCamera = null; return invalidate('map-retry');}
   function setCamera(next) {cancelNeighborPrefetch(); camera = next; view = next.view; invalidate('three-camera');}
   const input = createGlobeViewerInput({
     getCamera:() => camera, getViewport:() => viewport, setCamera, invalidate,
@@ -263,7 +263,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       lifetime.signal.throwIfAborted();
       const palette = paint.initializePalette();
       surface = createThreeGlobeSurface(THREE, {canvas, context, palette, countryCount, baseCountryCount:baseSlots.length, hydroCount:spec.hydroCount, cacheBudget, residency, workScheduler,
-        onLabelReady:() => invalidate('three-label-sdf-ready'), onLabelError:cause => deps.feedback.reportOperationError(cause,'지도 지명 SDF Worker를 사용할 수 없어 로컬 계산으로 전환했습니다.','PL-THREE-SDF-001'), packets:{
+        onLabelReady:() => invalidate('three-label-sdf-ready'), onLabelError:(cause, {terminal = false} = {}) => deps.feedback.reportOperationError(cause, terminal?'지도 지명 SDF 계산에 실패하여 자동 재시도를 중단했습니다.':'지도 지명 SDF Worker를 사용할 수 없어 로컬 계산으로 전환했습니다.',terminal?'PL-THREE-SDF-002':'PL-THREE-SDF-001'), packets:{
         borderGroupCount:spec.borderOwners.length,
       }});
       // Each resident detail packet has a CPU copy and one GPU copy of its arrays.
@@ -674,7 +674,11 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const strict = !ready||framePreserved||presentation.temporalPending();
     if (strict&&(!graticuleReady||!fontAvailable))return {...base, deferred:true};
     if (labelContent.needsUpdate())metrics.run('three.label-content', () => labelContent.update({surface, camera, view, features, activeSlots, fontReady, needed:labelsNeeded()}));
-    if (!surface.prepareLabels(camera, viewport.width, viewport.height, strict)&&strict)return {...base, deferred:true};
+    if (!surface.prepareLabels(camera, viewport.width, viewport.height, strict)&&strict) {
+      const cause = surface.labels.sdfError();
+      if (cause)failMapPreparation(cause);
+      return {...base, deferred:true};
+    }
     presentation.markTemporalFrame(frame);
     if (!presentation.canPresentVisualFrame(frame))return {...base, deferred:true};
     surface.activateTerritorialChunks(territories.view, basePrepared.parts);

@@ -194,3 +194,26 @@ test('GPU footprint counts shared attributes once and disposal keeps borrowed te
   disposeGlobeGpuResources({remove:() => {}}, meshes, {textures:[texture,texture]});
   assert.deepEqual(disposed, ['a','b','material','texture']);
 });
+
+
+test('label SDF recovery stops after bounded local failures and resets only for renewed preparation', async () => {
+  const {createGlobeLabelSdfRecovery} = await import('../../../src/rendering/three-globe-labels.js');
+  const recovery = createGlobeLabelSdfRecovery();
+  const workerFailure = Error('worker failed'), localFailure = Error('local failed');
+  assert.equal(recovery.fallback, false);
+  assert.equal(recovery.fail(workerFailure), 'fallback');
+  assert.equal(recovery.fallback, true);
+  assert.equal(recovery.fail(localFailure), 'retry');
+  recovery.succeed();
+  assert.equal(recovery.localFailures, 0);
+  assert.equal(recovery.fail(localFailure), 'retry');
+  assert.equal(recovery.fail(localFailure), 'terminal');
+  assert.equal(recovery.error, localFailure);
+  assert.equal(recovery.fail(Error('unexpected later failure')), 'terminal');
+  assert.equal(recovery.localFailures, 2);
+  assert.equal(recovery.error, localFailure);
+  recovery.reset();
+  assert.equal(recovery.error, null);
+  assert.equal(recovery.fallback, false);
+  assert.equal(recovery.localFailures, 0);
+});
