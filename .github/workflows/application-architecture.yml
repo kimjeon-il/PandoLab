@@ -75,7 +75,7 @@ jobs:
           retention-days: 7
 
   startup-packet-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Re-run initial packet and Worker batch regression' && github.event.before == 'b08d0cfe126c78042dfb21e1186f9e499deee989'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Fix startup geometry regression trigger' && github.event.before == '3b06a5562e40c543172ef2e1ef3a9792096e8423'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
