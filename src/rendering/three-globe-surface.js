@@ -78,7 +78,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const renderer = new THREE.WebGLRenderer({ canvas, context });
   const gpuFrameBudget=createGlobeGpuFrameBudget({totalRenderBytes:cacheBudget.totalRenderBytes});
   const uploadScene=new THREE.Scene(),uploadTarget=new THREE.WebGLRenderTarget(1,1);
-  const warmedGeometries=new WeakSet(),warmedTextures=new WeakSet();
+  let warmedGeometries=new WeakSet(),warmedTextures=new WeakSet();
   let gpuCamera=null,gpuViewport=null;
   const maxPointTextureSize = renderer.capabilities.maxTextureSize;
   renderer.setClearColor(palette.ocean);
@@ -113,9 +113,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const zoom = { value: 0 };
   const cameraUniforms = { eyeHigh: { value: eyeHigh }, eyeLow: { value: eyeLow }, viewRotation: { value: viewRotation }, zoom };
   const viewport = { value: new THREE.Vector2() }, margin = { value: 0.5 };
-  const labels = createThreeGlobeLabels(THREE, {scene, renderer, palette:palette.labels, capacity:PLACE_LIMITS.layoutCandidates, maxTextureSize:maxPointTextureSize, viewport, byteBudget:cacheBudget.labelAtlasBytes, residency, workScheduler, onReady:onLabelReady, onError:onLabelError});
+  const labels=createThreeGlobeLabels(THREE,{scene,renderer,palette:palette.labels,capacity:PLACE_LIMITS.layoutCandidates,maxTextureSize:maxPointTextureSize,viewport,byteBudget:cacheBudget.labelAtlasBytes,residency,workScheduler,gpuFrameBudget,prepareGpuMesh:mesh=>{const bytes=geometryUploadBytes(mesh.geometry);if(!gpuFrameBudget.admitUpload(bytes,1))return false;stageGpuMesh(mesh);warmedGeometries.add(mesh.geometry);return true;},onReady:onLabelReady,onError:onLabelError});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint() {
+    warmedGeometries=new WeakSet();warmedTextures=new WeakSet();
     countryTextureUploaded=false;countryPendingFull=true;texture.clearUpdateRanges();
     hydroUploaded=false;hydroPendingFull=true;hydroDirtySlots.clear();labels.restoreTextures();
   }
@@ -675,7 +676,11 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     return labels.update(globeCamera,width,height,createGlobeRangeCuller(globeCamera.frame,width,height),requireComplete,candidateLimit);
   }
   function beginGpuFrame(frameId) {gpuFrameBudget.beginFrame(frameId);}
-  function prepareGpuFrame(globeCamera,width,height) {updateGpuCamera(globeCamera,width,height);}
+  function prepareGpuFrame(globeCamera,width,height) {
+    updateGpuCamera(globeCamera,width,height);
+    const country=flushCountryPaint(),hydro=flushHydroPaint();
+    return country&&hydro&&countryTextureUploaded&&hydroUploaded;
+  }
   function prepareGpuResource(resource) {return !resource||resource.warmGpu();}
   function prepareStaticGpuResources() {
     for (const name of ['objects','graticule','borders'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
