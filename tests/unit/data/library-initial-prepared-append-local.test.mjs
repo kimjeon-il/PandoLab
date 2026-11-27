@@ -6,12 +6,12 @@ import {prepareLibraryData,withLibraryWrite} from '../../../tools/data/library-r
 import {storeLibraryData} from '../../../tools/data/library-store.mjs';
 import {decodeArchiveEntry,libraryCheckout} from '../../../tools/data/library-context.mjs';
 const SOURCE=base+'countries/state-AAA.json',GENERATED=base.replace('/source/','/generated/v2/')+'index.json';
-import {put,git,rejected} from './helpers/isolated-library-store.mjs';
+import {put,git,rejected,initFixtureRepository} from './helpers/isolated-library-store.mjs';
 function isolated(t,{omitPinned=false,mutateAfterPin,rawFileOnly=false}={}){
  for(const k of ['PANDOLAB_LIBRARY_DATA_ROOT','GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE'])assert(!process.env[k],'unset '+k+' for isolated store');
  const parent=fs.mkdtempSync(path.join(tmpdir(),'pando-initial-append-')),root=path.join(parent,'app'),data=path.join(root,'.library-data/repository');
  t.after(()=>{const p=path.resolve(parent);assert(p.startsWith(path.resolve(tmpdir())+path.sep)&&path.basename(p).startsWith('pando-initial-append-'));fs.rmSync(p,{recursive:true,force:true});});
- for(const dir of [root,data]){fs.mkdirSync(dir,{recursive:true});git(dir,'init','-q');git(dir,'config','core.longpaths','true');git(dir,'config','user.name','Fixture');git(dir,'config','user.email','fixture@example.invalid');}
+ for(const dir of [root,data])initFixtureRepository(dir);
  assert.equal(path.resolve(libraryCheckout(root)),path.resolve(data));
  const files={},add=(p,b)=>{put(data,p,b);files[p]={stored:p,encoding:'identity',sha256:hash(b),bytes:b.length};},commit=m=>{put(data,'archive/index.json',json({schema:'pando-library-archive-v1',files}));git(data,'add','.');git(data,'commit','-qm',m);return git(data,'rev-parse','HEAD');};
  const f=fixture();for(const [p,b]of f.sourceMap)add(p,b);add(GENERATED,json({entities:[]}));if(!omitPinned)for(const [p,b]of f.pinned)add(p,b);const pin=commit('immutable prepared source and scope anchors');

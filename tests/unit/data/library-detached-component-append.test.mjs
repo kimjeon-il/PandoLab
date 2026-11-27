@@ -46,11 +46,17 @@ for(const [name,mutate]of Object.entries({
  'version renamed':n=>{n.geometryVersions[0].versionId='other';},
  'append marker removed':n=>{delete n.geometryVersions[0].modernBoundarySupplement.detachedComponentAppend;},
  'receipt removed':n=>{delete n.geometryVersions[0].modernBoundarySupplement.sourceAdoptionReview;},
- 'parent changed':n=>{n.parentEntityId='state:BBB';},
  'source hash changed':n=>{n.sourceInfo.geometrySha256=hash('bad');},
- 'names changed':n=>{n.names.en='changed';},
  'crossmethod':n=>{n.geometryVersions[0].modernBoundarySupplement.adoptionMode='lossless-original-feature';},
 }))test('admitted append protects unchanged '+name,()=>{const f=fixture();assert.equal(run(f),1);const n=structuredClone(f.next);mutate(n);assert.throws(()=>assertHistoricalSourceStorageChanges(n,f.next,{prefixes:f.prefixes}),/detached-component append:/);});
+test('admitted append allows ordinary metadata edits without replaying the source proof',()=>{
+ const f=fixture();assert.equal(run(f),1);
+ const n=structuredClone(f.next);
+ n.names.en='New display name';n.parentEntityId='state:BBB';n.geometryVersions[0].validFrom='1900';
+ assert.equal(assertHistoricalSourceStorageChanges(n,f.next,{prefixes:[f.prefixes[0]],readEvidence:()=>assert.fail('metadata edit replayed source evidence')}),0);
+ assert.deepEqual(n.geometryVersions[0].geometry,f.next.geometryVersions[0].geometry);
+ assert.deepEqual(n.geometryVersions[0].modernBoundarySupplement,f.next.geometryVersions[0].modernBoundarySupplement);
+});
 test('admitted append unchanged exact descriptor stays readable',()=>{const f=fixture();assert.equal(run(f),1);assert.equal(assertHistoricalSourceStorageChanges(structuredClone(f.next),f.next,{prefixes:f.prefixes}),0);});
 test('partial append rejects 200001 selected points before topology',()=>{const f=fixture(),r=poly(10)[0];while(r.length<=200000)r.splice(-1,0,[10.5,.5]);setRaw(f,multi([poly(0),[r],poly(20)]));f.refresh();assert.throws(()=>run(f),/append exceeds 200000 point bound/);});
 test('unchanged old geometry cannot acquire an unverified initial append marker',()=>{const f=fixture();f.next.geometryVersions[0].geometry=structuredClone(f.before.geometryVersions[0].geometry);f.refresh();assert.throws(()=>run(f),/detached-component append:.*unchanged/);});

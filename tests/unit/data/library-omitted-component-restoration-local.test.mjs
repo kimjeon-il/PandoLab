@@ -18,12 +18,12 @@ const fixture=revision=>createRestorationFixture(revision,{storageFixture:true})
 const GENERATED=base.replace('/source/','/generated/v2/')+'index.json';
 const SOURCE=base+'countries/state-AAA.json';
 const SENTINEL='assets/data/restoration-local-sentinel.json';
-import {put,git} from './helpers/isolated-library-store.mjs';
+import {put,git,initFixtureRepository} from './helpers/isolated-library-store.mjs';
 function isolatedStore(t,{mutateEvidence,mutateHead,mutateSeed,nonSource=false}={}){
  for(const name of ['PANDOLAB_LIBRARY_DATA_ROOT','GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE'])assert(!process.env[name], 'Isolated integration requires unset '+name);
  const parent=fs.mkdtempSync(path.join(tmpdir(),'pando-omitted-store-')),root=path.join(parent,'app'),data=path.join(root,'.library-data/repository');
  t.after(()=>{const actual=path.resolve(parent),allowed=path.resolve(tmpdir())+path.sep;assert(actual.startsWith(allowed));assert(path.basename(actual).startsWith('pando-omitted-store-'));fs.rmSync(actual,{recursive:true,force:true});});
- for(const dir of [root,data]){fs.mkdirSync(dir,{recursive:true});git(dir,'init','-q');git(dir,'config','core.longpaths','true');git(dir,'config','user.name','Fixture');git(dir,'config','user.email','fixture@example.invalid');}
+ for(const dir of [root,data])initFixtureRepository(dir);
  assert.equal(path.resolve(libraryCheckout(root)),path.resolve(data),'fixture must never resolve to production data');
  let files={};const add=(p,b)=>{put(data,p,b);files[p]={stored:p,encoding:'identity',sha256:hash(b),bytes:b.length};};
  const seed=fixture();for(const[p,b]of seed.sourceMap)add(p,b);add(GENERATED,json({entities:[]}));add(SENTINEL,json({value:0}));mutateSeed?.({add});

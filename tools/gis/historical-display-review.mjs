@@ -511,6 +511,17 @@ const sourceStorageReviewRules=[
  */
 export function assertHistoricalSourceStorageChanges(next,previous,options={}){
  const {prefixes,readEvidence,getSourceSnapshot,sourceDataRevision}=options;
+ const appendMarked=v=>v?.modernBoundarySupplement&&(Object.hasOwn(v.modernBoundarySupplement,'detachedComponentAppend')||Object.hasOwn(v.modernBoundarySupplement,'initialPreparedAppend')||v.modernBoundarySupplement.adoptionMode==='lossless-original-detached-component-append');
+ // A disappeared adopted version has no surviving row for the change detector.
+ // Preserve its inventory before the metadata-only fast path, without
+ // replaying the archived proof for legitimate name/date/relationship edits.
+ const retainedIds=new Set((Array.isArray(next.geometryVersions)?next.geometryVersions:[]).map(v=>v.versionId));
+ for(const old of previous?.geometryVersions||[]){
+  if(retainedIds.has(old.versionId))continue;
+  if(appendMarked(old))throw Error('Raw source adoption: detached-component append: admitted version inventory cannot change');
+  if(old.modernBoundarySupplement&&Object.hasOwn(old.modernBoundarySupplement,'wholeFeatureCompletion'))
+   throw Error('Raw source adoption: whole-feature completion: completed version inventory cannot change');
+ }
  const changes=sourceGeometryChanges(next,previous);
  // No old country proof is replayed for names, flags, dates or other
  // metadata-only edits that leave the geometry and source claims unchanged.
@@ -539,7 +550,6 @@ export function assertHistoricalSourceStorageChanges(next,previous,options={}){
   const matched=scope==='pair'?match(next,previous):match(affectedNext)||(scope==='both'&&match(affectedPrevious));
   if(matched)return validate(next,previous,reviewOptions[options]);
  }
- const appendMarked=v=>v?.modernBoundarySupplement&&(Object.hasOwn(v.modernBoundarySupplement,'detachedComponentAppend')||Object.hasOwn(v.modernBoundarySupplement,'initialPreparedAppend')||v.modernBoundarySupplement.adoptionMode==='lossless-original-detached-component-append');
  if(next.geometryVersions?.some(v=>appendMarked(v)&&!v.modernBoundarySupplement.sourceAdoptionReview))throw Error('Raw source adoption: detached-component append: initial append receipt is required');
  if(next.geometryVersions?.some(appendMarked)&&previous&&next.geometryVersions.length===previous.geometryVersions?.length&&next.geometryVersions.every((v,i)=>v.versionId===previous.geometryVersions[i].versionId&&digest(v.geometry)===digest(previous.geometryVersions[i].geometry))&&!isDeepStrictEqual(next,previous))throw Error('Raw source adoption: detached-component append: unchanged geometry cannot acquire or alter append attribution');
  if(previous?.geometryVersions?.some(appendMarked)){
