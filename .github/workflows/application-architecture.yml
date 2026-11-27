@@ -74,7 +74,7 @@ jobs:
           retention-days: 7
 
   ancillary-regression:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Run focused ancillary-presentation regression checks' && github.event.before == 'af9882e3e7c1fa77e49ea4105457be11fdbca736'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Enable focused ancillary regression job' && github.event.before == 'af9882e3e7c1fa77e49ea4105457be11fdbca736'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
