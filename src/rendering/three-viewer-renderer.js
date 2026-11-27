@@ -171,7 +171,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     listen('webglcontextrestored', () => {lost = false; contextRevision++; surface?.restoreCountryPaint(); pickingChanged = true; presentation.rebaseContext(); invalidate('three-context-restored');});
   }
   const assetReader = createGlobeAssetReader({
-    dataRevision:meta.dataRevision, cacheBudget, residency, loadGate, workerGate, packetTasks, metrics,
+    dataRevision:meta.dataRevision, cacheBudget, residency, loadGate, packetTasks, metrics, lifetime,
     resolveUrl:row => new URL(row.url, document.baseURI).href,
   });
   const {load, loadTerritorialStroke} = assetReader;
