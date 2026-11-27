@@ -229,4 +229,3 @@ export function compactGlobeStrokeRange(packet, first, end) {
 }
 
 export const globeTerritoryKey = (id, geometry) => JSON.stringify([id, geometry?.id, geometry?.version]);
-export const globeMeshResourceKey = spec => spec.sha256;

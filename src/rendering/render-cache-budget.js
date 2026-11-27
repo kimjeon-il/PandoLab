@@ -49,10 +49,6 @@ export function renderFootprintBytes({buffers, extraBytes = 0}) {
   return renderBufferBytes(buffers, extraBytes);
 }
 
-export function renderPacketBytes(value) {
-  return renderBufferBytes(renderPacketBuffers(value?.packet??value));
-}
-
 // Decoded packet LRU with independent consumers of the same in-flight read.
 // Last-consumer cancellation propagates through network and Worker restores.
 export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, residency = null}) {

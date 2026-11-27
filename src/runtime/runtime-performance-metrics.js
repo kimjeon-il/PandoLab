@@ -2,7 +2,7 @@ const DEFAULT_SAMPLE_LIMIT = 120;
 const FIRST_LOAD_WINDOW_MS = 5_000;
 const EVENT_DURATION_FLOOR_MS = 16;
 
-export const PERFORMANCE_METRIC_NAMES = Object.freeze({
+const PERFORMANCE_METRIC_NAMES = Object.freeze({
   COMMAND: 'project.command',
   MOBILE_SHEET_DRAG: 'mobile-sheet.drag',
 });
@@ -435,9 +435,3 @@ export function installRuntimePerformanceMetrics({
   return metrics;
 }
 
-export function getRuntimePerformanceMetrics(globalObject = globalThis) {
-  const existing = globalObject.__PANDOLAB_PERFORMANCE__;
-  if (existing?.version === 1) return existing;
-  if (!globalObject.document) return null;
-  return installRuntimePerformanceMetrics({ globalObject, documentRef: globalObject.document });
-}

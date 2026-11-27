@@ -8,10 +8,6 @@ export function geometryIdentity(geometry) {
 }
 export const geometryRevisionKey = geometry => `${geometryIdentity(geometry)}:${geometryRevision(geometry)}`;
 export const geometryRevision = geometry => geometry && revisions.get(geometry) || 0;
-export function touchGeometry(geometry) {
-  if (geometry) revisions.set(geometry, geometryRevision(geometry) + 1);
-}
-
 export function geometryCoordinateFingerprint(geometry) {
   let first = 2166136261;
   let second = 0x9e3779b9;

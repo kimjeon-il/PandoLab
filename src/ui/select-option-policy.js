@@ -1,5 +1,3 @@
-const text = value => String(value ?? '');
-
 export function isPlaceholderOption(option) {
   return option?.placeholder === true
     || option?.dataset?.placeholder === 'true'
@@ -12,22 +10,3 @@ export function selectableOptions(options = []) {
     && option?.hidden !== true);
 }
 
-export function resolveSelectChoice(options = [], selectedValue = '', { autoSelectSingle = false, preserveInvalid = false } = {}) {
-  const values = [...options];
-  const candidates = selectableOptions(values);
-  const requestedValue = text(selectedValue);
-  const selected = values.find(option => !isPlaceholderOption(option)
-    && option?.disabled !== true
-    && option?.hidden !== true
-    && text(option?.value) === requestedValue);
-  const invalid = requestedValue !== '' && !selected;
-  const placeholder = values.find(isPlaceholderOption);
-  let value = selected ? requestedValue : text(placeholder?.value);
-  if (autoSelectSingle && candidates.length === 1 && !(preserveInvalid && invalid)) value = text(candidates[0]?.value);
-  return Object.freeze({
-    candidateCount: candidates.length,
-    invalid,
-    single: candidates.length === 1 && !(preserveInvalid && invalid),
-    value,
-  });
-}

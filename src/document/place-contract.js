@@ -3,9 +3,9 @@ export { PLACE_LIMITS } from './place-limits.js';
 
 /** Builtin places share label identity but not project storage. */
 export const PLACE_KINDS = Object.freeze(['capital', 'city', 'region', 'town', 'mountain', 'water', 'custom']);
-export const PLACE_LANGUAGES = Object.freeze(['ko', 'en', 'native']);
+const PLACE_LANGUAGES = Object.freeze(['ko', 'en', 'native']);
 export const DEFAULT_PLACE_LANGUAGES = Object.freeze({ ko: true, en: false, native: false });
-export const PLACE_NAME_TRANSITION_LIMIT = 16;
+const PLACE_NAME_TRANSITION_LIMIT = 16;
 /** Canonical platform-neutral PLAC binary format; frozen bytes are tested separately. */
 export const PLACE_TILE_FORMAT = Object.freeze({
   magic: 0x43414c50,
@@ -20,13 +20,6 @@ export const PLACE_TILE_FORMAT = Object.freeze({
 export function normalizePlaceLanguages(value) {
   const flags = Object.fromEntries(PLACE_LANGUAGES.map(language => [language, value?.[language] === true]));
   return PLACE_LANGUAGES.some(language => flags[language]) ? flags : { ...DEFAULT_PLACE_LANGUAGES };
-}
-export function togglePlaceLanguage(current, language, enabled) {
-  if (!PLACE_LANGUAGES.includes(language)) throw new TypeError('Unknown place display language');
-  const flags = normalizePlaceLanguages(current), checked = enabled === true;
-  if (flags[language] === checked) return null;
-  const next = { ...flags, [language]: checked };
-  return PLACE_LANGUAGES.some(key => next[key]) ? next : null;
 }
 export const isBuiltinPlaceId = id => /^builtin:place:[a-z0-9-]+:.+$/u.test(String(id || ''));
 export const normalizePlaceQuery = value => String(value || '').normalize('NFKC').trim().toLocaleLowerCase('ko').replace(/\s+/gu, ' ');

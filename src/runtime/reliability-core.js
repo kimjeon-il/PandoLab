@@ -1,5 +1,5 @@
 import { subscribeAbort, forwardAbort, waitForConsumer } from './async-request.js';
-export const RELIABILITY_ERROR_CATEGORIES = Object.freeze({
+const RELIABILITY_ERROR_CATEGORIES = Object.freeze({
   NETWORK: 'NETWORK',
   PARSE: 'PARSE',
   SCHEMA: 'SCHEMA',
@@ -14,7 +14,7 @@ export const RELIABILITY_ERROR_CATEGORIES = Object.freeze({
   STALE_RESULT: 'STALE_RESULT',
 });
 
-export const RELIABILITY_SEVERITIES = Object.freeze({
+const RELIABILITY_SEVERITIES = Object.freeze({
   INFO: 'info',
   WARNING: 'warning',
   ERROR: 'error',
@@ -23,13 +23,6 @@ export const RELIABILITY_SEVERITIES = Object.freeze({
 
 export function isAbortError(error) {
   return error?.name === 'AbortError' || error?.cancelled === true;
-}
-
-export function createCancellationError(message = '작업을 취소했습니다.') {
-  const error = new Error(String(message || '작업을 취소했습니다.'));
-  error.name = 'AbortError';
-  error.cancelled = true;
-  return error;
 }
 
 export function createOperationalError({
@@ -232,27 +225,6 @@ export async function fetchWithRetry(input, init = {}, {
     maxAttempts, baseDelay, maxDelay, jitter, signal, onRetry,
     shouldRetry: error => isRecoverableLoadError(error),
   });
-}
-
-export function createAssetState(initial = {}) {
-  const state = {
-    manifest: 'idle',
-    worker: 'idle',
-    view: 'idle',
-    cache: 'idle',
-    lastError: null,
-    ...initial,
-  };
-  return {
-    state,
-    set(part, value, error = null) {
-      if (!Object.prototype.hasOwnProperty.call(state, part)) throw new Error(`Unknown asset state part: ${part}`);
-      state[part] = value;
-      if (error) state.lastError = error;
-      return { ...state };
-    },
-    snapshot() { return Object.freeze({ ...state }); },
-  };
 }
 
 export function createDiagnosticLog({ limit = 200, now = () => typeof performance !== 'undefined' ? performance.now() : Date.now() } = {}) {

@@ -49,8 +49,3 @@ export function createMapVisualFrame({
   });
 }
 
-export function isMapVisualFrame(value) {
-  return value?.__mapVisualFrame === true
-    && Number.isFinite(value.frameId)
-    && typeof value.signature === 'string';
-}

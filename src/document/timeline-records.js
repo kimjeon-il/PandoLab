@@ -1,13 +1,7 @@
 import { sharedCalculationCore } from './temporal.js';
 
-export const TIMELINE_RECORD_SCHEMA_VERSION = 3;
 
 export const timelineObjectKey = ref => JSON.stringify([ref.domain, ref.id]);
-export function timelineObjectCatalog(project) {
-  return [...project.territorialEntities.map(row => ({objectRef:{domain:'territorial', id:row.id}, entityKind:row.properties.entityKind})),
-    ...(project.hydroEdits || []).map(row => ({objectRef:{domain:'hydro', id:row.id}, entityKind:row.properties.category}))];
-}
-
 if (typeof sharedCalculationCore.timelineNormalizeRecords !== 'function') {
   throw Object.assign(new Error('Canonical C++ timeline validator is unavailable.'),
     { code: 'PL-CORE-WASM-CAPABILITY' });

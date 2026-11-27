@@ -1,7 +1,7 @@
 import { normalizeTemporalInterval } from './temporal.js';
 import { graphDiagnostics } from './reference-graph-diagnostics.js';
 
-export const DISTRIBUTION_SCHEMA_VERSION = 3;
+const DISTRIBUTION_SCHEMA_VERSION = 3;
 
 export const DISTRIBUTION_MODES = Object.freeze({
   TERRITORIAL: 'territorial',
@@ -13,10 +13,7 @@ export const DISTRIBUTION_RENDER_MODES = Object.freeze({
   SINGLE: 'single',
 });
 
-const MODES = new Set(Object.values(DISTRIBUTION_MODES));
-const POLYGON_TYPES = new Set(['Polygon', 'MultiPolygon']);
 const LAYER_KEYS = new Set(['id', 'schemaVersion', 'name', 'unit', 'valueScale', 'color', 'locked', 'parentId', 'groups', 'validFrom', 'validTo', 'metadata']);
-const ENTRY_KEYS = new Set(['id', 'schemaVersion', 'layerId', 'mode', 'territorialUnitId', 'geometry', 'value', 'certainty', 'validFrom', 'validTo', 'metadata']);
 const text = value => String(value ?? '').trim();
 const clone = value => structuredClone(value);
 function assertAllowedKeys(value, allowed, label) {
@@ -88,65 +85,9 @@ export function normalizeDistributionLayers(value) {
   return output;
 }
 
-function normalizeDistributionEntry(raw, { cloneGeometry = clone } = {}) {
-  if (Number(raw?.schemaVersion) !== DISTRIBUTION_SCHEMA_VERSION) throw new Error('분포 엔트리 schemaVersion이 현재 형식과 일치하지 않습니다.');
-  assertAllowedKeys(raw, ENTRY_KEYS, '분포 엔트리');
-  const layerId = text(raw?.layerId);
-  if (!layerId) throw new Error('분포 엔트리의 레이어 ID가 비어 있습니다.');
-  const mode = text(raw?.mode);
-  if (!MODES.has(mode)) return null;
-  const territorialUnitId = mode === DISTRIBUTION_MODES.TERRITORIAL ? text(raw.territorialUnitId) : '';
-  const geometry = mode === DISTRIBUTION_MODES.GEOMETRY && POLYGON_TYPES.has(raw?.geometry?.type)
-    ? cloneGeometry(raw.geometry)
-    : null;
-  if ((mode === DISTRIBUTION_MODES.TERRITORIAL && !territorialUnitId)
-    || (mode === DISTRIBUTION_MODES.GEOMETRY && (!geometry || !Array.isArray(geometry.coordinates) || !geometry.coordinates.length))) return null;
-  const id = text(raw.id);
-  if (!id) throw new Error('분포 엔트리 ID가 비어 있습니다.');
-  const interval = normalizeTemporalInterval(raw.validFrom, raw.validTo);
-  return {
-    id,
-    schemaVersion: DISTRIBUTION_SCHEMA_VERSION,
-    layerId,
-    mode,
-    territorialUnitId,
-    geometry,
-    value: numericValue(raw.value),
-    certainty: text(raw.certainty) || 'unknown',
-    validFrom: interval.validFrom,
-    validTo: interval.validTo,
-    metadata: raw.metadata && typeof raw.metadata === 'object' ? clone(raw.metadata) : {},
-  };
-}
-
-export function normalizeDistributionEntries(value, { layerExists = () => true, cloneGeometry = clone } = {}) {
-  const output = [];
-  const seen = new Set();
-  for (const raw of Array.isArray(value) ? value : []) {
-    const entry = normalizeDistributionEntry(raw, { cloneGeometry });
-    if (!entry) throw new Error('분포 엔트리 형식이 올바르지 않습니다.');
-    if (seen.has(entry.id)) throw new Error(`분포 엔트리 ID가 중복되었습니다: ${entry.id}`);
-    if (!layerExists(entry.layerId)) throw new Error(`${entry.id}의 분포 레이어가 존재하지 않습니다.`);
-    seen.add(entry.id);
-    output.push(entry);
-  }
-  return output;
-}
-
 export function distributionEntriesForLayer(entries, layerId) {
   const key = text(layerId);
   return (entries || []).filter(entry => text(entry.layerId) === key);
-}
-
-export function validateDistributionModel(layers, entries, { territorialExists = () => true } = {}) {
-  const issues = [];
-  const layerIds = new Set((layers || []).map(layer => text(layer.id)));
-  for (const entry of entries || []) {
-    if (!layerIds.has(text(entry.layerId))) issues.push(`${entry.id}의 분포 항목이 존재하지 않습니다.`);
-    if (entry.mode === DISTRIBUTION_MODES.TERRITORIAL && !territorialExists(entry.territorialUnitId)) issues.push(`${entry.id}의 참조 영역이 존재하지 않습니다.`);
-    if (!Number.isFinite(entry.value)) issues.push(`${entry.id}의 값이 유한한 숫자가 아닙니다.`);
-  }
-  return { ok: issues.length === 0, issues };
 }
 
 export function distributionValueRange(layer, entries) {
@@ -160,9 +101,3 @@ export function distributionValueRange(layer, entries) {
   return min === Infinity ? null : { min, max };
 }
 
-export function distributionValueAlpha(value, range) {
-  if (!range) return 0;
-  const span = range.max - range.min;
-  const ratio = span > 0 ? Math.max(0, Math.min(1, (value - range.min) / span)) : 1;
-  return 0.12 + 0.58 * ratio;
-}

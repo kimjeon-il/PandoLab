@@ -35,6 +35,7 @@ import { layerStyle } from '../ui/layer-presentation.js';
 import { DISTRIBUTION_RENDER_MODES } from '../document/distribution-model.js';
 import { createSurfaceController } from '../ui/surface-controller.js';
 import { createPreferencesDialog } from '../ui/preferences-dialog.js';
+import { installDialogAccessibilityController } from '../ui/dialog-accessibility-controller.js';
 
 export async function composeViewer({ meta }) {
   const get = id => document.getElementById(id), status = get('viewerStatus');
@@ -360,6 +361,7 @@ export async function composeViewer({ meta }) {
     applyPreferences:(value, options) => preferencePresentation.apply(value, options),
     onError:report});
   disposables.push(preferencesDialog);
+  installDialogAccessibilityController(document);
   const onProjectPreferences = () => preferencesDialog.sync();
   window.addEventListener('pandolab:project-changed', onProjectPreferences);
   disposables.push({ dispose: () => window.removeEventListener('pandolab:project-changed', onProjectPreferences) });

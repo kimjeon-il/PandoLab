@@ -56,11 +56,6 @@ export function createGlobeChunkAssets(descriptors, {loadMesh, loadStroke, resid
   }
   return Object.freeze({plan, retain, prepare, warm, releaseWarm:() => packets.releaseWarm(), read, stats:packets.stats, dispose:packets.dispose, addDescriptors});
 }
-export function createGlobeBaseAssets(descriptors, options) {
-  const owner = createGlobeChunkAssets(descriptors, options);
-  return {...owner, plan:(cull, slots = null) => owner.plan(cull, row => !slots||!row.slots?.length||row.slots.some(slot => slots.has(slot)))};
-}
-
 /** Optional errors cannot block a later required request. Back off only
   * repeated optional attempts; never silently defer required coverage. */
 export function createGlobePlanFailures() {

@@ -1,7 +1,7 @@
 import { timelineObjectKey } from './timeline-records.js';
 import { sharedCalculationCore } from './temporal.js';
 
-for (const name of ['timelineInitialMonth', 'timelineResolveWorld']) {
+for (const name of ['timelineResolveWorld']) {
   if (typeof sharedCalculationCore[name] !== 'function')
     throw Object.assign(new Error('Canonical C++ timeline capability is unavailable: ' + name),
       { code: 'PL-CORE-WASM-CAPABILITY' });
@@ -14,10 +14,6 @@ function freeze(value, alreadyFrozen = false) {
     Object.freeze(value);
   }
   return value;
-}
-
-export function initialTimelineMonth(records, currentMonth) {
-  return sharedCalculationCore.timelineInitialMonth(records, currentMonth);
 }
 
 /** Map the C++ resolved typed values onto the current Web presentation DTO. */
@@ -79,10 +75,3 @@ export function resolveWorld(identities, records, geometries, month) {
   });
 }
 
-export function resolvedTimelineViews(identities, records, geometries, month) {
-  return Object.freeze(resolveWorld(identities, records, geometries, month).entities.filter(row => row.objectRef.domain==='territorial').map(row => {
-    const properties = Object.freeze({ ...row.identity.properties, parentId: row.parentId,
-      coverageMode: row.coverageMode, validFrom: row.validFrom, validTo: row.validTo });
-    return Object.freeze({ ...row.identity, properties, geometry: row.geometry });
-  }));
-}

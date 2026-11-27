@@ -100,4 +100,3 @@ export const MAP_OBJECT_CATEGORIES = Object.freeze({
   }),
 });
 
-export const MAP_OBJECT_CATEGORY_ORDER = Object.freeze(Object.keys(MAP_OBJECT_CATEGORIES));

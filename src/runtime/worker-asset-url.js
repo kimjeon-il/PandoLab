@@ -25,16 +25,6 @@ export function runtimeDataRoot(scriptUrl) {
   return url;
 }
 
-export function runtimeDataAssetUrl(scriptUrl, asset) {
-  if (typeof asset?.url !== 'string' || !asset.url.startsWith('assets/data/')
-    || /(?:\.\.|[?\\#])/.test(asset.url) || !/^[a-f0-9]{64}$/.test(asset.sha256)) {
-    throw new Error('Invalid runtime data asset');
-  }
-  const url = new URL(asset.url, runtimeDataRoot(scriptUrl));
-  url.searchParams.set('sha256', asset.sha256);
-  return url;
-}
-
 export function workerBuildMeta(scriptUrl, meta) {
   const params = new URL(scriptUrl).searchParams;
   if (!meta?.assetRevision || !meta.dataRevision
