@@ -12,12 +12,12 @@ import { createGlobeCamera } from './globe-camera.js';
 import { COUNTRY_LABEL_MIN_ZOOM } from './three-globe-labels.js';
 import { globeTerritoryKey } from './globe-mesh.js';
 import { createGlobeTerritorialAssets, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures } from './globe-view-mesh-assets.js';
-import { createGlobeHistoryIndex, globeHistoryMonthKey } from './globe-history-index.js';
+import { createGlobeHistoryIndex, globeHistoryMonthKey, createGlobeNeighborPrefetchKey } from './globe-history-index.js';
 import { createGlobeTemporalPresentation } from './globe-temporal-presentation.js';
 import { createGlobePacketTasks, globePacketWorkerCount } from './globe-packet-tasks.js';
 import { createGlobeWorkScheduler, estimateGlobeWorkingBytes } from './globe-work-scheduler.js';
 import { createGlobePacketIndex } from './globe-picking.js';
-import { createGlobeObjectQuery, sameGlobePickScene } from './globe-object-query.js';
+import { createGlobeObjectQuery, sameGlobePickScene, reconcileGlobeFillPickIndex, sameGlobeHoverScene } from './globe-object-query.js';
 import { createMapPresentationSession } from './map-presentation-session.js';
 import { createThreeGlobeSurface } from './three-globe-surface.js';
 import { createRenderingMetrics } from './rendering-metrics.js';
@@ -59,7 +59,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   let basePrepared = null, basePreparing = null, publishedBase = null, baseJobRequired = false, physicalJobRequired = false;
   const baseFailures = createGlobePlanFailures({residency, onRetry:() => invalidate('three-territory-memory-recovered')});
   const physicalFailures = createGlobePlanFailures({residency, onRetry:() => invalidate('three-physical-memory-recovered')});
-  let neighborTimer = null, neighborIdleOff = null, neighborKey = null, publishedMonth = null, monthDirection = 0;
+  let neighborTimer = null, neighborIdleOff = null, publishedMonth = null, monthDirection = 0;
+  const neighborKey = createGlobeNeighborPrefetchKey();
   const neighborStats = {runs:0, completed:0, cancelled:0, claimedBytes:0, idleWaits:0, pressureSkips:0};
   let fontReady = false, fontPending = null, fontFailed = false, lastLabelsNeeded = false;
   const failedLineLayers = new Set();
@@ -114,9 +115,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const controller = requestScopes.get(name); requestScopes.delete(name); controller?.abort();
   }
   function cancelNeighborPrefetch() {
-    if (neighborIdleOff) {neighborIdleOff(); neighborIdleOff = null; neighborKey = null;}
-    if (neighborTimer!==null) {clearTimeout(neighborTimer); neighborTimer = null; neighborKey = null;}
-    if (requestScopes.has('neighbor-prefetch')) {cancelRequest('neighbor-prefetch'); neighborKey = null; neighborStats.cancelled++;}
+    if (neighborIdleOff) {neighborIdleOff(); neighborIdleOff = null; neighborKey.clear();}
+    if (neighborTimer!==null) {clearTimeout(neighborTimer); neighborTimer = null; neighborKey.clear();}
+    if (requestScopes.has('neighbor-prefetch')) {cancelRequest('neighbor-prefetch'); neighborKey.clear(); neighborStats.cancelled++;}
   }
   function clearPreparation() {
     cancelNeighborPrefetch();
@@ -209,7 +210,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function territorialPlan(prepared = territories, padding = 0) {
     syncViewPlans(); const extra = strokePadding(), key = territorialContext(prepared)+'|'+padding+'|'+extra;
     if (territoryPlans.has(key))return territoryPlans.get(key);
-    if (state.layerVisibility.objects===false)return [];
+    if (state.layerVisibility.objects===false) {const rows = []; territoryPlans.set(key, rows); return rows;}
     const selectedSlots = new Set(prepared.slots), hidden = new Set(prepared.view?.hiddenBorders??[]);
     const cull = viewCull(padding);
     const rows = territorialAssets.plan(viewCull(padding+extra), row => {
@@ -369,20 +370,20 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (disposed||lost||input.isMoving()||framePreserved||presentation.temporalPending()||!ready||basePreparing||visiblePhysicalPlan||!physical)return;
     const interval = historyLoaded?historyIndex.intervalKey(month):'catalog';
     const key = interval+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
-    if (neighborKey===key||neighborTimer!==null||neighborIdleOff||requestScopes.has('neighbor-prefetch'))return;
-    neighborKey = key;
+    if (neighborKey.has(key)||neighborTimer!==null||neighborIdleOff||requestScopes.has('neighbor-prefetch'))return;
+    const keyClaim = neighborKey.claim(key);
     const epoch = generation;
     const valid = () => !disposed&&!lost&&!input.isMoving()&&!framePreserved&&!presentation.temporalPending()&&generation===epoch&&ready&&
       (!historyLoaded||historyIndex.intervalKey(state.timelineCursor)===interval||interval==='catalog');
     const begin = () => {
       neighborTimer = null;
-      if (!valid()) {neighborKey = null; return;}
+      if (!valid()) {neighborKey.clear(keyClaim); return;}
       const gate = loadGate.stats();
       if (gate.active||gate.queued) {
         neighborStats.idleWaits++;
         neighborIdleOff = loadGate.onIdle(() => {
           const off = neighborIdleOff; neighborIdleOff = null; off?.();
-          if (!valid()) {neighborKey = null; return;}
+          if (!valid()) {neighborKey.clear(keyClaim); return;}
           neighborTimer = setTimeout(begin, 100);
         });
         return;
@@ -397,12 +398,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         remaining-=bytes; neighborStats.claimedBytes+=bytes; return true;
       };
       neighborStats.runs++;
+      let completed = false;
       (async() => {
         if (!historyLoaded) {
           const catalogEstimate = estimateGlobeWorkingBytes(spec.historyCatalog,'catalog');
           // Catalog acquisition is independently bounded; a large one is
           // deliberately left to a required history request.
-          if (catalogEstimate>cacheBudget.pendingBytes/2)return;
+          if (catalogEstimate>cacheBudget.pendingBytes/2) {completed = true; return;}
           neighborStats.claimedBytes+=catalogEstimate;
           await ensureHistoryCatalog(signal, -15);
         }
@@ -418,15 +420,17 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
           if (physicalAssets.has(target.physicalIdentity))await physicalAssets.warm(physicalPlan(target.physicalIdentity), {signal, priority:-20, claim, holdBytes:physicalHold});
           if (remaining<=0)break;
         }
-        if (requestCurrent('neighbor-prefetch', controller)) {neighborStats.completed++; residency.trim();}
+        if (requestCurrent('neighbor-prefetch', controller)&&valid()) {residency.trim(); neighborStats.completed++; completed = true;}
       })().catch (cause => {if (cause?.memoryPressure)neighborStats.pressureSkips++;})
         .finally(() => {
+          const current = requestCurrent('neighbor-prefetch', controller)&&valid();
           finishRequest('neighbor-prefetch', controller);
-          // When the catalog was first loaded, key the completed preparation
-          // by the real transition interval, not the month or bootstrap token.
-          if (!signal.aborted&&valid()&&historyLoaded&&interval==='catalog') {
-            neighborKey = historyIndex.intervalKey(state.timelineCursor)+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key;
-          }
+          // Failed or superseded preparation must not certify an interval,
+          // including when the catalog was loaded before a later failure.
+          if (!current||!completed)neighborKey.clear(keyClaim);
+          else if (historyLoaded&&interval==='catalog') {
+            neighborKey.complete(keyClaim, historyIndex.intervalKey(state.timelineCursor)+'|'+Math.sign(monthDirection)+'|'+basePlanKey(basePrepared?.plan??[])+'|'+physical.plan.key);
+          }else neighborKey.complete(keyClaim);
         });
     };
     neighborTimer = setTimeout(begin, 180);
@@ -698,6 +702,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!submitted)return {...base, deferred:true};
     drawCount++;
     drawnFrame = {frame, camera, viewport, territories, basePrepared, physical, visibleSlots:paint.visibleSlots(), riverChunks:riverDetail.activeEntries(),
+      pickTerritoryPlan:territorialPlan(), pickPhysicalPlan:physicalPlan(physical.spec.identity),
       labelHit:surface.labels.hitSnapshot(), lakesVisible:state.layerVisibility.lakes!==false, riversVisible:showRivers, generation,
       contextRevision, month:state.timelineCursor, hydroVisibilityKey:JSON.stringify([presentationInputs.hydroItems,presentationInputs.hydroLayers,presentationInputs.builtinHydro])};
     input.advanceInertia();
@@ -706,23 +711,27 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function publishPickSnapshot(draw) {
     const previous = acceptedPick, riverChunks = draw.riverChunks;
     const sameRivers = previous&&riverChunks.length===previous.riverChunks.length&&riverChunks.every((row, i) => row.packet===previous.riverChunks[i].packet);
-    const sameCountries = previous&&draw.basePrepared===previous.basePrepared;
-    const samePhysical = previous&&draw.physical===previous.physical;
+    const sameCountries = previous&&draw.basePrepared===previous.basePrepared&&draw.pickTerritoryPlan===previous.pickTerritoryPlan;
+    const samePhysical = previous&&draw.physical===previous.physical&&draw.pickPhysicalPlan===previous.pickPhysicalPlan;
     const sameScene = sameGlobePickScene(previous,draw);
     if (!pickingChanged&&sameScene&&sameCountries&&samePhysical&&sameRivers&&previous.labelHit===draw.labelHit)return;
     const active = draw.physical;
-    if (!sameScene)cancelRequest('pick-click');
-    cancelRequest('pick-hover');
-    acceptedPick = {...draw,
-      countryIndex:sameCountries?previous.countryIndex:createGlobePacketIndex(draw.basePrepared.parts.filter(row => row.role==='country').map(row => row.mesh), row => row.packet.spatialBounds),
-      waterIndex:samePhysical?previous.waterIndex:createGlobePacketIndex(active.waters, row => row.mesh.packet.spatialBounds),
-      lakeIndex:samePhysical?previous.lakeIndex:createGlobePacketIndex(active.lakes, row => row.mesh.packet.spatialBounds),
+    const countryCoverage = previous?.pickTerritoryPlan===draw.pickTerritoryPlan?previous.countryCoverage:
+      reconcileGlobeFillPickIndex(previous?.countryCoverage, draw.pickTerritoryPlan.filter(row => row.role==='country'), draw.basePrepared.parts);
+    const waterCoverage = reconcileGlobeFillPickIndex(previous?.waterCoverage, draw.pickPhysicalPlan.waters, active.waters);
+    const lakeCoverage = reconcileGlobeFillPickIndex(previous?.lakeCoverage, draw.pickPhysicalPlan.lakes, active.lakes);
+    const next = {...draw, countryCoverage, waterCoverage, lakeCoverage,
+      countryIndex:countryCoverage.index, waterIndex:waterCoverage.index, lakeIndex:lakeCoverage.index,
       riverIndex:samePhysical&&sameRivers?previous.riverIndex:createGlobePacketIndex([
         ...active.riverChunks.map(row => ({packet:row.packet, minZoom:row.minZoom})),
         ...riverChunks.map(row => ({packet:row.packet, minZoom:row.row.minZoom})),
       ].flatMap(row => row.packet.spatialParts.map(part => ({...part, minZoom:row.minZoom}))), row => row.index.rootBounds),
     };
-    pickingRevision++; pickingChanged = false;
+    if (!sameScene)cancelRequest('pick-click');
+    // The input controller also uses this revision to supersede pending
+    // hover work. Label, outline and optional river arrivals do not affect it.
+    if (!sameGlobeHoverScene(previous,next)) {cancelRequest('pick-hover'); pickingRevision++;}
+    acceptedPick = next; pickingChanged = false;
   }
   function commitVisualFrame(frame) {
     const draw = drawnFrame;
@@ -799,7 +808,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     waitForTemporalPresentation:presentation.waitForTemporalPresentation, getProjectGeneration:() => generation,
     preserveTemporalFrame() {cancelNeighborPrefetch(); framePreserved = true;}, isFramePreserved:() => framePreserved,
     resetProjectRenderState(options) {generation = options.generation; features = null; ready = false; error = null;
-        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey = null; publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; clearViewPlans(); presentation.resetForProject(options);},
+        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; clearViewPlans(); presentation.resetForProject(options);},
     measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation, retryMapPreparation, getRuntimeState,
     getStats:() => ({...getRuntimeState(), mapReadiness:readyState(), displayedRevision:ready?revision:0, sourceRevision:revision,
       generation, certifiedRevision:ready&&!lost&&!presentation.temporalPending()?revision:null,

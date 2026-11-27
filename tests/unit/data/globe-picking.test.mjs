@@ -130,3 +130,35 @@ test('accepted-frame river picking admits Core identities and discards supersede
  }
  assert.deepEqual(published,[feature.id,feature.id]);assert.equal(completed,6);
 });
+
+
+test('hover fill coverage ignores optional margins and label or river refreshes', async () => {
+  const {reconcileGlobeFillPickIndex, sameGlobeHoverScene, createGlobeObjectQuery} = await import('../../../src/rendering/globe-object-query.js');
+  const {createGlobePacketIndex} = await import('../../../src/rendering/globe-picking.js');
+  const row = key => ({key, mesh:{packet:{spatialBounds:[-1,-1,-1,1,1,1]}}});
+  const country = row('country'), margin = row('margin');
+  const required = [country], first = reconcileGlobeFillPickIndex(null, required, [country]);
+  const refreshed = reconcileGlobeFillPickIndex(first, [country], [country,margin]);
+  assert.equal(refreshed.index,first.index);
+  const changed = reconcileGlobeFillPickIndex(first, [country,margin], [country,margin]);
+  assert.notEqual(changed.index,first.index);
+  const empty = createGlobePacketIndex([],()=>null), camera = createGlobeCamera({center:[0,0],zoom:5},{width:800,height:600});
+  let gate = Promise.withResolvers(), started = Promise.withResolvers();
+  const delayedIndex = {async queryCooperative(){started.resolve(); await gate.promise; return [];}};
+  let sample = {generation:1,contextRevision:0,month:'2026-11',camera,viewport:{width:800,height:600},
+    visibleSlots:new Set(),lakesVisible:true,countryIndex:empty,waterIndex:delayedIndex,lakeIndex:empty,
+    riverIndex:empty,labelHit:()=>null};
+  const query = createGlobeObjectQuery({getAcceptedPick:()=>sample,canPickFrame:()=>true,cancelNeighborPrefetch(){},
+    startRequest:()=>new AbortController(),finishRequest(){},refs:[]});
+  const original = sample, point = [400,300];
+  const pending = query.queryObjectRefs(point,{includeHydro:false,includeLabels:false});
+  await started.promise;
+  sample = {...sample,riverIndex:changed.index,labelHit:()=>({id:'label'}),riversVisible:false,hydroVisibilityKey:'updated'};
+  assert.equal(sameGlobeHoverScene(original,sample),true);
+  gate.resolve(); assert.deepEqual(await pending,[]);
+  gate = Promise.withResolvers(); started = Promise.withResolvers();
+  const obsolete = query.queryObjectRefs(point,{includeHydro:false,includeLabels:false});
+  const rejected = assert.rejects(obsolete,{name:'AbortError'});
+  await started.promise;
+  sample = {...sample,countryIndex:changed.index}; gate.resolve(); await rejected;
+});

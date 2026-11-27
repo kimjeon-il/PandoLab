@@ -280,3 +280,23 @@ test('detail river retry timer is cancelled when the owner is disposed', async (
   assert.ok(timer); detail.dispose(); assert.equal(timer,null);
   assert.equal(detail.retryDue(),false);
 });
+
+
+test('failed neighbor prefetch releases the same interval without overwriting a newer claim', async () => {
+  const {createGlobeNeighborPrefetchKey} = await import('../../../src/rendering/globe-history-index.js');
+  const key = createGlobeNeighborPrefetchKey(), first = key.claim('catalog');
+  key.clear(first);
+  assert.equal(key.has('catalog'),false);
+  const second = key.claim('catalog');
+  key.clear(first);
+  key.complete(first,'wrong');
+  assert.equal(key.has('catalog'),true);
+  assert.equal(key.has('wrong'),false);
+  key.complete(second,'interval-42');
+  assert.equal(key.has('interval-42'),true);
+  const next = key.claim('interval-43');
+  key.clear(next);
+  assert.equal(key.has('interval-43'),false);
+  key.claim('interval-43');
+  assert.equal(key.has('interval-43'),true);
+});

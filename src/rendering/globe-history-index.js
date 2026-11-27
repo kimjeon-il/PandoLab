@@ -138,3 +138,16 @@ export function createGlobeHistoryIndex(history, baseCount, {decodedLimit = DECO
   }
   return Object.freeze({base, find, neighbors, intervalKey, stats:() => ({views:rows.length, decodedViews:decoded.size, checkpointStride:stride, timelineMoments:moments.length})});
 }
+
+
+// A claim belongs to one speculative attempt, not permanently to the date.
+// A cancelled/failed attempt may never mark a newer claim as completed.
+export function createGlobeNeighborPrefetchKey() {
+  let current = null;
+  return Object.freeze({
+    has:key => current?.key===key,
+    claim(key) {current = {key}; return current;},
+    clear(claim = current) {if (current===claim)current = null;},
+    complete(claim, key = claim.key) {if (current===claim)current = {key};},
+  });
+}

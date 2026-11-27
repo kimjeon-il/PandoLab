@@ -1,7 +1,7 @@
 import { forwardAbort } from '../runtime/async-request.js';
 import { normalizeObjectRef } from '../document/object-ref-identity.js';
 import {
-  globeRayIntersectsBounds, globeStrokePickPredicate, createGlobePickBudget,
+  globeRayIntersectsBounds, globeStrokePickPredicate, createGlobePickBudget, createGlobePacketIndex,
   pickGlobeSlotsCooperative, pickGlobeStrokeSlotsCooperative,
 } from './globe-picking.js';
 
@@ -13,6 +13,27 @@ export function sameGlobePickScene(a,b){
     &&a.camera===b.camera&&a.viewport===b.viewport&&a.territories===b.territories
     &&a.physical?.spec.identity===b.physical?.spec.identity&&a.visibleSlots===b.visibleSlots
     &&a.lakesVisible===b.lakesVisible&&a.riversVisible===b.riversVisible&&a.hydroVisibilityKey===b.hydroVisibilityKey;
+}
+
+// Only visible required fill chunks participate in hover. A padded margin
+// download cannot change hits on the current viewport, and labels/river
+// strokes are deliberately excluded by the hover query contract.
+export function reconcileGlobeFillPickIndex(previous, requiredRows, preparedRows) {
+  if (previous?.requiredRows===requiredRows)return previous;
+  const keys = requiredRows.map(row => row.key);
+  const prepared = new Map(preparedRows.map(row => [row.key, row]));
+  const rows = keys.map(key => {
+    const row = prepared.get(key);
+    if (!row)throw Error('Missing admitted fill pick coverage');
+    return row;
+  });
+  const same = previous&&keys.length===previous.keys.length&&keys.every((key, i) => key===previous.keys[i]);
+  return {requiredRows, keys, index:same?previous.index:createGlobePacketIndex(rows, row => row.mesh.packet.spatialBounds)};
+}
+export function sameGlobeHoverScene(a, b) {
+  return !!a&&!!b&&a.generation===b.generation&&a.contextRevision===b.contextRevision&&a.month===b.month
+    &&a.camera===b.camera&&a.viewport===b.viewport&&a.visibleSlots===b.visibleSlots
+    &&a.lakesVisible===b.lakesVisible&&a.countryIndex===b.countryIndex&&a.waterIndex===b.waterIndex&&a.lakeIndex===b.lakeIndex;
 }
 
 /** Resolves map hits against the last accepted frame and admits visible hydro identities. */
@@ -29,7 +50,7 @@ export function createGlobeObjectQuery({
     const detachAbort = forwardAbort(consumerSignal, controller);
     const {signal} = controller;
     const isCurrent = () => !signal.aborted&&canPickFrame()&&(requestName==='pick-click'
-      ?sameGlobePickScene(sample,getAcceptedPick()):getAcceptedPick()===sample);
+      ?sameGlobePickScene(sample,getAcceptedPick()):sameGlobeHoverScene(sample,getAcceptedPick()));
     const assertCurrent = () => {
       signal.throwIfAborted();
       if (!isCurrent())throw new DOMException('Picking frame superseded','AbortError');
@@ -46,7 +67,7 @@ export function createGlobeObjectQuery({
       for (const row of await sample.waterIndex.queryCooperative(intersect, budget)) {
         const packet = row.mesh.packet;
         if ((await pickGlobeSlotsCooperative(packet, packet.spatial, ray, undefined, {firstHit:true, budget})).length) {
-          if (!includeHydro)return [];
+          if (!includeHydro) {assertCurrent(); return [];}
           waterFeatures.push(row.feature);
         }
       }
@@ -54,7 +75,7 @@ export function createGlobeObjectQuery({
         if (sampledCamera.view.zoom<row.minZoom)continue;
         const packet = row.mesh.packet;
         const hits = await pickGlobeSlotsCooperative(packet, packet.spatial, ray, undefined, {firstHit:!includeHydro, budget});
-        if (hits.length&&!includeHydro)return [];
+        if (hits.length&&!includeHydro) {assertCurrent(); return [];}
         for (const slot of hits)lakeSlots.add(slot);
       }
       let hydroRefs = [];
@@ -81,7 +102,7 @@ export function createGlobeObjectQuery({
       }
       if (waterFeatures.length||lakeSlots.size)return hydroRefs;
       const hits = [];
-      for (const {packet} of await sample.countryIndex.queryCooperative(intersect, budget))
+      for (const {mesh:{packet}} of await sample.countryIndex.queryCooperative(intersect, budget))
         hits.push(...await pickGlobeSlotsCooperative(packet, packet.spatial, ray, slot => sample.visibleSlots.has(slot), {budget}));
       assertCurrent();
       return [...hydroRefs, ...hits.map(slot => refs[slot])];
