@@ -1,5 +1,8 @@
 name: Viewer core checks
 on:
+  push:
+    branches: [work/active]
+    paths: ['.github/workflows/application-architecture.yml']
   workflow_dispatch:
     inputs:
       group:
@@ -27,6 +30,7 @@ permissions:
   contents: read
 jobs:
   check:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
@@ -69,3 +73,24 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  focused-node-lint:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/work/active' && github.event.head_commit.message == 'Check concurrent spatial Worker batch implementation' && github.event.before == '3dbc103ffed3859d9e52336e106493e263a1b7ae'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Run focused Node regressions and lint
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/run-application-checks.mjs --group=node --file=tests/unit/data/core-timeline-preparation.test.mjs --file=tests/unit/data/globe-render-resources.test.mjs --file=tests/unit/data/globe-temporal-assets.test.mjs
+          node scripts/run-application-checks.mjs --group=lint --file=src/document/project-source-runtime.js --file=src/app/viewer-map.js --file=src/rendering/three-viewer-renderer.js --file=src/rendering/globe-asset-reader.js --file=src/rendering/globe-packet-tasks.js --file=src/rendering/workers/globe-packet-worker.js --file=src/rendering/three-globe-physical.js --file=tests/unit/data/core-timeline-preparation.test.mjs --file=tests/unit/data/globe-render-resources.test.mjs --file=tests/unit/data/globe-temporal-assets.test.mjs --file=tests/browser/viewer.spec.mjs
