@@ -191,3 +191,33 @@ test('a failed dated preparation makes sibling preparations obsolete without com
   assert.equal(siblingCurrent(),false);
   gate.resolve();
 });
+
+
+test('initial Core candidate and required geometry preparation run concurrently with rollback on geometry failure',async()=>{
+ const {prepareProjectCandidateWithGeometry}=await import('../../../src/document/project-source-runtime.js');
+ const started=[],coreGate=Promise.withResolvers(),geometryGate=Promise.withResolvers(),discarded=[];
+ const candidate={kind:'temporal-candidate'};
+ const pending=prepareProjectCandidateWithGeometry({
+  prepareCandidate:async()=>{started.push('core');await coreGate.promise;return candidate;},
+  prepareGeometry:async()=>{started.push('geometry');await geometryGate.promise;},
+  discardCandidate:async value=>discarded.push(value),
+ });
+ await Promise.resolve();assert.deepEqual(started,['core','geometry']);
+ coreGate.resolve();geometryGate.reject(Error('initial geometry failed'));
+ await assert.rejects(pending,/initial geometry failed/);
+ assert.deepEqual(discarded,[candidate]);
+});
+
+test('initial geometry failure waits for Core candidate settlement before discarding it',async()=>{
+ const {prepareProjectCandidateWithGeometry}=await import('../../../src/document/project-source-runtime.js');
+ const coreGate=Promise.withResolvers(),geometryGate=Promise.withResolvers(),discarded=[];
+ const pending=prepareProjectCandidateWithGeometry({
+  prepareCandidate:()=>coreGate.promise,prepareGeometry:()=>geometryGate.promise,
+  discardCandidate:async value=>discarded.push(value),
+ });
+ geometryGate.reject(Error('packet failure'));await Promise.resolve();
+ assert.deepEqual(discarded,[]);
+ const candidate={kind:'temporal-candidate'};coreGate.resolve(candidate);
+ await assert.rejects(pending,/packet failure/);
+ assert.deepEqual(discarded,[candidate]);
+});

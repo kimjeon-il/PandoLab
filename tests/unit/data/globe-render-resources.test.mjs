@@ -332,3 +332,46 @@ test('GPU mesh standby recency refreshes on reuse and again when a scene is rele
   assert.equal(residency.stats().residentBytes,8);
   ledger.remove(a); residency.dispose();
 });
+
+
+test('small spatial packet decodes coalesce into bounded Worker batches by priority',async()=>{
+ const {createGlobeDecodeBatcher}=await import('../../../src/rendering/globe-packet-tasks.js');
+ const queued=[],calls=[];
+ const batcher=createGlobeDecodeBatcher(async(rows,{priority})=>{
+  calls.push({ids:rows.map(row=>row.id),priority});
+  return rows.map(row=>({ok:true,value:row.id}));
+ },{schedule:fn=>queued.push(fn),maxItemBytes:32,maxBytes:64,maxDecodedBytes:64,maxItems:4});
+ const packet=id=>({id,kind:'mesh',bytes:new Uint8Array(8),spec:{decodedBytes:8}});
+ const a=batcher.enqueue(packet('a'),{priority:10}),b=batcher.enqueue(packet('b'),{priority:10}),c=batcher.enqueue(packet('c'),{priority:5});
+ assert.equal(queued.length,1);queued.shift()();
+ assert.deepEqual(await Promise.all([a,b,c]),['a','b','c']);
+ assert.deepEqual(calls,[{ids:['a','b'],priority:10},{ids:['c'],priority:5}]);
+ assert.equal(batcher.stats().batches,1);assert.equal(batcher.stats().packets,2);
+ batcher.dispose();
+});
+
+test('one cancelled small packet does not cancel other members of its Worker batch',async()=>{
+ const {createGlobeDecodeBatcher}=await import('../../../src/rendering/globe-packet-tasks.js');
+ const queued=[],started=Promise.withResolvers(),finish=Promise.withResolvers();let workerSignal;
+ const batcher=createGlobeDecodeBatcher(async(rows,{signal})=>{
+  workerSignal=signal;started.resolve();return finish.promise;
+ },{schedule:fn=>queued.push(fn),maxItemBytes:32,maxBytes:64,maxDecodedBytes:64});
+ const abort=new AbortController(),packet=id=>({id,kind:'stroke',bytes:new Uint8Array(8),spec:{decodedBytes:8}});
+ const first=batcher.enqueue(packet('first'),{signal:abort.signal}),second=batcher.enqueue(packet('second'));
+ queued.shift()();await started.promise;abort.abort();
+ await assert.rejects(first,{name:'AbortError'});assert.equal(workerSignal.aborted,false);
+ finish.resolve([{ok:true,value:'ignored'},{ok:true,value:'second'}]);
+ assert.equal(await second,'second');batcher.dispose();
+});
+
+test('Worker spatial preparation attaches primitive indexes before mesh and stroke packets are published',async()=>{
+ const {prepareGlobeSpatialPacket}=await import('../../../src/rendering/globe-spatial-partition.js');
+ const mesh=prepareGlobeSpatialPacket({positions:Float32Array.of(0,0,0,1,0,0,0,1,0),
+  residuals:new Float32Array(9),indices:Uint32Array.of(0,1,2),slots:new Uint16Array(0)});
+ assert.equal(mesh.spatial.count,1);assert.equal(mesh.spatial.nodes.length,3);
+ assert.deepEqual([...mesh.spatialBounds],[0,0,0,1,1,0]);
+ const stroke=prepareGlobeSpatialPacket({count:1,points:Float32Array.of(0,0,0,0,0,0,1,0,0,0,0,0),
+  endpointIndices:Uint32Array.of(0,1),widths:Float32Array.of(1),ownerGroups:new Uint16Array(0)});
+ assert.equal(stroke.spatialParts.length,1);assert.equal(stroke.spatialParts[0].index.count,1);
+ assert.ok(stroke.spatialParts[0].index.nodes instanceof Uint32Array);
+});
