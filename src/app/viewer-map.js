@@ -298,17 +298,22 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     cancelSearch:() => places().cancelSearch(), update, features:entityStore.snapshot, searchPlaces:query => labelOwner.searchPlaces(query), renderer,
     loadHydroData:physicalResources.loadHydroData,
     viewState:state, objectPresentation, searchActive:() => places().isSearchOpen(), preparePhysicalContext, prepareTimelineView,
-    prepareBuiltinProject:async(month, options) => {
-      // Parallel country/physical preparation must not orphan a native
-      // candidate when only the physical half fails or is superseded.
+    prepareBuiltinProject:async(month, options = {}) => {
+      // Core candidate admission, initial territorial packets and physical
+      // packets are independent after the builtin source index is available.
+      const prepareGeometry = async({isCurrent}) => {
+        const references = await projectSourceRuntime.readWorldGeometryReferences(month, {isCurrent});
+        return renderer.prepareDatedTerritories(month, references, {isCurrent});
+      };
       const [candidate, physical] = await Promise.allSettled([
-        projectSourceRuntime.prepareProjectCandidate(month, options),
+        projectSourceRuntime.prepareProjectCandidate(month, {...options, prepareGeometry}),
         preparePhysicalContext(month, options),
       ]);
-      if (candidate.status==='fulfilled'&&physical.status==='rejected')
-        await projectDomain.discardTemporalBuiltin(candidate.value);
-      if (candidate.status==='rejected')throw candidate.reason;
-      if (physical.status==='rejected')throw physical.reason;
+      if (candidate.status==='rejected'||physical.status==='rejected') {
+        if (candidate.status==='fulfilled')await projectDomain.discardTemporalBuiltin(candidate.value);
+        renderer.releasePreparedStartupResources();
+        throw candidate.status==='rejected'?candidate.reason:physical.reason;
+      }
       return candidate.value;
     },
     placeSelectionReferences:labelOwner.builtinPlaceSelectionReferences, hydroSelectionReferences:physicalResources.builtinHydroSelectionReferences,

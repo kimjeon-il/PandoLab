@@ -442,6 +442,11 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     };
     neighborTimer = setTimeout(begin, 180);
   }
+  function releasePreparedStartupResources() {
+    for (const name of ['country-prefetch','physical-prefetch'])cancelRequest(name);
+    prefetchTerritoryPlan = null; prefetchPhysical = null;
+    retainCpuResources();
+  }
   async function prepareDatedTerritories(month, references, {isCurrent = () => true} = {}) {
     const controller = startRequest('country-prefetch');
     let plan;
@@ -816,7 +821,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     cameraSnapshot:() => camera?.view??null, getRenderPixelRatio:() => window.devicePixelRatio||1, verifyLayout, syncCameraFromState, fitWorld, fitMapBounds, fitGeometry,
     isAtWorldView:() => Boolean(viewport&&Math.abs(view.zoom-worldFit().zoom)<0.01&&Math.abs(view.center[0]-15)<0.1&&Math.abs(view.center[1]-12)<0.1),
     panBy:input.panBy,
-    setTerritorialFeatures, preparePhysicalContext, prepareDatedTerritories,
+    setTerritorialFeatures, preparePhysicalContext, prepareDatedTerritories, releasePreparedStartupResources,
     setSelection(value) {labelContent.setSelection(value); paint.setSelection(value);},
     setInteractionStyle(value) {paint.setInteractionStyle(value); invalidate('three-interaction-style');},
     invalidateCountryColors, invalidateCountryPalette:invalidatePalette, invalidatePhysicalStyle, invalidateHydroVisibility, invalidatePresentationStyle, setRenderQuality,

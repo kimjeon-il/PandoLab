@@ -5,6 +5,23 @@ import { mapProjectResourcePath } from '../data/map-project-manifest.js';
 import { mapProjectCatalogSpec } from '../data/map-project-runtime.js';
 import { mapProjectDocumentIdentity } from '../data/map-project-identity.js';
 
+export async function prepareProjectCandidateWithGeometry({prepareCandidate, prepareGeometry = null, discardCandidate, isCurrent = () => true}) {
+  if (typeof prepareCandidate!=='function'||typeof discardCandidate!=='function'||typeof isCurrent!=='function')
+    throw new TypeError('Core candidate preparation requires explicit ownership callbacks.');
+  const [candidate, geometry] = await Promise.allSettled([
+    Promise.resolve().then(prepareCandidate),
+    prepareGeometry?Promise.resolve().then(prepareGeometry):Promise.resolve(true),
+  ]);
+  const stale = !isCurrent();
+  if (candidate.status==='fulfilled'&&candidate.value&&(geometry.status==='rejected'||stale)) {
+    try {await discardCandidate(candidate.value);}catch{}
+  }
+  if (candidate.status==='rejected')throw candidate.reason;
+  if (geometry.status==='rejected')throw geometry.reason;
+  if (stale)throw Object.assign(new Error('Builtin source request was superseded'), {name:'AbortError', cancelled:true, code:'PL-CORE-STALE'});
+  return candidate.value;
+}
+
 // Project-scoped source preparation and Core admission. A source adapter
 // supplies country bytes; the accepted C++ document is the only writable map.
 // Historical geometry bytes stay lazy and retain their existing verified cache.
@@ -115,8 +132,8 @@ export function createProjectSourceRuntime({buildMeta, projectDomain, baseDatase
   // Initial document admission is the sole builtin candidate path.
   // Date changes inside an admitted document use setTimelineCursor instead.
   async function prepareProjectCandidate(month = deviceCurrentMonth(), options = {}) {
-    if (Object.keys(options).some(key => key!=='isCurrent'))throw new TypeError('Unsupported builtin project preparation option.');
-    const {isCurrent = () => true} = options;
+    if (Object.keys(options).some(key => !['isCurrent','prepareGeometry'].includes(key)))throw new TypeError('Unsupported builtin project preparation option.');
+    const {isCurrent = () => true, prepareGeometry = null} = options;
     const domain = projectDomain;
     const prepared = await prepareProjectSource(month, {isCurrent});
     // This prepared value remains private to this attempt. The Worker can
@@ -128,9 +145,14 @@ export function createProjectSourceRuntime({buildMeta, projectDomain, baseDatase
       decodedBytes:prepared.decodedBytes, sourceMonth:prepared.sourceMonth,
       baseDataset:prepared.baseDataset, fingerprint:prepared.fingerprint};
     if (!isCurrent())throw staleBuiltin();
-    const candidate = await domain.prepareTemporalBuiltin(facts, createBuiltinProjectSetup(month), {
-      dataRevision:buildMeta.dataRevision, manifestSha256:territorialSpec().sha256,
-      expectedGeneration:prepared.expectedGeneration, isCurrent, transferSource:true});
+    const candidate = await prepareProjectCandidateWithGeometry({
+      prepareCandidate:() => domain.prepareTemporalBuiltin(facts, createBuiltinProjectSetup(month), {
+        dataRevision:buildMeta.dataRevision, manifestSha256:territorialSpec().sha256,
+        expectedGeneration:prepared.expectedGeneration, isCurrent, transferSource:true}),
+      prepareGeometry:prepareGeometry?() => prepareGeometry({isCurrent, month}):null,
+      discardCandidate:value => domain.discardTemporalBuiltin(value),
+      isCurrent,
+    });
     if (!candidate||!isCurrent()) {
       if (candidate?.kind==='temporal-candidate')await domain.discardTemporalBuiltin(candidate);
       throw staleBuiltin();
