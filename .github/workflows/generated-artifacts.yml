@@ -4,6 +4,7 @@ on:
     branches:
       - work/active
     paths:
+      - .github/workflows/generated-artifacts.yml
       - src/**/native/**
       - src/rendering/workers/polygon-mesh-core.js
       - src/rendering/workers/polygon-raster-contract.js
@@ -46,6 +47,10 @@ on:
           - all
         required: false
         default: auto
+      regression:
+        description: Explicitly run application regression checks with the published WASM
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -85,6 +90,9 @@ jobs:
         run: node scripts/generated-artifact-plan.mjs --github-output
   generate:
     needs: plan
+    outputs:
+      result_sha: ${{ steps.publish.outputs.result_sha }}
+      superseded: ${{ steps.publish.outputs.superseded }}
     if: needs.plan.outputs.wasm == 'true' || needs.plan.outputs.selected_families != '[]' || needs.plan.outputs.blocked_families != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -124,9 +132,11 @@ jobs:
         if: needs.plan.outputs.wasm == 'true'
         with:
           cmake-version: ${{ needs.plan.outputs.cmake_version }}
-      - name: Install compiler prerequisites only for WASM
+      - name: Use runner-provided Ninja for WASM
         if: needs.plan.outputs.wasm == 'true'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          command -v ninja
+          ninja --version
       - uses: actions/checkout@v4
         if: needs.plan.outputs.wasm == 'true'
         with:
@@ -206,3 +216,74 @@ jobs:
             assets/wasm/pandoeditor-core.manifest.json
           if-no-files-found: error
           retention-days: 14
+
+  regression-lint:
+    if: inputs.regression == true || contains(github.event.head_commit.message, '[regression-check]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node scripts/run-application-checks.mjs --group=lint
+  regression-node:
+    needs: generate
+    if: needs.generate.outputs.superseded != 'true' && (inputs.regression == true || contains(github.event.head_commit.message, '[regression-check]'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.generate.outputs.result_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify the published WASM against the checked-out source
+        run: node tools/build/package-shared-core-assets.mjs --build-dir assets/wasm --check
+      - name: Run registered common Node regression checks
+        run: node scripts/run-application-checks.mjs --group=node
+      - name: Run affected consolidated GIS scenarios
+        if: always() && !cancelled()
+        run: >-
+          node scripts/run-application-checks.mjs --group=gis
+          --file=tests/unit/data/registered-original-proof.test.mjs
+          --file=tests/unit/data/protected-current-ssr-copy-source-review.test.mjs
+          --file=tests/unit/data/registered-current-outline-source-review.test.mjs
+  regression-browser:
+    needs: generate
+    if: needs.generate.outputs.superseded != 'true' && (inputs.regression == true || contains(github.event.head_commit.message, '[regression-check]'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.generate.outputs.result_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: node tools/build/package-shared-core-assets.mjs --build-dir assets/wasm --check
+      - name: Prepare pinned library metadata
+        run: node tools/data/library-data.mjs --prepare-metadata
+      - name: Install Chromium for the existing runner libraries
+        run: pnpm exec playwright install chromium
+      - name: Run actual Viewer browser regression checks
+        run: node scripts/run-application-checks.mjs --group=browser
+      - name: Retain browser failure evidence
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-browser-failures
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
