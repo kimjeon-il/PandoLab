@@ -319,10 +319,13 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
           if (slotReleased)return;
           slotReleased = true;
           active--; if (isSpeculative)speculative--; else foreground--;
+        };
+        const handoff = () => {
+          if (slotReleased)return;
+          handoffs++; releaseSlot();
           if (residency)schedule(); else pump();
           notifyIdle();
         };
-        const handoff = () => {if (!slotReleased)handoffs++; releaseSlot();};
         const releaseAdmission = () => {
           if (reservationReleased)return;
           reservationReleased = true; releaseSlot();
@@ -330,8 +333,10 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
           if (residency)schedule(); else pump();
           notifyIdle();
         };
-        Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task({handoff, releaseSlot});})
-          .then(row.resolve, row.reject).finally(releaseAdmission);
+        Promise.resolve().then(() => {row.signal?.throwIfAborted(); return row.task({handoff});}).then(
+          value => {releaseAdmission(); row.resolve(value);},
+          error => {releaseAdmission(); row.reject(error);},
+        );
       }
     }finally {pumping = false; notifyIdle();}
   }
