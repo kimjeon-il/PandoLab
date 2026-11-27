@@ -47,7 +47,7 @@ export function gpuResourceFootprint(geometries, textures = [], retained = [], i
 // remeasured, and protection-only changes reuse the previous footprint.
 // The shared residency ledger owns actual eviction and backing-buffer
 // deduplication; local totals are maintained by deltas for cache diagnostics.
-export function createGlobeGpuResidency(residency = null) {
+export function createGlobeGpuResidency(residency = null, {now = () => performance.now()} = {}) {
   const rows = new Map(), dirty = new Set(), groups = new Map();
   let total = 0, reads = 0, updates = 0;
   function groupDelta(group, bytes) {
@@ -74,9 +74,11 @@ export function createGlobeGpuResidency(residency = null) {
   }
   function protect(resource, value) {
     const row = rows.get(resource);
-    if (!row||row.protected===value)return;
-    row.protected = value;
-    if (value)resource.lastUsed = performance.now();
+    if (!row)return;
+    // Refresh recency on both cache hits and release. A resource's standby
+    // age starts when it was last used, not when it first became active.
+    resource.lastUsed = now();
+    if (row.protected!==value)row.protected = value;
     dirty.add(resource);
   }
   function flush() {

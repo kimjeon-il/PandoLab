@@ -306,3 +306,29 @@ test('GPU residency measures only dirty resources and keeps incremental totals a
   assert.equal(residency.stats().residentBytes,0);
   residency.dispose();
 });
+
+
+test('GPU mesh standby recency refreshes on reuse and again when a scene is released', async () => {
+  const {createGlobeGpuResidency} = await import('../../../src/rendering/globe-gpu-resources.js');
+  const {createRenderResidencyBudget} = await import('../../../src/rendering/render-cache-budget.js');
+  let clock = 0;
+  const residency = createRenderResidencyBudget(8);
+  const ledger = createGlobeGpuResidency(residency,{now:() => clock});
+  const evicted = [], a = {lastUsed:0}, b = {lastUsed:0};
+  const make = (resource,name) => {
+    ledger.track(resource,()=>({buffers:new Set([new ArrayBuffer(8)])}));
+    ledger.configure(resource,{group:'mesh',evict:()=>{evicted.push(name);ledger.remove(resource);}});
+  };
+  make(a,'a'); make(b,'b'); ledger.flush();
+  clock=10; ledger.protect(a,false);
+  clock=20; ledger.protect(b,false); ledger.flush();
+  assert.equal(a.lastUsed,10); assert.equal(b.lastUsed,20);
+  clock=30; ledger.protect(a,true); ledger.flush();
+  clock=40; ledger.protect(a,false); ledger.flush();
+  assert.equal(a.lastUsed,40);
+  residency.trim();
+  assert.deepEqual(evicted,['b']);
+  assert.equal(ledger.stats().entries,1);
+  assert.equal(residency.stats().residentBytes,8);
+  ledger.remove(a); residency.dispose();
+});

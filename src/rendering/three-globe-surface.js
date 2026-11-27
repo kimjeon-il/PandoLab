@@ -138,6 +138,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   const layers = new Map(), residentMeshes = new Map();
   const meshLedger = createGlobeGpuResidency(residency);
+  const meshCacheStats = {hits:0, misses:0, evictions:0};
   const spatialResources = new Set(), activeSpatialResources = new Set(), dirtyOutlineOwners = new Map();
   const strokeResources = {country:new Set(), river:new Set()};
   let spatialStats = {triangles:0, submittedTriangles:0, segments:0, submittedSegments:0, ranges:0, visibleRanges:0, strokeBatches:0, strokeDrawCalls:0, directStrokeSegments:0, compactionUploadBytes:0, meshDrawCalls:0, immutableIndexTriangles:0, rewrittenBlocks:0};
@@ -411,7 +412,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function useMesh(role, identity, prepare) {
     const key = role+':'+identity;
     const existing = residentMeshes.get(key);
-    if (existing) {meshLedger.protect(existing.mesh, true); return existing.mesh;}
+    if (existing) {meshCacheStats.hits++; meshLedger.protect(existing.mesh, true); return existing.mesh;}
+    meshCacheStats.misses++;
     const mesh = prepare(), entry = {mesh};
     residentMeshes.set(key, entry);
     meshLedger.configure(mesh, {group:'mesh', evict:() => evictMesh(key, entry)});
@@ -541,7 +543,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   // previously published scene while a replacement is still being drawn.
   function evictMesh(key, entry) {
     if (residentMeshes.get(key)!==entry)return;
-    residentMeshes.delete(key); entry.mesh.dispose();
+    residentMeshes.delete(key); meshCacheStats.evictions++; entry.mesh.dispose();
   }
   residency.set(channels, {buffers:renderPacketBuffers([channels, countryVisible, hydroBytes, borderBytes, countrySlotRevisions, borderSlotRevisions]), extraBytes:channels.byteLength+hydroBytes.byteLength, protected:true});
   function evictOutline(slot, entry) {
@@ -564,7 +566,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       outlineResidentBytes+=entry.bytes();
       for (const [key, value] of Object.entries(entry.stats()))outlineChunks[key]+=value;
     }
-    return {meshes:residentMeshes.size, meshResidentBytes:meshLedger.groupBytes('mesh'), meshLedger:meshLedger.stats(), outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
+    return {meshes:residentMeshes.size, meshResidentBytes:meshLedger.groupBytes('mesh'), meshLedger:meshLedger.stats(), meshCache:{...meshCacheStats}, outlines:outlineCache.size, outlineResidentBytes, outlineChunks};
   }
 
   function resize(width, height, dpr) {
