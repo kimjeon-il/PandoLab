@@ -454,6 +454,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const controller = startRequest('country-prefetch');
     let plan;
     try {
+      // Establish the initial camera/viewport before spatially selecting the
+      // startup chunks; a null camera would otherwise admit the whole catalog.
+      await initialize();
+      if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
       const prepared = await requireTerritorialGeometry(month, references, controller.signal);
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
       const visibility = includeAllObjects?{objectsVisible:true,bordersVisible:true}:null;
