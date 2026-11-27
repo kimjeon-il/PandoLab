@@ -229,6 +229,21 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
   }, before.toString('base64'));
   const expected = COUNTRY_DEFAULT_COLORS.FRA.slice(1).match(/../g).map(value => parseInt(value, 16));
   expect(Math.max(...middlePixel.map((value, i) => Math.abs(value - expected[i])))).toBeLessThanOrEqual(1);
+  const samplePerformance = async(stage) => {
+   const metrics = await page.evaluate(() => {
+    const stats = window.__PANDOLAB_VIEWER__.rendererStats(), canvas = document.querySelector('#map canvas');
+    const gl = canvas.getContext('webgl2'), debug = gl.getExtension('WEBGL_debug_renderer_info');
+    return {source:window.PANDOLAB_BUILD_META.sourceCommit??null, data:window.PANDOLAB_BUILD_META.dataRevision,
+     dpr:devicePixelRatio, width:canvas.width,height:canvas.height,renderer:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),
+     drawCount:stats.drawCount,drawCalls:stats.drawCalls,firstPublishedAt:stats.performance.firstPublishedAt,
+     phases:stats.performance.phases,spatial:stats.spatialRendering,residency:stats.residency,
+     meshLedger:stats.residentCache?.meshLedger??null,labelLedger:stats.labelAtlas?.pageLedger??null,
+     bufferWrites:window.globeBufferWrites};
+   });
+   console.log('[viewer-performance]',JSON.stringify({stage,...metrics}));
+   return metrics;
+  };
+  await samplePerformance('startup');
   const writes = await page.evaluate(() => window.globeBufferWrites);
   const startupRequests = baseRequests();
   expect(assetRequests.filter(path=>path.includes('/pick/'))).toEqual([]);
@@ -267,6 +282,14 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
   await expect.poll(async()=>outlinePixels(await canvas.screenshot())).toBeGreaterThan(20);
   const selectionWrites=await page.evaluate(() => window.globeBufferWrites);
   expect(selectionWrites).toBeGreaterThan(writes);
+  // Record actual animation callback spacing during the same drag/zoom path.
+  await page.evaluate(() => {
+   const rows = []; let last = null;
+   window.globeFrameProbe = {rows,active:true};
+   const tick = time => {if (!window.globeFrameProbe.active)return;if(last!==null)rows.push(time-last);last=time;requestAnimationFrame(tick);};
+   requestAnimationFrame(tick);
+  });
+  const movementStarted=performance.now();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 110, box.y + box.height / 2 + 30, { steps: 8 });
@@ -276,6 +299,12 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
   await page.mouse.wheel(0, -80);
   await expect.poll(async () => (await camera(page)).zoom).toBeGreaterThan(zoomBeforeWheel);
   await ready(page, 'map after drag and zoom');
+  const movementMs=performance.now()-movementStarted;
+  const intervals=await page.evaluate(()=>{window.globeFrameProbe.active=false;return window.globeFrameProbe.rows;});
+  const ordered=intervals.slice().sort((a,b)=>a-b);
+  const quantile=q=>ordered.length?ordered[Math.min(ordered.length-1,Math.floor((ordered.length-1)*q))]:null;
+  console.log('[viewer-performance-movement]',JSON.stringify({movementMs,frames:intervals.length,p50Ms:quantile(.5),p95Ms:quantile(.95),maxMs:ordered.at(-1)??null}));
+  await samplePerformance('after drag and zoom');
   expectNoDuplicateBaseRequests();
   expect(await page.evaluate(() => window.__PANDOLAB_VIEWER__.rendererStats().renderer)).toBe('three');
   await expect.poll(() => page.evaluate(async () => {
@@ -285,7 +314,10 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
   })).toBe(0);
   const dateCamera = (await camera(page)).camera;
   // This month shares the startup edition's territorial packets.
+  const dateStarted=performance.now();
   await month(page, '2026-12');
+  console.log('[viewer-performance-date]',JSON.stringify({elapsedMs:performance.now()-dateStarted,month:'2026-12'}));
+  await samplePerformance('after month transition');
   expect((await camera(page)).camera).toEqual(dateCamera);
   expectNoDuplicateBaseRequests();
   const viewBeforeContextLoss = (await camera(page)).camera;
