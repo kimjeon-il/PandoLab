@@ -100,6 +100,10 @@ test('dated physical contexts reuse unchanged river packets while changing water
   assert.equal(dated.waters[0].id,'waterbody:lake');
   assert.deepEqual(calls.sort(),['dated-water','modern-water','rivers']);
   assert.equal(await assets.prepare(assets.plan('dated')),dated);
+  const full = assets.plan('current',{lakesVisible:true,riversVisible:true});
+  const hidden = assets.plan('current',{lakesVisible:false,riversVisible:false});
+  assert.equal(assets.covers(await assets.prepare(full),hidden),true);
+  assert.equal(assets.covers(await assets.prepare(hidden),full),false);
 });
 
 test('dated physical cache drops inactive contexts without releasing a shared active river', async () => {
