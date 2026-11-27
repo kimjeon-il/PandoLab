@@ -507,3 +507,42 @@ test('required geometry reservations cannot consume unbounded protected-memory o
  assert.equal(ledger.stats().overflowCount,1);
  gate.dispose();ledger.dispose();
 });
+
+
+test('per-frame GPU creation and upload budgets reset without allowing cumulative overflow',async()=>{
+ const {createGlobeGpuFrameBudget}=await import('../../../src/rendering/globe-gpu-frame-budget.js');
+ const budget=createGlobeGpuFrameBudget({limits:{createBytes:100,createOperations:2,maxSingleCreateBytes:160,
+  uploadBytes:80,uploadOperations:2,maxSingleUploadBytes:120,compactionBytes:32}});
+ assert.equal(budget.beginFrame(1),true);
+ assert.equal(budget.admitCreate(40),true);
+ assert.equal(budget.admitCreate(40),true);
+ assert.equal(budget.admitCreate(1),false);
+ assert.equal(budget.admitUpload(50),true);
+ assert.equal(budget.admitUpload(31),false);
+ assert.equal(budget.admitCompaction(20),true);
+ assert.equal(budget.admitCompaction(20),false);
+ const first=budget.stats();
+ assert.equal(first.createBytes,80);
+ assert.equal(first.uploadBytes,70);
+ assert.equal(first.compactionBytes,20);
+ assert.deepEqual(first.deferred,{create:1,upload:1,compaction:1});
+ assert.equal(budget.beginFrame(1),false);
+ assert.equal(budget.beginFrame(2),true);
+ assert.equal(budget.admitUpload(120),true,'a bounded oversize resource may run alone');
+ assert.equal(budget.admitUpload(1),false,'oversize admission excludes all other uploads that frame');
+ assert.equal(budget.stats().uploadBytes,120);
+ assert.equal(budget.beginFrame(3),true);
+ assert.equal(budget.admitUpload(80),true);
+ assert.equal(budget.admitCompaction(32),false,'compaction cannot exceed its independent frame cap');
+});
+
+test('GPU frame budget scales with shared render memory and never mutates its limits',async()=>{
+ const {globeGpuFrameLimits,createGlobeGpuFrameBudget}=await import('../../../src/rendering/globe-gpu-frame-budget.js');
+ const low=globeGpuFrameLimits(96*1024*1024),high=globeGpuFrameLimits(320*1024*1024);
+ assert.ok(low.uploadBytes<high.uploadBytes);
+ assert.ok(low.createBytes<high.createBytes);
+ const budget=createGlobeGpuFrameBudget({totalRenderBytes:96*1024*1024});
+ const stats=budget.stats();
+ assert.equal(stats.limits.uploadBytes,low.uploadBytes);
+ assert.equal(Object.isFrozen(stats.limits),false);
+});
