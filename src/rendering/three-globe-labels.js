@@ -199,7 +199,7 @@ const equalCoordinate = (a, b) => a?.[0]===b?.[0]&&a?.[1]===b?.[1];
 const sameLabel = (a, b) => a&&b&&labelFields.every(key => a[key]===b[key])&&a.ref?.key===b.ref?.key&&
   equalCoordinate(a.coordinate, b.coordinate)&&a.lines.length===b.lines.length&&a.lines.every((line, i) => line===b.lines[i]);
 
-export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacity, viewport, maxTextureSize = 2048, byteBudget = renderCacheBudget().labelAtlasBytes, onReady = () => {}, onError = () => {}, createSdfTasks = createGlobeLabelSdfTasks, residency = null, workScheduler = null}) {
+export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,viewport,maxTextureSize=2048,byteBudget=renderCacheBudget().labelAtlasBytes,onReady=()=>{},onError=()=>{},createSdfTasks=createGlobeLabelSdfTasks,residency=null,workScheduler=null,gpuFrameBudget=null,prepareGpuMesh=null}) {
   const rasterOwner = createGlobeLabelRaster(), {canvas:raster, context} = rasterOwner;
   const fontUrl = new URL(GLOBE_LABEL_FONT_PATH, document.baseURI).href;
   let probes = null, workerRaster = true;
@@ -223,30 +223,35 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
   const counters = {rasterizedRuns:0, textMeasurements:0, fullUploadBytes:0, partialUploadBytes:0, partialUploads:0, fullUploads:0, evictedPages:0, compactedPages:0, shrunkBatches:0, workerRasterRuns:0, documentRasterRuns:0, rasterFallbacks:0, reusedRects:0, reclaimedRuns:0, compactionDeferrals:0};
 
   function textureState(texture) {
-    const state = {texture, uploaded:false, rects:[]};
-    texture.onUpdate = () => {
-      state.uploaded = true; counters.fullUploads++; counters.fullUploadBytes+=texture.image.data.byteLength;
-    };
-    texture.needsUpdate = true;
+    const state={texture,uploaded:false,pendingFull:true,rects:[]};
+    texture.onUpdate=()=>{state.uploaded=true;state.pendingFull=false;counters.fullUploads++;counters.fullUploadBytes+=texture.image.data.byteLength;};
     return state;
   }
   function restoreTexture(state) {
-    state.uploaded = false; state.rects.length = 0; state.texture.clearUpdateRanges(); state.texture.needsUpdate = true;
+    state.uploaded=false;state.pendingFull=true;state.rects.length=0;state.texture.clearUpdateRanges();
+  }
+  function uploadFull(state) {
+    if (state.uploaded)return true;
+    if (!state.pendingFull)return false;
+    const bytes=state.texture.image?.data?.byteLength??0;
+    if (gpuFrameBudget&&!gpuFrameBudget.admitUpload(bytes,1))return false;
+    state.texture.needsUpdate=true;renderer.initTexture(state.texture);
+    return state.uploaded;
   }
   function dirty(state, x, y, width, height) {
     if (state.uploaded&&width>0&&height>0)state.rects.push({x, y, width, height});
   }
   function flush(state) {
-    if (!state.rects.length)return;
-    const texture = state.texture, {width, height, data} = texture.image;
-    const rects = mergeLabelTextureRects(state.rects); state.rects.length = 0;
-    if (!state.uploaded)return;
-    const area = rects.reduce((sum, row) => sum+row.width*row.height, 0);
-    if (!renderer?.copyTextureToTexture||area>=width*height*.6||rects.length>64) {
-      restoreTexture(state); return;
-    }
-    const bytesPerTexel = data.byteLength/(width*height);
-    textureCopier.copy(texture, rects, pixels => {counters.partialUploads++; counters.partialUploadBytes+=pixels*bytesPerTexel;});
+    if (!state.rects.length)return true;
+    const texture=state.texture,{width,height,data}=texture.image,rects=mergeLabelTextureRects(state.rects);
+    if (!state.uploaded)return false;
+    const area=rects.reduce((sum,row)=>sum+row.width*row.height,0);
+    if (!renderer?.copyTextureToTexture||area>=width*height*.6||rects.length>64) {restoreTexture(state);return false;}
+    const bytesPerTexel=data.byteLength/(width*height),bytes=area*bytesPerTexel;
+    if (gpuFrameBudget&&!gpuFrameBudget.admitUpload(bytes,rects.length))return false;
+    state.rects.length=0;
+    textureCopier.copy(texture,rects,pixels=>{counters.partialUploads++;counters.partialUploadBytes+=pixels*bytesPerTexel;});
+    return true;
   }
   function addPage(place) {
     const pixels = new Uint8Array(size*size);
@@ -449,8 +454,8 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     const material = new THREE.ShaderMaterial({vertexShader, fragmentShader, depthTest:false, depthWrite:false, transparent:true,
       uniforms:{atlas:{value:page.atlas}, atlasSize:{value:size}, boxes:{value:boxes}, capacity:{value:allocated}, viewport, textColor:{value:textColor}, haloColor:{value:haloColor}}});
     const mesh = createGlobeMesh(THREE, geometry, material, 7);
-    geometry.instanceCount = 0; mesh.visible = false; scene.add(mesh);
-    cacheDirty = true; dirtyBatchPages.add(page); pageLedger.mark(page); return {values, boxes, upload:textureState(boxes), mesh, capacity:allocated, count:0};
+    geometry.instanceCount=0;mesh.visible=false;scene.add(mesh);
+    cacheDirty=true;dirtyBatchPages.add(page);pageLedger.mark(page);return {values,boxes,upload:textureState(boxes),mesh,capacity:allocated,count:0,gpuReady:false};
   }
   function updateBatch(batch, rows, first, count) {
     let dirtyStart = -1;
@@ -467,8 +472,8 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     }
     if (dirtyStart>=0)dirty(batch.upload, 0, dirtyStart, 2, count-dirtyStart);
     if (batch.count!==count)cacheDirty = true;
-    batch.count = count; batch.mesh.geometry.instanceCount = count; batch.mesh.visible = count>0;
-    flush(batch.upload);
+    batch.count=count;batch.mesh.geometry.instanceCount=count;
+    batch.mesh.visible=count>0&&batch.gpuReady&&page.upload.uploaded&&batch.upload.uploaded;
   }
   function hideBatches(page, first = 0) {
     for (let i = first; i<page.batches.length; i++) {
@@ -612,10 +617,10 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       let batchIndex = 0;
       for (let first = 0; first<rows.length; first+=maxRows) {
         const count = Math.min(maxRows, rows.length-first);
-        const batch = createBatch(page, count, page.batches[batchIndex]);
-        page.batches[batchIndex++] = batch; updateBatch(batch, rows, first, count);
+        const batch=createBatch(page,count,page.batches[batchIndex]);
+        page.batches[batchIndex++]=batch;updateBatch(batch,rows,first,count);
       }
-      hideBatches(page, batchIndex); flush(page.upload);
+      hideBatches(page,batchIndex);
     }
     activePages = new Set(byPage.keys()); layoutStats.placed = placed.length;
     syncLabelMemory(); return lastComplete;
@@ -626,7 +631,23 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
     if (next.halo) {const color = String(next.halo).replace(/^rgba\(([^,]+,[^,]+,[^,]+),[^)]+\)$/,'rgb($1)');haloColor.set(color);}
   }
   function restoreTextures() {
-    for (const page of pages) {restoreTexture(page.upload); for (const batch of page.batches)restoreTexture(batch.upload);}
+    for (const page of pages) {restoreTexture(page.upload);for (const batch of page.batches){restoreTexture(batch.upload);batch.gpuReady=false;batch.mesh.visible=false;}}
+  }
+  function flushUploads() {
+    let complete=true;
+    for (const page of activePages) {
+      if (!uploadFull(page.upload)) {complete=false;for (const batch of page.batches)batch.mesh.visible=false;continue;}
+      for (const batch of page.batches) {
+        if (batch.upload.pendingFull&&!uploadFull(batch.upload)) {complete=false;batch.mesh.visible=false;continue;}
+        if (batch.upload.rects.length&&!flush(batch.upload)) {complete=false;batch.mesh.visible=false;continue;}
+        if (!batch.gpuReady) {
+          if (prepareGpuMesh&&!prepareGpuMesh(batch.mesh)) {complete=false;batch.mesh.visible=false;continue;}
+          batch.gpuReady=true;
+        }
+        batch.mesh.visible=batch.count>0;
+      }
+    }
+    return complete;
   }
   function syncLabelMemory() {
     const next = new Set(activePages);
@@ -652,7 +673,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       batchCapacity:pages.reduce((sum, page) => sum+page.batches.reduce((n, batch) => n+batch.capacity, 0), 0),
       measuredTexts:metricsCache.size, ...counters, sdfWorker:{...sdfTasks.stats(), workerRaster, fallback:sdfRecovery.fallback, localFailures:sdfRecovery.localFailures, failed:!!sdfRecovery.error, pendingMaskBytes}, layout:{...layoutStats}};
   }
-  return Object.freeze({setCandidates, setCandidateGroups, update, trim, dispose, cancelPending, restoreTextures, setPalette, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
+  return Object.freeze({setCandidates,setCandidateGroups,update,trim,flushUploads,dispose,cancelPending,restoreTextures,setPalette, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
     visibleCount:place => placed.filter(row => Boolean(row.place)===place).length,
     drawCalls:() => [...activePages].reduce((count,page)=>count+page.batches.filter(batch=>batch.count>0).length,0),atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
 }
