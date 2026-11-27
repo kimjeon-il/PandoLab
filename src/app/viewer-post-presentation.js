@@ -13,16 +13,18 @@ export function createViewerPostPresentation({hydrate, refresh, afterMap = [], o
       console.error('[PL-VIEWER-POST-DIAGNOSTIC]', diagnosticError);
     }
   };
-  function schedule(isCurrent) {
+  function schedule(isCurrent, {beforeRefresh = []} = {}) {
     if (typeof isCurrent!=='function')throw new TypeError('A current project check is required.');
+    if (!Array.isArray(beforeRefresh)||beforeRefresh.some(task => typeof task!=='function'))
+      throw new TypeError('Post-presentation refresh tasks must be functions.');
     const request = ++revision;
     const current = () => {
       if (disposed||request!==revision)return false;
       try {return isCurrent()!==false;}catch (_) {return false;}
     };
-    // Yield from the map-open path. Each optional action is independent: a
-    // failed search/surface task must not block subsequent actions.
-    void Promise.resolve().then(async() => {
+    // Yield through a browser task so the accepted map frame can paint before
+    // catalog pruning, search-model construction or other optional UI work.
+    void new Promise(resolve => setTimeout(resolve,0)).then(async() => {
       if (!current())return;
       for (let i = 0; i<afterMap.length; i++) {
         if (!current())return;
@@ -32,6 +34,12 @@ export function createViewerPostPresentation({hydrate, refresh, afterMap = [], o
       if (!current())return;
       try {await hydrate(current);}
       catch (error) {report(error,'hydrate', current); return;}
+      if (!current())return;
+      for (const task of beforeRefresh) {
+        if (!current())return;
+        try {await task();}
+        catch (error) {report(error,'auxiliary-refresh', current);}
+      }
       if (!current())return;
       try {await refresh();}
       catch (error) {report(error,'search', current);}

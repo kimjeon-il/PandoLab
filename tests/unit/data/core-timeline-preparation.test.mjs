@@ -221,3 +221,54 @@ test('initial geometry failure waits for Core candidate settlement before discar
  await assert.rejects(pending,/packet failure/);
  assert.deepEqual(discarded,[candidate]);
 });
+
+
+test('dated auxiliary catalog cleanup runs after hydration and before search refresh',async()=>{
+ const {createViewerPostPresentation}=await import('../../../src/app/viewer-post-presentation.js');
+ const events=[],hydration=Promise.withResolvers(),reported=[];
+ const post=createViewerPostPresentation({
+  afterMap:[()=>events.push('overlay')],
+  hydrate:async()=>{events.push('hydrate');await hydration.promise;},
+  refresh:()=>events.push('search'),
+  onError:(error,stage)=>reported.push([error.message,stage]),
+ });
+ const returned=post.schedule(()=>true,{beforeRefresh:[async()=>{events.push('prune');}]});
+ assert.equal(returned,undefined);
+ await new Promise(resolve=>setTimeout(resolve,5));
+ assert.deepEqual(events,['overlay','hydrate']);
+ hydration.resolve();
+ await new Promise(resolve=>setTimeout(resolve,5));
+ assert.deepEqual(events,['overlay','hydrate','prune','search']);
+ assert.deepEqual(reported,[]);
+ post.dispose();
+});
+
+test('superseded dated auxiliary cleanup cannot refresh stale search results',async()=>{
+ const {createViewerPostPresentation}=await import('../../../src/app/viewer-post-presentation.js');
+ const events=[],hydration=Promise.withResolvers();let current=true;
+ const post=createViewerPostPresentation({
+  hydrate:async()=>{events.push('hydrate');await hydration.promise;},
+  refresh:()=>events.push('search'),
+ });
+ post.schedule(()=>current,{beforeRefresh:[()=>events.push('prune')]});
+ await new Promise(resolve=>setTimeout(resolve,5));
+ current=false;post.invalidate();hydration.resolve();
+ await new Promise(resolve=>setTimeout(resolve,5));
+ assert.deepEqual(events,['hydrate']);
+ post.dispose();
+});
+
+test('failed deferred catalog cleanup is reported but does not suppress search refresh',async()=>{
+ const {createViewerPostPresentation}=await import('../../../src/app/viewer-post-presentation.js');
+ const events=[],reported=[],failure=Error('catalog prune failed');
+ const post=createViewerPostPresentation({
+  hydrate:async()=>events.push('hydrate'),
+  refresh:()=>events.push('search'),
+  onError:(error,stage)=>reported.push([error,stage]),
+ });
+ post.schedule(()=>true,{beforeRefresh:[()=>{throw failure;}]});
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(events,['hydrate','search']);
+ assert.deepEqual(reported,[[failure,'auxiliary-refresh']]);
+ post.dispose();
+});

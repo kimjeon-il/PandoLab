@@ -6,7 +6,7 @@ import { installTimelineControls } from '../ui/timeline-controls.js';
 /** Owns the Viewer date-control, C++ cursor transition, and temporal recovery flow. */
 export function createViewerTimelineComposition({
   document, window, map, projectDomain, activeSession, status, preferencePresentation,
-  postPresentation, openBuiltinProject, search, syncStatus, report, getPresentedMonth, setPresentedMonth,
+  postPresentation, openBuiltinProject, syncStatus, report, getPresentedMonth, setPresentedMonth,
 }) {
   const applyDocumentMonth = async(month, {
     isCurrent = () => true, waitForFrame = false, admitPresentation = null, geometryPreparation,
@@ -17,8 +17,8 @@ export function createViewerTimelineComposition({
     await map.renderer.measureWork('core.timeline-cursor',
       () => activeSession.commandOwner.setTimelineCursor(month, {isCurrent, geometryPreparation}));
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    if (before!==map.features()&&territorialMembershipDelta(before, map.features()).changed)
-      await map.objectCatalog.pruneLayerItemVisibility();
+    const membershipChanged = before!==map.features()
+      &&territorialMembershipDelta(before, map.features()).changed;
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     // Place data and its SDF atlas are refreshed in the background by the
     // rendering domain; they must not delay the certified dated map frame.
@@ -27,9 +27,7 @@ export function createViewerTimelineComposition({
     if (admitPresentation?.()===false)return false;
     if (waitForFrame)await map.renderer.waitForMapPresentation(generation);
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    search();
-    syncStatus();
-    return true;
+    return {membershipChanged};
   };
 
   const changeProjectCursor = async(month, {isCurrent, commit}) => {
@@ -53,14 +51,17 @@ export function createViewerTimelineComposition({
       } finally {preparing = false;}
       if (!current())return false;
       map.renderer.preserveTemporalFrame();
-      if (!await applyDocumentMonth(month, {
+      const applied = await applyDocumentMonth(month, {
         isCurrent:current, waitForFrame:true, geometryPreparation,
         admitPresentation:() => map.renderer.admitTemporalViewTransition(temporalTicket),
-      }))return false;
+      });
+      if (!applied)return false;
       if (!current()||!committed)return false;
       status.dataset.ready = 'true';
       presentViewerLoadStatus(status,'지도 준비 완료.');
-      postPresentation.schedule(current);
+      postPresentation.schedule(current, {
+        beforeRefresh:applied.membershipChanged?[() => map.objectCatalog.pruneLayerItemVisibility()]:[],
+      });
       return true;
     } catch (error) {
       if (current()) {
@@ -78,6 +79,9 @@ export function createViewerTimelineComposition({
               admitPresentation:() => map.renderer.admitTemporalViewTransition(restoreTicket),
             });
             if (!restored)throw new Error('Previous dated map was not restored.');
+            postPresentation.schedule(current, {
+              beforeRefresh:restored.membershipChanged?[() => map.objectCatalog.pruneLayerItemVisibility()]:[],
+            });
           } catch (restoreError) {error.restoreError = restoreError;}
           finally {map.renderer.finishTemporalViewTransition(restoreTicket);}
         }
