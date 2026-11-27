@@ -24,12 +24,13 @@ import { createRenderingMetrics } from './rendering-metrics.js';
 import { createGlobeRiverDetail } from './three-globe-rivers.js';
 import { createRenderPacketCache, renderCacheBudget, createRenderResidencyBudget, createRenderLoadGate } from './render-cache-budget.js';
 import { createGlobePhysicalAssets } from './three-globe-physical.js';
+import { GLOBE_FINE_LOD, globeLodEnabled, selectGlobeLod } from './globe-lod.js';
 
 const copyCamera = (view, backup) => ({...backup, ...view, center:view?.center??(view?.globeRotation&&view.globeRotation.slice(0, 2).map(v => -v))??backup.center});
 
 export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMapPreparation, onMapPreparationStatus, readSafeInsets, onWorldFitChange}) {
   const {state} = deps.projectState;
-  const spec = meta.globePreview, baseSlots = spec.countrySlots;
+  const spec = meta.globePreview, baseSlots = spec.countrySlots, lodEnabled=globeLodEnabled(spec.lodVersion);
   const slots = [...baseSlots];
   const slotByKey = new Map(slots.map(({id, geometry}, slot) => [globeTerritoryKey(id, geometry), slot]));
   const labelsBySlot = baseSlots.map(row => spec.countryLabels[row.id]);
@@ -74,7 +75,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   let territories = baseTerritories, acceptedTerritories = baseTerritories, activeSlots = new Set(baseTerritories.slots);
   let activeSlotByKey = new Map(baseTerritories.slots.map(slot => [refs[slot].key, slot]));
   let pickingRevision = 0, pickingChanged = false;
-  let outlineTargets = new Map(), outlinePlanDirty = true, lastOutlineCamera = null, outlinePaintDirty = true;
+  let outlineTargets = new Map(), outlinePlanDirty = true, lastOutlineCamera = null, lastOutlineLod = null, outlinePaintDirty = true;
   let presentationInputs = null, qualityKey = null;
   const readPresentationInputs = createGlobePresentationInputReader();
   const outlineStats = {outlinePlans:0, outlineDownloads:0};
@@ -185,8 +186,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     loadMesh, loadStroke:(row, signal, priority = 20, descriptor = null) => descriptor?.sources
       ?loadTerritorialStroke(row,signal,priority,descriptor,'하천')
       :load(row,'stroke',{signal,priority}),
-    byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:Math.floor(cacheBudget.borderBatchBytes/2), residency,
+    byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:Math.floor(cacheBudget.borderBatchBytes/2), residency, lodVersion:spec.lodVersion,
   });
+  let geometryLod=null;
+  function currentGeometryLod() {
+    geometryLod=selectGlobeLod({zoom:view.zoom,pitch:view.pitch??0,dpr:viewport?.dpr??1,enabled:lodEnabled,previous:geometryLod});
+    return geometryLod;
+  }
   let planCamera = null, planViewport = null; const cullCache = new Map(), territoryPlans = new Map(), physicalPlans = new Map(), planKeys = new WeakMap();
   function clearViewPlans() {planCamera = null; planViewport = null; cullCache.clear(); territoryPlans.clear(); physicalPlans.clear();}
   function syncViewPlans() {
@@ -206,13 +212,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function physicalPlan(identity, padding = 0, visibility = null) {
     syncViewPlans(); const extra = strokePadding(), lakesVisible = visibility?.lakesVisible??state.layerVisibility.lakes!==false,
       riversVisible = visibility?.riversVisible??state.layerVisibility.rivers!==false;
-    const key = JSON.stringify([identity, padding, extra, lakesVisible, riversVisible, view.zoom]);
+    const lod=currentGeometryLod(),key=JSON.stringify([identity,lod,padding,extra,lakesVisible,riversVisible,view.zoom]);
     let plan = physicalPlans.get(key);
-    if (!plan) {plan = physicalAssets.plan(identity, {zoom:view.zoom, cull:viewCull(padding), strokeCull:viewCull(padding+extra), lakesVisible, riversVisible});
+    if (!plan) {plan = physicalAssets.plan(identity, {zoom:view.zoom,lod,cull:viewCull(padding), strokeCull:viewCull(padding+extra), lakesVisible, riversVisible});
       if (physicalPlans.size>=8)physicalPlans.clear(); physicalPlans.set(key, plan);}
     return plan;
   }
-  const territorialContext = (prepared, visibility = null) => prepared.key+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
+  const territorialContext = (prepared, visibility = null) => prepared.key+'|'+currentGeometryLod()+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
   function territorialPlan(prepared = territories, padding = 0, visibility = null) {
     syncViewPlans(); const extra = strokePadding(), objectsVisible = visibility?.objectsVisible??state.layerVisibility.objects!==false,
       boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility)+'|'+padding+'|'+extra;
@@ -225,14 +231,14 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot => selectedSlots.has(slot)));
       if (!boundariesVisible)return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
-    });
+    },currentGeometryLod());
     if (boundariesVisible&&prepared.view)
-      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra)));
+      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),currentGeometryLod()));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
   function installHistoryCatalog(catalog) {
     if (historyLoaded)return;
-    if (catalog?.version!==1||!Array.isArray(catalog.historicalCountries)||catalog.historicalCountries.length!==countryCount-baseSlots.length
+    if (catalog?.version!==1||catalog.lodVersion!==spec.lodVersion||!Array.isArray(catalog.historicalCountries)||catalog.historicalCountries.length!==countryCount-baseSlots.length
       ||!Array.isArray(catalog.historicalBorders)||!Array.isArray(catalog.physicalContexts)||!Array.isArray(catalog.historyTimeline))
       throw Error('Three.js history slot count mismatch');
     const index = createGlobeHistoryIndex(catalog.history, baseSlots.length, {timeline:catalog.historyTimeline,
@@ -648,12 +654,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }
   function requestOutlines() {
     if (!ready||!camera||!surface)return;
-    if (lastOutlineCamera!==camera||outlinePlanDirty) {
+    const lod=currentGeometryLod();
+    if (lastOutlineCamera!==camera||lastOutlineLod!==lod||outlinePlanDirty) {
       const cull = viewCull(strokePadding()+32), targets = new Map();
       const roleStyles = paint.roleStyles();
       for (const [slot, code] of paint.countryRoles()) {
         if (!(roleStyles[code]?.width>0&&roleStyles[code]?.alpha>0))continue;
-        for (const descriptor of territorialAssets.outlineDescriptors(slot)) {
+        for (const descriptor of territorialAssets.outlineDescriptors(slot,lod)) {
           if (descriptor.bounds&&!cull(descriptor.bounds))continue;
           let target = targets.get(descriptor.key);
           if (!target) {target = {descriptor, roles:new Map()}; targets.set(descriptor.key, target);}
@@ -668,7 +675,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         for (const key of outlineFailed)if (!targets.has(key))outlineFailed.delete(key);
         outlineTargets = targets; outlinePaintDirty = true;
       }
-      lastOutlineCamera = camera; outlinePlanDirty = false; outlineStats.outlinePlans++;
+      lastOutlineCamera = camera; lastOutlineLod=lod; outlinePlanDirty = false; outlineStats.outlinePlans++;
       for (const [key, controller] of pendingOutlines)if (!outlineTargets.has(key)) {pendingOutlines.delete(key); controller.abort();}
       for (const [key, {descriptor}] of outlineTargets) {
         if (pendingOutlines.has(key)||surface.hasOutlines(key)||outlineFailed.has(key))continue;
@@ -735,7 +742,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const showRivers = state.layerVisibility.rivers!==false;
     if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical||riverDetail.retryDue()) {
       riverCamera = camera; riverVisible = showRivers; riverContext = physical;
-      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom, strokeCull:viewCull(strokePadding())}):[]))residencyDirty = true;
+      if (riverDetail.update(showRivers?physicalAssets.detailPlan(physical.spec.identity, {zoom:view.zoom,lod:physical.plan.lod,strokeCull:viewCull(strokePadding())}):[]))residencyDirty = true;
     }
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height));
     if (!submitted)return {...base, deferred:true};
@@ -859,6 +866,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         territorialSlots:acceptedTerritories.slots, riverDetailChunks:acceptedRiverChunks.length,
         riverDetailSegments:acceptedRiverChunks.reduce((count,row) => count+row.packet.count,0)}:null,
       drawCount, drawCalls:surface?.drawCalls()??0, spatialRendering:surface?.spatialStats()??null, performance:metrics.snapshot(),
+      geometryLod:{requested:currentGeometryLod(),displayed:acceptedPhysical?.plan.lod??null,finest:GLOBE_FINE_LOD,enabled:lodEnabled},
       countrySlotCount:acceptedTerritories.slots.length, activeHistoricalTerritories:acceptedTerritories.slots.filter(slot => slot>=baseSlots.length).length,
       physicalWaterIds:acceptedPhysical?.spec.waters.map(row => row.id)??[], visibleWaterChunks:acceptedPhysical?.waters.length??0,
       baseChunks:publishedBase?.parts.filter(row => row.role==='country'&&row.historySlot===undefined).length??0, territorialChunks:publishedBase?.parts.length??0, neighborPrefetch:{...neighborStats},

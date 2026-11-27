@@ -1,19 +1,20 @@
 import { createRenderPacketCache, renderCacheBudget, touchRenderCache } from './render-cache-budget.js';
 import { createGlobeChunkCatalog, globeChunkSetContains } from './globe-view-mesh-assets.js';
+import { GLOBE_FINE_LOD, globeChunkLod, validateGlobeLodChunks } from './globe-lod.js';
 
 // The same immutable Cartesian descriptor index is used for water, lakes
 // and all river tiers.
 export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, byteBudget = renderCacheBudget().physicalCpuBytes,
-  strokeBatchBytes = renderCacheBudget().borderBatchBytes, residency = null}) {
+  strokeBatchBytes = renderCacheBudget().borderBatchBytes, residency = null, lodVersion}) {
   const catalog = new Map(), contexts = new Map(), pending = new Map();
   function batchRiverChunks(rows) {
     const groups = new Map(), result = [];
     for (const row of rows) {
-      const cell = row.cell??row.key;
+      const cell = globeChunkLod(row)+':'+(row.cell??row.key);
       let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
       group.push(row);
     }
-    for (const [cell, group] of groups) {
+    for (const group of groups.values()) {
       let sources = [], decodedBytes = 0;
       const flush = () => {
         if (sources.length===1)result.push(sources[0]);
@@ -25,7 +26,7 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
             bounds[axis]=Math.min(bounds[axis],row.bounds[axis]);
             bounds[axis+3]=Math.max(bounds[axis+3],row.bounds[axis+3]);
           }
-          result.push({role:'river',kind:'stroke',cell,minZoom:group[0].minZoom,key,sources,bounds,
+          result.push({role:'river',kind:'stroke',cell:group[0].cell,lod:group[0].lod,minZoom:group[0].minZoom,key,sources,bounds,
             spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
         }
         sources=[]; decodedBytes=0;
@@ -41,18 +42,18 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
   }
   let retained = [], disposed = false;
   function chunks(list, role) {
-    return list.flatMap((row, i) => row.chunks.map((chunk, j) => ({
-      ...row, ...chunk, chunks:undefined, role, kind:role==='river'?'stroke':'mesh',
-      key:role+':'+(row.id??i)+':'+j+':'+chunk.spec.sha256,
+    return list.flatMap((row, i) => validateGlobeLodChunks(row.chunks,lodVersion).map((chunk, j) => ({
+      ...row, ...chunk, chunks:undefined, role, kind:'mesh',
+      key:role+':'+globeChunkLod(chunk)+':'+(row.id??i)+':'+j+':'+chunk.spec.sha256,
     })));
   }
   function addDescriptors(rows) {
     for (const spec of rows) {
       if (catalog.has(spec.identity))continue;
       const waters = chunks(spec.waters,'water'), lakes = chunks(spec.lakes,'lake');
-      const rivers = batchRiverChunks(spec.riverChunks.map((row, i) => ({...row, role:'river', kind:'stroke',
-        minZoom:spec.riverMinZoom, key:'river:'+i+':'+row.spec.sha256})));
-      const details = spec.riverDetail.map(row => ({...row, role:'detail', kind:'stroke', key:'detail:'+row.id}));
+      const rivers = batchRiverChunks(validateGlobeLodChunks(spec.riverChunks,lodVersion).map((row, i) => ({...row, role:'river', kind:'stroke',
+        minZoom:spec.riverMinZoom, key:'river:'+globeChunkLod(row)+':'+i+':'+row.spec.sha256})));
+      const details = validateGlobeLodChunks(spec.riverDetail,lodVersion).map(row => ({...row, role:'detail', kind:'stroke', key:'detail:'+globeChunkLod(row)+':'+row.id}));
       catalog.set(spec.identity, {spec, meshes:createGlobeChunkCatalog([...waters, ...lakes]),
         strokes:createGlobeChunkCatalog(rivers), detail:createGlobeChunkCatalog(details)});
     }
@@ -66,15 +67,15 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
     return files.read(keyOf(row), (readSignal, readPriority) => row.kind==='stroke'?
       loadStroke(row.spec, readSignal, readPriority, row):loadMesh(row.spec, readSignal, readPriority), signal, {priority});
   }
-  function plan(identity, {zoom = Infinity, lakesVisible = true, riversVisible = true, cull = () => true, strokeCull = cull} = {}) {
+  function plan(identity, {zoom = Infinity, lod = GLOBE_FINE_LOD, lakesVisible = true, riversVisible = true, cull = () => true, strokeCull = cull} = {}) {
     const source = catalog.get(identity);
     if (!source)throw Error('Three.js physical context is missing');
-    const {spec} = source, meshes = source.meshes.select(cull, row => row.role==='water'||lakesVisible&&zoom>=row.minZoom);
+    const {spec} = source, meshes = source.meshes.select(cull, row => row.role==='water'||lakesVisible&&zoom>=row.minZoom,lod);
     const waters = meshes.filter(row => row.role==='water'), lakes = meshes.filter(row => row.role==='lake');
     const rivers = riversVisible&&zoom>=spec.riverMinZoom;
-    const riverChunks = rivers?source.strokes.select(strokeCull):[];
-    const rows = [...waters, ...lakes, ...riverChunks], key = JSON.stringify([identity, rivers, rows.map(row => row.key)]);
-    return {key, spec, waters, lakes, rivers, riverChunks, rows, keys:rows.map(keyOf)};
+    const riverChunks = rivers?source.strokes.select(strokeCull,()=>true,lod):[];
+    const rows = [...waters, ...lakes, ...riverChunks], key = JSON.stringify([identity,lod,rivers,rows.map(row => row.key)]);
+    return {key,spec,lod,waters,lakes,rivers,riverChunks,rows,keys:rows.map(keyOf)};
   }
   function refresh() {
     if (disposed)return;
@@ -104,15 +105,15 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
       refresh();
     }
   }
-  function coversWaters(have, needed) {return !!have&&have.spec.identity===needed.spec.identity&&globeChunkSetContains(have.waters, needed.waters);}
+  function coversWaters(have, needed) {return !!have&&have.spec.identity===needed.spec.identity&&have.lod===needed.lod&&globeChunkSetContains(have.waters, needed.waters);}
   function covers(have, needed) {return coversWaters(have, needed)&&(!needed.rivers||have.rivers)&&
     globeChunkSetContains(have.lakes, needed.lakes)&&globeChunkSetContains(have.riverChunks, needed.riverChunks);}
   async function warm(target, {signal, priority = -20, claim, holdBytes = 0}) {
     for (const row of target.rows) {signal?.throwIfAborted(); if (files.has(keyOf(row))) {if (holdBytes)files.holdWarm(keyOf(row), holdBytes); continue;}if (!claim(row.spec, row.kind))continue; await read(row, signal, priority); if (holdBytes)files.holdWarm(keyOf(row), holdBytes);}
   }
-  function detailPlan(identity, {zoom, strokeCull = () => true}) {
+  function detailPlan(identity, {zoom, lod = GLOBE_FINE_LOD, strokeCull = () => true}) {
     const source = catalog.get(identity); if (!source)return [];
-    return source.detail.select(strokeCull, row => zoom>=row.minZoom);
+    return source.detail.select(strokeCull, row => zoom>=row.minZoom,lod);
   }
   function retain(plans) {retained = plans.filter(Boolean); refresh();}
   function dispose() {disposed = true; contexts.clear(); pending.clear(); catalog.clear(); retained = []; files.dispose();}

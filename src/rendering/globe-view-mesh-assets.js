@@ -1,6 +1,7 @@
 import { createGlobeRangeCuller } from './globe-spatial-partition.js';
 import { createRenderPacketCache, renderCacheBudget } from './render-cache-budget.js';
 import { createGlobePacketIndex } from './globe-picking.js';
+import { GLOBE_FINE_LOD, globeChunkLod, validateGlobeLodChunks } from './globe-lod.js';
 
 const all = () => true;
 export function globeViewChunkCuller(camera, viewport, padding = 0) {
@@ -30,9 +31,17 @@ export function createGlobeChunkCatalog(descriptors) {
   if (rows.some(row => !Array.isArray(row.bounds)||row.bounds.length!==6||!row.bounds.every(Number.isFinite)
       ||row.bounds.slice(0,3).some((value, axis) => value>row.bounds[axis+3])))
     throw Error('Invalid Cartesian globe chunk bounds');
-  const index = createGlobePacketIndex(rows, row => row.bounds);
-  function select(cull = all, accept = all) {
-    return index.query(cull).filter(accept);
+  const byLod = new Map(), indexes = new Map();
+  for (const row of rows) {
+    const lod=globeChunkLod(row);
+    if (!byLod.has(lod))byLod.set(lod,[]);
+    byLod.get(lod).push(row);
+  }
+  // Only the requested precision's descriptor tree is built. A coarse
+  // camera never traverses every exact/detail descriptor.
+  function select(cull = all, accept = all, lod = GLOBE_FINE_LOD) {
+    if (!indexes.has(lod))indexes.set(lod,createGlobePacketIndex(byLod.get(lod)??[], row => row.bounds));
+    return indexes.get(lod).query(cull).filter(accept);
   }
   return {rows, select};
 }
@@ -44,7 +53,7 @@ export function createGlobeChunkAssets(descriptors, {loadMesh, loadStroke, resid
   let catalog = createGlobeChunkCatalog(descriptors);
   const packets = createRenderPacketCache({byteBudget, residency});
   const keyOf = row => (row.kind??'mesh')+':'+row.spec.sha256;
-  function plan(cull, accept = all) {return catalog.select(cull, accept);}
+  function plan(cull, accept = all, lod = GLOBE_FINE_LOD) {return catalog.select(cull, accept, lod);}
   function addDescriptors(rows) {const merged = new Map(catalog.rows.map(row => [row.key, row])); for (const row of rows)merged.set(row.key, row); catalog = createGlobeChunkCatalog([...merged.values()]);}
   function retain(plans) {packets.retain(new Set(plans.filter(Boolean).flatMap(plan => plan.map(keyOf))));}
   function read(row, signal, priority) {
@@ -121,12 +130,12 @@ export function createGlobeTerritorialAssets(spec, {
     const groups = new Map(), result = [];
     for (const row of rows) {
       if (row.role!=='border'||Boolean(row.baseBorder)!==baseBorder) {result.push(row); continue;}
-      const cell = row.cell??row.key;
+      const cell = globeChunkLod(row)+':'+(row.cell??row.key);
       let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
       group.push(row);
     }
     const maxBatchBytes = baseBorder?Math.floor(cacheBudget.borderBatchBytes/2):cacheBudget.borderBatchBytes;
-    for (const [cell, group] of groups) {
+    for (const group of groups.values()) {
       let sources = [], decodedBytes = 0;
       const flush = () => {
         if (sources.length===1)result.push(sources[0]);
@@ -139,7 +148,7 @@ export function createGlobeTerritorialAssets(spec, {
             bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
           }
           const slots = [...new Set(sources.flatMap(row => row.slots??[]))].sort((a,b) => a-b);
-          result.push({role:'border',kind:'stroke',key,sources,bounds,slots,cell,baseBorder,
+          result.push({role:'border',kind:'stroke',key,sources,bounds,slots,cell:group[0].cell,lod:group[0].lod,baseBorder,
             spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
         }
         sources = []; decodedBytes = 0;
@@ -153,17 +162,19 @@ export function createGlobeTerritorialAssets(spec, {
     }
     return result;
   }
+  const version=spec.lodVersion;
+  const chunks=rows=>validateGlobeLodChunks(rows,version);
   function descriptorsFor(catalog = null) {
     if (!catalog) return [
-      ...spec.countryChunks.map((row, i) => ({...row, role:'country', key:'base-country:'+i+':'+row.spec.sha256})),
-      ...combineBorderRows(spec.borderChunks.map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+i+':'+row.spec.sha256})),true),
+      ...chunks(spec.countryChunks).map((row, i) => ({...row, role:'country', key:'base-country:'+globeChunkLod(row)+':'+i+':'+row.spec.sha256})),
+      ...combineBorderRows(chunks(spec.borderChunks).map((row, i) => ({...row, role:'border', kind:'stroke', baseBorder:true, key:'base-border:'+globeChunkLod(row)+':'+i+':'+row.spec.sha256})),true),
     ];
     return [
-      ...catalog.historicalCountries.flatMap((country, i) => country.countryChunks.map((row, j) => ({
-        ...row, role:'country', historySlot:baseSlots.length+i, key:'history-country:'+i+':'+j+':'+row.spec.sha256,
+      ...catalog.historicalCountries.flatMap((country, i) => chunks(country.countryChunks).map((row, j) => ({
+        ...row, role:'country', historySlot:baseSlots.length+i, key:'history-country:'+globeChunkLod(row)+':'+i+':'+j+':'+row.spec.sha256,
       }))),
-      ...catalog.historicalBorders.flatMap((border, i) => border.chunks.map((row, j) => ({
-        ...row, role:'border', kind:'stroke', historyBorder:i, key:'history-border:'+i+':'+j+':'+row.spec.sha256,
+      ...catalog.historicalBorders.flatMap((border, i) => chunks(border.chunks).map((row, j) => ({
+        ...row, role:'border', kind:'stroke', historyBorder:i, key:'history-border:'+globeChunkLod(row)+':'+i+':'+j+':'+row.spec.sha256,
       }))),
     ];
   }
@@ -173,31 +184,41 @@ export function createGlobeTerritorialAssets(spec, {
   const borderPlansByView = new WeakMap();
 
   function addOutlineDescriptors(row, slot) {
-    for (let order = 0; order<row.outlineChunks.length; order++) {
-      const chunk = row.outlineChunks[order];
-      const descriptor = {...chunk, key:'outline:'+(slot??'base')+':'+order+':'+chunk.spec.sha256, slot, order, count:row.outlineChunks.length};
+    const byLod=new Map();
+    for (const chunk of chunks(row.outlineChunks)) {
+      const lod=globeChunkLod(chunk);
+      if (!byLod.has(lod))byLod.set(lod,[]);
+      byLod.get(lod).push(chunk);
+    }
+    for (const [lod,level] of byLod)for (let order=0;order<level.length;order++) {
+      const chunk=level[order];
+      const descriptor={...chunk,key:'outline:'+lod+':'+(slot??'base')+':'+order+':'+chunk.spec.sha256,slot,order,count:level.length};
       for (const owner of chunk.ownerSlots) {
-        let rows = outlineBySlot.get(owner);
-        if (!rows) {rows = []; outlineBySlot.set(owner, rows);}
+        const key=lod+':'+owner;
+        let rows=outlineBySlot.get(key);
+        if (!rows) {rows=[];outlineBySlot.set(key,rows);}
         rows.push(descriptor);
       }
     }
   }
   function addHistoryCatalog(catalog) {
+    if (catalog.lodVersion!==version)throw Error('Historical globe LOD version mismatch');
     assets.addDescriptors(descriptorsFor(catalog));
     catalog.historicalCountries.forEach((row, index) => addOutlineDescriptors(row, baseSlots.length+index));
   }
-  function planHistoryBorders(view, cull) {
+  function planHistoryBorders(view, cull, lod = GLOBE_FINE_LOD) {
     if (!view) return [];
-    let index = borderPlansByView.get(view);
+    let levels=borderPlansByView.get(view);
+    if (!levels) {levels=new Map();borderPlansByView.set(view,levels);}
+    let index=levels.get(lod);
     if (!index) {
       const groups = new Set(view.borders);
       const allRows = assets.plan(() => true,
-        row => row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder));
+        row => row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder),lod);
       index = createGlobeChunkCatalog(combineBorderRows(allRows,false));
-      borderPlansByView.set(view, index);
+      levels.set(lod,index);
     }
-    return index.select(cull);
+    return index.select(cull,all,lod);
   }
   async function loadOutlines(row, signal) {
     const owners = row.owners;
@@ -216,5 +237,5 @@ export function createGlobeTerritorialAssets(spec, {
     assets.dispose();
   }
   return Object.freeze({...assets, addHistoryCatalog,
-    outlineDescriptors:slot => outlineBySlot.get(slot)??[], planHistoryBorders, loadOutlines, dispose});
+    outlineDescriptors:(slot,lod=GLOBE_FINE_LOD) => outlineBySlot.get(lod+':'+slot)??[], planHistoryBorders, loadOutlines, dispose});
 }
