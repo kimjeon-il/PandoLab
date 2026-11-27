@@ -108,7 +108,7 @@ test('timeline preparation retries when another operation advances the Core epoc
 
 test('unchanged builtin water identities do not re-enter Core until the project changes',async()=>{
  const calls=[];
- const project=createProjectDomain({productMode:'viewer',readOnly:true,
+ const project=createProjectDomain({
   commandOwner:{async selectionCatalogLoad(domain,refs){calls.push({domain,refs});return {accepted:true};}},
   publishCommand:async()=>{}});
  const river={domain:'hydroBuiltin',id:'river:1',logicalId:'river:1',type:'river',sourceIds:['hydro:1']};
@@ -122,5 +122,48 @@ test('unchanged builtin water identities do not re-enter Core until the project 
   await project.resetRenderGeneration('fixture-replacement');
   await project.admitSelectionCatalog('hydroBuiltin',[river]);
   assert.equal(calls.length,3);
+ }finally{project.dispose();}
+});
+
+test('failed project replacement restores the prior accepted owner and retires its generation',async()=>{
+ const before=Object.freeze({documentId:'original',mapProjectIdentity:{projectId:'world'}});
+ const first=Object.freeze({documentId:'accepted',mapProjectIdentity:{projectId:'world'}});
+ const rejected=Object.freeze({documentId:'rejected',mapProjectIdentity:{projectId:'world'}});
+ let snapshot=before,checkpoint=null,id=0;
+ const state=[],published=[],restored=[],released=[],resets=[];
+ const project=createProjectDomain({
+  commandOwner:{
+   async captureReplacement(){checkpoint=snapshot;return ++id;},
+   async loadBaseline(baselineId){snapshot=baselineId===1?first:rejected;},
+   async selectionCatalogLoad(){},
+   async rollbackReplacement(){snapshot=checkpoint;},
+   async releaseReplacement(replacementId){released.push(replacementId);},
+  },
+  documentModel:{snapshot:()=>snapshot},
+  readBuiltinSelectionCatalogs:()=>[{domain:'hydroBuiltin',refs:[]}],
+  replaceSnapshot:async value=>value!==rejected,
+  restoreReplacement:async(value,generation,active)=>{restored.push({value,generation,active});},
+  onProjectReset:event=>resets.push(event.generation),
+  onReplacementState:(value)=>state.push(value),
+  onReplacementCommitted:()=>published.push(snapshot.documentId),
+ });
+ try{
+  assert.equal(await project.open(async()=>({baselineId:1,setup:{}})),true);
+  const accepted=project.activeProject();
+  assert.equal(accepted.documentId,'accepted');
+  await assert.rejects(project.open(async()=>({baselineId:2,setup:{}})),/Project replacement was rejected/);
+  assert.equal(project.snapshot(),first);
+  assert.equal(project.activeProject().documentId,'accepted');
+  assert.equal(project.getGeneration(),3);
+  assert.deepEqual(resets,[1,2,3]);
+  assert.deepEqual(state,[true,false,true,false]);
+  assert.deepEqual(published,['accepted']);
+  assert.deepEqual(released,[1,2]);
+  assert.equal(restored.length,1);
+  assert.equal(restored[0].value,first);
+  assert.equal(restored[0].generation,3);
+  assert.equal(restored[0].active.documentId,accepted.documentId);
+  assert.equal(project.isReplacing(),false);
+  assert.equal(project.isOpening(),false);
  }finally{project.dispose();}
 });

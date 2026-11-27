@@ -474,11 +474,97 @@ test('reference graph diagnostics share the compiled chain kernel for authoring 
  assert.equal(result[2].missing,true);
 });
 
-test('split document calculation bindings retain the compiled public ABI',async()=>{
+test('current document calculation and external Toolkit bindings retain the compiled public ABI',async()=>{
   const {sharedCalculationCore:core}=await import('../../src/document/temporal.js');
   for(const name of ["sphericalRingSignedArea","validateTerritorialRing","validateClippedTerritorialRing","referenceGraphDiagnostics","planGisCountryMerge","planGisCountryGeometry","gisCountryMergeCanCommit","resolveTerritorialRoot","sphericalRingSignedAreas","temporalParse","temporalMonthEnd","temporalCompare","temporalNormalizeInterval","temporalContains","temporalIntervalsOverlap","temporalShiftMonth","temporalCompareKeys","temporalFollowingDay","normalizePolygonGeometry","normalizePolygonRing","hasCanonicalPolygonWinding","hasCanonicalClippedPolygonWinding"])assert.equal(typeof core[name],'function',name);
   assert.equal(typeof core.DocumentSession,'function');
+  for(const name of ['referenceImageCalculate','referenceImagePlacement','referenceGradientField','referenceSnapAnchor',
+    'referenceTraceTree','referenceTracePath','referenceSimplifyTrace','referenceRefineTrace','referenceBoundaryGraph','PreparedReferenceImageWarp'])
+    assert.equal(typeof core[name],'function',name);
+  for(const name of ['timelineInitialMonth','distributionReferenceDiagnostics'])assert.equal(core[name],undefined,name);
+  assert.equal(core.DocumentSession.prototype.admitExternalBaseline,undefined);
   assert.equal(core.coreAbiVersion,1);
   assert.equal(core.temporalCompareKeys([2020,1,1],[2020,1,2]),-1);
   assert.equal(core.referenceGraphDiagnostics(['a','b'],['b','a'])[0].cycle,true);
+});
+
+test('the actual WASM runtime publishes immutable dated read models with epoch-pinned receipts',async()=>{
+ const {createDocumentSessionRuntime}=await import('../../src/document/core-document-runtime.js');
+ const {createCoreDocumentReadModel}=await import('../../src/document/core-document-read-model.js');
+ const fixture=readFixture(),model=createCoreDocumentReadModel(fixture);
+ const runtime=createDocumentSessionRuntime({loadModule:core,validateFlagDataUrl(){},currentMonth:()=> '2026-10'});
+ const context={throwIfCancelled(){}};
+ try{
+  const loaded=await runtime.load({storageJson:JSON.stringify(fixture)},context);
+  model.acceptTransition(loaded,'core.document-load');
+  const move=async month=>{
+   const result=await runtime.setTimelineCursor({month,expectedEpoch:model.world().sourceEpoch},context);
+   model.acceptTransition(result,'core.document-timeline-cursor');
+   assert.equal(model.world().month,month);
+   assert.equal(model.world().sourceEpoch,result.state.epoch);
+   return result;
+  };
+  await move('1914-07');
+  const previous=model.world(),snapshot=model.snapshot(),geometry=model.geometry({id:'shape',version:2});
+  assert.equal(previous.byId.get('B').parentId,'A');
+  const result=await move('1916-01');
+  const accepted=model.world();
+  assert.equal(accepted.byId.get('B').parentId,'C');
+  assert.equal(previous.byId.get('B').parentId,'A');
+  assert.equal(previous.month,'1914-07');
+  assert.ok(Object.isFrozen(previous.entities));
+  assert.equal(model.geometry({id:'shape',version:2}),geometry);
+  assert.equal(model.snapshot().documentId,snapshot.documentId);
+  assert.throws(()=>model.projectWorld(loaded.world,result.state.epoch),{code:'PL-CORE-STALE'});
+  assert.equal(model.world(),accepted);
+ }finally{await runtime.dispose();}
+});
+
+test('retiring a stateless Worker lane cannot cancel the replacement owner',async()=>{
+ const {createStatelessWorkerLane}=await import('../../src/runtime/stateless-worker-lane.js');
+ const workers=[];
+ const lane=createStatelessWorkerLane(()=>{const worker=workerPort();workers.push(worker);return worker;},1000);
+ try{
+  const first=lane.acquire();
+  const retired=first.request('packet.old',null,{timeoutMs:0});
+  const rejected=assert.rejects(retired,{code:'PL-WORKER-RPC-CANCELLED'});
+  lane.retire(first,'superseded');await rejected;
+  assert.equal(workers[0].terminated,true);
+  const next=lane.acquire();
+  assert.notEqual(next,first);
+  const current=next.request('packet.current',null,{timeoutMs:0});
+  lane.retire(first,'late cleanup');
+  assert.equal(lane.acquire(),next);
+  assert.equal(workers[1].terminated,undefined);
+  workers[1].onmessage({data:reply(workers[1].messages[0],'accepted')});
+  assert.equal((await current).result,'accepted');
+  assert.equal(next.stats().pendingCount,0);
+ }finally{lane.dispose('test-complete');}
+ assert.equal(lane.active,false);assert.equal(workers[1].terminated,true);
+});
+
+test('retired pending requests and cancelled consumers cannot remove a newer shared request',async()=>{
+ const {trackPending,waitForConsumer}=await import('../../src/runtime/async-request.js');
+ const entries=new Map(),old=Promise.withResolvers(),next=Promise.withResolvers();
+ const first=trackPending(entries,'resource',old.promise);
+ const current=trackPending(entries,'resource',next.promise);
+ const cancelled=new AbortController();
+ const detached=waitForConsumer(current,cancelled.signal);
+ const rejected=assert.rejects(detached,{name:'AbortError'});
+ cancelled.abort();await rejected;
+ old.resolve('obsolete');assert.equal(await first,'obsolete');
+ assert.equal(entries.get('resource'),current);
+ next.resolve('accepted');assert.equal(await current,'accepted');
+ assert.equal(entries.has('resource'),false);
+});
+
+test('shared LRU trimming preserves leased resources and disposes only the actual victims',async()=>{
+ const {setLruEntry,touchLruEntry,trimLruEntries}=await import('../../src/runtime/lru-cache.js');
+ const entries=new Map(),disposed=[];
+ for(const key of ['published','recent','old'])setLruEntry(entries,key,{bytes:8});
+ touchLruEntry(entries,'recent');
+ const bytes=trimLruEntries(entries,new Set(['published']),16,entry=>entry.bytes,key=>disposed.push(key));
+ assert.equal(bytes,16);
+ assert.deepEqual([...entries.keys()],['published','recent']);
+ assert.deepEqual(disposed,['old']);
 });

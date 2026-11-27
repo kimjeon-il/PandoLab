@@ -207,3 +207,42 @@ test('globe gesture owner publishes one movement lifecycle for an explicit pan',
   controller.abort();
   input.dispose();
 });
+
+test('pointer gestures settle on elapsed time even after a long deferred render',t=>{
+ const oldMatchMedia=Object.getOwnPropertyDescriptor(globalThis,'matchMedia');
+ Object.defineProperty(globalThis,'matchMedia',{configurable:true,writable:true,value:()=>({matches:false})});
+ t.after(()=>{if(oldMatchMedia)Object.defineProperty(globalThis,'matchMedia',oldMatchMedia);else delete globalThis.matchMedia;});
+ let now=1000;
+ t.mock.method(performance,'now',()=>now);
+ const events=[],handlers=new Map(),controller=new AbortController();
+ let current={frame:{center:[450,325]},drag(from,to){events.push(['drag',from,to]);return this;}};
+ const input=createGlobeViewerInput({
+  getCamera:()=>current,getViewport:()=>viewport,setCamera:value=>{current=value;},
+  invalidate:()=>{},beforeMovement:()=>{},onMovementStart:()=>{},onMovementEnd:()=>{},
+  signal:controller.signal,
+ });
+ t.after(()=>{controller.abort();input.dispose();});
+ input.subscribeInput('movestart',()=>events.push('start'));
+ input.subscribeInput('moveend',()=>events.push('end'));
+ input.subscribeInput('click',()=>events.push('click'));
+ input.attach({addEventListener(type,callback){handlers.set(type,callback);},
+  getBoundingClientRect:()=>({left:0,top:0}),setPointerCapture(){}});
+ const send=(type,x,y)=>handlers.get(type)({type,pointerId:1,button:0,clientX:x,clientY:y});
+ send('pointerdown',450,325);
+ now+=16;send('pointermove',466,325);
+ now+=16;send('pointermove',482,325);
+ now+=1;send('pointerup',482,325);
+ assert.equal(input.isMoving(),true);
+ now+=32;input.advanceInertia();
+ assert.equal(input.isMoving(),true);
+ now+=2000;input.advanceInertia();
+ assert.equal(input.isMoving(),false);
+ assert.deepEqual(events.filter(row=>typeof row==='string'),['start','end']);
+ send('pointerdown',450,325);
+ now+=16;send('pointermove',470,325);
+ send('pointercancel',470,325);
+ assert.equal(input.isMoving(),false);
+ assert.deepEqual(events.filter(row=>typeof row==='string'),['start','end','start','end']);
+ send('pointerdown',450,325);send('pointerup',450,325);
+ assert.deepEqual(events.filter(row=>typeof row==='string'),['start','end','start','end','click']);
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectMapOwner, mergeMapPorts} from '../../../src/app/map-owner-ports.js';
+import {connectMapOwner, createMapReadPorts, mergeMapPorts} from '../../../src/app/map-owner-ports.js';
 
 test('owner wiring selects only declared groups and reuses their live shared references', () => {
   let live = 1, connected, qualityPorts;
@@ -14,7 +14,7 @@ test('owner wiring selects only declared groups and reuses their live shared ref
   const quality = {connect(ports) {qualityPorts = ports;}};
   assert.equal(connectMapOwner('projectSession', owner, registry), owner);
   connectMapOwner('renderQuality', quality, registry);
-  assert.deepEqual(Object.keys(connected), ['domains', 'applicationConstants', 'modelValidation', 'physicalConfig', 'mapFactories', 'rendering', 'mapLayout', 'preferences', 'objectDisplay', 'physicalResources']);
+  assert.deepEqual(new Set(Object.keys(connected)), new Set(['domains', 'applicationConstants', 'modelValidation', 'physicalConfig', 'mapFactories', 'rendering', 'mapLayout', 'preferences', 'objectDisplay', 'physicalResources']));
   assert.equal(connected.runtimeConfiguration, undefined);
   assert.equal(connected.domains, common.domains);
   assert.equal(qualityPorts.domains, connected.domains);
@@ -66,4 +66,23 @@ test('map host initializes the real renderer once and retains the browser inspec
   assert.throws(()=>owner.mapHost.setViewState({projection:'flat'}));
   owner.stopMapResizeObserver();assert.equal(owner.mapHost.isReady(),false);
  } finally {globalThis.window=oldWindow;globalThis.document=oldDocument;}
+});
+
+test('map readers observe the canonical state and layout owners without materializing snapshots',()=>{
+ let current={view:{zoom:2}},revision=1,reads=0;
+ const owners={
+  projectSession:{get state(){reads++;return current;}},
+  mapHost:{get viewRevision(){return revision;}},
+ };
+ const read=createMapReadPorts(owners);
+ assert.equal(reads,0);
+ assert.equal(read.projectState.state,current);
+ assert.equal(read.mapLayout.viewRevision,1);
+ const prior=current;
+ current={view:{zoom:4}};revision++;
+ assert.equal(read.projectState.state,current);
+ assert.notEqual(read.projectState.state,prior);
+ assert.equal(prior.view.zoom,2);
+ assert.equal(read.mapLayout.viewRevision,2);
+ assert.throws(()=>{read.projectState.state=prior;},TypeError);
 });

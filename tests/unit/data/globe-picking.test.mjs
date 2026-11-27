@@ -81,3 +81,37 @@ test('cooperative picking yields to input and cancels a superseded query',async(
  const budget=createGlobePickBudget({signal:controller.signal,sliceMs:0,quantum:1,yieldTask:()=>{controller.abort();return Promise.resolve();}});
  await assert.rejects(pickGlobeSlotsCooperative(mesh,index,ray,undefined,{budget}),{name:'AbortError'});
 });
+
+test('accepted-frame river picking admits Core identities and discards superseded asynchronous hits',async()=>{
+ const {createGlobeObjectQuery}=await import('../../../src/rendering/globe-object-query.js');
+ const {encodeGlobeStrokes}=await import('../../../scripts/lib/globe-preview-assets.mjs');
+ const {decodeGlobeStrokes}=await import('../../../src/rendering/globe-mesh.js');
+ const packet=decodeGlobeStrokes(encodeGlobeStrokes([-0.1,0,0.1,0],null,[1],Uint16Array.of(3)));
+ const index=buildGlobeSpatialIndex(packet),camera=createGlobeCamera({center:[0,0],zoom:12},{width:800,height:600});
+ const empty=createGlobePacketIndex([],()=>null);
+ let sample={camera,waterIndex:empty,lakeIndex:empty,countryIndex:empty,
+  riverIndex:createGlobePacketIndex([{packet,index,minZoom:5}],row=>row.index.rootBounds),
+  labelHit:()=>null,lakesVisible:true,riversVisible:true,physical:{spec:{riverMinZoom:3}},visibleSlots:new Set()};
+ const feature={id:'river:fixture',properties:{category:'river'},__awBounds:[-.1,0,.1,0]};
+ let hold=null,started=null,completed=0,published=[];
+ const query=createGlobeObjectQuery({
+  getAcceptedPick:()=>sample,canPickFrame:()=>true,cancelNeighborPrefetch(){},
+  startRequest:()=>new AbortController(),finishRequest(){completed++;},refs:[],
+  async hydroFeaturesForSlots(slots,water){assert.deepEqual([...slots],[3]);assert.deepEqual(water,[]);return [feature];},
+  isHydroFeatureVisible:()=>true,hydroFeatureById:()=>null,
+  async admitHydroFeatures(rows,{isCurrent}){
+   assert.deepEqual(rows,[feature]);
+   if(hold){started.resolve();await hold.promise;}
+   if(isCurrent())published.push(...rows.map(row=>row.id));
+  },
+ });
+ const point=camera.projectVisibleCoordinate([0,0]);
+ const refs=await query.queryObjectRefs(point,{includeLabels:false});
+ assert.deepEqual(refs.map(row=>[row.domain,row.id]),[['hydro',feature.id]]);
+ assert.deepEqual(published,[feature.id]);
+ hold=Promise.withResolvers();started=Promise.withResolvers();
+ const stale=query.queryObjectRefs(point,{includeLabels:false});
+ const rejected=assert.rejects(stale,{name:'AbortError'});
+ await started.promise;sample={...sample};hold.resolve();await rejected;
+ assert.deepEqual(published,[feature.id]);assert.equal(completed,2);
+});

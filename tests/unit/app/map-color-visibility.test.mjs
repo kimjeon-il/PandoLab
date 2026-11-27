@@ -31,6 +31,8 @@ test('color visibility changes presentation only, preserving territorial colors,
  let paint;
  const settings=createMapSettings({capabilities:{builtinHydro:true,builtinPlaces:true},viewPresentation:{applyPresentation:async payload=>{
   events.push(['command',payload]);
+  assert.notEqual(state.layerPresentation.styles[payload.group].colorVisible,payload.patch.colorVisible,
+   'the UI must not directly mutate the accepted presentation before the owner command');
   if(payload.action==='groupStyle')Object.assign(state.layerPresentation.styles[payload.group],payload.patch);
   return true;
  }}});

@@ -62,8 +62,11 @@ export function createGlobeViewerInput({
 
   function advanceInertia() {
     if (moving&&!pointers.size&&velocity) {
-      const now = performance.now(), dt = Math.min(32, now-lastPointerMove); lastPointerMove = now;
-      const point = getCamera().frame.center; velocity = velocity.map(value => value*Math.exp(-dt/135));
+      const now = performance.now(), elapsed = Math.max(0, now-lastPointerMove); lastPointerMove = now;
+      // Bound a single camera step, but decay velocity by actual wall time.
+      // Slow asset preparation or software rendering must not prolong inertia.
+      const dt = Math.min(32, elapsed), point = getCamera().frame.center;
+      velocity = velocity.map(value => value*Math.exp(-elapsed/135));
       if (Math.hypot(...velocity)<0.02)finishMovement();
       else setCamera(getCamera().drag(point, [point[0]+velocity[0]*dt, point[1]+velocity[1]*dt]));
     }

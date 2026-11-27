@@ -1,12 +1,15 @@
 import {test,expect} from '@playwright/test';
 
 import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {gunzipSync} from 'node:zlib';
+import {decodeGlobeHistoryList,globeHistoryMonthKey} from '../../src/rendering/globe-history-index.js';
 
 import { COUNTRY_DEFAULT_COLORS } from '../../src/ui/country-default-colors.js';
 
 // Only accepted frames can certify a camera jump, timeline change or screen sample.
 // The host's current camera may already have changed while the canvas still shows the old frame.
-function readPresentedFrame({month=null,camera=null,afterFrame=null,coordinate=null}={}){
+function readPresentedFrame({month=null,camera=null,afterFrame=null,coordinate=null,settled=false,riverDetail=false}={}){
   const viewer=window.__PANDOLAB_VIEWER__,stats=viewer?.rendererStats(),host=window.__PANDOLAB_MAP_HOST__;
   const status=document.querySelector('#viewerStatus'),frame=stats?.presentedFrame;
   const current=host?.getViewState({withGeographicBounds:false}),cursor=viewer?.documentState()?.timelineCursor;
@@ -25,6 +28,9 @@ function readPresentedFrame({month=null,camera=null,afterFrame=null,coordinate=n
     requestedMonth:month===null||frame?.month===month,
     requestedCamera:camera===null||sameCamera(frame?.camera,camera),
     newerFrame:afterFrame===null||frame?.frameId>afterFrame,
+    movementSettled:!settled||stats?.moving===false,
+    riverDetailPresented:!riverDetail||Boolean(frame&&stats?.riverDetail?.requestedChunks>0
+      &&frame.riverDetailChunks===stats.riverDetail.requestedChunks&&frame.riverDetailSegments>0),
   };
   let point=null,rect=null;
   if(coordinate!==null){
@@ -67,10 +73,10 @@ async function goToCoordinate(page,center,zoom){
   await ready(page,'camera '+center.join(',')+' at zoom '+zoom,target);
 }
 
-async function clickGeographicPoint(page,coordinate){
+async function clickGeographicPoint(page,coordinate,expected={}){
   let sample;
   await expect.poll(async()=>{
-    sample=await page.evaluate(readPresentedFrame,{coordinate});
+    sample=await page.evaluate(readPresentedFrame,{...expected,coordinate,settled:true});
     return sample.blockers;
   },{message:'Geographic click target not presented: '+coordinate.join(',')}).toEqual([]);
   await page.mouse.click(sample.rect.x+sample.point[0],sample.rect.y+sample.point[1]);
@@ -383,66 +389,95 @@ test('Three globe draws local detailed rivers and reuses them after hiding the l
  expect(detailRequests).toHaveLength(network);
 });
 
+// Read the immutable published catalog independently of the running renderer.
+// A changed source pin may legitimately add/remove objects or geometry versions.
+async function readPinnedGlobeHistory(page){
+  const spec=await page.evaluate(()=>window.PANDOLAB_BUILD_META.globePreview);
+  const response=await page.request.get(new URL(spec.historyCatalog.url,page.url()).href);
+  expect(response.ok()).toBe(true);
+  const bytes=await response.body(),asset=spec.historyCatalog;
+  expect(bytes.length).toBe(asset.compressedBytes);
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(asset.sha256);
+  const decoded=gunzipSync(bytes,{maxOutputLength:asset.decodedBytes});
+  expect(decoded.length).toBe(asset.decodedBytes);
+  const catalog=JSON.parse(decoded.toString('utf8')),base=spec.countrySlots.map((_,index)=>index);
+  const moments=catalog.historyTimeline,history=catalog.history;
+  return month=>{
+    const key=globeHistoryMonthKey(month);
+    const moment=moments.findLast(([date])=>globeHistoryMonthKey(date)<=key);
+    expect(moment,'pinned history contains '+month).toBeDefined();
+    const index=moment[1];
+    if(index===-1)return base;
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(index).toBeLessThan(history.rows.length);
+    let slots=[];
+    for(let i=index-index%history.stride;i<=index;i++)slots=decodeGlobeHistoryList(slots,history.rows[i][1]);
+    expect(new Set(slots).size).toBe(slots.length);
+    return slots;
+  };
+}
+
 test('Three globe switches to changed historical meshes and reuses them on return', async ({page})=>{
  const historyRequests=[];
- page.on('request',request=>{if(request.url().includes('/globe-preview/historical/'))historyRequests.push(request.url());});
- await page.addInitScript(()=>{
-  window.globeHistoryBufferWrites=0;
-  const gl=window.WebGL2RenderingContext.prototype;
-  for(const name of ['bufferData','bufferSubData']){
-   const implementation=gl[name];
-   gl[name]=function(...args){window.globeHistoryBufferWrites++;return implementation.apply(this,args);};
-  }
+ page.on('requestfinished',request=>{
+  const path=new URL(request.url()).pathname;
+  if(/\/globe-preview\/historical\/(?:countries|borders)\//.test(path))historyRequests.push(path);
  });
  await page.goto('./?debug=1');
  await ready(page,'Three globe historical startup');
  await goToCoordinate(page,[46.7,39.8],2.75);
+ const expectedSlots=await readPinnedGlobeHistory(page);
  const canvas=page.locator('#map canvas'),modernMap=await canvas.screenshot();
- const base=await page.evaluate(()=>({month:window.__PANDOLAB_VIEWER__.builtinMonth().month,
-  count:window.__PANDOLAB_VIEWER__.rendererStats().countrySlotCount}));
- const initialCamera=(await camera(page)).camera;
- const active=()=>page.evaluate(()=>{const stats=window.__PANDOLAB_VIEWER__.rendererStats();
-  return {count:stats.countrySlotCount,changed:stats.activeHistoricalTerritories,writes:window.globeHistoryBufferWrites};});
- expect(historyRequests).toEqual([]);
+ const active=()=>page.evaluate(()=>{
+  const viewer=window.__PANDOLAB_VIEWER__,stats=viewer.rendererStats();
+  return {month:stats.presentedFrame.month,slots:stats.presentedFrame.territorialSlots,
+   count:stats.countrySlotCount,changed:stats.activeHistoricalTerritories};
+ });
+ const base=await active(),initialCamera=(await camera(page)).camera;
+ const assertMonth=async(value)=>{
+  const expected=expectedSlots(value);
+  const baseCount=await page.evaluate(()=>window.PANDOLAB_BUILD_META.globePreview.countrySlots.length);
+  await expect.poll(active).toEqual({month:value,slots:expected,count:expected.length,
+   changed:expected.filter(slot=>slot>=baseCount).length});
+  expect((await camera(page)).camera).toEqual(initialCamera);
+ };
+ await assertMonth(base.month);
  await month(page,'2020-12');
- const first=await active(),requests=historyRequests.length;
- expect(first.count).toBe(base.count+1);
- expect(first.changed).toBe(3);
- expect(requests).toBeGreaterThan(0);
- expect((await camera(page)).camera).toEqual(initialCamera);
- expect((await canvas.screenshot()).equals(modernMap)).toBe(false);
+ await assertMonth('2020-12');
+ const first=await active();
+ expect(first.slots).not.toEqual(base.slots);
+ expect(first.changed).toBeGreaterThan(0);
+ await expect.poll(()=>historyRequests.length).toBeGreaterThan(0);
+ await expect.poll(async()=>(await canvas.screenshot()).equals(modernMap)).toBe(false);
+ const visited=new Set(historyRequests);
+ const downloads=()=>historyRequests.filter(path=>visited.has(path)).length;
+ const initialDownloads=downloads();
  await month(page,base.month);
- expect(await active()).toEqual({count:base.count,changed:0,writes:first.writes});
- expect((await canvas.screenshot()).equals(modernMap)).toBe(true);
+ await assertMonth(base.month);
+ await expect.poll(async()=>(await canvas.screenshot()).equals(modernMap)).toBe(true);
  await month(page,'2020-12');
+ await assertMonth('2020-12');
  expect(await active()).toEqual(first);
- expect(historyRequests).toHaveLength(requests);
- await month(page,'1991-12');
- expect((await active()).count).toBeLessThan(base.count);
- expect((await active()).changed).toBeGreaterThan(first.changed);
- await month(page,'1910-07');
- const earlier=await active();
- expect(earlier.count).toBeLessThan(base.count);
- expect(earlier.changed).toBeGreaterThan(0);
- expect((await camera(page)).camera).toEqual(initialCamera);
- await month(page,'-0001-12');
- expect((await active()).count).toBeLessThan(earlier.count);
- await month(page,'0001-01');
- expect((await active()).count).toBeLessThan(earlier.count);
+ // Adjacent-date prefetch may download different packets; a revisit must
+ // reuse the successfully downloaded historical packets already visited.
+ expect(downloads()).toBe(initialDownloads);
+ for(const value of ['1991-12','1910-07','-0001-12','0001-01']){
+  await month(page,value);
+  await assertMonth(value);
+ }
 });
 
 async function openGeographicSampleMap(page){
  await page.addInitScript(()=>localStorage.setItem('pandolab-user-preferences',JSON.stringify({version:2,backgrounds:{viewer:{graticule:false}}})));
  await page.goto('./?debug=1');
  await ready(page,'geographic samples startup');
- const canvas=page.locator('#map canvas');
  const go=(center,zoom)=>goToCoordinate(page,center,zoom);
  const rgb=hex=>hex.slice(1).match(/../g).map(value=>parseInt(value,16));
  const paint=async(coordinate,hex)=>expect.poll(async()=>{
   const actual=await readGeographicPixel(page,coordinate);
   return actual?Math.max(...rgb(hex).map((value,index)=>Math.abs(actual[index]-value))):Infinity;
  },{message:'Geographic pixel: '+coordinate.join(',')+' expected '+hex}).toBeLessThanOrEqual(1);
- return {canvas,go,paint};
+ return {go,paint};
 }
 
 test('Three globe uses territorial coastlines for coastal fill',async({page})=>{
@@ -503,22 +538,23 @@ test('Three globe selects rendered rivers and dated water with Core identities',
  await page.goto('./?debug=1');
  await ready(page,'Three globe hydro selection startup');
  const go=(center,zoom)=>goToCoordinate(page,center,zoom);
- const click=coordinate=>clickGeographicPoint(page,coordinate);
+ const click=(coordinate,expected)=>clickGeographicPoint(page,coordinate,expected);
  const selection=()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.selectionSnapshot().items.map(ref=>ref.id));
+ const selectRiver=async(coordinate,id,name)=>{
+  await go(coordinate,12);
+  await ready(page,'presented river '+name,{riverDetail:true,settled:true});
+  await click(coordinate,{riverDetail:true});
+  const option=page.locator('#objectChooserList [role="option"]').filter({hasText:name});
+  await expect.poll(async()=>await option.isVisible()||(await selection()).includes(id),
+   {message:'Rendered river selection: '+name+' ('+id+')'}).toBe(true);
+  if(await option.isVisible())await option.click();
+  await expect.poll(selection).toContain(id);
+ };
  // A vertex from the reviewed GRWL eastern mouth, with the retained river ID.
  const nakdong=[128.96075,35.1557],nakdongId='hydro-system:40505530';
  expect(await page.evaluate(()=>window.PANDOLAB_BUILD_META.projectCatalogs.rivers.version)).toBe('0.14.2');
  // Keep the Busan place label clear of the river hit target.
- await go(nakdong,12);
- await expect.poll(()=>page.evaluate(()=>{
-  const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
-  return visibleChunks>0&&visibleChunks===requestedChunks;
- })).toBe(true);
- await click(nakdong);
- const chooser=page.locator('#objectChooserList [role="option"]').filter({hasText:'낙동강'});
- await expect.poll(async()=>await chooser.isVisible()||(await selection()).includes(nakdongId)).toBe(true);
- if(await chooser.isVisible())await chooser.click();
- await expect.poll(selection).toContain(nakdongId);
+ await selectRiver(nakdong,nakdongId,'낙동강');
  const canvas=page.locator('#map canvas');
  await expect.poll(async()=>page.evaluate(async encoded=>{
   const image=await createImageBitmap(new Blob([Uint8Array.from(atob(encoded),char=>char.charCodeAt(0))]));
@@ -528,28 +564,10 @@ test('Three globe selects rendered rivers and dated water with Core identities',
   return false;
  },(await canvas.screenshot()).toString('base64'))).toBe(true);
  const thames=[-0.84703,51.54459],thamesId='hydro-grwl:V01.02:17337';
- await go(thames,12);
- await expect.poll(()=>page.evaluate(()=>{
-  const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
-  return visibleChunks>0&&visibleChunks===requestedChunks;
- })).toBe(true);
- await click(thames);
- const thamesOption=page.locator('#objectChooserList [role="option"]').filter({hasText:'템스강'});
- await expect.poll(async()=>await thamesOption.isVisible()||(await selection()).includes(thamesId)).toBe(true);
- if(await thamesOption.isVisible())await thamesOption.click();
- await expect.poll(selection).toContain(thamesId);
+ await selectRiver(thames,thamesId,'템스강');
  await expect(page.locator('#viewerSelectionStatus')).toHaveText('템스강');
  const chao=[100.55509,14.04603],chaoId='hydro-system:41339527';
- await go(chao,12);
- await expect.poll(()=>page.evaluate(()=>{
-  const {visibleChunks,requestedChunks}=window.__PANDOLAB_VIEWER__.rendererStats().riverDetail;
-  return visibleChunks>0&&visibleChunks===requestedChunks;
- })).toBe(true);
- await click(chao);
- const chaoOption=page.locator('#objectChooserList [role="option"]').filter({hasText:'짜오프라야강'});
- await expect.poll(async()=>await chaoOption.isVisible()||(await selection()).includes(chaoId)).toBe(true);
- if(await chaoOption.isVisible())await chaoOption.click();
- await expect.poll(selection).toContain(chaoId);
+ await selectRiver(chao,chaoId,'짜오프라야강');
  await expect(page.locator('#viewerSelectionStatus')).toHaveText('짜오프라야강');
  const caspian=[51,42];
  await go(caspian,2.75);
@@ -808,13 +826,13 @@ test('desktop Viewer presents the real map, changes year, searches and moves the
   await open(page);
   await month(page,'2024-12');
   await search(page);
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().moving)).toBe(false);
+  await ready(page,'before camera drag',{settled:true});
   const before=await camera(page);
+  const beforeFrame=await page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().presentedFrame.frameId);
   await page.mouse.move(600,420);await page.mouse.down();
   await page.mouse.move(740,450,{steps:8});await page.mouse.up();
-  await expect.poll(()=>camera(page)).not.toEqual(before);
-  await expect.poll(()=>page.evaluate(()=>window.__PANDOLAB_VIEWER__.rendererStats().moving)).toBe(false);
-  await ready(page);
+  await expect.poll(async()=>(await camera(page)).camera.center).not.toEqual(before.camera.center);
+  await ready(page,'settled drag frame',{settled:true,afterFrame:beforeFrame});
   const moved=await camera(page);
   await expect.poll(()=>page.evaluate(view=>new Promise((resolve,reject)=>{const request=indexedDB.open('pandolab-viewer');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,transaction=db.transaction('views','readonly');transaction.oncomplete=()=>db.close();const records=transaction.objectStore('views').getAll();records.onsuccess=()=>resolve(records.result.some(record=>Math.abs((record.center?.[0]??1000)+view.globeRotation[0])<0.001&&record.zoom===view.zoom));records.onerror=()=>reject(records.error);};}),moved)).toBe(true);
   await page.reload({waitUntil:'domcontentloaded'});await ready(page,'camera restore');
