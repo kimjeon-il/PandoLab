@@ -31,7 +31,7 @@ export function globeActiveLimits(cacheBudget,{tier='medium',otherBytes=0}={}) {
     bytes:Math.floor(bytes*.72),chunks:Math.min(hard.chunks,Math.floor(240*quality*memoryFactor))};
   const optional={triangles:0,segments:Math.floor(90_000*quality*memoryFactor),
     drawCalls:Math.floor(96*quality*memoryFactor),bytes:Math.floor(bytes*.12),chunks:Math.floor(64*quality*memoryFactor)};
-  return {hard,target,optional,labelCandidates:Math.floor(768*quality*memoryFactor)};
+  return {hard,target,optional,transitionBytes:bytes+Math.floor(cacheBudget.pendingBytes/2),labelCandidates:Math.floor(768*quality*memoryFactor)};
 }
 
 function primitiveCount(row,kind) {
@@ -64,6 +64,19 @@ export function estimateGlobePlanCost(rows) {
   planCosts.set(rows,cost); return cost;
 }
 
+// Reused chunks are charged once while the previous accepted scene and its
+// replacement must coexist. Content aliases with different GPU keys remain
+// conservative separate charges.
+export function estimateGlobeTransitionBytes(...plans) {
+  let bytes=0;
+  const seen=new Set();
+  for (const rows of plans)for (const row of rows??[]) {
+    const key=row.key===undefined?row:(row.role??row.kind??'mesh')+':'+row.key;
+    if (seen.has(key))continue;
+    seen.add(key);bytes+=estimateGlobeChunkCost(row).bytes;
+  }
+  return bytes;
+}
 export function globeBudgetError(cost,limits) {
   const exceeded=globeBudgetViolations(cost,limits);
   return Object.assign(new RangeError('Required globe geometry exceeds active render budget: '+exceeded.join(', ')),
@@ -77,12 +90,19 @@ export function chooseGlobeActivePlan({requestedLod,minLod=0,limits,build}) {
   for (let lod=requestedLod;lod>=minLod;lod--) {
     const candidate=build(lod), cost=candidate.cost;
     last=candidate;
-    if (!globeCostFits(cost,limits.hard))continue;
+    if (!globeCostFits(cost,limits.hard)||(candidate.transitionBytes??0)>(limits.transitionBytes??Infinity))continue;
     fallback={...candidate,lod,targetExceeded:true,budgetLimited:lod!==requestedLod};
     if (globeCostFits(cost,limits.target))return {...fallback,targetExceeded:false};
   }
   if (fallback)return fallback;
-  throw globeBudgetError(last?.cost??emptyGlobeCost(),limits.hard);
+  const error=globeBudgetError(last?.cost??emptyGlobeCost(),limits.hard);
+  if ((last?.transitionBytes??0)>(limits.transitionBytes??Infinity)) {
+    error.exceeded.push('transitionBytes');
+    error.cost.transitionBytes=last.transitionBytes;
+    error.limits.transitionBytes=limits.transitionBytes;
+    error.message='Required globe geometry exceeds active render budget: '+error.exceeded.join(', ');
+  }
+  throw error;
 }
 // Rank optional resources at the caller (selection role/viewport distance).
 // Only admit whole chunks and preserve the original drawing order afterwards.

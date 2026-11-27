@@ -283,7 +283,7 @@ export function createRenderResidencyBudget(byteBudget, {groups = {}} = {}) {
 
 // Admit a bounded number of downloads + Worker inputs, not only Worker calls.
 // A required oversize packet runs alone. Queued work never acquires bytes.
-export function createRenderLoadGate({concurrency, byteBudget, residency = null}) {
+export function createRenderLoadGate({concurrency, byteBudget, residency = null, overflowAllowance = Infinity}) {
   let active = 0, foreground = 0, speculative = 0, bytes = 0, closed = false, peakBytes = 0, peakActive = 0, bypasses = 0, pressureSkips = 0;
   let pumpQueued = false, pumping = false, handoffs = 0;
   const idleListeners = new Set();
@@ -307,7 +307,9 @@ export function createRenderLoadGate({concurrency, byteBudget, residency = null}
         }
         const row = queue[at];
         if (row.signal?.aborted) {pending.take(at); row.reject(row.signal.reason); continue;}
-        const allowOverflow = row.priority>=10&&active===0&&bytes===0;
+        const pressure=residency?.pressure();
+        const allowOverflow=row.priority>=10&&active===0&&bytes===0&&(!pressure||
+          pressure.protectedBytes+pressure.workingBytes+row.bytes<=pressure.byteBudget+overflowAllowance);
         const release = residency?residency.reserve(row.bytes, {kind:row.kind, optional:!allowOverflow}):() => {};
         if (!release) {
           // Visible-margin work can wait for admitted loads to release their

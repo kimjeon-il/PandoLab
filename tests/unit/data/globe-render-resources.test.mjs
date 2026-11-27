@@ -431,3 +431,79 @@ test('same-cell mesh batches reduce GPU geometry count without crossing style, c
  const positioned=blocks.map((row,index)=>({...row,offset:index*65_536}));
  assert.equal(globeDrawGroups(positioned).length,1);
 });
+
+
+test('active geometry admission chooses one complete affordable LOD across both layers',async()=>{
+ const {chooseGlobeActivePlan,emptyGlobeCost,sumGlobeCosts}=await import('../../../src/rendering/globe-active-budget.js');
+ const cost=(triangles,segments,bytes)=>({...emptyGlobeCost(),triangles,segments,bytes,drawCalls:4,chunks:2});
+ const hard={triangles:200,segments:160,bytes:1000,drawCalls:20,chunks:10};
+ const target={...hard,triangles:100,segments:80,bytes:700};
+ const visited=[];
+ const build=lod=>{
+  visited.push(lod);
+  const base={lod,cost:cost([30,70,140][lod],10,200)};
+  const physical={lod,cost:cost(20,[20,80,150][lod],200)};
+  return {base,physical,cost:sumGlobeCosts(base.cost,physical.cost),transitionBytes:400};
+ };
+ const chosen=chooseGlobeActivePlan({requestedLod:2,limits:{hard,target,transitionBytes:1000},build});
+ assert.equal(chosen.lod,0);assert.equal(chosen.base.lod,chosen.physical.lod);
+ assert.deepEqual(visited,[2,1,0]);assert.equal(chosen.budgetLimited,true);
+ assert.equal(chosen.targetExceeded,false);
+ const fallback=chooseGlobeActivePlan({requestedLod:1,limits:{hard,target:{...target,triangles:1}},build});
+ assert.equal(fallback.lod,0);assert.equal(fallback.targetExceeded,true);
+ assert.throws(()=>chooseGlobeActivePlan({requestedLod:2,minLod:2,limits:{hard:{...hard,triangles:1},target},build}),{code:'PL-THREE-ACTIVE-BUDGET'});
+ assert.throws(()=>chooseGlobeActivePlan({requestedLod:1,limits:{hard,target,transitionBytes:399},build}),error=>
+  error.code==='PL-THREE-ACTIVE-BUDGET'&&error.exceeded.includes('transitionBytes'));
+});
+
+test('active geometry counts whole packet ranges and merged sources before I/O',async()=>{
+ const {estimateGlobePlanCost,estimateGlobeTransitionBytes,estimateGlobeChunkCost}=await import('../../../src/rendering/globe-active-budget.js');
+ const row=(key,role,count)=>({key,role,first:100,end:100+count,spec:{decodedBytes:count*40}});
+ const land=row('land','country',12),water=row('water','water',10),riverA=row('a','river',20),riverB=row('b','river',21);
+ const batch={role:'river',key:'batch',sources:[riverA,riverB],spec:{decodedBytes:41*40}};
+ const cost=estimateGlobePlanCost([land,water,batch]);
+ assert.equal(cost.triangles,22);assert.equal(cost.segments,41);assert.equal(cost.chunks,3);
+ assert.equal(estimateGlobeTransitionBytes([land],[land,water]),estimateGlobeChunkCost(land).bytes+estimateGlobeChunkCost(water).bytes);
+ assert.equal(estimateGlobeTransitionBytes([land],[{...land,role:'lake'}]),2*estimateGlobeChunkCost(land).bytes);
+});
+
+test('outline and detail river admission share the same residual active budget',async()=>{
+ const {admitGlobeOptional,emptyGlobeCost,estimateGlobeChunkCost}=await import('../../../src/rendering/globe-active-budget.js');
+ const outline={role:'outline',first:0,end:10,spec:{decodedBytes:400}},river={role:'detail',first:0,end:20,spec:{decodedBytes:800}};
+ const limits={hard:{triangles:100,segments:100,drawCalls:10,bytes:100000,chunks:10},
+  optional:{triangles:0,segments:25,drawCalls:5,bytes:100000,chunks:5}};
+ const required={...emptyGlobeCost(),segments:70};
+ const first=admitGlobeOptional([outline],{required,limits});
+ assert.deepEqual(first.rows,[outline]);
+ const second=admitGlobeOptional([river],{required,limits,optionalUsed:first.cost});
+ assert.deepEqual(second.rows,[]);assert.equal(second.omitted,1);
+ assert.deepEqual(second.cost,estimateGlobeChunkCost(outline));
+});
+
+test('protected residency counts shared backing buffers only once and moves them out of active accounting',async()=>{
+ const {createRenderResidencyBudget}=await import('../../../src/rendering/render-cache-budget.js');
+ const ledger=createRenderResidencyBudget(128),shared=new ArrayBuffer(16),a={},b={};
+ ledger.set(a,{buffers:new Set([shared]),extraBytes:8,protected:true});
+ ledger.set(b,{buffers:new Set([shared]),extraBytes:4,protected:true});
+ assert.equal(ledger.stats().protectedBytes,28);
+ assert.equal(ledger.stats().protectedCpuBytes,16);
+ ledger.set(a,{buffers:new Set([shared]),extraBytes:8,protected:false});
+ assert.equal(ledger.stats().protectedBytes,20);
+ ledger.remove(b);
+ assert.equal(ledger.stats().protectedBytes,0);
+ assert.equal(ledger.stats().residentBytes,24);
+ assert.equal(ledger.stats().unprotectedBytes,24);
+ ledger.dispose();
+});
+
+test('required geometry reservations cannot consume unbounded protected-memory overflow',async()=>{
+ const {createRenderResidencyBudget,createRenderLoadGate}=await import('../../../src/rendering/render-cache-budget.js');
+ const ledger=createRenderResidencyBudget(100);
+ ledger.set('published',{protected:true,extraBytes:90});
+ const gate=createRenderLoadGate({concurrency:1,byteBudget:50,residency:ledger,overflowAllowance:20});
+ await assert.rejects(gate.run({bytes:31,priority:20},()=>assert.fail('over-limit load ran')),error=>error.memoryPressure===true);
+ assert.equal(await gate.run({bytes:20,priority:20},()=>42),42);
+ assert.equal(ledger.stats().workingBytes,0);
+ assert.equal(ledger.stats().overflowCount,1);
+ gate.dispose();ledger.dispose();
+});

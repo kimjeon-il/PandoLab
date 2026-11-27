@@ -26,7 +26,7 @@ import { createRenderPacketCache, renderCacheBudget, createRenderResidencyBudget
 import { createGlobePhysicalAssets } from './three-globe-physical.js';
 import { GLOBE_FINE_LOD, globeLodEnabled, selectGlobeLod } from './globe-lod.js';
 import { emptyGlobeCost, sumGlobeCosts, globeCostFits, globeBudgetError, globeActiveLimits,
-  estimateGlobePlanCost, chooseGlobeActivePlan, admitGlobeOptional } from './globe-active-budget.js';
+  estimateGlobePlanCost, estimateGlobeTransitionBytes, chooseGlobeActivePlan, admitGlobeOptional } from './globe-active-budget.js';
 
 const copyCamera = (view, backup) => ({...backup, ...view, center:view?.center??(view?.globeRotation&&view.globeRotation.slice(0, 2).map(v => -v))??backup.center});
 
@@ -51,7 +51,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     outlineChunk:{byteBudget:Math.floor(cacheBudget.outlineBytes/4),entryLimit:64,standbyOnly:true},
   }});
   const historyCatalogCache = createRenderPacketCache({byteBudget:Infinity, entryLimit:1});
-  const loadGate = createRenderLoadGate({concurrency:cacheBudget.concurrentLoads, byteBudget:cacheBudget.pendingBytes, residency});
+  const loadGate = createRenderLoadGate({concurrency:cacheBudget.concurrentLoads,byteBudget:cacheBudget.pendingBytes,residency,overflowAllowance:cacheBudget.pendingBytes});
   const workScheduler = createGlobeWorkScheduler({maxConcurrent:globePacketWorkerCount(), residency});
   const hydroMetadataCache = createRenderPacketCache({byteBudget:16*1024*1024, entryLimit:1});
   let refreshHydroLedger = () => {};
@@ -191,8 +191,19 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     byteBudget:cacheBudget.physicalCpuBytes, strokeBatchBytes:Math.floor(cacheBudget.borderBatchBytes/2), residency, lodVersion:spec.lodVersion,
   });
   let geometryLod=null, budgetTier='medium', lastAdmission=null, activeBudgetStats=null, outlineBudgetKey=null, riverBudgetKey=null;
-  let outlineBudgetCost=emptyGlobeCost(), outlineBudgetOmitted=0, detailBudgetOmitted=0;
+  let outlineBudgetCost=emptyGlobeCost(),outlineBudgetOmitted=0,detailBudgetOmitted=0,optionalPressureBlocked=false;
   const gridBudgetRows=[{role:'graticule',kind:'stroke',spec:spec.graticule}];
+  let pressureWakeQueued=false;
+  const offBudgetPressure=residency.onChange(()=>{
+    if (!optionalPressureBlocked||pressureWakeQueued||disposed||!ready)return;
+    const pressure=residency.pressure();
+    if (pressure.protectedBytes+pressure.workingBytes>pressure.byteBudget*.75)return;
+    pressureWakeQueued=true;
+    queueMicrotask(()=>{
+      pressureWakeQueued=false;
+      if (!disposed&&ready&&optionalPressureBlocked)invalidate('three-active-budget-recovered');
+    });
+  });
   function currentGeometryLod() {
     geometryLod=selectGlobeLod({zoom:view.zoom,pitch:view.pitch??0,dpr:viewport?.dpr??1,enabled:lodEnabled,previous:geometryLod});
     return geometryLod;
@@ -254,12 +265,14 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       +Math.ceil((viewport?.width??0)*(viewport?.height??0)*(viewport?.dpr??1)**2*12);
     const key=JSON.stringify([territorialContext(prepared,visibility,requestedLod),identity,
       visibility?.lakesVisible??state.layerVisibility.lakes!==false,visibility?.riversVisible??state.layerVisibility.rivers!==false,
-      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes]);
+      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes,publishedBase&&basePlanKey(publishedBase.plan),publishedPhysical?.plan.key]);
     if (admissions.has(key))return admissions.get(key);
     const limits=globeActiveLimits(cacheBudget,{tier:budgetTier,otherBytes:fixedBytes});
     const build=(lod,padding=0)=>{
       const base=territorialPlan(prepared,padding,visibility,lod),physical=physicalPlan(identity,padding,visibility,lod);
-      return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical)};
+      const transitionBytes=estimateGlobeTransitionBytes(publishedBase?.plan,publishedPhysical?.plan.rows,base,physical.rows,
+        graticuleNeeded()?gridBudgetRows:[]);
+      return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical),transitionBytes};
     };
     const selected=chooseGlobeActivePlan({requestedLod,minLod:lodEnabled?0:GLOBE_FINE_LOD,limits,build});
     // Keep the existing margin prefetch only if the complete combined margin
@@ -267,7 +280,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     let margin=selected;
     if (!selected.targetExceeded) {
       const padded=build(selected.lod,96);
-      if (globeCostFits(padded.cost,limits.target))margin=padded;
+      if (globeCostFits(padded.cost,limits.target)&&padded.transitionBytes<=limits.transitionBytes)margin=padded;
     }
     const result={...selected,requestedLod,limits,margin};
     if (admissions.size>=6)admissions.clear();
@@ -811,7 +824,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     surface.activatePhysicalContext(physical);
     pickingChanged||=lastCamera!==camera||acceptedTerritories!==territories||acceptedPhysical!==physical;
     if (paint.needsUpdate())metrics.run('three.paint', () => paint.updatePaint(surface, {activeSlots, activeSlotByKey, features, bordersNeeded}));
-    const pressure=residency.pressure(),allowOptional=pressure.protectedBytes+pressure.workingBytes<pressure.byteBudget*.9;
+    const pressure=residency.pressure(),protectedAndWorking=pressure.protectedBytes+pressure.workingBytes;
+    optionalPressureBlocked=optionalPressureBlocked?protectedAndWorking>pressure.byteBudget*.75:protectedAndWorking>=pressure.byteBudget*.9;
+    const allowOptional=!optionalPressureBlocked;
     const usedOutline=requestOutlines(admission,requiredCost,allowOptional);
     const showRivers=state.layerVisibility.rivers!==false,detailKey=JSON.stringify([requiredCost,usedOutline,admission.limits.optional,allowOptional]);
     if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==physical||riverBudgetKey!==detailKey||riverDetail.retryDue()) {
@@ -825,7 +840,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }
     activeBudgetStats={requestedLod:admission.requestedLod,admittedLod:admission.lod,
       budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
-      required:admission.cost,active:requiredCost,optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
+      required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height,admission.limits.hard));
     if (!submitted)return {...base, deferred:true};
     drawCount++;
@@ -879,6 +894,12 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const riverChanged = riverDetail.commit(acceptedRiverChunks), surfaceChanged = surface.trimResidency();
     const riverTrimmed = riverDetail.trim();
     if (first||residencyDirty||riverChanged||surfaceChanged||riverTrimmed) {residencyDirty = false; residency.trim();}
+    if (activeBudgetStats) {
+      const measured=residency.pressure(),spatial=surface.spatialStats();
+      activeBudgetStats={...activeBudgetStats,measured:{protectedBytes:measured.protectedBytes,workingBytes:measured.workingBytes,
+        totalBytes:measured.totalBytes,byteBudget:measured.byteBudget,triangles:spatial.triangles,segments:spatial.segments,drawCalls:surface.drawCalls(),
+        memoryOverBudget:measured.protectedBytes+measured.workingBytes>measured.byteBudget}};
+    }
     if (first) {metrics.publish(); notify('ready','지도 표시 준비 완료'); invalidate('three-adjacent-viewport-chunks');}
     const month = state.timelineCursor, monthChanged = publishedMonth!==null&&month!==publishedMonth;
     if (monthChanged)monthDirection = Math.sign(globeHistoryMonthKey(month)-globeHistoryMonthKey(publishedMonth));
@@ -936,7 +957,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     waitForTemporalPresentation:presentation.waitForTemporalPresentation, getProjectGeneration:() => generation,
     preserveTemporalFrame() {cancelNeighborPrefetch(); framePreserved = true;}, isFramePreserved:() => framePreserved,
     resetProjectRenderState(options) {generation = options.generation; features = null; ready = false; error = null;
-        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; lastAdmission=activeBudgetStats=null;outlineBudgetKey=riverBudgetKey=null;outlineBudgetCost=emptyGlobeCost();outlineBudgetOmitted=detailBudgetOmitted=0;clearViewPlans();presentation.resetForProject(options);},
+        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; lastAdmission=activeBudgetStats=null;outlineBudgetKey=riverBudgetKey=null;outlineBudgetCost=emptyGlobeCost();outlineBudgetOmitted=detailBudgetOmitted=0;optionalPressureBlocked=false;clearViewPlans();presentation.resetForProject(options);},
     measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation,
     reportAncillaryError:(cause, message, code) => deps.feedback.reportOperationError(cause,message,code),
     retryMapPreparation, getRuntimeState,
@@ -958,7 +979,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
       territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded, estimatedBytes:historyCatalogBytes}, historicalMetadata:historyIndex.stats(), temporalPresentation:{...temporalStats, ...temporalReuse}, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
       labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), errorMessage:error?.message??null, initialLoading}),
-    dispose() {cancelNeighborPrefetch(); disposed = true; baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
+    dispose() {cancelNeighborPrefetch(); disposed = true;offBudgetPressure(); baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
       acceptedPick = drawnFrame = features = basePrepared = publishedBase = basePreparing = physical = acceptedPhysical = publishedPhysical = hydroMetadata = null;
       acceptedRiverChunks = []; hydroSlots.clear(); paint.dispose(); temporalInputs.reset(); labelContent.dispose(); clearViewPlans(); surface = riverDetail = null;},
   });

@@ -34,9 +34,9 @@ export function createGlobeLabelSdfRecovery() {
   });
 }
 
-export function placeGlobeLabels(candidates, camera, viewport, previous, onGrid = null, measureLabel = null, stats = null) {
+export function placeGlobeLabels(candidates, camera, viewport, previous, onGrid = null, measureLabel = null, stats = null, pixelBudget = Infinity) {
   const placed = [], cells = new Map(), checked = new Uint32Array(candidates.length);
-  let stamp = 0;
+  let stamp = 0,usedPixels=0;
   // Preserve greedy priority and hysteresis. Each pair is compared at most
   // once, even when both labels cross several screen cells.
   const cellSize = 64, columns = Math.floor(viewport.width/cellSize)+1;
@@ -80,6 +80,9 @@ export function placeGlobeLabels(candidates, camera, viewport, previous, onGrid 
       }
       return false;
     }))continue;
+    const pixels=measured.width*measured.height;
+    if (usedPixels+pixels>pixelBudget) {if (stats)stats.pixelBudgetOmitted=(stats.pixelBudgetOmitted??0)+1;continue;}
+    usedPixels+=pixels;
     const row = {...label, ...measured, left, right, top, bottom, collisionIndex:placed.length};
     placed.push(row);
     cellRange(left, top, right, bottom, key => {
@@ -88,6 +91,7 @@ export function placeGlobeLabels(candidates, camera, viewport, previous, onGrid 
       bucket.push(row); return false;
     });
   }
+  if (stats)stats.layoutPixels=usedPixels;
   onGrid?.(cells, columns, cellSize);
   return placed;
 }
@@ -574,7 +578,7 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       const stats = {candidates:candidateGroups.reduce((sum, group) => sum+group.rows.length, 0), spatialCandidates:visible.length, projectedCandidates:0, collisionComparisons:0, duplicateCollisionSkips:0};
       let hitGrid = null;
       stats.budgetCandidates=Math.min(visible.length,candidateLimit);stats.budgetOmitted=visible.length-stats.budgetCandidates;
-      const layout = placeGlobeLabels(visible.slice(0,candidateLimit), camera, {width, height}, previous, (cells, columns, cellSize) => {hitGrid = {cells, columns, cellSize};}, measureLabel, stats);
+      const layout = placeGlobeLabels(visible.slice(0,candidateLimit), camera, {width, height}, previous, (cells, columns, cellSize) => {hitGrid = {cells, columns, cellSize};}, measureLabel, stats,Math.floor(byteBudget/4));
       layoutCache = {camera, width, height,revision:candidateRevision,candidateLimit,layout,hitGrid,stats};
     }
     const {layout, hitGrid, stats} = layoutCache; layoutStats = {...stats};
@@ -648,5 +652,6 @@ export function createThreeGlobeLabels(THREE, {scene, renderer, palette, capacit
       measuredTexts:metricsCache.size, ...counters, sdfWorker:{...sdfTasks.stats(), workerRaster, fallback:sdfRecovery.fallback, localFailures:sdfRecovery.localFailures, failed:!!sdfRecovery.error, pendingMaskBytes}, layout:{...layoutStats}};
   }
   return Object.freeze({setCandidates, setCandidateGroups, update, trim, dispose, cancelPending, restoreTextures, setPalette, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
-    visibleCount:place => placed.filter(row => Boolean(row.place)===place).length, atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
+    visibleCount:place => placed.filter(row => Boolean(row.place)===place).length,
+    drawCalls:() => [...activePages].reduce((count,page)=>count+page.batches.filter(batch=>batch.count>0).length,0),atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
 }

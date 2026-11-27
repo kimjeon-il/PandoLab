@@ -603,7 +603,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     // Reject a misestimated or malformed packet plan before submitting
     // excessive primitives to WebGL. The previously published canvas stays.
     if (activeLimits) {
-      const actual={triangles:stats.triangles,segments:stats.segments,drawCalls:stats.meshDrawCalls+stats.strokeDrawCalls,bytes:0,chunks:0};
+      const actual={triangles:stats.triangles,segments:stats.segments,drawCalls:stats.meshDrawCalls+stats.strokeDrawCalls+labels.drawCalls(),bytes:0,chunks:0};
       if (!globeCostFits(actual,activeLimits))throw globeBudgetError(actual,activeLimits);
     }
     renderer.render(scene, camera); return true;
