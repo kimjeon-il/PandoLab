@@ -14,9 +14,11 @@ const lintFile=(group,file)=>/\.(?:js|mjs)$/.test(file)&&
 const accepts=(group,file)=>group.id==='lint'?lintFile(group,file):testFile(file)&&group.argv.includes(file);
 
 /** Plan exactly the declared scope. No implicit whole-project execution. */
-export function selectChecks({groups,catalog=readCatalog(),testNamePattern,files}={}) {
+export function selectChecks({groups,catalog=readCatalog(),testNamePattern,files,allowWholeGroup=false}={}) {
  if(!Array.isArray(groups)||!groups.length||groups.some(id=>typeof id!=='string')||new Set(groups).size!==groups.length)
   throw Error('Explicit distinct check groups are required (--group=node|gis|browser|lint)');
+ if(typeof allowWholeGroup!=='boolean')throw Error('Whole-group approval must be explicit');
+ if(testNamePattern!==undefined&&(typeof testNamePattern!=='string'||!testNamePattern.trim()))throw Error('A nonempty scenario pattern is required');
  const selected=groups.map(id=>{
   const group=catalog.groups.find(row=>row.id===id);
   if(!group||!Array.isArray(group.argv)||!group.argv.length)throw Error('Unknown check group: '+id);
@@ -30,6 +32,16 @@ export function selectChecks({groups,catalog=readCatalog(),testNamePattern,files
  return selected.flatMap(group=>{
   const scoped=files?.filter(file=>accepts(group,file));
   if(scoped&&!scoped.length)return [];
+  // Node's name filter still loads every selected file. A browser file
+  // contains all scenarios, so its filename alone is not a focused scope.
+  const registered=group.argv.filter(testFile);
+  const filtered=Boolean(testNamePattern)&&(browser(group)||Boolean(scoped));
+  const allFiles=registered.length>0&&scoped?.length===registered.length;
+  if(!allowWholeGroup&&(
+    (!scoped&&!filtered)||
+    (browser(group)&&!testNamePattern)||
+    (allFiles&&!testNamePattern)
+  ))throw Error('Whole-group check requires --allow-whole-group: '+group.id);
   const argv=group.id==='lint'&&scoped?[...group.argv.slice(0,2),'--',...scoped]:
     group.argv.filter(value=>!scoped||!testFile(value)||scoped.includes(value));
   if(argv[0]==='node')argv[0]=process.execPath;
@@ -56,6 +68,7 @@ export function main(args=process.argv.slice(2)) {
  for(let i=0;i<args.length;i++){
   const raw=args[i],at=raw.indexOf('='),key=at<0?raw:raw.slice(0,at);
   if(key==='--plan'&&at<0){plan=true;continue;}
+  if(key==='--allow-whole-group'&&at<0){options.allowWholeGroup=true;continue;}
   if(!['--group','--test-name-pattern','--file'].includes(key))throw Error('Unknown check option: '+key);
   const value=at<0?args[++i]:raw.slice(at+1);
   if(!value||(at<0&&value.startsWith('--')))throw Error('Missing check option value: '+key);

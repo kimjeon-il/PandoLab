@@ -20,7 +20,12 @@ Read [development policy](docs/policies/development.md#브랜치와-작업공간
 - Local development uses CI-built native artifacts. Do not install or restore
   local compilers, Emscripten, native SDKs, or native test build environments
   to satisfy a check. Run only the selected registered checks in CI through
-  `scripts/run-application-checks.mjs`. Missing tools must not trigger manual
+  `scripts/run-application-checks.mjs`. Whole-group checks require the runner's
+  explicit `--allow-whole-group` flag (CI `whole_group: true`) and the user's
+  authorization for that scope. Never auto-add this flag, restore an implicit
+  full-suite default, bypass the runner with raw full-suite commands, or
+  reattach automatic regression jobs to artifact generation or ordinary pushes.
+  Missing tools must not trigger manual
   installation as a workaround. Preserve required existing GIS runtimes,
   GPU Python/CUDA, ADB and other projects' shared tools. Compiler/SDK setup
   belongs to CI; ordinary JS/browser development remains local.

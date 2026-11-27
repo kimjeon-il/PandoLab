@@ -351,8 +351,8 @@ test('Viewer closure rejects missing payloads and private report dependencies',(
 
 test('failed and blocked checks stop execution before any publication action',async t=>{
  const {executeChecks}=await import('../../scripts/run-application-checks.mjs');const root=sandbox(t),published=join(root,'published.txt'),catalog={groups:[{id:'verify',argv:['node','verify.mjs']},{id:'publish',argv:['node','publish.mjs']}]};let calls=[];
- assert.throws(()=>executeChecks({groups:['verify','publish'],root,catalog,run:argv=>{calls.push(argv);if(calls.length===1)return {status:1};writeFileSync(published,'wrong');return {status:0};}}),/fail|exit|status/i);assert.equal(calls.length,1);assert.equal(existsSync(published),false);calls=[];
- assert.throws(()=>executeChecks({groups:['verify','publish'],root,catalog,run:argv=>{calls.push(argv);return {status:null,error:Error('blocked execution')};}}),/fail|block|status|exit/i);assert.equal(calls.length,1);assert.equal(existsSync(published),false);
+ assert.throws(()=>executeChecks({groups:['verify','publish'],allowWholeGroup:true,root,catalog,run:argv=>{calls.push(argv);if(calls.length===1)return {status:1};writeFileSync(published,'wrong');return {status:0};}}),/fail|exit|status/i);assert.equal(calls.length,1);assert.equal(existsSync(published),false);calls=[];
+ assert.throws(()=>executeChecks({groups:['verify','publish'],allowWholeGroup:true,root,catalog,run:argv=>{calls.push(argv);return {status:null,error:Error('blocked execution')};}}),/fail|block|status|exit/i);assert.equal(calls.length,1);assert.equal(existsSync(published),false);
 });
 test('application checks select only registered files and scenarios', async () => {
  const {executeChecks}=await import('../../scripts/run-application-checks.mjs');
@@ -373,6 +373,23 @@ test('application checks select only registered files and scenarios', async () =
   assert.throws(()=>selectChecks({groups:['lint'],catalog:lintCatalog,files:[file]}),/registered/i);
  }
  assert.throws(()=>selectChecks({groups:['lint'],catalog:lintCatalog,testNamePattern:'anything'}),/scenario/i);
+ // Both the planner and executor reject broad scopes before starting a process.
+ const denied=[
+  {groups:['node']},
+  {groups:['node'],testNamePattern:'chosen'},
+  {groups:['node'],files:['tests/a.test.mjs','tests/b.test.mjs']},
+  {groups:['browser'],files:['tests/viewer.spec.mjs']},
+  {groups:['lint']},
+ ];
+ for(const scope of denied){
+  assert.throws(()=>executeChecks({...scope,catalog:lintCatalog,run:()=>assert.fail('unapproved check started')}),/allow-whole-group/);
+ }
+ assert.throws(()=>selectChecks({groups:['node'],catalog,testNamePattern:' '}),/nonempty/);
+ assert.throws(()=>selectChecks({groups:['node'],catalog,allowWholeGroup:'true'}),/approval/);
+ assert.deepEqual(selectChecks({groups:['node'],catalog,allowWholeGroup:true})[0].argv.slice(1),
+  ['--test','tests/a.test.mjs','tests/b.test.mjs']);
+ assert.deepEqual(selectChecks({groups:['browser'],catalog,testNamePattern:'touch'})[0].argv.slice(1),
+  ['playwright.js','test','tests/viewer.spec.mjs','--grep','touch']);
 });
 
 test('historical frontend indexing reads retired module identities without recreating a worktree',async()=>{
