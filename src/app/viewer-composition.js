@@ -325,7 +325,7 @@ export async function composeViewer({ meta }) {
   };
   const timeline = createViewerTimelineComposition({
     document, window, map, projectDomain, activeSession, owners, status, preferencePresentation,
-    postPresentation, syncStatus, report,
+    postPresentation, report,
     getPresentedMonth:() => presentedMonth,
     setPresentedMonth:value => {presentedMonth = value;},
     openBuiltinProject:(month, isCurrent) => open(() => map.prepareBuiltinProject(month, {isCurrent}), {

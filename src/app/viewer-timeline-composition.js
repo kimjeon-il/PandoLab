@@ -6,8 +6,12 @@ import { installTimelineControls } from '../ui/timeline-controls.js';
 /** Owns the Viewer date-control, C++ cursor transition, and temporal recovery flow. */
 export function createViewerTimelineComposition({
   document, window, map, projectDomain, activeSession, status, preferencePresentation,
-  postPresentation, openBuiltinProject, syncStatus, report, getPresentedMonth, setPresentedMonth,
+  postPresentation, openBuiltinProject, report, getPresentedMonth, setPresentedMonth,
 }) {
+  const deferredMembershipPrune = applied => applied.membershipMayHaveChanged?[() => {
+    if (territorialMembershipDelta(applied.before, applied.after).changed)
+      return map.objectCatalog.pruneLayerItemVisibility();
+  }]:[];
   const applyDocumentMonth = async(month, {
     isCurrent = () => true, waitForFrame = false, admitPresentation = null, geometryPreparation,
   } = {}) => {
@@ -17,8 +21,8 @@ export function createViewerTimelineComposition({
     await map.renderer.measureWork('core.timeline-cursor',
       () => activeSession.commandOwner.setTimelineCursor(month, {isCurrent, geometryPreparation}));
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    const membershipChanged = before!==map.features()
-      &&territorialMembershipDelta(before, map.features()).changed;
+    const after = map.features();
+    const membershipMayHaveChanged = before!==after;
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
     // Place data and its SDF atlas are refreshed in the background by the
     // rendering domain; they must not delay the certified dated map frame.
@@ -27,7 +31,7 @@ export function createViewerTimelineComposition({
     if (admitPresentation?.()===false)return false;
     if (waitForFrame)await map.renderer.waitForMapPresentation(generation);
     if (!isCurrent()||projectDomain.getGeneration()!==generation)return false;
-    return {membershipChanged};
+    return {membershipMayHaveChanged, before, after};
   };
 
   const changeProjectCursor = async(month, {isCurrent, commit}) => {
@@ -60,7 +64,7 @@ export function createViewerTimelineComposition({
       status.dataset.ready = 'true';
       presentViewerLoadStatus(status,'지도 준비 완료.');
       postPresentation.schedule(current, {
-        beforeRefresh:applied.membershipChanged?[() => map.objectCatalog.pruneLayerItemVisibility()]:[],
+        beforeRefresh:deferredMembershipPrune(applied),
       });
       return true;
     } catch (error) {
@@ -80,7 +84,7 @@ export function createViewerTimelineComposition({
             });
             if (!restored)throw new Error('Previous dated map was not restored.');
             postPresentation.schedule(current, {
-              beforeRefresh:restored.membershipChanged?[() => map.objectCatalog.pruneLayerItemVisibility()]:[],
+              beforeRefresh:deferredMembershipPrune(restored),
             });
           } catch (restoreError) {error.restoreError = restoreError;}
           finally {map.renderer.finishTemporalViewTransition(restoreTicket);}
@@ -132,7 +136,6 @@ export function createViewerTimelineComposition({
     onCommitted:() => {
       setPresentedMonth({scope:projectDomain.activeProjectScope(),
         month:activeSession.commandOwner.state().timelineCursor});
-      syncStatus();
       window.dispatchEvent(new CustomEvent('pandolab:project-changed'));
     },
     onError:report,
