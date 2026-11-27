@@ -113,7 +113,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const zoom = { value: 0 };
   const cameraUniforms = { eyeHigh: { value: eyeHigh }, eyeLow: { value: eyeLow }, viewRotation: { value: viewRotation }, zoom };
   const viewport = { value: new THREE.Vector2() }, margin = { value: 0.5 };
-  const labels=createThreeGlobeLabels(THREE,{scene,renderer,palette:palette.labels,capacity:PLACE_LIMITS.layoutCandidates,maxTextureSize:maxPointTextureSize,viewport,byteBudget:cacheBudget.labelAtlasBytes,residency,workScheduler,gpuFrameBudget,prepareGpuMesh:mesh=>{const bytes=geometryUploadBytes(mesh.geometry);if(!gpuFrameBudget.admitUpload(bytes,1))return false;stageGpuMesh(mesh);warmedGeometries.add(mesh.geometry);return true;},onReady:onLabelReady,onError:onLabelError});
+  const labels=createThreeGlobeLabels(THREE,{scene,renderer,palette:palette.labels,capacity:PLACE_LIMITS.layoutCandidates,maxTextureSize:maxPointTextureSize,viewport,byteBudget:cacheBudget.labelAtlasBytes,residency,workScheduler,gpuFrameBudget,prepareGpuMesh,onReady:onLabelReady,onError:onLabelError});
   const reusableColor = new THREE.Color(), highlightColor = new THREE.Color();
   function restoreCountryPaint() {
     warmedGeometries=new WeakSet();warmedTextures=new WeakSet();
@@ -162,6 +162,20 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (geometry.index)bytes+=geometry.index.array?.byteLength??0;
     return bytes;
   }
+  function prepareGpuMesh(mesh) {
+    const texture=mesh.material?.uniforms?.pointCoordinates?.value??null;
+    if (texture&&!warmedTextures.has(texture)) {
+      const bytes=texture.image?.data?.byteLength??0;
+      if (!gpuFrameBudget.admitUpload(bytes,1))return false;
+      texture.needsUpdate=true;renderer.initTexture(texture);warmedTextures.add(texture);
+    }
+    const geometry=mesh.geometry;
+    if (!warmedGeometries.has(geometry)) {
+      if (!gpuFrameBudget.admitUpload(geometryUploadBytes(geometry),1))return false;
+      stageGpuMesh(mesh);warmedGeometries.add(geometry);
+    }
+    return true;
+  }
   function stageGpuMesh(mesh) {
     const geometry=mesh.geometry,parent=mesh.parent,visible=mesh.visible;
     const drawRange={...geometry.drawRange},instanceCount=geometry.instanceCount;
@@ -205,20 +219,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const resource = {
       material, update, lastUsed:performance.now(),
       markFootprint:() => meshLedger.mark(resource),
-      warmGpu() {
-        for (const mesh of objects) {
-          const geometry=mesh.geometry,texture=mesh.material?.uniforms?.pointCoordinates?.value??null;
-          if (texture&&!warmedTextures.has(texture)) {
-            const bytes=texture.image?.data?.byteLength??0;
-            if (!gpuFrameBudget.admitUpload(bytes,1))return false;
-            texture.needsUpdate=true;renderer.initTexture(texture);warmedTextures.add(texture);
-          }
-          if (warmedGeometries.has(geometry))continue;
-          if (!gpuFrameBudget.admitUpload(geometryUploadBytes(geometry),1))return false;
-          stageGpuMesh(mesh);warmedGeometries.add(geometry);
-        }
-        return true;
-      },
+      warmGpu() {for (const mesh of objects)if (!prepareGpuMesh(mesh))return false;return true;},
       setOrder(order, span = 0) {objects.forEach((mesh, i) => {mesh.renderOrder = order+span*i/Math.max(1,objects.length);});},
       setStrokeStyle(style) {for (const material of materials) {const u = material.uniforms; if (u.radius)u.radius.value = style.width/2;if(u.strokeColor)u.strokeColor.value.set(style.color);if(u.strokeOpacity)u.strokeOpacity.value=style.opacity??style.alpha??1;}},
       get visible() {return enabled;},
@@ -607,9 +608,9 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   let paintedOutlines = new Set();
   function installOutlines(key, data, {slot = null, order = 0, count = 1} = {}) {
     if (outlineCache.has(key))return;
-    const outline = createGlobeOutlineCache(THREE, {scene, ...data, strokeOptions, maxTextureSize:maxPointTextureSize,
-      orderForChunk:(part, parts) => 6+.9*((slot===null?0:slot+1)+(order+(part+1)/(parts+1))/Math.max(1,count))/(countryCount+1),
-      residency, onResidencyChange:() => {dirtyOutlineOwners.set(outline, key);}});
+    const outline=createGlobeOutlineCache(THREE,{scene,...data,strokeOptions,maxTextureSize:maxPointTextureSize,
+      orderForChunk:(part,parts)=>6+.9*((slot===null?0:slot+1)+(order+(part+1)/(parts+1))/Math.max(1,count))/(countryCount+1),
+      residency,gpuFrameBudget,prepareGpuMesh,onResidencyChange:()=>{dirtyOutlineOwners.set(outline,key);}});
     outlineCache.set(key, outline); dirtyOutlineOwners.set(outline, key);
   }
   function setOutlinePaint(requested, styles, color) {

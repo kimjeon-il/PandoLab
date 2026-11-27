@@ -75,7 +75,8 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex
   function clearInactive(chunk) {
     hideMesh(chunk); activeChunks.delete(chunk);
     chunk.selection = null; chunk.selected = null;
-    if (!chunk.gpu) {disposePendingGpu(chunk);chunk.subsets.clear();chunks.delete(chunk.id);}
+    disposePendingGpu(chunk);
+    if (!chunk.gpu) {chunk.subsets.clear();chunks.delete(chunk.id);}
     markChunk(chunk);
   }
   function paint(roles, styles, color) {
