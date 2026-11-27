@@ -74,6 +74,11 @@ export function simplifyGlobeRiverPacket(packet, lod, isShared = () => false) {
     while (end<packet.count&&end-first<maxRun) {
       const joint=endpoints[(end-1)*2+1];
       if (endpoints[end*2]!==joint||degree[joint]!==2||isShared(words,joint)||packet.ownerGroups[end]!==owner)break;
+      // Longitude aliases may have different high/low bits at the date line.
+      // Keep those seam vertices and polar endpoints even without an exact
+      // dictionary match in another packet.
+      const [jx,jy,jz]=xyz(joint);
+      if (jx<0&&Math.abs(jy)<1e-10||Math.abs(jz)>1-1e-12)break;
       const width=packet.widths[end]??0,nextLow=Math.min(low,width),nextHigh=Math.max(high,width);
       if (nextHigh-nextLow>.08||!admissible(first,end+1))break;
       low=nextLow;high=nextHigh;end++;

@@ -318,3 +318,23 @@ test('globe spatial chunk levels keep exact primitive bits and choose only their
     assert.deepEqual(decodeGlobeMesh(selected[0].buffer).indices,Uint32Array.of(0,1,2));
   }
 });
+
+
+test('coarse native globe tessellation reduces interior triangles without editing the source polygon',async()=>{
+ const {GLOBE_LODS}=await import('../../../src/rendering/globe-lod.js');
+ await import('../../../src/rendering/workers/polygon-mesh-core.js');
+ const engine=globalThis.PandoLabPolygonMeshCore;
+ const polygon={type:'Feature',id:'large',geometry:{type:'MultiPolygon',coordinates:[
+  [[[0,0],[12,0],[12,12],[0,12],[0,0]],[[2,2],[2,4],[4,4],[4,2],[2,2]]],
+  [[[15,0],[15.1,0],[15.1,.1],[15,.1],[15,0]]],
+ ]}};
+ const before=JSON.stringify(polygon),meshes=GLOBE_LODS.map(lod=>engine.buildPolygonMeshFeatures([polygon],{validate:true,maxEdgeDegrees:lod.maxEdgeDegrees}));
+ assert.equal(JSON.stringify(polygon),before);
+ assert.ok(meshes[0].triangleIndices.length<meshes[1].triangleIndices.length);
+ assert.ok(meshes[1].triangleIndices.length<meshes[2].triangleIndices.length);
+ for (let i=0;i<meshes.length;i++) {
+  assert.equal(meshes[i].stats.polygonCount,2);
+  assert.ok(meshes[i].stats.maxEdgeDegrees<=GLOBE_LODS[i].maxEdgeDegrees+1e-9);
+  assert.ok(meshes[i].positions.some((value,index)=>index%2===0&&value>=15e6));
+ }
+});
