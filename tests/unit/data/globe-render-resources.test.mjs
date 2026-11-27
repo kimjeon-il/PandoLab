@@ -428,5 +428,6 @@ test('same-cell mesh batches reduce GPU geometry count without crossing style, c
  assert.equal(globeDrawBlockSize(262_144),131_072);
  const blocks=splitGlobeDrawRanges(Uint32Array.of(0,131_072),131_072);
  assert.equal(blocks.length,2);
- assert.equal(globeDrawGroups(blocks).length,2);
+ const positioned=blocks.map((row,index)=>({...row,offset:index*65_536}));
+ assert.equal(globeDrawGroups(positioned).length,2);
 });
