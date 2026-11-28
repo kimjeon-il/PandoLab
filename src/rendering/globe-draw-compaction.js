@@ -142,20 +142,66 @@ export function globeDrawGroups(blocks) {
   return groups;
 }
 
-/** Merge only consecutive compatible small packets. Source order is the
-  * painter order; never sort by style or move a draw across another owner.
-  * Bounded groups avoid unbounded duplicate vertex/compaction memory. */
-export function groupGlobeGpuMeshes(rows, compatibility, {maxTriangles = 65536, maxVertices = 262144, maxChunks = 32} = {}) {
-  const result = [];
-  for (const row of rows) {
-    const packet = row.mesh.packet, triangles = packet.indices.length/3,vertices=packet.positions.length/3;
-    const style = compatibility(row), cell = row.cell??null, prior = result.at(-1);
-    if (prior&&prior.style===style&&prior.rows.length<maxChunks&&
-          prior.triangles+triangles<=maxTriangles&&prior.vertices+vertices<=maxVertices) {
-      prior.rows.push(row); prior.triangles+=triangles; prior.vertices+=vertices;
-    }else result.push({rows:[row], style, cell, triangles, vertices});
+export const GLOBE_GPU_MESH_BATCH_LIMITS = Object.freeze({
+  maxTriangles:65_536,maxVertices:262_144,maxChunks:64,maxCellSpan:4,
+});
+const cellCoordinates=value=>{
+  if(value===null||value===undefined)return null;
+  const parts=String(value).split(':').map(Number);
+  return parts.length===3&&parts.every(Number.isSafeInteger)?parts:null;
+};
+export function globeMeshCellKey(row) {
+  if(row.cell!==undefined&&row.cell!==null)return String(row.cell);
+  const bounds=row.bounds;
+  if(!Array.isArray(bounds)||bounds.length!==6||!bounds.every(Number.isFinite))return null;
+  return bounds.slice(0,3).map((min,axis)=>Math.floor((min+bounds[axis+3]+2)*2)).join(':');
+}
+export function globeMeshCellState(cell) {
+  const coordinates=cellCoordinates(cell);
+  return {cellKey:cell===null?null:String(cell),cellBounds:coordinates?[...coordinates,...coordinates]:null};
+}
+export function canAppendGlobeMeshCell(group,cell,maxCellSpan=GLOBE_GPU_MESH_BATCH_LIMITS.maxCellSpan) {
+  const key=cell===null?null:String(cell);
+  if(group.cellKey===key)return true;
+  const coordinates=cellCoordinates(cell);
+  if(!coordinates||!group.cellBounds)return false;
+  for(let axis=0;axis<3;axis++) {
+    const span=Math.max(group.cellBounds[axis+3],coordinates[axis])-Math.min(group.cellBounds[axis],coordinates[axis]);
+    if(span>=maxCellSpan)return false;
   }
-  return result.map(group => ({...group, key:group.rows.length===1?group.rows[0].key:'gpu-batch:'+JSON.stringify(group.rows.map(row => row.key))}));
+  return true;
+}
+export function includeGlobeMeshCell(group,cell) {
+  const key=cell===null?null:String(cell);
+  if(group.cellKey===key)return;
+  const coordinates=cellCoordinates(cell);
+  if(!coordinates)return;
+  if(!group.cellBounds)group.cellBounds=[...coordinates,...coordinates];
+  else for(let axis=0;axis<3;axis++) {
+    group.cellBounds[axis]=Math.min(group.cellBounds[axis],coordinates[axis]);
+    group.cellBounds[axis+3]=Math.max(group.cellBounds[axis+3],coordinates[axis]);
+  }
+}
+
+/** Merge consecutive compatible packets in a bounded spatial neighborhood.
+  * Preserve painter order and each source packet's spatial sub-index. */
+export function groupGlobeGpuMeshes(rows, compatibility, {
+  maxTriangles=GLOBE_GPU_MESH_BATCH_LIMITS.maxTriangles,
+  maxVertices=GLOBE_GPU_MESH_BATCH_LIMITS.maxVertices,
+  maxChunks=GLOBE_GPU_MESH_BATCH_LIMITS.maxChunks,
+  maxCellSpan=GLOBE_GPU_MESH_BATCH_LIMITS.maxCellSpan,
+}={}) {
+  const result=[];
+  for(const row of rows) {
+    const packet=row.mesh.packet,triangles=packet.indices.length/3,vertices=packet.positions.length/3;
+    const style=compatibility(row),cell=globeMeshCellKey(row),prior=result.at(-1);
+    if(prior&&prior.style===style&&canAppendGlobeMeshCell(prior,cell,maxCellSpan)&&
+      prior.rows.length<maxChunks&&prior.triangles+triangles<=maxTriangles&&prior.vertices+vertices<=maxVertices) {
+      prior.rows.push(row);prior.triangles+=triangles;prior.vertices+=vertices;includeGlobeMeshCell(prior,cell);
+    }else result.push({rows:[row],style,cell,triangles,vertices,...globeMeshCellState(cell)});
+  }
+  return result.map(group=>({...group,key:group.rows.length===1?group.rows[0].key:
+    'gpu-batch:'+JSON.stringify(group.rows.map(row=>row.key))}));
 }
 export function combineGlobeDrawMeshes(rows) {
   if (rows.length===1)return rows[0].mesh.packet;

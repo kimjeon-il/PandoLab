@@ -371,13 +371,13 @@ test('GPU mesh batches span neighboring cells while retaining owner order and sp
     spec:{sha256:'mesh'+i,decodedBytes:106}};
  });
  const groups=groupGlobeGpuMeshes(rows,()=> 'country');
- assert.equal(groups.length,3);
+ assert.equal(groups.length,2);
  assert.deepEqual(groups.flatMap(group=>group.rows.map(row=>row.key)),rows.map(row=>row.key));
  const combined=combineGlobeDrawMeshes(groups[0].rows);
- assert.equal(combined.drawParts.length,32);
+ assert.equal(combined.drawParts.length,64);
  assert.deepEqual([...combined.slots.slice(0,3)],[0,1,2]);
  const cost=estimateGlobePlanCost(rows);
- assert.equal(cost.chunks,3);assert.equal(cost.drawCalls,6);assert.equal(cost.triangles,70);
+ assert.equal(cost.chunks,2);assert.equal(cost.drawCalls,4);assert.equal(cost.triangles,70);
 });
 
 

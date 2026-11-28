@@ -403,7 +403,7 @@ test('network admission hands off its concurrency slot while retaining the full 
 });
 
 
-test('same-cell mesh batches reduce GPU geometry count without crossing style, cell or size boundaries',async()=>{
+test('mesh batches retain source order and respect style, cell and size boundaries',async()=>{
  const {groupGlobeGpuMeshes,combineGlobeDrawMeshes,globeDrawBlockSize,splitGlobeDrawRanges,globeDrawGroups}=await import('../../../src/rendering/globe-draw-compaction.js');
  const row=(key,cell,triangles,vertices,style='country')=>({key,cell,style,mesh:{packet:{
   positions:{length:vertices*3},residuals:{length:vertices*3},indices:{length:triangles*3},slots:{length:vertices},

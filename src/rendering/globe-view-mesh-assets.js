@@ -134,7 +134,7 @@ export function createGlobeTerritorialAssets(spec, {
       prefix:(baseBorder?'base-border-batch':'border-batch')+'-'+aggregationLevel,
       byteBudget:aggregationLevel===0?(baseBorder?Math.floor(cacheBudget.borderBatchBytes/2):cacheBudget.borderBatchBytes):
         Math.max(256*1024,Math.floor(cacheBudget.borderBatchBytes/(baseBorder?4:2))),
-      maxSources:aggregationLevel===0?32:128,groupKey:row=>String(globeChunkLod(row))+(!baseBorder?':'+String(row.historyBorder??''):''),
+      maxSources:aggregationLevel===0?64:128,groupKey:row=>String(globeChunkLod(row)),
       aggregate:sources=>{
         const row=sources[0];if(aggregationLevel===0||row.lod!==0)return {};
         const gridDivisions=aggregationLevel===1?128:aggregationLevel===2?64:20;

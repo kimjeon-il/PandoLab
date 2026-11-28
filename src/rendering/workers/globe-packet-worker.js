@@ -79,17 +79,18 @@ rpc.install({handlers:{
     context.throwIfCancelled();return transfer(prepareGlobeSpatialPacket(aggregated));
   },
   'globe.combine-stored-strokes':async({packets}, context) => {
-    const maxPoints = packets.reduce((sum, row) => sum+Math.floor(row.spec.decodedBytes/24),0);
-    const builder = createGlobeStrokeBatchBuilder(maxPoints);
-    const decodedPackets = await Promise.all(packets.map(async row => {
+    if(!Array.isArray(packets)||packets.length<1||packets.length>64)throw Error('Invalid stored stroke batch size');
+    const maxPoints=packets.reduce((sum,row)=>sum+Math.floor(row.spec.decodedBytes/24),0);
+    const builder=createGlobeStrokeBatchBuilder(maxPoints);
+    // Decode and append one source at a time. The builder owns the shared point
+    // dictionary; decoded source packets can be collected immediately afterward.
+    for(const row of packets) {
       context.throwIfCancelled();
-      const decoded = await decodeStoredBuffer(row.bytes,row.spec,'worker','border-batch','역사 국경선',context.signal);
-      validateAssetLength(decoded,row.spec,'역사 국경선');
-      return decodeGlobeStrokes(decoded.buffer);
-    }));
+      const decoded=await decodeStoredBuffer(row.bytes,row.spec,'worker','border-batch','국경선 배치',context.signal);
+      validateAssetLength(decoded,row.spec,'국경선 배치');
+      builder.append(decodeGlobeStrokes(decoded.buffer));
+    }
     context.throwIfCancelled();
-    for (const packet of decodedPackets)builder.append(packet);
-    // The combined stroke packet receives its spatial index before it leaves the Worker.
     return transfer(prepareGlobeSpatialPacket(builder.finish()));
   },
   'globe.decode-packet':async(packet,context) => {

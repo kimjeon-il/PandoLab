@@ -165,6 +165,7 @@ export function createGlobePacketTasks({
   }
   function combineStoredStrokes(inputs, {signal, priority = 10} = {}) {
     signal?.throwIfAborted();
+    if(!Array.isArray(inputs)||inputs.length<1||inputs.length>64)throw new RangeError('Invalid stored stroke batch size');
     // Inputs are private verified stored-byte copies, not cached decoded
     // packets. Transfer their backing stores exactly once.
     const transfer = [...new Set(inputs.map(row => row.bytes))];

@@ -471,6 +471,24 @@ test('stroke descriptor batches aggregate consecutive neighboring cells within s
 });
 
 
+test('historical border chunks from different owner groups share bounded draw batches',async()=>{
+ const {createGlobeTerritorialAssets}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+ const {renderCacheBudget}=await import('../../../src/rendering/render-cache-budget.js');
+ const assets=createGlobeTerritorialAssets({lodVersion:1},{baseSlots:[],cacheBudget:renderCacheBudget(8),
+  loadMesh:async()=>({}),loadStroke:async()=>({})});
+ const historicalBorders=Array.from({length:70},(_,owner)=>({chunks:[0,1,2].map(lod=>({
+  role:'border',kind:'stroke',lod,bounds:[-.2,-.2,-.2,.2,.2,.2],first:0,end:10,
+  spec:{sha256:'border-'+owner+'-'+lod,decodedBytes:240,compressedBytes:80},
+ }))}));
+ const selection=assets.createSelection([],{lodVersion:1,historicalCountries:[],historicalBorders});
+ const view={borders:Array.from({length:70},(_,i)=>i)};
+ const plan=assets.planHistoryBorders(view,()=>true,0,selection);
+ assert.equal(plan.length,2);
+ assert.deepEqual(plan.map(row=>row.sources.length),[64,6]);
+ assert.deepEqual(plan.flatMap(row=>row.sources.map(source=>source.historyBorder)),Array.from({length:70},(_,i)=>i));
+ assets.dispose();
+});
+
 test('physical river plans expose progressively coarser spatial aggregation without changing water identity',async()=>{
  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
  const rows=Array.from({length:70},(_,i)=>({role:'river',kind:'stroke',lod:0,minZoom:2,cell:(i<35?0:1)+':0:0',
@@ -481,6 +499,8 @@ test('physical river plans expose progressively coarser spatial aggregation with
  })});
  const source=assets.createDescriptor({identity:'world',waters:[],riverMinZoom:2},rows);
  const normal=assets.plan(source,{zoom:3,lod:0,aggregationLevel:0});
+ assert.equal(normal.riverChunks.length,2);
+ assert.deepEqual(normal.riverChunks.map(row=>row.sources.length),[64,6]);
  const medium=assets.plan(source,{zoom:3,lod:0,aggregationLevel:1});
  const coarse=assets.plan(source,{zoom:3,lod:0,aggregationLevel:2});
  const emergency=assets.plan(source,{zoom:3,lod:0,aggregationLevel:3});

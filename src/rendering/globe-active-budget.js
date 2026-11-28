@@ -1,3 +1,5 @@
+import { GLOBE_GPU_MESH_BATCH_LIMITS, canAppendGlobeMeshCell, includeGlobeMeshCell, globeMeshCellKey, globeMeshCellState } from './globe-draw-compaction.js';
+
 // Bound active viewport work before packet I/O, not just standby cache bytes.
 // Estimates deliberately include all primitives in admitted chunks, even
 // when the GPU/CPU culler will reject part of them. Never drop required land
@@ -83,8 +85,13 @@ export function estimateGlobePlanCost(rows) {
     const compatibility=meshCompatibility(row),next=estimateGlobeChunkCost(row);
     if(compatibility!==null&&row.kind!=='stroke'){
       const triangles=next.triangles,vertices=meshVertexEstimate(row,triangles);
-      if(group&&(group.compatibility!==compatibility||group.rows.length>=32||group.triangles+triangles>65_536||group.vertices+vertices>262_144))flush();
-      if(!group)group={compatibility,rows:[],triangles:0,vertices:0};
+      const cell=globeMeshCellKey(row);
+      if(group&&(group.compatibility!==compatibility||!canAppendGlobeMeshCell(group,cell)||
+        group.rows.length>=GLOBE_GPU_MESH_BATCH_LIMITS.maxChunks||
+        group.triangles+triangles>GLOBE_GPU_MESH_BATCH_LIMITS.maxTriangles||
+        group.vertices+vertices>GLOBE_GPU_MESH_BATCH_LIMITS.maxVertices))flush();
+      if(!group)group={compatibility,rows:[],triangles:0,vertices:0,...globeMeshCellState(cell)};
+      else includeGlobeMeshCell(group,cell);
       group.rows.push(row);group.triangles+=triangles;group.vertices+=vertices;
     }else{flush();for(const field of fields)cost[field]+=next[field];}
   }
