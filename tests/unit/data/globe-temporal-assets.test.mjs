@@ -497,7 +497,7 @@ test('physical river plans expose progressively coarser spatial aggregation with
 });
 
 
-test('dense base and historical borders use the same bounded aggregation tiers while retaining owner groups',async()=>{
+test('dense base borders use the same bounded aggregation tiers while retaining owner groups',async()=>{
  const {createGlobeTerritorialAssets}=await import('../../../src/rendering/globe-view-mesh-assets.js');
  const {renderCacheBudget}=await import('../../../src/rendering/render-cache-budget.js');
  const budget=renderCacheBudget(8),rows=[];

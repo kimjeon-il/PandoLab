@@ -613,3 +613,44 @@ test('active geometry admission uses emergency spatial aggregation before refusi
  assert.equal(chosen.aggregateFallback,true);assert.equal(chosen.targetExceeded,false);
  assert.deepEqual(visited,[[2,0],[1,0],[0,0],[0,1],[0,2],[0,3]]);
 });
+
+
+test('100x dense river and border coverage remains hard-budget admissible through the final spatial tier',async()=>{
+ const {batchGlobeStrokeDescriptors}=await import('../../../src/rendering/globe-spatial-aggregate.js');
+ const {globeActiveLimits,estimateGlobePlanCost,chooseGlobeActivePlan,globeCostFits}=await import('../../../src/rendering/globe-active-budget.js');
+ const {renderCacheBudget}=await import('../../../src/rendering/render-cache-budget.js');
+ const MiB=1024*1024,limits=globeActiveLimits(renderCacheBudget(8));
+ const base=[];
+ for(let i=0;i<70;i++)base.push({role:'country',kind:'mesh',lod:0,key:'country-'+i,first:0,end:180,vertexCount:100,
+  spec:{sha256:'country-'+i,decodedBytes:180*12+100*24+16}});
+ for(let i=0;i<22;i++)base.push({role:'lake',kind:'mesh',lod:0,key:'lake-'+i,minZoom:4,first:0,end:180,vertexCount:100,
+  spec:{sha256:'lake-'+i,decodedBytes:180*12+100*24+16}});
+ const borders=Array.from({length:7000},(_,i)=>({role:'border',kind:'stroke',baseBorder:true,lod:0,key:'border-'+i,
+  slots:[i%70],bounds:[-1,-1,-1,1,1,1],cell:'0:0:0',first:0,end:100,
+  spec:{sha256:'border-'+i,decodedBytes:12000,compressedBytes:4000}}));
+ const rivers=Array.from({length:57900},(_,i)=>({role:'river',kind:'stroke',lod:0,minZoom:0,key:'river-'+i,
+  bounds:[-1,-1,-1,1,1,1],cell:'0:0:0',first:0,end:320,
+  spec:{sha256:'river-'+i,decodedBytes:12000,compressedBytes:4000}}));
+ const borderPlan=level=>batchGlobeStrokeDescriptors(borders,{prefix:'stress-border-'+level,
+  byteBudget:level===0?4*MiB:2*MiB,maxSources:level===0?32:128,groupKey:row=>String(row.lod),
+  aggregate:sources=>!level||sources[0].lod!==0?{}:{force:true,aggregateErrorScale:level===1?32:64,
+    aggregateReductionEstimate:level===1?2:level===2?8:32,aggregateMaxRun:512,aggregateBounds:null,
+    aggregateGridDivisions:level===1?128:level===2?64:20,aggregatePreserveOwners:true}});
+ const riverPlan=level=>batchGlobeStrokeDescriptors(rivers,{prefix:'stress-river-'+level,
+  byteBudget:level===0?8*MiB:4*MiB,maxSources:level===0?32:128,groupKey:row=>row.lod+':'+row.minZoom,
+  aggregate:sources=>!level||sources[0].lod!==0?{}:{force:true,aggregateErrorScale:level===1?32:64,
+    aggregateReductionEstimate:level===1?2:level===2?8:32,aggregateMaxRun:512,aggregateBounds:null,
+    aggregateGridDivisions:level===1?128:level===2?64:20,aggregatePreserveOwners:level===1,pickable:level<2}});
+ const build=(lod,padding,level=0)=>{
+  const cost=estimateGlobePlanCost([...base,...borderPlan(level),...riverPlan(level)]);
+  return {cost,transitionBytes:cost.bytes,aggregationLevel:level};
+ };
+ const normal=build(0,0,0),chosen=chooseGlobeActivePlan({requestedLod:0,minLod:0,limits,aggregateLevels:[1,2,3],build});
+ assert.ok(normal.cost.segments>limits.hard.segments||normal.cost.chunks>limits.hard.chunks);
+ assert.equal(chosen.aggregationLevel,3);assert.equal(chosen.aggregateFallback,true);
+ assert.equal(chosen.targetExceeded,true);
+ assert.ok(globeCostFits(chosen.cost,limits.hard));
+ assert.ok(chosen.cost.segments<limits.hard.segments);
+ assert.ok(chosen.cost.drawCalls<limits.hard.drawCalls);
+ assert.ok(chosen.cost.chunks<limits.hard.chunks);
+});
