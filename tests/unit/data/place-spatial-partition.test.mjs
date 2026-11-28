@@ -52,7 +52,7 @@ test('city viewport worker selects the finest affordable spatial stage and retai
   assert.equal(result.stageId,stage);
   assert.equal(result.records.length,records.length);
  }
- const search=await store.search('City 0001');
+ const search=await store.search('City 0000');
  assert.ok(search.records.some(row=>row.sourceId==='1'));
  store.dispose?.();
 });
