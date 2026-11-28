@@ -96,18 +96,8 @@ function pagesForStage(records,stage) {
 export function buildPlaceSpatialPartition(inputRecords) {
   if(!Array.isArray(inputRecords))throw new TypeError('Place spatial partition requires records');
   const records=inputRecords.map(normalizePlace).sort(comparePlaces);
-  const tiles={},search={},shards={},shardFiles=[],stageStats=[],allPages=[];
-  for(const stage of PLACE_SPATIAL_STAGES) {
-    const pages=pagesForStage(records,stage);
-    allPages.push(...pages);
-    stageStats.push({id:stage.id,minZoom:stage.minZoom,columns:stage.columns,rows:stage.rows,
-      tileCount:new Set(pages.map(row=>row.key)).size,pageCount:pages.length,
-      maxRecords:pages.reduce((max,row)=>Math.max(max,row.records.length),0),
-      maxBytes:pages.reduce((max,row)=>Math.max(max,row.bytes.length),0)});
-    if(pages.reduce((sum,row)=>sum+row.records.length,0)!==records.length)
-      throw new Error('Place spatial stage lost or duplicated records: '+stage.id);
-  }
-  let shardIndex=0,current=[],currentBytes=0;
+  const tiles={},search={},shards={},shardFiles=[],stageStats=[];
+  let shardIndex=0,current=[],currentBytes=0,totalPages=0;
   const flush=()=>{
     if(!current.length)return;
     const bytes=Buffer.concat(current.map(row=>row.bytes)),id='places-v1-'+String(shardIndex).padStart(3,'0');
@@ -127,17 +117,27 @@ export function buildPlaceSpatialPartition(inputRecords) {
         }
         for(const prefix of prefixes) {
           if(!search[prefix])search[prefix]=[];
-          search[prefix].push({...descriptor,first:prefix,last:prefix+'\uffff',rank:page.priority});
+          search[prefix].push({...descriptor,first:prefix,last:prefix+'\\uffff',rank:page.priority});
         }
       }
       offset+=page.bytes.length;
     }
     shardIndex++;current=[];currentBytes=0;
   };
-  for(const page of allPages) {
+  const appendPage=page=>{
     if(page.bytes.length>PLACE_LIMITS.shardBytes)throw new RangeError('Place spatial page exceeds shard limit');
     if(current.length&&currentBytes+page.bytes.length>PLACE_LIMITS.shardBytes)flush();
-    current.push(page);currentBytes+=page.bytes.length;
+    current.push(page);currentBytes+=page.bytes.length;totalPages++;
+  };
+  for(const stage of PLACE_SPATIAL_STAGES) {
+    const pages=pagesForStage(records,stage);
+    const recordCount=pages.reduce((sum,row)=>sum+row.records.length,0);
+    if(recordCount!==records.length)throw new Error('Place spatial stage lost or duplicated records: '+stage.id);
+    stageStats.push({id:stage.id,minZoom:stage.minZoom,columns:stage.columns,rows:stage.rows,
+      tileCount:new Set(pages.map(row=>row.key)).size,pageCount:pages.length,
+      maxRecords:pages.reduce((max,row)=>Math.max(max,row.records.length),0),
+      maxBytes:pages.reduce((max,row)=>Math.max(max,row.bytes.length),0)});
+    for(const page of pages)appendPage(page);
   }
   flush();
   for(const [key,rows] of Object.entries(tiles))tiles[key]=rows.length===1?rows[0]:rows;
@@ -145,6 +145,6 @@ export function buildPlaceSpatialPartition(inputRecords) {
   const spatialPartition={schema:'pando-place-spatial-partition-v1',algorithm:'equirectangular-grid-bounded-overflow-v1',
     maxTileRecords:PLACE_LIMITS.tileRecords,maxTileBytes:PLACE_LIMITS.shardBytes,maxQueryPages:PLACE_LIMITS.queryTiles,
     sourceRecordCount:records.length,totalCells:stageStats.reduce((sum,row)=>sum+row.tileCount,0),
-    totalPages:allPages.length,shards:shardFiles.length,stages:stageStats};
+    totalPages,shards:shardFiles.length,stages:stageStats};
   return {stages:PLACE_SPATIAL_STAGES.map(row=>({...row})),tiles,search,shards,shardFiles,spatialPartition};
 }
