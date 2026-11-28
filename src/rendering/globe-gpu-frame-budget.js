@@ -42,11 +42,15 @@ export function createGlobeGpuFrameBudget({totalRenderBytes=320*MiB,limits=globe
     if (!admitUpload(size,operations))return false;
     compactionBytes+=size;return true;
   }
+  function remainingCompactionBytes() {
+    if (uploads>=limits.uploadOperations)return 0;
+    return Math.max(0,Math.min(limits.compactionBytes-compactionBytes,limits.uploadBytes-uploadBytes));
+  }
   function stats() {
     return {frameId,limits:{...limits},creates,createBytes,uploads,uploadBytes,compactionBytes,
       deferred:{...deferred},remaining:{createBytes:Math.max(0,limits.createBytes-createBytes),
         uploadBytes:Math.max(0,limits.uploadBytes-uploadBytes),compactionBytes:Math.max(0,limits.compactionBytes-compactionBytes),
         createOperations:Math.max(0,limits.createOperations-creates),uploadOperations:Math.max(0,limits.uploadOperations-uploads)}};
   }
-  return Object.freeze({beginFrame,admitCreate,admitUpload,admitCompaction,stats});
+  return Object.freeze({beginFrame,admitCreate,admitUpload,admitCompaction,remainingCompactionBytes,stats});
 }

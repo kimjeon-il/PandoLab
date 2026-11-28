@@ -26,6 +26,28 @@ export function planGlobeCompactionUpdates(next, previous = new Uint32Array()) {
   return writes;
 }
 
+// Limit both bytes and interval count. More than 32 intervals would widen
+// applyGlobeDrawWrites' actual upload beyond the selected slice.
+export function takeGlobeDrawWriteSlice(writes,cursor,maxPrimitives,maxRanges=32) {
+  let index=cursor.index,offset=cursor.offset,remaining=Math.max(0,Math.floor(maxPrimitives)),count=0;
+  const rows=[];
+  while(index<writes.length&&remaining>0&&rows.length<maxRanges) {
+    const row=writes[index],size=Math.min(remaining,row.end-row.first-offset);
+    if (size<=0) {index++;offset=0;continue;}
+    rows.push({first:row.first+offset,end:row.first+offset+size,offset:row.offset+offset});
+    count+=size;remaining-=size;offset+=size;
+    if(offset===row.end-row.first){index++;offset=0;}
+  }
+  return {writes:rows,cursor:{index,offset},count,complete:index>=writes.length};
+}
+export function estimateGlobeDrawWriteBytes(writes,bytesPerPrimitive) {
+  if (!writes.length)return 0;
+  if (writes.length>32) {
+    const first=writes[0],last=writes.at(-1);
+    return (last.offset+last.end-last.first-first.offset)*bytesPerPrimitive;
+  }
+  return writes.reduce((sum,row)=>sum+row.end-row.first,0)*bytesPerPrimitive;
+}
 export function mergeGlobeDrawRanges(parts) {
   const result = []; let count = 0;
   for (const {ranges, offset = 0} of parts)for (let i = 0; i<ranges.length; i+=2) {

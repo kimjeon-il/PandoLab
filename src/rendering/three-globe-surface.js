@@ -4,7 +4,7 @@ import { createGlobeDataTexture, createGlobeMesh, globeMeshMaterials, gpuResourc
 import { GLOBE_FIELD_OF_VIEW } from './globe-camera.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture, hydroStyleLookup } from './three-globe-strokes.js';
 import { createGlobeOutlineCache } from './globe-outline-cache.js';
-import { planGlobeCompactionUpdates, mergeGlobeDrawRanges, copyGlobeDrawWrites, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, writeDirectGlobeStrokes, globeDrawCapacity, splitGlobeDrawRanges, globeDrawGroups, globeDrawBlockSize, groupGlobeGpuMeshes, combineGlobeDrawMeshes } from './globe-draw-compaction.js';
+import { planGlobeCompactionUpdates, takeGlobeDrawWriteSlice, estimateGlobeDrawWriteBytes, mergeGlobeDrawRanges, copyGlobeDrawWrites, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, writeDirectGlobeStrokes, globeDrawCapacity, splitGlobeDrawRanges, globeDrawGroups, globeDrawBlockSize, groupGlobeGpuMeshes, combineGlobeDrawMeshes } from './globe-draw-compaction.js';
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges } from './globe-outline-cache.js';
 import { createThreeGlobeLabels } from './three-globe-labels.js';
 import { PLACE_LIMITS } from '../document/place-limits.js';
@@ -79,7 +79,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const gpuFrameBudget=createGlobeGpuFrameBudget({totalRenderBytes:cacheBudget.totalRenderBytes});
   const uploadScene=new THREE.Scene(),uploadTarget=new THREE.WebGLRenderTarget(1,1);
   let warmedGeometries=new WeakSet(),warmedTextures=new WeakSet();
-  let gpuCamera=null,gpuViewport=null;
   const maxPointTextureSize = renderer.capabilities.maxTextureSize;
   renderer.setClearColor(palette.ocean);
   renderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
@@ -203,11 +202,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     viewRotation.set(...frame.right,...frame.up,...frame.forward.map(value=>-value));
     camera.near=frame.distance*.01;camera.far=frame.distance+4;
     camera.setViewOffset(width,height,width/2-frame.center[0],height/2-frame.center[1],width,height);
-    gpuCamera=globeCamera;gpuViewport={width,height};
   }
   // The logical visibility/ownership of a packet is independent of which
   // spatial ranges its current camera actually submits.
-  function spatialResource(objects, material, update, pointResources = [], retained = null, {geometries = null, workspace = () => [], disposeExtra = () => {}} = {}) {
+  function spatialResource(objects, material, update, pointResources = [], retained = null, {geometries = null, workspace = () => [], disposeExtra = () => {}, optional = false} = {}) {
     let enabled = true, disposed = false;
     const materials = globeMeshMaterials(objects);
     if (material)materials.add(material);
@@ -217,9 +215,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         pointResources.map(row => row.texture), workspace(), immutableBuffers);
     }
     const resource = {
-      material, update, lastUsed:performance.now(),
+      material,optional,drawReady:false,update, lastUsed:performance.now(),
       markFootprint:() => meshLedger.mark(resource),
       warmGpu() {for (const mesh of objects)if (!prepareGpuMesh(mesh))return false;return true;},
+      hideObjects() {for (const mesh of objects)mesh.visible=false;},
       setOrder(order, span = 0) {objects.forEach((mesh, i) => {mesh.renderOrder = order+span*i/Math.max(1,objects.length);});},
       setStrokeStyle(style) {for (const material of materials) {const u = material.uniforms; if (u.radius)u.radius.value = style.width/2;if(u.strokeColor)u.strokeColor.value.set(style.color);if(u.strokeOpacity)u.strokeOpacity.value=style.opacity??style.alpha??1;}},
       get visible() {return enabled;},
@@ -289,7 +288,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       const attributes = Object.values(mesh.geometry.attributes).filter(attribute => attribute.isInstancedBufferAttribute);
       for (const attribute of attributes)attribute.setUsage(THREE.DynamicDrawUsage);
       mesh.geometry.instanceCount = 0;
-      drawParts.push({source, mesh, output, direct, prior:new Uint32Array(), parts:group.parts.map(row => ({
+      drawParts.push({source, mesh, output, direct, prior:new Uint32Array(), pending:null, parts:group.parts.map(row => ({
         ...row, offset:row.first-group.first, selection:createGlobeSpatialSelection(row.packet, row.index), ownerRevision:options.baseBorder?localOwnerRevision(row.packet.ownerGroups, borderSlotRevisions, () => borderVisibilityRevision):() => 0
       }))});
     }
@@ -297,6 +296,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const resource = spatialResource(drawParts.map(row => row.mesh), null, (getCuller, currentZoom, stats) => {
       const cull = currentZoom>=(options.minZoom??-2)?getCuller(strokePadding(options, maxWidth)):admitNone;
       stats.segments+=count; stats.strokeBatches+=drawParts.length;
+      let complete=true;
       for (const batch of drawParts) {
         const {source, mesh, output, direct, parts} = batch;
         const selections = []; let changed = false, total = 0;
@@ -307,22 +307,38 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
           selections.push({ranges:selected.ranges, offset:row.offset});
         }
         if (changed) {
-          const {ranges}=mergeGlobeDrawRanges(selections),writes=planGlobeCompactionUpdates(ranges,batch.prior);
-          const bytes=writes.reduce((sum,row)=>sum+(row.end-row.first)*(direct?48:8)+(output.widths.length?4:0)+(output.ownerGroups.length?2:0),0);
-          if (bytes&&!gpuFrameBudget.admitCompaction(bytes,1)) {mesh.visible=Boolean(batch.prior.length);continue;}
-          if (direct&&writes.length) {
-            writeDirectGlobeStrokes(output, source, writes);
-            for (const name of ['start','startLow','end','endLow'])stats.compactionUploadBytes+=applyGlobeDrawWrites(mesh.geometry.getAttribute(name), writes);
-          }else if (!direct)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('endpointIndices'), source.endpointIndices, writes);
-          if (output.widths.length)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('sourceWidth'), source.widths, writes);
-          if (output.ownerGroups.length)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('ownerGroup'), source.ownerGroups, writes);
-          batch.prior = ranges; resource.markFootprint();
+          const {ranges}=mergeGlobeDrawRanges(selections);
+          // An interrupted write no longer matches the previous GPU mapping.
+          const writes=planGlobeCompactionUpdates(ranges,batch.pending?new Uint32Array():batch.prior);
+          batch.pending={ranges,writes,cursor:{index:0,offset:0},total};
+        }
+        if (batch.pending) {
+          const pending=batch.pending,bytesPerSegment=(direct?48:8)+(output.widths.length?4:0)+(output.ownerGroups.length?2:0);
+          const slice=takeGlobeDrawWriteSlice(pending.writes,pending.cursor,Math.floor(gpuFrameBudget.remainingCompactionBytes()/bytesPerSegment));
+          if (slice.count&&gpuFrameBudget.admitCompaction(slice.count*bytesPerSegment,1)) {
+            const writes=slice.writes;
+            if (direct) {
+              writeDirectGlobeStrokes(output,source,writes);
+              for (const name of ['start','startLow','end','endLow'])stats.compactionUploadBytes+=applyGlobeDrawWrites(mesh.geometry.getAttribute(name),writes);
+            }else stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('endpointIndices'),source.endpointIndices,writes);
+            if (output.widths.length)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('sourceWidth'),source.widths,writes);
+            if (output.ownerGroups.length)stats.compactionUploadBytes+=copyGlobeDrawWrites(mesh.geometry.getAttribute('ownerGroup'),source.ownerGroups,writes);
+            // Flush now, not in a future visible render which could combine
+            // multiple frames' dirty attributes into one oversized upload.
+            stageGpuMesh(mesh);
+            pending.cursor=slice.cursor;resource.markFootprint();
+          }
+          if (pending.cursor.index<pending.writes.length) {
+            mesh.visible=false;complete=false;continue;
+          }
+          batch.prior=pending.ranges;total=pending.total;batch.pending=null;resource.markFootprint();
         }
         mesh.geometry.instanceCount = total; mesh.visible = total>0;
         stats.submittedSegments+=total;
         if (total) {stats.strokeDrawCalls++; if (direct)stats.directStrokeSegments+=total;}
       }
-    }, pointResources, packet, {workspace:() => drawParts.flatMap(row => [row.prior, ...row.parts.flatMap(part => part.selection.footprint())]), disposeExtra:() => strokeResources[options.strokeKind]?.delete(resource)});
+      return complete;
+    }, pointResources, packet, {optional:Boolean(options.optional),workspace:() => drawParts.flatMap(row => [row.prior,row.pending?.ranges,...row.parts.flatMap(part => part.selection.footprint())]), disposeExtra:() => strokeResources[options.strokeKind]?.delete(resource)});
     if (options.strokeKind)strokeResources[options.strokeKind].add(resource);
     return resource;
   }
@@ -385,33 +401,40 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         if (!old||old.capacity!==cap||old.offset!==entry.offset)layoutChanged = true;
       }
       if (next.size!==blocks.size||needed!==capacity)layoutChanged = true;
+      for (const row of next.values()) {
+        const old=layoutChanged?null:blocks.get(row.id);
+        for (const write of planGlobeCompactionUpdates(row.ranges,old?.ranges))
+          writes.push({...write,offset:write.offset+row.offset});
+      }
+      const writeBytes=estimateGlobeDrawWriteBytes(writes,12);
       if (layoutChanged) {
-        if (!gpuFrameBudget.admitCreate(needed*12,1))return false;
-        const replacement=residency.withTemporary(needed*12*2,'gpu-index-growth',()=>{
+        // Fill new indices before their first upload. The original vertex
+        // attributes are shared and already uploaded.
+        const newIndexBytes=needed*12;
+        if (writeBytes>gpuFrameBudget.remainingCompactionBytes()||
+            !gpuFrameBudget.admitCreate(newIndexBytes,1)||!gpuFrameBudget.admitUpload(newIndexBytes,1))return false;
+        const replacement=residency.withTemporary(newIndexBytes*2,'gpu-index-growth',()=>{
           const index=new THREE.BufferAttribute(new Uint32Array(needed*3),1).setUsage(THREE.DynamicDrawUsage);
           return {geometry:makeGeometry(index),index};
         });
-        const previous=dynamicGeometry,previousIndex=drawIndex,previousCapacity=capacity;
-        dynamicGeometry=replacement.geometry;drawIndex=replacement.index;capacity=needed;mesh.geometry=dynamicGeometry;
-        if (!gpuFrameBudget.admitUpload(geometryUploadBytes(dynamicGeometry),1)) {
-          dynamicGeometry=previous;drawIndex=previousIndex;capacity=previousCapacity;mesh.geometry=previous??sourceGeometry;
-          replacement.geometry.dispose();return false;
+        const previous=dynamicGeometry;
+        dynamicGeometry=replacement.geometry;drawIndex=replacement.index;capacity=needed;
+        stats.compactionUploadBytes+=copyGlobeDrawWrites(drawIndex,packet.indices,writes,3);
+        mesh.geometry=dynamicGeometry;stageGpuMesh(mesh);warmedGeometries.add(dynamicGeometry);
+        if (previous) {
+          for (const key of Object.keys(attributes))previous.deleteAttribute(key);
+          previous.dispose();
         }
-        stageGpuMesh(mesh);warmedGeometries.add(dynamicGeometry);
-        if (previous) {for (const key of Object.keys(attributes))previous.deleteAttribute(key);previous.dispose();}
+      }else {
+        if (writeBytes&&!gpuFrameBudget.admitCompaction(writeBytes,1))return false;
+        stats.compactionUploadBytes+=copyGlobeDrawWrites(drawIndex,packet.indices,writes,3);
+        mesh.geometry=dynamicGeometry;
+        if (writeBytes)stageGpuMesh(mesh);
       }
-      for (const row of next.values()) {
-        const old = layoutChanged?null:blocks.get(row.id);
-        for (const write of planGlobeCompactionUpdates(row.ranges, old?.ranges)) {
-          writes.push({...write, offset:write.offset+row.offset});
-        }
-      }
-      const writeBytes=writes.reduce((sum,row)=>sum+(row.end-row.first)*12,0);
-      if (writeBytes&&!gpuFrameBudget.admitCompaction(writeBytes,1))return false;
-      stats.compactionUploadBytes+=copyGlobeDrawWrites(drawIndex,packet.indices,writes,3);
-      blocks=next;mesh.geometry=dynamicGeometry;
-      setGroups(dynamicGeometry, globeDrawGroups([...blocks.values()]));
-      stats.rewrittenBlocks+=new Set(writes.map(write => Math.floor(write.first/globeDrawBlockSize(primitiveCount)))).size;
+      blocks=next;
+      setGroups(dynamicGeometry,globeDrawGroups([...blocks.values()]));
+      stats.rewrittenBlocks+=new Set(writes.map(write=>Math.floor(write.first/globeDrawBlockSize(primitiveCount)))).size;
+      return true;
     }
     const resource = spatialResource([mesh], material, (getCuller, currentZoom, stats) => {
       const cull = currentZoom>=minZoom?getCuller(0):admitNone;
@@ -432,6 +455,13 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         }else {
           stableDirectFrames=0;
           if (prepareDynamic(ranges,stats)) {priorSelection=ranges;submitted=count;visibleLeaves=leaves;resource.markFootprint();}
+          else {
+            // GPU clipping and the existing owner mask preserve coverage.
+            // Use the already uploaded original index rather than a stale
+            // compacted stream when the dynamic update exceeds this frame.
+            mesh.geometry=sourceGeometry;setGroups(sourceGeometry,[{start:0,count:packet.indices.length}]);
+            priorSelection=ranges;submitted=primitiveCount;visibleLeaves=leaves;resource.markFootprint();
+          }
         }
       }
       if (mesh.geometry===sourceGeometry&&dynamicGeometry&&++stableDirectFrames>=16) {releaseDynamic(); stableDirectFrames = 0;}
@@ -461,12 +491,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   if (packets.countries)register('objects', packets.countries, palette.defaultLand, 1, -2,'country');
   const multisampling = Boolean(context.getContextAttributes().antialias);
   const riverStyle = { ...palette.strokes.river, color: palette.ocean };
-  const riverMesh = (packet, minZoom) => spatialStrokes(packet, {order:3, minZoom, strokeKind:'river',
+  const riverMesh = (packet, minZoom, optional=false) => spatialStrokes(packet, {order:3, minZoom, optional,strokeKind:'river',
     style:riverStyle, cameraUniforms, viewport, margin, multisampling, hydroUniforms});
   function attachRiverDetail(row, packet) {
-    const resource = riverMesh(packet, row.minZoom);
+    const resource = riverMesh(packet, row.minZoom,true);
     const order = Math.max(0, row.order??0); resource.setOrder(4+.49*order/(order+1));
-    return {residentBytes:meshLedger.bytes(resource),warmGpu:()=>resource.warmGpu(),
+    return {residentBytes:meshLedger.bytes(resource),warmGpu:()=>resource.warmGpu(),drawReady:()=>resource.drawReady,
       setResidency:options=>meshLedger.configure(resource,options),
       setProtected:value=>meshLedger.protect(resource,value),
       setVisible:visible=>{resource.visible=visible;},dispose:()=>resource.dispose()};
@@ -701,8 +731,17 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (!countryReady||!hydroReady)return false;
     labels.flushUploads();
     const stats = {triangles:0, submittedTriangles:0, segments:0, submittedSegments:0, ranges:0, visibleRanges:0, strokeBatches:0, strokeDrawCalls:0, directStrokeSegments:0, compactionUploadBytes:0, meshDrawCalls:0, immutableIndexTriangles:0, rewrittenBlocks:0};
-    for (const resource of activeSpatialResources)resource.update(getCuller, view.zoom, stats);
-    for (const outline of paintedOutlines)outline.update(getCuller, strokePadding, stats);
+    let requiredReady=true;
+    for (const resource of activeSpatialResources)if (!resource.optional) {
+      resource.drawReady=resource.update(getCuller,view.zoom,stats)!==false;
+      requiredReady&&=resource.drawReady;
+    }
+    if (!requiredReady)return false;
+    for (const resource of activeSpatialResources)if (resource.optional) {
+      resource.drawReady=resource.update(getCuller,view.zoom,stats)!==false;
+      if (!resource.drawReady)resource.hideObjects();
+    }
+    for (const outline of paintedOutlines)outline.update(getCuller,strokePadding,stats);
     spatialStats = stats;
     // Reject a misestimated or malformed packet plan before submitting
     // excessive primitives to WebGL. The previously published canvas stays.
