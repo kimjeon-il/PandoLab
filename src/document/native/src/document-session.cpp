@@ -202,11 +202,11 @@ TemporalCandidateReceipt DocumentSession::temporalCandidatePrepare(
             if (previous&&previous!=shape&&!sameGeometryValue(*previous, *shape))
                 throw TimelineError("CORE_BUILTIN_GEOMETRY_VERSION","A temporal source cannot rewrite an immutable geometry version.");
         }
-        const auto impact = calculateChangeImpact(project_.document(), staged->project.document(), {}, targetMonth);
-        // Prepare the authoritative wire delta before entering the replacement
-        // transaction. Initial/file adoption continues to publish a full model.
         // Resource-backed source swaps publish the complete declaration catalog.
-        if (!referenceOnlyGeometry_)staged->preparedDelta = projectcodec::encodeWebDelta(project_.document(), staged->project.document(), impact);
+        if (!referenceOnlyGeometry_) {
+            const auto impact = calculateChangeImpact(project_.document(), staged->project.document(), {}, targetMonth);
+            staged->preparedDelta = projectcodec::encodeWebDelta(project_.document(), staged->project.document(), impact);
+        }
     }
     staged->preparedSetupKey = setupKey;
     staged->preparedDocumentId = documentId;

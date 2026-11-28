@@ -1,5 +1,5 @@
 import { resourceKey, resourceUpdate } from '../runtime/resource-dependency-policy.js';
-import { admittedGeometryKey, geometryReferenceFor, featureGeometryKey } from '../geometry/geometry-version-store.js';
+import { geometryReferenceFor, featureGeometryKey } from '../geometry/geometry-version-store.js';
 import { worldViewChange } from './world-view-change.js';
 // A fast path is allowed only for *verified* presentation-only differences.
 // The full Core and renderer path stays authoritative for any uncertainty.

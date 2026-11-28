@@ -160,9 +160,18 @@ export function createCoreDocumentClient({
       return ordered('core.document-geometry-admit', admission, options, true, true);
     },
     prepareTimelineGeometry,
-    prepareGeometryRefs:(requirements, month, options = {}) => {
+    prepareGeometryRefs:async(requirements, month, options = {}) => {
       const unique = new Map(requirements.map(row => [JSON.stringify([row.id,row.version]),row]));
-      return ensureGeometryResources(month,options,[...unique.values()]);
+      const generation=documentGeneration;
+      for (;;) {
+        const epoch=currentState?.epoch;
+        try {return await ensureGeometryResources(month,options,[...unique.values()]);}
+        catch(error) {
+          if ((error?.code!=='PL-CORE-STALE'&&error?.name!=='AbortError')||disposed||options.signal?.aborted
+            ||options.isCurrent?.()===false||documentGeneration!==generation||!currentState
+            ||currentState.epoch===epoch||currentState.timelineCursor!==month)throw error;
+        }
+      }
     },
     storageBaselineLoad: (baseline, options) => ordered('core.storage-baseline-load', { baseline }, options, true, true),
     temporalSourcePrepare:(source, {dataRevision, manifestSha256, ...options} = {}) =>

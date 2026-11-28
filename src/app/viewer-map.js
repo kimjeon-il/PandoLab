@@ -157,15 +157,23 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     navigation: ports.navigation, feedback: ports.feedback,
     getGeneration:()=>projectDomain.getGeneration(),
     async loadGeometryForFeatures(features, {month,isCurrent}) {
-      const requirements = features.filter(row=>row?.geometryRef&&!documentSession.documentModel.geometry(row.geometryRef)).map(row=>row.geometryRef);
-      if(requirements.length)await documentSession.commandOwner.prepareGeometryRefs(requirements,month,{isCurrent});
-      if(!isCurrent())return null;
-      return features.map(row=> {
-        if(!row?.geometryRef)return row;
-        const geometry=documentSession.documentModel.geometry(row.geometryRef);
+      // Capture each admitted allocation before another batch can evict it.
+      // The temporary focus projection never becomes a retained world snapshot.
+      const rows=[],read=({id,version})=>documentSession.documentModel.geometry({id,version});
+      for(const feature of features) {
+        if(!isCurrent())return null;
+        const ref=feature?.geometryRef;
+        if(!ref){rows.push(feature);continue;}
+        let geometry=read(ref);
+        if(!geometry) {
+          await documentSession.commandOwner.prepareGeometryRefs([ref],month,{isCurrent});
+          if(!isCurrent())return null;
+          geometry=read(ref);
+        }
         if(!geometry)throw new Error('The requested Core geometry is not resident.');
-        return {...row,geometry};
-      });
+        rows.push({...feature,geometry});
+      }
+      return rows;
     },
   });
   connectOwner('objectCatalog');

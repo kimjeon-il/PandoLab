@@ -272,3 +272,23 @@ test('failed deferred catalog cleanup is reported but does not suppress search r
  assert.deepEqual(reported,[[failure,'auxiliary-refresh']]);
  post.dispose();
 });
+
+
+test('reference-only Viewer timeline does not fetch coordinate payloads; exact geometry is admitted on demand',async()=>{
+ const calls=[],required=[{id:'fixture',version:2,type:'Polygon',contentSha256:'a'.repeat(64),decodedBytes:2}];
+ const state={epoch:1,timelineCursor:'2026-12'};let loads=0;
+ const worker={postMessage(message){
+  calls.push([message.operation,message.payload]);
+  const result=message.operation==='core.document-timeline-cursor'?{state:{epoch:2,timelineCursor:message.payload.month}}:{state:message.operation==='core.document-geometry-admit'?{epoch:2,timelineCursor:'1922-12'}:state};
+  queueMicrotask(()=>worker.onmessage({data:{...message,type:'result',ok:true,result}}));
+ },terminate(){}};
+ const client=createCoreDocumentClient({createWorker:()=>worker,referenceOnlyGeometry:true});
+ try {
+  await client.load('{}');client.setGeometryLoader(async rows=>{loads++;assert.deepEqual(rows,required);return [{id:'fixture',version:2,source:'{}'}];});
+  const geometryPreparation=await client.prepareTimelineGeometry('1922-12');
+  await client.setTimelineCursor('1922-12',{geometryPreparation});
+  assert.equal(loads,0);assert.equal(calls.some(([name])=>name==='core.document-geometry-requirements'),false);
+  await client.prepareGeometryRefs(required,'1922-12');
+  assert.equal(loads,1);assert.equal(calls.at(-1)[0],'core.document-geometry-admit');assert.equal(calls.at(-1)[1].expectedEpoch,2);
+ }finally{client.dispose();}
+});

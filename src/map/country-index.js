@@ -265,7 +265,7 @@ export function createCountryIndex({buildMeta = globalThis.PANDOLAB_BUILD_META} 
         countryLabelAnchorVersions.set(id, ++anchorVersionSequence); changed = true; continue;
       }
       const baked = bakedAnchors[countryBoundaryOwner(id)];
-      if (baked&&validLabelAnchor(baked.coordinates)&&matchesCountryGeometrySignature(feature, baked.signature)) {
+      if (feature.geometry&&baked&&validLabelAnchor(baked.coordinates)&&matchesCountryGeometrySignature(feature, baked.signature)) {
         countryLabelAnchors.set(id, [...baked.coordinates]); pendingCountryLabelAnchors.delete(id);
         countryLabelAnchorVersions.set(id, ++anchorVersionSequence); changed = true; continue;
       }

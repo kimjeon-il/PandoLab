@@ -184,7 +184,13 @@ bool sameOwner(const ProjectDocument& a, const OwnerRecords& ar, const ProjectDo
         if (std::tie(x.id, x.validity.from, x.validity.to, x.geometryRef.id, x.geometryRef.version)!=
            std::tie(y.id, y.validity.from, y.validity.to, y.geometryRef.id, y.geometryRef.version))return false;
         const auto xs = a.geometries.get(x.geometryRef), ys = b.geometries.get(y.geometryRef);
-        if (!xs||!ys||!sameGeometryValue(*xs, *ys))return false;
+        if (xs&&ys) {if (!sameGeometryValue(*xs, *ys))return false;}
+        else {
+            const auto& ax = a.geometries.resources(); const auto& by = b.geometries.resources();
+            const auto ai = ax.find(x.geometryRef), bi = by.find(y.geometryRef);
+            if (ai==ax.end()||bi==by.end()||ai->second.type!=bi->second.type||
+                ai->second.contentSha256!=bi->second.contentSha256||ai->second.decodedBytes!=bi->second.decodedBytes)return false;
+        }
     }
     return true;
 }

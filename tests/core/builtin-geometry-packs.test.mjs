@@ -217,3 +217,19 @@ test('formal name date evidence distinguishes actual dated use from publication 
   {...accepted,dateEvidence:{...accepted.dateEvidence,sourceUrl:'https://example.test/unlinked'}},
  ])assert.throws(()=>readBuiltinWorldFormalNames({...source,names:[row]}),/date evidence/i);
 });
+
+
+test('reference-only Viewer startup fetches only the pinned index until exact geometry is requested',async()=>{
+ const world=fixture(),requests=[];
+ const loader=createBuiltinWorldLoader({manifestUrl:new URL(indexPath,base).href,manifestSpec:world.manifestSpec,
+  dataRevision:'fixture',assetRoot:base,referenceOnlyGeometry:true,cacheStorage:null,
+  fetchFn:async url=>{const path=new URL(url).pathname;requests.push(path);
+   const bytes=path.endsWith('/index.json')?world.bytes:world.files.get(path.slice(path.indexOf('geometries/')));
+   assert.ok(bytes,'Only catalog and requested geometry may be fetched');return new Response(bytes);
+  }});
+ const {project}=await loader.loadProject('2026-11');
+ assert.equal(project.geometries.length,0);assert.equal(project.geometryResources.length,world.index.geometryAssets.length);assert.equal(requests.length,1);
+ const ref=project.geometryResources[0];const loaded=await loader.loadGeometryResources([ref]);
+ assert.equal(loaded.length,1);assert.equal(loaded[0].id,ref.id);assert.equal(requests.length,2);
+ await loader.loadGeometryResources([ref]);assert.equal(requests.length,2);
+});
