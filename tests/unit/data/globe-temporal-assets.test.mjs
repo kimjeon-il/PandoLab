@@ -469,3 +469,29 @@ test('stroke descriptor batches aggregate consecutive neighboring cells within s
  assert.deepEqual(batches.flatMap(row=>row.sources.map(source=>source.key)),rows.map(row=>row.key));
  assert.ok(batches.every(row=>row.bounds.every(Number.isFinite)));
 });
+
+
+test('physical river plans expose progressively coarser spatial aggregation without changing water identity',async()=>{
+ const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+ const rows=Array.from({length:70},(_,i)=>({role:'river',kind:'stroke',lod:0,minZoom:2,cell:(i<35?0:1)+':0:0',
+  key:'river-'+i,bounds:[-.8,-.1,-.1,.8,.1,.1],first:0,end:320,
+  spec:{sha256:'river-'+i,decodedBytes:320*24,compressedBytes:128}}));
+ const assets=createGlobePhysicalAssets({loadMesh:async()=>({}),loadStroke:async(spec,signal,priority,descriptor)=>({
+  count:2,points:new Float32Array(18),endpointIndices:Uint32Array.of(0,1,1,2),widths:new Float32Array(2),ownerGroups:new Uint16Array(0),
+ })});
+ const source=assets.createDescriptor({identity:'world',waters:[],riverMinZoom:2},rows);
+ const normal=assets.plan(source,{zoom:3,lod:0,aggregationLevel:0});
+ const medium=assets.plan(source,{zoom:3,lod:0,aggregationLevel:1});
+ const coarse=assets.plan(source,{zoom:3,lod:0,aggregationLevel:2});
+ const emergency=assets.plan(source,{zoom:3,lod:0,aggregationLevel:3});
+ assert.equal(normal.aggregationLevel,0);assert.equal(medium.aggregationLevel,1);
+ assert.ok(medium.riverChunks.every(row=>row.aggregateGridDivisions===128&&row.aggregatePreserveOwners));
+ assert.ok(coarse.riverChunks.every(row=>row.aggregateGridDivisions===64&&row.pickable===false));
+ assert.ok(emergency.riverChunks.every(row=>row.aggregateGridDivisions===20&&row.pickable===false));
+ assert.ok(emergency.riverChunks.every(row=>row.sources.length<=32));
+ const prepared=await assets.prepare(emergency);
+ assert.equal(prepared.plan.aggregationLevel,3);
+ assert.ok(prepared.plan.riverChunks.every(row=>row.end===2&&!row.sources));
+ assert.equal(assets.covers(prepared.plan,normal),false);
+ assets.dispose();
+});

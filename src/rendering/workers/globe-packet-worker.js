@@ -6,7 +6,7 @@ import { indexGlobeOutlineChunks } from '../globe-outline-index.js';
 import { GLOBE_HISTORY_CATALOG_VERSION } from '../globe-history-catalog.js';
 import { GLOBE_SPATIAL_CATALOG_VERSION } from '../globe-spatial-catalog.js';
 import { GLOBE_LODS } from '../globe-lod.js';
-import { createGlobeRiverJunctionGuard,simplifyGlobeRiverPacket } from '../globe-river-simplification.js';
+import { createGlobeRiverJunctionGuard,simplifyGlobeRiverPacket,aggregateGlobeStrokePacket } from '../globe-river-simplification.js';
 
 const rpc = self.PandoLabWorkerRpc;
 function transfer(value) {
@@ -63,9 +63,9 @@ async function decodePacket({kind,bytes,spec,ownerCount,outlineOwners,identityCo
   return {value,transferable:kind!=='hydro'&&kind!=='catalog'&&kind!=='catalog-page'&&kind!=='spatial-catalog-page'};
 }
 rpc.install({handlers:{
-  'globe.aggregate-stored-strokes':async({packets,lod=0,errorScale=16,maxRun=512,protectedBounds=null},context)=>{
-    if(!Array.isArray(packets)||packets.length<2||packets.length>32||lod!==0||!Number.isFinite(errorScale)||errorScale<1||errorScale>64||
-      !Number.isInteger(maxRun)||maxRun<32||maxRun>512||protectedBounds!==null&&(!Array.isArray(protectedBounds)||protectedBounds.length!==6||!protectedBounds.every(Number.isFinite)))
+  'globe.aggregate-stored-strokes':async({packets,lod=0,errorScale=16,maxRun=512,protectedBounds=null,gridDivisions=0,preserveOwners=true},context)=>{
+    if(!Array.isArray(packets)||packets.length<1||packets.length>32||lod!==0||!Number.isFinite(errorScale)||errorScale<1||errorScale>64||
+      !Number.isInteger(maxRun)||maxRun<32||maxRun>512||!([0,20,64,128].includes(gridDivisions))||typeof preserveOwners!=='boolean'||protectedBounds!==null&&(!Array.isArray(protectedBounds)||protectedBounds.length!==6||!protectedBounds.every(Number.isFinite)))
       throw Error('Invalid hierarchical river aggregate request');
     const maxPoints=packets.reduce((sum,row)=>sum+Math.floor(row.spec.decodedBytes/24),0);
     const decodedPackets=await Promise.all(packets.map(async row=>{
@@ -75,7 +75,8 @@ rpc.install({handlers:{
     context.throwIfCancelled();const guard=createGlobeRiverJunctionGuard(decodedPackets),builder=createGlobeStrokeBatchBuilder(maxPoints);
     for(const packet of decodedPackets){context.throwIfCancelled();builder.append(packet);}
     const simplified=simplifyGlobeRiverPacket(builder.finish(),GLOBE_LODS[lod],guard,{maxRun,errorScale,protectedBounds});
-    context.throwIfCancelled();return transfer(prepareGlobeSpatialPacket(simplified));
+    const aggregated=gridDivisions?aggregateGlobeStrokePacket(simplified,{gridDivisions,preserveOwners}):simplified;
+    context.throwIfCancelled();return transfer(prepareGlobeSpatialPacket(aggregated));
   },
   'globe.combine-stored-strokes':async({packets}, context) => {
     const maxPoints = packets.reduce((sum, row) => sum+Math.floor(row.spec.decodedBytes/24),0);

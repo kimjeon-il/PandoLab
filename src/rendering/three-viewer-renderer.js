@@ -241,12 +241,12 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     for (const row of paint.roleStyles())width = Math.max(width, row?.width??0);
     return Math.max(5, Math.ceil(width+2*(0.5/(viewport?.dpr||1))+2));
   };
-  function physicalPlan(identity, padding = 0, visibility = null, lod = currentGeometryLod(),selection=activeCatalogSelection) {
+  function physicalPlan(identity, padding = 0, visibility = null, lod = currentGeometryLod(),selection=activeCatalogSelection,aggregationLevel=0) {
     syncViewPlans(); const extra = strokePadding(), lakesVisible = visibility?.lakesVisible??state.layerVisibility.lakes!==false,
       riversVisible = visibility?.riversVisible??state.layerVisibility.rivers!==false;
-    const key=JSON.stringify([identity,lod,padding,extra,lakesVisible,riversVisible,view.zoom,selection.key]);
+    const key=JSON.stringify([identity,lod,aggregationLevel,padding,extra,lakesVisible,riversVisible,view.zoom,selection.key]);
     let plan = physicalPlans.get(key);
-    if (!plan) {plan = physicalAssets.plan(selection.physicalSource,{zoom:view.zoom,lod,cull:viewCull(padding),strokeCull:viewCull(padding+extra),lakesVisible,riversVisible});
+    if (!plan) {plan = physicalAssets.plan(selection.physicalSource,{zoom:view.zoom,lod,aggregationLevel,cull:viewCull(padding),strokeCull:viewCull(padding+extra),lakesVisible,riversVisible});
       if (physicalPlans.size>=8)physicalPlans.clear(); physicalPlans.set(key, plan);}
     return plan;
   }
@@ -285,18 +285,18 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       graticuleNeeded(),strokePadding(),budgetTier,fixedBytes,publishedPlanRevision,selection.key]);
     if (admissions.has(key))return admissions.get(key);
     const limits=globeActiveLimits(cacheBudget,{tier:budgetTier,otherBytes:fixedBytes});
-    const build=(lod,padding=0)=>{
-      const base=territorialPlan(prepared,padding,visibility,lod,selection),physical=physicalPlan(identity,padding,visibility,lod,selection);
+    const build=(lod,padding=0,aggregationLevel=0)=>{
+      const base=territorialPlan(prepared,padding,visibility,lod,selection),physical=physicalPlan(identity,padding,visibility,lod,selection,aggregationLevel);
       const transitionBytes=estimateGlobeTransitionBytes(publishedBase?.plan,publishedPhysical?.plan.rows,base,physical.rows,
         graticuleNeeded()?gridBudgetRows:[]);
-      return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical),transitionBytes};
+      return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical),transitionBytes,aggregationLevel};
     };
-    const selected=chooseGlobeActivePlan({requestedLod,minLod:lodEnabled?0:GLOBE_FINE_LOD,limits,build});
+    const selected=chooseGlobeActivePlan({requestedLod,minLod:lodEnabled?0:GLOBE_FINE_LOD,limits,aggregateLevels:[1,2,3],build});
     // Keep the existing margin prefetch only if the complete combined margin
     // (not each layer in isolation) fits the soft active workload target.
     let margin=selected;
     if (!selected.targetExceeded) {
-      const padded=build(selected.lod,96);
+      const padded=build(selected.lod,96,selected.aggregationLevel??0);
       if (globeCostFits(padded.cost,limits.target)&&padded.transitionBytes<=limits.transitionBytes)margin=padded;
     }
     const result={...selected,requestedLod,limits,margin,selection};
@@ -317,7 +317,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const lod=publishedPhysical.plan.lod;
     const context=territorialContext(territories,null,lod);
     const base=territorialPlan(territories,0,null,lod,admission.selection);
-    const water=physicalPlan(publishedPhysical.spec.identity,0,null,lod,admission.selection);
+    const water=physicalPlan(publishedPhysical.spec.identity,0,null,lod,admission.selection,admission.aggregationLevel??0);
     if (publishedBase.context!==context||!globeChunkSetContains(publishedBase.plan,base)||
         !physicalAssets.covers(publishedPhysical.plan,water))return null;
     const cost=activeCost(publishedBase.plan,publishedPhysical.plan);
@@ -1051,7 +1051,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!riverDetail.prepareGpuUploads())invalidate('three-river-gpu-stage');
     activeBudgetStats={requestedLod:targetAdmission.requestedLod,targetLod:targetAdmission.lod,admittedLod:admission.lod,
       moving,usingPublishedCoverage:usingPublished,labelCandidateLimit:labelLimit,detailDeferred:showRivers&&(!detailAllowed||!detailCatalog),detailCatalogOmitted:detailRequest?.omitted??0,
-      budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
+      budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,aggregationLevel:admission.aggregationLevel??0,
+      spatialAggregation:!!admission.aggregateFallback,limits:admission.limits,
       required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,gpuFrame:surface.gpuFrameStats(),optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera,viewport.width,viewport.height,admission.limits.hard,initialStrict));
     if (!submitted) {surface.trimResidency();residency.trim();invalidate('three-gpu-upload-budget');return defer();}
@@ -1081,8 +1082,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const next = {...draw, countryCoverage, waterCoverage, lakeCoverage,
       countryIndex:countryCoverage.index, waterIndex:waterCoverage.index, lakeIndex:lakeCoverage.index,
       riverIndex:samePhysical&&sameRivers?previous.riverIndex:createGlobePacketIndex([
-        ...active.riverChunks.map(row => ({packet:row.packet, minZoom:row.minZoom})),
-        ...riverChunks.map(row => ({packet:row.packet, minZoom:row.row.minZoom})),
+        ...active.riverChunks.filter(row=>row.pickable!==false).map(row => ({packet:row.packet, minZoom:row.minZoom})),
+        ...riverChunks.filter(row=>row.row?.pickable!==false).map(row => ({packet:row.packet, minZoom:row.row.minZoom})),
       ].flatMap(row => row.packet.spatialParts.map(part => ({...part, minZoom:row.minZoom}))), row => row.index.rootBounds),
     };
     if (!sameScene)cancelRequest('pick-click');

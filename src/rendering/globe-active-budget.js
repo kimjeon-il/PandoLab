@@ -112,16 +112,25 @@ export function globeBudgetError(cost,limits) {
 // Prefer the highest affordable tier at or below the camera request. If the
 // soft target is unattainable, use the coarsest hard-admissible complete
 // coverage. If even that is too large, do not download or publish a partial map.
-export function chooseGlobeActivePlan({requestedLod,minLod=0,limits,build}) {
-  let fallback=null,last=null;
+export function chooseGlobeActivePlan({requestedLod,minLod=0,limits,build,aggregateLevels=[]}) {
+  let fallback=null,aggregateFallback=null,last=null;
   for (let lod=requestedLod;lod>=minLod;lod--) {
-    const candidate=build(lod), cost=candidate.cost;
-    last=candidate;
+    const candidate=build(lod,0,0),cost=candidate.cost;last=candidate;
     if (!globeCostFits(cost,limits.hard)||(candidate.transitionBytes??0)>(limits.transitionBytes??Infinity))continue;
-    fallback={...candidate,lod,targetExceeded:true,budgetLimited:lod!==requestedLod};
+    fallback={...candidate,lod,aggregationLevel:0,targetExceeded:true,budgetLimited:lod!==requestedLod};
     if (globeCostFits(cost,limits.target))return {...fallback,targetExceeded:false};
   }
+  // Only after every ordinary LOD has failed its soft target do we trade
+  // river identity/precision for bounded spatial-network aggregation.
+  for (const level of aggregateLevels) {
+    const candidate=build(minLod,0,level),cost=candidate.cost;last=candidate;
+    if (!globeCostFits(cost,limits.hard)||(candidate.transitionBytes??0)>(limits.transitionBytes??Infinity))continue;
+    aggregateFallback={...candidate,lod:minLod,aggregationLevel:level,aggregateFallback:true,
+      targetExceeded:true,budgetLimited:true};
+    if (globeCostFits(cost,limits.target))return {...aggregateFallback,targetExceeded:false};
+  }
   if (fallback)return fallback;
+  if (aggregateFallback)return aggregateFallback;
   const error=globeBudgetError(last?.cost??emptyGlobeCost(),limits.hard);
   if ((last?.transitionBytes??0)>(limits.transitionBytes??Infinity)) {
     error.exceeded.push('transitionBytes');

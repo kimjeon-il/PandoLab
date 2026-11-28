@@ -1,4 +1,4 @@
-import { createGlobeStrokePointTable } from './globe-mesh.js';
+import { createGlobeStrokePointTable, encodeIndexedGlobeStrokes } from './globe-mesh.js';
 function pointWords(packet){return new Uint32Array(packet.points.buffer,packet.points.byteOffset,packet.points.length);}
 function pointHash(words,index){let hash=2166136261;for(let axis=0;axis<6;axis++)hash=Math.imul(hash^words[index*6+axis],16777619);hash^=hash>>>16;return Math.imul(hash,0x85ebca6b)>>>0;}
 function hasBit(bits,hash){const bit=hash%(bits.length*8);return Boolean(bits[bit>>>3]&(1<<(bit&7)));}
@@ -51,4 +51,65 @@ export function simplifyGlobeRiverPacket(packet,lod,isShared=()=>false,{maxRun=3
   if(count===packet.count)return packet;
   return {count,points:table.finish(),endpointIndices:outIndices.slice(0,count*2),
     widths:widths.slice(0,widths.length?count:0),ownerGroups:owners.slice(0,owners.length?count:0)};
+}
+
+
+// Last-resort display aggregation: quantize the unit-sphere network into a
+// bounded spatial lattice, merge duplicate edges, and retain maximum width.
+// This is display-only and deliberately drops object ownership when requested;
+// the exact source packets remain immutable and are still used at higher LODs.
+export function aggregateGlobeStrokePacket(packet,{gridDivisions=64,preserveOwners=true}={}) {
+  if(!packet||!Number.isSafeInteger(packet.count)||packet.count<0||
+    !Number.isInteger(gridDivisions)||gridDivisions<16||gridDivisions>256||
+    typeof preserveOwners!=='boolean'||packet.endpointIndices?.length!==packet.count*2||
+    packet.points?.length%6!==0||packet.widths?.length!==0&&packet.widths.length!==packet.count||
+    packet.ownerGroups?.length!==0&&packet.ownerGroups.length!==packet.count)
+    throw new TypeError('Invalid spatial stroke aggregation packet');
+  if(!packet.count)return packet;
+  const values=packet.points,words=new Uint32Array(packet.points.buffer,packet.points.byteOffset,packet.points.length);
+  const table=createGlobeStrokePointTable(Math.max(1,packet.count*2));
+  const pointCache=new Map(),cellCache=new Map(),edges=new Map(),side=gridDivisions+1;
+  function quantizePoint(id) {
+    if(pointCache.has(id))return pointCache.get(id);
+    const at=id*6,x=values[at]+values[at+3],y=values[at+1]+values[at+4],z=values[at+2]+values[at+5];
+    if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z))throw new TypeError('Invalid stroke endpoint');
+    const cell=[x,y,z].map(value=>Math.max(0,Math.min(gridDivisions,
+      Math.round((Math.max(-1,Math.min(1,value))+1)*.5*gridDivisions))));
+    const cellKey=cell[0]+side*(cell[1]+side*cell[2]);
+    let output=cellCache.get(cellKey);
+    if(output===undefined) {
+      let vector=cell.map(value=>-1+value*2/gridDivisions),length=Math.hypot(...vector);
+      if(!Number.isFinite(length)||length<1e-12){vector=[x,y,z];length=Math.hypot(...vector);}
+      vector=vector.map(value=>value/length);
+      const high=Float32Array.from(vector),low=Float32Array.from(vector.map((value,index)=>value-high[index]));
+      const point=Float32Array.from([...high,...low]);
+      output=table.intern(new Uint32Array(point.buffer),0);
+      cellCache.set(cellKey,output);
+    }
+    pointCache.set(id,output);return output;
+  }
+  const pointCapacity=Math.max(2,packet.count*2+1),hasWidths=packet.widths.length>0;
+  const keepOwners=preserveOwners&&packet.ownerGroups.length>0;
+  for(let segment=0;segment<packet.count;segment++) {
+    const first=quantizePoint(packet.endpointIndices[segment*2]),last=quantizePoint(packet.endpointIndices[segment*2+1]);
+    if(first===last)continue;
+    const low=Math.min(first,last),high=Math.max(first,last),owner=keepOwners?packet.ownerGroups[segment]:0;
+    const key=keepOwners?owner+':'+low+':'+high:low*pointCapacity+high;
+    const prior=edges.get(key),width=hasWidths?packet.widths[segment]:0;
+    if(prior)prior.width=Math.max(prior.width,width);
+    else edges.set(key,{first,last,owner,width});
+  }
+  const rows=[...edges.values()],endpointIndices=new Uint32Array(rows.length*2);
+  const widths=new Float32Array(hasWidths?rows.length:0),ownerGroups=new Uint16Array(keepOwners?rows.length:0);
+  rows.forEach((row,index)=>{
+    endpointIndices[index*2]=row.first;endpointIndices[index*2+1]=row.last;
+    if(widths.length)widths[index]=row.width;
+    if(ownerGroups.length)ownerGroups[index]=row.owner;
+  });
+  // Re-encode through the canonical packet contract before building its
+  // shared draw/picking spatial index in the Worker.
+  const encoded=encodeIndexedGlobeStrokes({count:rows.length,points:table.finish(),endpointIndices,widths,ownerGroups});
+  const pointOffset=20,indexOffset=pointOffset+table.finish().byteLength;
+  return {count:rows.length,points:table.finish(),endpointIndices,widths,ownerGroups,
+    encodedBytes:encoded.byteLength,pointCount:indexOffset};
 }

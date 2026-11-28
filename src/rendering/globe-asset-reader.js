@@ -40,7 +40,8 @@ export function createGlobeAssetReader({dataRevision, cacheBudget, residency, lo
       return metrics.track(descriptor.aggregateErrorScale?'three.aggregate-river-strokes':'three.combine-strokes', () =>
         descriptor.aggregateErrorScale
           ?packetTasks.aggregateStoredStrokes(inputs,{signal,priority,lod:descriptor.lod,errorScale:descriptor.aggregateErrorScale,
-            maxRun:descriptor.aggregateMaxRun,protectedBounds:descriptor.aggregateBounds})
+            maxRun:descriptor.aggregateMaxRun,protectedBounds:descriptor.aggregateBounds,
+            gridDivisions:descriptor.aggregateGridDivisions??0,preserveOwners:descriptor.aggregatePreserveOwners??true})
           :packetTasks.combineStoredStrokes(inputs,{signal,priority}));
     });
   }

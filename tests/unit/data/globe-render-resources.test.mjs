@@ -597,3 +597,19 @@ test('detail river packet arrival does not create GPU resources outside a frame'
  ready=true;assert.equal(detail.prepareGpuUploads(),true);assert.equal(detail.activeEntries().length,1);
  detail.update([]);assert.equal(visible,false);detail.dispose();
 });
+
+
+test('active geometry admission uses emergency spatial aggregation before refusing a dense viewport',async()=>{
+ const {chooseGlobeActivePlan,emptyGlobeCost}=await import('../../../src/rendering/globe-active-budget.js');
+ const hard={triangles:100,segments:100,bytes:1000,drawCalls:20,chunks:10},target={...hard,segments:70};
+ const visited=[];
+ const build=(lod,padding,aggregationLevel=0)=>{
+  visited.push([lod,aggregationLevel]);
+  const segments=aggregationLevel===0?160:aggregationLevel===1?120:aggregationLevel===2?105:60;
+  return {base:{lod},physical:{lod,aggregationLevel},cost:{...emptyGlobeCost(),segments,drawCalls:2,chunks:1,bytes:100},transitionBytes:200,aggregationLevel};
+ };
+ const chosen=chooseGlobeActivePlan({requestedLod:2,minLod:0,limits:{hard,target,transitionBytes:500},aggregateLevels:[1,2,3],build});
+ assert.equal(chosen.lod,0);assert.equal(chosen.aggregationLevel,3);
+ assert.equal(chosen.aggregateFallback,true);assert.equal(chosen.targetExceeded,false);
+ assert.deepEqual(visited,[[2,0],[1,0],[0,0],[0,1],[0,2],[0,3]]);
+});

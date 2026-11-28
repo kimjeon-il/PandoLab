@@ -379,3 +379,17 @@ test('GPU mesh batches span neighboring cells while retaining owner order and sp
  const cost=estimateGlobePlanCost(rows);
  assert.equal(cost.chunks,3);assert.equal(cost.drawCalls,6);assert.equal(cost.triangles,70);
 });
+
+
+test('emergency spatial river aggregation collapses dense zigzags and keeps ownership only at selectable tiers',async()=>{
+ const {aggregateGlobeStrokePacket}=await import('../../../src/rendering/globe-river-simplification.js');
+ const coordinates=[];for(let i=0;i<=512;i++)coordinates.push(-20+i*40/512,i%2?1.2:-1.2);
+ const line=decodeGlobeStrokes(encodeGlobeStrokes(coordinates,null,Array(512).fill(1),Uint16Array.from({length:512},()=>7)));
+ const kept=aggregateGlobeStrokePacket(line,{gridDivisions:64,preserveOwners:true});
+ const display=aggregateGlobeStrokePacket(line,{gridDivisions:20,preserveOwners:false});
+ assert.ok(kept.count<line.count/4);
+ assert.ok(display.count<line.count/24);
+ assert.equal(kept.ownerGroups.length,kept.count);
+ assert.equal(display.ownerGroups.length,0);
+ assert.ok(display.endpointIndices.every((id,index)=>index%2===0||id!==display.endpointIndices[index-1]));
+});
