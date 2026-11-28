@@ -48,7 +48,9 @@ export function estimateGlobeChunkCost(row) {
   const prior=rowCosts.get(row); if (prior)return prior;
   const kind=row.kind==='stroke'||['border','river','detail','outline','graticule'].includes(row.role)?'stroke':'mesh';
   const count=primitiveCount(row,kind);
-  const decoded=Math.max(0,Number(row.spec?.decodedBytes)||0);
+  const rawDecoded=Math.max(0,Number(row.spec?.decodedBytes)||0);
+  const decoded=row.aggregateReductionEstimate&&row.sources?.length
+    ?Math.ceil(rawDecoded/row.aggregateReductionEstimate):rawDecoded;
   // CPU packet + spatial tree + copied/compacted buffers + GPU storage.
   // These are accounting estimates, not hardware-reported allocations.
   const cost={triangles:kind==='mesh'?count:0,segments:kind==='stroke'?count:0,
