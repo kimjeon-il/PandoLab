@@ -186,3 +186,13 @@ test('repeated selection refresh reuses groups and buttons, preserving focus and
     assert.notEqual(host.children[0],newGroup,'New project generations build a clean relation tree');
   }finally{ui.dispose();}
 });
+
+test('virtual windows bound mounted rows and preserve the final partial grid row',async()=>{
+  const {objectListWindow}=await import('../../../src/ui/virtual-object-list.js');
+  const top=objectListWindow(100000,{height:320,stride:40});
+  assert.deepEqual(top,{start:0,end:12,before:0,after:(100000-12)*40});
+  const middle=objectListWindow(100000,{scroll:400000,height:320,stride:40,columns:4});
+  assert.ok(middle.end-middle.start<=64);assert.equal(middle.start%4,0);
+  const end=objectListWindow(100001,{scroll:1000000,height:320,stride:40,columns:4});
+  assert.equal(end.end,100001);assert.equal(end.after,0);
+});

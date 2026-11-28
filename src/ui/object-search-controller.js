@@ -2,6 +2,7 @@ import { normalizeObjectRef } from '../document/object-ref-identity.js';
 import { normalizePlaceQuery, PLACE_LIMITS } from '../document/place-contract.js';
 import { createObjectSearchModel, visibleObjectSearchRows } from '../document/object-search-model.js';
 import { resourceKey, resourceUpdate } from '../runtime/resource-dependency-policy.js';
+import { objectListWindow,objectListSpacer,observeObjectList,virtualListMetrics } from './virtual-object-list.js';
 
 /**
  * Object search is deliberately flat. The project still owns object grouping and
@@ -24,7 +25,8 @@ export function createObjectSearchController({
 } = {}) {
   let searchTimer = 0;
   let renderedDependencies = null;
-  let renderedSearchRefs = [];
+  let renderedSearchRefs = [],resultRows=[],renderedWindow=null,resultNodes=new Map(),stopVirtual=()=>{};
+  let windowMetrics=null,renderedQuery='',renderedTruncated=false;
   let cachedCatalog = null, cachedRevision;
   let hydrated = false;
   let disposed = false;
@@ -50,7 +52,7 @@ export function createObjectSearchController({
     if (next===projectScope)return false;
     projectScope = next; searchGeneration++; rowRevision++;
     cachedCatalog = null; cachedRevision = undefined; renderedDependencies = null;
-    renderedSearchRefs = []; builtinQuery = null; builtinRows = []; builtinTruncated = false;
+    renderedSearchRefs = []; resultRows=[];renderedWindow=null;resultNodes.clear();windowMetrics=null; builtinQuery = null; builtinRows = []; builtinTruncated = false;
     cancelBuiltinSearch();
     return true;
   }
@@ -74,6 +76,7 @@ export function createObjectSearchController({
     flag.src = item.flagUrl;
     flag.alt = '';
     flag.decoding = 'async';
+    flag.loading='lazy';
     flag.addEventListener('error', () => {
       const fallback = searchResultIcon(item);
       if (fallback && flag.isConnected) flag.replaceWith(fallback);
@@ -81,7 +84,7 @@ export function createObjectSearchController({
     return flag;
   }
 
-  function rowFor(item) {
+  function rowFor(item,index) {
     const current = selection();
     const selected = current.items?.some(candidate => candidate.key === item.key) || false;
     const primary = current.primaryKey === item.key;
@@ -91,6 +94,8 @@ export function createObjectSearchController({
     row.dataset.searchRowRevision = String(rowRevision);
     row.dataset.searchProjectScope = projectScope;
     row.setAttribute('role', 'option');
+    row.setAttribute('aria-posinset',String(index+1));
+    row.setAttribute('aria-setsize',String(resultRows.length));
     row.setAttribute('aria-selected', String(selected));
     row.classList.toggle('is-selected', selected);
     row.classList.toggle('is-primary-selected', primary);
@@ -140,6 +145,46 @@ export function createObjectSearchController({
     return visibleObjectSearchRows(cachedCatalog, query);
   }
 
+  function renderWindow({force=false,focusIndex=null,focusAction=false}={}) {
+    const results=elements.searchResults;
+    if (!results||disposed||projectSuspended||!resultRows.length)return;
+    const virtual=resultRows.length>48&&results.clientHeight>0&&typeof window.getComputedStyle==='function';
+    let range={start:0,end:resultRows.length,before:0,after:0},gap=0;
+    if (virtual) {
+      let sample=results.querySelector('.object-search-result');
+      if (!sample) {sample=rowFor(resultRows[0],0);results.replaceChildren(sample);resultNodes.set(resultRows[0].key,sample);}
+      windowMetrics=virtualListMetrics(window,results,sample);gap=windowMetrics.gap;
+      if (focusIndex!==null) {
+        const offset=focusIndex*windowMetrics.stride;
+        if (offset<results.scrollTop||offset+windowMetrics.stride>results.scrollTop+results.clientHeight)
+          results.scrollTop=Math.max(0,offset-windowMetrics.stride);
+      }
+      range=objectListWindow(resultRows.length,{scroll:results.scrollTop,height:results.clientHeight,stride:windowMetrics.stride});
+    }else if (resultRows.length>48&&typeof window.getComputedStyle==='function') {
+      // Hidden/collapsed search: wait for the resize observer before mounting
+      // rows that cannot currently be seen.
+      range={start:0,end:Math.min(24,resultRows.length),before:0,after:0};
+    }
+    if (!force&&focusIndex===null&&renderedWindow?.start===range.start&&renderedWindow?.end===range.end&&
+      renderedWindow?.before===range.before&&renderedWindow?.after===range.after)return;
+    const nextNodes=new Map(),nodes=[];
+    if (range.before)nodes.push(objectListSpacer(document,range.before,gap));
+    for (let i=range.start;i<range.end;i++) {
+      const item=resultRows[i],row=resultNodes.get(item.key)||rowFor(item,i);
+      row.setAttribute('aria-posinset',String(i+1));row.setAttribute('aria-setsize',String(resultRows.length));
+      nextNodes.set(item.key,row);nodes.push(row);
+    }
+    if (range.after)nodes.push(objectListSpacer(document,range.after,gap));
+    if (renderedTruncated)nodes.push(createEmptyState('내장 도시 검색 결과를 일부 표시했습니다.','이름의 앞부분을 더 입력해 범위를 좁히세요.'));
+    const focused=document.activeElement,retained=focused&&nodes.some(node=>node.contains(focused));
+    if ([...resultNodes].some(([key,node])=>!nextNodes.has(key)&&node.matches?.(':hover')))commands.clearSearchHover();
+    results.replaceChildren(...nodes);resultNodes=nextNodes;renderedWindow=range;
+    commands.syncCanonicalControls?.(results);syncSelection();
+    if (focusIndex!==null) {
+      const row=resultNodes.get(resultRows[focusIndex]?.key);
+      row?.querySelector(focusAction?'[data-object-search-focus]':'[data-object-search-select]')?.focus({preventScroll:true});
+    }else if (retained&&document.activeElement!==focused)focused.focus?.({preventScroll:true});
+  }
   function commitRows(query, rows) {
     const next = { source: resourceKey(['object-search', projectScope]), content: resourceKey(rows.map(item =>
       [item.key, item.id, item.layerGroup, item.name || '', item.typeLabel || '', item.flagUrl || ''])),
@@ -147,10 +192,14 @@ export function createObjectSearchController({
     if (!resourceUpdate(renderedDependencies, next).present) { syncSelection(); return false; }
     const results = elements.searchResults;
     rowRevision++;
-    results.replaceChildren();
+    const resetScroll=query!==renderedQuery;
+    commands.clearSearchHover();
+    results.replaceChildren();resultNodes.clear();renderedWindow=null;
+    resultRows=rows;renderedQuery=query;renderedTruncated=builtinTruncated;
+    if (resetScroll)results.scrollTop=0;
     renderedSearchRefs = rows.map(item => item.ref).filter(Boolean);
-    if (query && rows.length) { results.append(...rows.map(rowFor)); if (builtinTruncated) results.append(createEmptyState('검색 결과를 일부 표시했습니다.', '이름의 앞부분을 더 입력해 범위를 좁히세요.')); }
-    else if (query) results.append(createEmptyState('검색 결과가 없습니다.', '내장 도시는 두 글자 이상으로 이름의 앞부분을 검색하세요.'));
+    if (query&&rows.length)renderWindow({force:true});
+    else if (query)results.append(createEmptyState('검색 결과가 없습니다.','내장 도시는 두 글자 이상으로 이름의 앞부분을 검색하세요.'));
     commands.syncCanonicalControls?.(results);
     syncSelection();
     renderedDependencies = next;
@@ -158,8 +207,8 @@ export function createObjectSearchController({
   }
 
   function combinedRows(query) {
-    const rows = [...rowsFor(query).slice(0, 100), ...builtinRows.filter(row => builtinRecordVisible(row))];
-    return [...new Map(rows.map(row => [row.key, row])).values()].slice(0, 150);
+    const rows=[...rowsFor(query),...builtinRows.filter(row=>builtinRecordVisible(row))];
+    return [...new Map(rows.map(row=>[row.key,row])).values()];
   }
 
   function requestBuiltinRows(query) {
@@ -262,13 +311,26 @@ export function createObjectSearchController({
     // transition must not cancel the camera command belonging to this intent.
     if (selected !== true || disposed || projectSuspended || intent!==focusIntentRevision
       || sourceScope !== readProjectScope()) return false;
-    commands.focusItem?.(group, id);
+    await commands.focusItem?.(group,id);
     return true;
   }
 
   function bind() {
     if (bound || disposed) return;
     bound = true;
+    stopVirtual=observeObjectList(window,elements.searchResults,()=>renderWindow());
+    listen(elements.searchResults,'keydown',event=>{
+      if (!renderedWindow||resultRows.length<=48||!['Tab','ArrowDown','ArrowUp','Home','End'].includes(event.key))return;
+      const row=event.target.closest('[data-object-key]');if(!row)return;
+      const i=Number(row.getAttribute('aria-posinset'))-1;
+      const action=Boolean(event.target.closest('[data-object-search-focus]'));
+      let next=null,nextAction=action;
+      if(event.key==='Tab') {
+        if(!event.shiftKey&&action&&i===renderedWindow.end-1&&i+1<resultRows.length){next=i+1;nextAction=false;}
+        else if(event.shiftKey&&!action&&i===renderedWindow.start&&i>0){next=i-1;nextAction=true;}
+      }else next=event.key==='Home'?0:event.key==='End'?resultRows.length-1:i+(event.key==='ArrowDown'?1:-1);
+      if(next!==null&&next>=0&&next<resultRows.length){event.preventDefault();renderWindow({focusIndex:next,focusAction:nextAction});}
+    });
     const hoverRow = event => event.target.closest('[data-object-search-select]');
     listen(elements.searchResults, 'pointerover', event => {
       if (event.pointerType === 'touch') return;
@@ -359,6 +421,7 @@ export function createObjectSearchController({
   function dispose() {
     if (disposed) return;
     disposed = true;
+    stopVirtual();resultNodes.clear();resultRows=[];
     for (const unsubscribe of subscriptions.splice(0)) unsubscribe();
     bound = false;
     projectSuspended = false;

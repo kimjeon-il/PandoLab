@@ -1,4 +1,5 @@
 import { createSemanticIcon } from './icon-utils.js';
+import {objectListWindow,objectListSpacer,observeObjectList,virtualListMetrics} from './virtual-object-list.js';
 
 /** Read-only territorial details. Canonical selection/dated ancestry are supplied by the Viewer. */
 export function groupObjectDetailChildren(children = []) {
@@ -35,6 +36,8 @@ export function createObjectDetailsPanel({document, surfaces, displayInfo, relat
   ];
   let currentKey = null, projectGeneration = null, disposed = false;
   let renderedGroups = new Map();
+  const window=document.defaultView,scrollHost=groupHost.closest?.('.object-details-body');
+  let stopVirtual=()=>{};
   let preview = null;
   const subscriptions = [];
   const listen = (element, event, fn) => {
@@ -126,12 +129,62 @@ export function createObjectDetailsPanel({document, surfaces, displayInfo, relat
     }
     const image = node('img','object-details-child-flag');
     image.setAttribute('alt','');
+    image.loading='lazy';image.decoding='async';
     image.addEventListener('error', () => {
       if (button.firstElementChild===image)showFallback();
     }, {once:true});
     button.replaceChildren(image);
     image.setAttribute('src', child.flagUrl);
   }
+  function renderGroupTiles(entry,{focusIndex=null}={}) {
+    const items=entry.items,focused=document.activeElement;
+    let range={start:0,end:items.length,before:0,after:0},gap=0;
+    const virtual=items.length>64&&window&&scrollHost;
+    if (virtual) {
+      let sample=entry.list.querySelector('.object-details-child');
+      if (!sample) {
+        const tile=entry.buttons.get(items[0].id)||createTile(items[0].id);
+        updateTile(tile,items[0]);entry.buttons.set(items[0].id,tile);entry.list.replaceChildren(tile.button);sample=tile.button;
+      }
+      const metrics=virtualListMetrics(window,entry.list,sample,{grid:true});
+      gap=metrics.gap;
+      const hostBox=scrollHost.getBoundingClientRect(),listBox=entry.list.getBoundingClientRect();
+      let scroll=hostBox.top-listBox.top;
+      if (focusIndex!==null) {
+        const offset=Math.floor(focusIndex/metrics.columns)*metrics.stride;
+        if(offset<scroll||offset+metrics.stride>scroll+scrollHost.clientHeight) {
+          scrollHost.scrollTop+=offset-scroll;scroll=offset;
+        }
+      }
+      range=objectListWindow(items.length,{scroll,height:scrollHost.clientHeight,stride:metrics.stride,columns:metrics.columns});
+      if (listBox.bottom<hostBox.top-200||listBox.top>hostBox.bottom+200) {
+        const rows=Math.ceil(items.length/metrics.columns);
+        range={start:0,end:0,before:0,after:rows*metrics.stride};
+      }
+    }
+    const buttons=new Map(),rows=[];let focusedRetained=false;
+    if(range.before)rows.push(objectListSpacer(document,range.before,gap));
+    for(let i=range.start;i<range.end;i++) {
+      const child=items[i],tile=entry.buttons.get(child.id)||createTile(child.id);
+      updateTile(tile,child);
+      tile.button.dataset.objectDetailIndex=String(i);
+      if(focused===tile.button)focusedRetained=true;
+      buttons.set(child.id,tile);rows.push(tile.button);
+    }
+    if(range.after)rows.push(objectListSpacer(document,range.after,gap));
+    const old=Array.from(entry.list.children);
+    // On scroll within the same window retain both spacers and live buttons.
+    const same=entry.range?.start===range.start&&entry.range?.end===range.end&&entry.range?.before===range.before&&entry.range?.after===range.after;
+    const sameButtons=entry.buttons.size===buttons.size&&[...buttons].every(([id,tile],i)=>entry.buttons.get(id)===tile&&[...entry.buttons.keys()][i]===id);
+    if(!same||!sameButtons||old.length!==rows.length)entry.list.replaceChildren(...rows);
+    entry.range=range;entry.buttons=buttons;
+    if(preview&&!groupHost.contains(preview.tile.button))clearHover();
+    if(focusIndex!==null)buttons.get(items[focusIndex]?.id)?.button.focus({preventScroll:true});
+    else if(focusedRetained&&document.activeElement!==focused)focused.focus?.({preventScroll:true});
+  }
+  stopVirtual=observeObjectList(window,scrollHost,()=>{
+    if(!disposed)for(const entry of renderedGroups.values())if(entry.items.length>64)renderGroupTiles(entry);
+  });
   function renderRelations(ref, {reset = false} = {}) {
     if (reset)clearHover();
     const view = relations(ref)||{};
@@ -149,8 +202,6 @@ export function createObjectDetailsPanel({document, surfaces, displayInfo, relat
     // A new selection/project generation starts a fresh UI tree.
     const previous = reset?new Map():renderedGroups;
     const next = new Map();
-    const focused = document.activeElement;
-    let focusedRetained = false;
     const elements = groups.map(group => {
       let entry = previous.get(group.label);
       if (!entry) {
@@ -158,35 +209,26 @@ export function createObjectDetailsPanel({document, surfaces, displayInfo, relat
         const heading = node('h3','object-details-group-heading', group.label);
         const list = node('div','object-details-group-list');
         section.append(heading, list);
-        entry = {section, list, buttons:new Map()};
+        entry = {section,list,buttons:new Map(),items:[],range:null};
+        list.addEventListener('keydown',event=>{
+          const i=Number(event.target.dataset?.objectDetailIndex);
+          if(!Number.isInteger(i)||entry.items.length<=64)return;
+          let next=null;
+          if(event.key==='Tab'&&!event.shiftKey&&i===entry.range.end-1&&i+1<entry.items.length)next=i+1;
+          else if(event.key==='Tab'&&event.shiftKey&&i===entry.range.start&&i>0)next=i-1;
+          if(next!==null){event.preventDefault();renderGroupTiles(entry,{focusIndex:next});}
+        });
       }
-      const buttons = new Map();
-      const rows = group.items.map(child => {
-        const tile = entry.buttons.get(child.id)||createTile(child.id);
-        updateTile(tile, child);
-        const {button} = tile;
-        if (focused===button)focusedRetained = true;
-        buttons.set(child.id, tile);
-        return button;
-      });
-      // Do not detach buttons, their focus or their event handlers when the
-      // hierarchy is unchanged. Reuse retained buttons when rows are reordered.
-      const oldRows = Array.from(entry.list.children);
-      if (oldRows.length!==rows.length||rows.some((row, index) => row!==oldRows[index]))
-        entry.list.replaceChildren(...rows);
-      entry.buttons = buttons;
+      entry.items=group.items;
       next.set(group.label, entry);
       return entry.section;
     });
     const oldElements = Array.from(groupHost.children);
     if (oldElements.length!==elements.length||elements.some((item, index) => item!==oldElements[index]))
       groupHost.replaceChildren(...elements);
-    renderedGroups = next;
-    if (preview&&!groupHost.contains(preview.tile.button))clearHover();
-    // A reordered retained button may briefly be detached. Restore keyboard
-    // focus only if it was inside this same object and was actually lost.
-    if (focusedRetained&&focused&&document.activeElement!==focused)
-      focused.focus?.({preventScroll:true});
+    renderedGroups=next;
+    for(const entry of next.values())renderGroupTiles(entry);
+    if(preview&&!groupHost.contains(preview.tile.button))clearHover();
   }
 
   function syncSelection(snapshot) {
@@ -225,7 +267,7 @@ export function createObjectDetailsPanel({document, surfaces, displayInfo, relat
   return Object.freeze({syncSelection, reveal, selectTab, clearHover, dispose() {
     if (disposed)return;
     clearHover();
-    disposed = true;
+    disposed = true;stopVirtual();renderedGroups.clear();
     for (const unsubscribe of subscriptions.splice(0))unsubscribe();
   }});
 }

@@ -175,3 +175,19 @@
 .surface-details .object-details-flag-fallback {
   color: var(--muted);
 }
+
+/* Virtualized rows preserve the same dimensions and scroll extent. */
+.object-list-spacer {
+  grid-column: 1 / -1;
+  min-width: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.object-search-section .object-search-result {
+  height: var(--ui-control-height);
+  min-height: var(--ui-control-height);
+}
+.surface-details .object-details-child {
+  height: var(--ui-control-height);
+  min-height: var(--ui-control-height);
+}
