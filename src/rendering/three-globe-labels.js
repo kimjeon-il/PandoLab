@@ -219,7 +219,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   let layoutCache = null, candidateRevision = 0;
   let pendingSdf = null, desiredKeys = new Set(), pendingMaskBytes = 0;
   const sdfRecovery = createGlobeLabelSdfRecovery();
-  let activePages = new Set(), hitSnapshot = () => null, layoutStats = {};
+  let activePages = new Set(),hitSnapshot=()=>null,layoutStats={},visibleKeys=new Set(),batchCreationPending=false;
   const counters = {rasterizedRuns:0, textMeasurements:0, fullUploadBytes:0, partialUploadBytes:0, partialUploads:0, fullUploads:0, evictedPages:0, compactedPages:0, shrunkBatches:0, workerRasterRuns:0, documentRasterRuns:0, rasterFallbacks:0, reusedRects:0, reclaimedRuns:0, compactionDeferrals:0};
 
   function textureState(texture) {
@@ -246,7 +246,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     const texture=state.texture,{width,height,data}=texture.image,rects=mergeLabelTextureRects(state.rects);
     if (!state.uploaded)return false;
     const area=rects.reduce((sum,row)=>sum+row.width*row.height,0);
-    if (!renderer?.copyTextureToTexture||area>=width*height*.6||rects.length>64) {restoreTexture(state);return false;}
+    if (!renderer?.copyTextureToTexture||area>=width*height*.6||rects.length>(gpuFrameBudget?.stats().limits.uploadOperations??64)) {restoreTexture(state);return uploadFull(state);}
     const bytesPerTexel=data.byteLength/(width*height),bytes=area*bytesPerTexel;
     if (gpuFrameBudget&&!gpuFrameBudget.admitUpload(bytes,rects.length))return false;
     state.rects.length=0;
@@ -445,6 +445,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
   function createBatch(page, needed, old) {
     const allocated = labelInstanceCapacity(old?.capacity??0, needed, maxRows);
     if (old&&allocated===old.capacity)return old;
+    if (gpuFrameBudget&&!gpuFrameBudget.admitCreate(allocated*36+4096,1))return null;
     if (old) {if (allocated<old.capacity)counters.shrunkBatches++; disposeBatch(old);}
     const values = new Float32Array(allocated*8), boxes = createGlobeDataTexture(THREE, values, 2, allocated, {format:THREE.RGBAFormat, type:THREE.FloatType});
     const geometry = new THREE.InstancedBufferGeometry();
@@ -472,7 +473,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     }
     if (dirtyStart>=0)dirty(batch.upload, 0, dirtyStart, 2, count-dirtyStart);
     if (batch.count!==count)cacheDirty = true;
-    batch.count=count;batch.mesh.geometry.instanceCount=count;
+    batch.count=count;batch.keys=rows.slice(first,first+count).map(row=>row.key);batch.mesh.geometry.instanceCount=count;
     batch.mesh.visible=count>0&&batch.gpuReady&&page.upload.uploaded&&batch.upload.uploaded;
   }
   function hideBatches(page, first = 0) {
@@ -587,7 +588,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       const layout = placeGlobeLabels(visible.slice(0,candidateLimit), camera, {width, height}, previous, (cells, columns, cellSize) => {hitGrid = {cells, columns, cellSize};}, measureLabel, stats,Math.floor(byteBudget/4));
       layoutCache = {camera, width, height,revision:candidateRevision,candidateLimit,layout,hitGrid,stats};
     }
-    const {layout, hitGrid, stats} = layoutCache; layoutStats = {...stats};
+    const {layout,stats}=layoutCache;layoutStats={...stats};
     lastComplete = prepareMissing(layout);
     layoutStats.pending = layout.filter(row => !cachedRun(row.atlasKey)).length;
     // Initial/temporal frames retain the previous label buffers until the
@@ -595,16 +596,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     // only ready runs; missing rows are not exposed to picking.
     if (requireComplete&&!lastComplete) {syncLabelMemory(); return false;}
     placed = layout.filter(row => cachedRun(row.atlasKey));
-    previous = new Set(placed.map(row => row.key));
-    const readyKeys = new Set(placed.map(row => row.key)), hitCells = new Map();
-    if (hitGrid) {
-      const {cells, columns, cellSize} = hitGrid;
-      for (const [key, rows] of cells) {
-        const hits = rows.filter(row => readyKeys.has(row.key)).map(({ref, left, right, top, bottom}) => ({ref, left, right, top, bottom}));
-        if (hits.length)hitCells.set(key, hits);
-      }
-      hitSnapshot = ([x, y]) => x<0||y<0||x>width||y>height?null:(hitCells.get(Math.floor(y/cellSize)*columns+Math.floor(x/cellSize))??[]).find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null;
-    }else hitSnapshot = () => null;
+    batchCreationPending=false;
     const renderRows = compactActivePages(placed.map(row => ({...row, ...cachedRun(row.atlasKey)})));
     const byPage = new Map();
     for (const row of renderRows) {
@@ -618,12 +610,14 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       for (let first = 0; first<rows.length; first+=maxRows) {
         const count = Math.min(maxRows, rows.length-first);
         const batch=createBatch(page,count,page.batches[batchIndex]);
+        if (!batch) {batchCreationPending=true;break;}
         page.batches[batchIndex++]=batch;updateBatch(batch,rows,first,count);
       }
       hideBatches(page,batchIndex);
     }
     activePages = new Set(byPage.keys()); layoutStats.placed = placed.length;
-    syncLabelMemory(); return lastComplete;
+    if (batchCreationPending)lastCamera=null;
+    syncLabelMemory();return lastComplete;
   }
   function cancelPending() {desiredKeys.clear(); cancelSdf(); sdfRecovery.reset(); layoutCache = null; lastCamera = null; cacheDirty = true; syncLabelMemory();}
   function setPalette(next) {
@@ -634,10 +628,12 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
     for (const page of pages) {restoreTexture(page.upload);for (const batch of page.batches){restoreTexture(batch.upload);batch.gpuReady=false;batch.mesh.visible=false;}}
   }
   function flushUploads() {
-    let complete=true;
+    let complete=!batchCreationPending;
+    const keys=new Set();
     for (const page of activePages) {
-      if (!uploadFull(page.upload)) {complete=false;for (const batch of page.batches)batch.mesh.visible=false;continue;}
+      if (!uploadFull(page.upload)||!flush(page.upload)) {complete=false;for (const batch of page.batches)batch.mesh.visible=false;continue;}
       for (const batch of page.batches) {
+        if (!batch.count)continue;
         if (batch.upload.pendingFull&&!uploadFull(batch.upload)) {complete=false;batch.mesh.visible=false;continue;}
         if (batch.upload.rects.length&&!flush(batch.upload)) {complete=false;batch.mesh.visible=false;continue;}
         if (!batch.gpuReady) {
@@ -645,8 +641,19 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
           batch.gpuReady=true;
         }
         batch.mesh.visible=batch.count>0;
+        if (batch.mesh.visible)for (const key of batch.keys??[])keys.add(key);
       }
     }
+    const {hitGrid,width,height}=layoutCache??{},hitCells=new Map();
+    visibleKeys=keys;previous=new Set(keys);layoutStats.placed=keys.size;
+    if (hitGrid) {
+      const {cells,columns,cellSize}=hitGrid;
+      for (const [key,rows] of cells) {
+        const hits=rows.filter(row=>keys.has(row.key)).map(({ref,left,right,top,bottom})=>({ref,left,right,top,bottom}));
+        if (hits.length)hitCells.set(key,hits);
+      }
+      hitSnapshot=([x,y])=>x<0||y<0||x>width||y>height?null:(hitCells.get(Math.floor(y/cellSize)*columns+Math.floor(x/cellSize))??[]).find(row=>x>=row.left&&x<=row.right&&y>=row.top&&y<=row.bottom)?.ref??null;
+    }else hitSnapshot=()=>null;
     return complete;
   }
   function syncLabelMemory() {
@@ -674,6 +681,6 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       measuredTexts:metricsCache.size, ...counters, sdfWorker:{...sdfTasks.stats(), workerRaster, fallback:sdfRecovery.fallback, localFailures:sdfRecovery.localFailures, failed:!!sdfRecovery.error, pendingMaskBytes}, layout:{...layoutStats}};
   }
   return Object.freeze({setCandidates,setCandidateGroups,update,trim,flushUploads,dispose,cancelPending,restoreTextures,setPalette, sdfError:() => sdfRecovery.error, hitSnapshot:() => hitSnapshot, cacheStats,
-    visibleCount:place => placed.filter(row => Boolean(row.place)===place).length,
-    drawCalls:() => [...activePages].reduce((count,page)=>count+page.batches.filter(batch=>batch.count>0).length,0),atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
+    visibleCount:place=>placed.filter(row=>Boolean(row.place)===place&&visibleKeys.has(row.key)).length,
+    drawCalls:() => [...activePages].reduce((count,page)=>count+page.batches.filter(batch=>batch.mesh.visible&&batch.count>0).length,0),atlasEntryCount:() => cache.size, hitTest:point => hitSnapshot(point)});
 }

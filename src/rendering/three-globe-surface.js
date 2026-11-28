@@ -232,7 +232,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         if (disposed||enabled===Boolean(value))return;
         enabled = Boolean(value);
         if (enabled) {resource.lastUsed = performance.now(); activeSpatialResources.add(resource);}
-        else {activeSpatialResources.delete(resource); for (const mesh of objects)mesh.visible = false;}
+        else {resource.drawReady=false;activeSpatialResources.delete(resource);for (const mesh of objects)mesh.visible=false;}
       },
       dispose() {
         if (disposed)return;
@@ -483,7 +483,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function registerGpuGroups(rows,role,compatibility,create,stage) {
     const groups=groupGlobeGpuMeshes(rows,compatibility),result=[];
     for (const group of groups) {
-      const estimate=group.vertices*24+group.triangles*4+group.vertices*2+4096;
+      const estimate=group.vertices*26+group.triangles*12+4096;
       const resource=useMesh(role,group.key,()=>{
         const packet=group.rows.length===1?group.rows[0].mesh.packet:
           residency.withTemporary(group.vertices*52+group.triangles*24,'gpu-mesh-batch',()=>combineGlobeDrawMeshes(group.rows));
@@ -767,7 +767,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     for (const name of ['objects','graticule','borders'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
     return true;
   }
-  function draw(globeCamera,width,height,activeLimits=null) {
+  function draw(globeCamera,width,height,activeLimits=null,requireLabels=false) {
     updateGpuCamera(globeCamera,width,height);
     const {frame,view}=globeCamera;
     if (globeCamera!==cullingCamera||width!==cullingWidth||height!==cullingHeight) {
@@ -779,7 +779,6 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     };
     const countryReady=flushCountryPaint(),hydroReady=flushHydroPaint();
     if (!countryReady||!hydroReady)return false;
-    labels.flushUploads();
     const stats = {triangles:0, submittedTriangles:0, segments:0, submittedSegments:0, ranges:0, visibleRanges:0, strokeBatches:0, strokeDrawCalls:0, directStrokeSegments:0, compactionUploadBytes:0, meshDrawCalls:0, immutableIndexTriangles:0, rewrittenBlocks:0};
     let requiredReady=true;
     for (const resource of activeSpatialResources)if (!resource.optional) {
@@ -787,6 +786,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       requiredReady&&=resource.drawReady;
     }
     if (!requiredReady)return false;
+    if (!labels.flushUploads()&&requireLabels)return false;
     for (const resource of activeSpatialResources)if (resource.optional) {
       resource.drawReady=resource.update(getCuller,view.zoom,stats)!==false;
       if (!resource.drawReady)resource.hideObjects();

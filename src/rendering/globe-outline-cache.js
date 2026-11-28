@@ -3,7 +3,7 @@ import { touchLruEntry, trimLruCount } from '../runtime/lru-cache.js';
 import { createGlobeSpatialSelection } from './globe-spatial-partition.js';
 import { createThreeGlobeStrokes, createGlobeStrokePointTexture } from './three-globe-strokes.js';
 import { renderPacketBuffers, renderFootprintBytes } from './render-cache-budget.js';
-import { planGlobeCompactionUpdates, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, globeBufferCapacity } from './globe-draw-compaction.js';
+import { planGlobeCompactionUpdates, estimateGlobeDrawWriteBytes, applyGlobeDrawWrites, useDirectGlobeStrokeAttributes, globeBufferCapacity } from './globe-draw-compaction.js';
 
 import { indexGlobeOutlineChunks, selectGlobeOutlineGroups } from './globe-outline-index.js';
 export { indexGlobeOutlineRanges, selectGlobeOutlineGroups, globeOutlineRanges, indexGlobeOutlineChunks } from './globe-outline-index.js';
@@ -137,7 +137,8 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex
   function ensureGpu(chunk,needed) {
     const gpu=chunk.gpu,part=partitions[chunk.id].packet,capacity=outlineInstanceCapacity(gpu?.capacity??0,needed,part.count);
     const direct=useDirectGlobeStrokeAttributes({count:capacity});
-    if (gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.membershipRevision===chunk.membershipRevision))return gpu;
+    if (gpu&&gpu.capacity===capacity&&gpu.direct===direct&&(direct||gpu.membershipRevision===chunk.membershipRevision))
+      return !prepareGpuMesh||prepareGpuMesh(gpu.mesh)?gpu:null;
     const membership=[...chunk.roles.keys()].sort((a,b)=>a-b).join(',');
     let subset=null;
     if (!direct) {
@@ -180,13 +181,13 @@ export function createGlobeOutlineCache(THREE,{scene,packet,owners,preparedIndex
       if (chunk.selected?.ranges!==selected.ranges) {chunk.selected = selected; markChunk(chunk);}
       stats.submittedSegments+=selected.count; stats.visibleRanges+=selected.leaves;
       if (!selected.count) {hideMesh(chunk); continue;}
-      const gpu=ensureGpu(chunk,selected.count);if(!gpu)continue;
+      const gpu=ensureGpu(chunk,selected.count);if(!gpu){hideMesh(chunk);continue;}
       const {mesh,output,subset}=gpu;
       const rangesChanged = gpu.ranges!==selected.ranges, rolesChanged = gpu.roleRevision!==chunk.roleRevision;
       if (rangesChanged||rolesChanged) {
         const writes=planGlobeCompactionUpdates(selected.ranges,gpu.ranges??new Uint32Array());
-        const uploadBytes=writes.reduce((sum,row)=>sum+(row.end-row.first)*(gpu.direct?48:8)+selected.count*2,0);
-        if (uploadBytes&&gpuFrameBudget&&!gpuFrameBudget.admitCompaction(uploadBytes,1))continue;
+        const uploadBytes=estimateGlobeDrawWriteBytes(writes,gpu.direct?48:8)+(rolesChanged?selected.count*2:estimateGlobeDrawWriteBytes(writes,2));
+        if (uploadBytes&&gpuFrameBudget&&!gpuFrameBudget.admitCompaction(uploadBytes,1)) {hideMesh(chunk);continue;}
         for (const {first, end, offset} of writes) {
           let dst = offset;
           for (let id = first; id<end; id++, dst++) {

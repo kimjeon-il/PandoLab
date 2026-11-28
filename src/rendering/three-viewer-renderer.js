@@ -339,7 +339,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       // Each resident detail packet has a CPU copy and one GPU copy of its arrays.
       riverDetail = createGlobeRiverDetail({byteBudget:cacheBudget.hydroBytes,
         load:physicalAssets.readDetail,
-        attach:surface.attachRiverDetail,deferGpuAttach:true, invalidate:() => {residencyDirty = true; invalidate('three-river-detail');},
+        attach:surface.attachRiverDetail,deferGpuAttach:true,residency, invalidate:() => {residencyDirty = true; invalidate('three-river-detail');},
         onError:cause => deps.feedback.reportOperationError(cause,'상세 하천을 불러오지 못했습니다.','PL-THREE-RIVER-001'),
       });
       refreshHydroLedger = residency.register(() => hydroMetadata?[{protected:true, extraBytes:Math.max(0, Number(spec.hydroMetadata.decodedBytes)||0)*2+hydroSlots.size*64}]:[]);
@@ -850,7 +850,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     activeBudgetStats={requestedLod:admission.requestedLod,admittedLod:admission.lod,
       budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
       required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,gpuFrame:surface.gpuFrameStats(),optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
-    const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height,admission.limits.hard));
+    const submitted = metrics.run('three.submit-frame', () => surface.draw(camera,viewport.width,viewport.height,admission.limits.hard,initialStrict));
     if (!submitted) {surface.trimResidency();residency.trim();invalidate('three-gpu-upload-budget');return {...base,deferred:true};}
     const gpuDeferred=surface.gpuFrameStats().deferred;
     if (gpuDeferred.create||gpuDeferred.upload||gpuDeferred.compaction)invalidate('three-gpu-frame-work-pending');

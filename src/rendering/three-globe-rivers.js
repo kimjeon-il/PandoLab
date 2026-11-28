@@ -1,8 +1,9 @@
 import { touchLruEntry } from '../runtime/lru-cache.js';
+import { renderPacketBuffers } from './render-cache-budget.js';
 /** Retain prepared line buffers for the accepted viewport and recent visits. */
 const RETRY_DELAY = 1500, MAX_RETRIES = 3;
 export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, onError,
-  deferGpuAttach=false,now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout}) {
+  deferGpuAttach=false,residency=null,now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout}) {
   const entries = new Map(), failed = new Map();
   let wanted = new Set(), published = new Set(), residentBytes = 0, retryTimer = null, disposed = false;
   function cancelRetryTimer() {
@@ -30,7 +31,7 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
   }
   function discard(id, entry) {
     if (entries.get(id)!==entry)return;
-    entries.delete(id);
+    entries.delete(id);residency?.remove(entry);
     if (!entry.resource) {entry.controller.abort(); return;}
     entry.resource.dispose();
     residentBytes-=entry.bytes;
@@ -48,7 +49,7 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     const row=entry.row;
     entry.resource=attach(row,entry.packet);
     if (!entry.resource)return false;
-    entry.bytes=entry.resource.residentBytes;entry.lastUsed=performance.now();
+    residency?.remove(entry);entry.bytes=entry.resource.residentBytes;entry.lastUsed=performance.now();
       residentBytes+=entry.bytes;
       entry.resource.setResidency({protected:wanted.has(row.id)||published.has(row.id), evict:() => discard(row.id, entry),
         onBytesChanged:bytes => {
@@ -63,6 +64,7 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
       if (entries.get(row.id)!==entry)return;
       entry.packet=packet;
       if (!deferGpuAttach)attachPrepared(entry);
+      else residency?.set(entry,{buffers:renderPacketBuffers(packet),protected:true});
       failed.delete(row.id);trim();scheduleRetry();invalidate();
     }catch (error) {
       if (entries.get(row.id)!==entry)return;
@@ -109,10 +111,14 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     for (const id of wanted) {
       const entry=entries.get(id);
       if (!entry?.packet)continue;
-      if (!attachPrepared(entry)) {ready=false;continue;}
-      const available=entry.resource.warmGpu?.()??true;
-      entry.resource.setVisible(available);
-      if (!available)ready=false;
+      try {
+        if (!attachPrepared(entry)) {ready=false;continue;}
+        const available=entry.resource.warmGpu?.()??true;
+        entry.resource.setVisible(available);
+        if (!available)ready=false;
+      }catch(error) {
+        discard(id,entry);failed.set(id,{attempts:MAX_RETRIES+1,retryAt:Infinity});onError(error,entry.row);
+      }
     }
     return ready;
   }
