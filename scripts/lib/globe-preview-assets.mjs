@@ -5,6 +5,7 @@ import { globeVector } from '../../src/rendering/globe-camera.js';
 import { GLOBE_LODS, GLOBE_FINE_LOD, GLOBE_LOD_VERSION, validateGlobeLodChunks } from '../../src/rendering/globe-lod.js';
 import { createGlobeRiverJunctionGuard, simplifyGlobeRiverPacket } from './globe-lod-assets.mjs';
 import {encodeGlobeHistoricalViews} from '../../src/rendering/globe-history-index.js';
+import {partitionGlobeHistoryCatalog} from '../../src/rendering/globe-history-catalog.js';
 import {globeSpatialPrimitiveOrder,globePrimitiveBounds,globePrimitiveOwner} from '../../src/rendering/globe-spatial-partition.js';
 import { decodeGlobeMesh, decodeGlobeStrokes, packGlobeMesh, GLOBE_MESH_HEADER_BYTES, GLOBE_MESH_MAGIC,
   createGlobeStrokePointTable, encodeIndexedGlobeStrokes, globeTerritoryKey } from '../../src/rendering/globe-mesh.js';
@@ -651,7 +652,9 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
   const hydroMetadata=emit(Buffer.from(JSON.stringify(hydroObjects)),'hydro-pick/');
   const otherPhysical=[...physicalContexts.values()].filter(row=>row!==basePhysical);
   const physicalIndex=new Map([basePhysical,...otherPhysical].map((row,index)=>[row.identity,index]));
-  const historyCatalog=emit(Buffer.from(JSON.stringify({version:1,lodVersion:GLOBE_LOD_VERSION,historicalCountries,historicalBorders,physicalContexts:otherPhysical,
+  const historyDirectoryIndex=partitionGlobeHistoryCatalog({lodVersion:GLOBE_LOD_VERSION,historicalCountries,historicalBorders,physicalContexts:otherPhysical},
+    page=>emit(Buffer.from(JSON.stringify(page)),'catalog/pages/'));
+  const historyCatalog=emit(Buffer.from(JSON.stringify({...historyDirectoryIndex,
     history:encodeGlobeHistoricalViews(historicalViews),historyTimeline:timeline.map(row=>[row.month,viewBySignature.get(row.signature),physicalIndex.get(row.physicalIdentity)])})),'catalog/');
   return {assets,skeleton,preview:{lodVersion:GLOBE_LOD_VERSION,countryChunks,countrySlots,countryLabels,outlineChunks,borderChunks,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:basePhysical,physicalMonth:month,historySlotCount:historicalCountries.length,historyCatalog}};

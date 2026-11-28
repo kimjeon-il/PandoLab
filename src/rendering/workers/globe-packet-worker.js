@@ -3,6 +3,7 @@ import { decodeStoredBuffer, validateAssetLength } from '../../data/asset-decomp
 import { decodeGlobeMesh, decodeGlobeStrokes, createGlobeStrokeBatchBuilder } from '../globe-mesh.js';
 import { prepareGlobeSpatialPacket } from '../globe-spatial-partition.js';
 import { indexGlobeOutlineChunks } from '../globe-outline-index.js';
+import { GLOBE_HISTORY_CATALOG_VERSION } from '../globe-history-catalog.js';
 
 const rpc = self.PandoLabWorkerRpc;
 function transfer(value) {
@@ -36,8 +37,13 @@ async function decodePacket({kind,bytes,spec,ownerCount,outlineOwners,identityCo
       break;
     case 'catalog':
       value = JSON.parse(new TextDecoder().decode(decoded.buffer));
-      if (value?.version!==1||!Array.isArray(value.historicalCountries)||!Array.isArray(value.historicalBorders)||!Array.isArray(value.physicalContexts))
-        throw Error('Invalid Three.js spatial catalog');
+      if (value?.version!==GLOBE_HISTORY_CATALOG_VERSION||!Array.isArray(value.pages))
+        throw Error('Invalid Three.js history directory');
+      break;
+    case 'catalog-page':
+      value=JSON.parse(new TextDecoder().decode(decoded.buffer));
+      if (value?.version!==GLOBE_HISTORY_CATALOG_VERSION||!Array.isArray(value.entries))
+        throw Error('Invalid Three.js history catalog page');
       break;
     case 'hydro':
       value = JSON.parse(new TextDecoder().decode(decoded.buffer));
@@ -46,7 +52,7 @@ async function decodePacket({kind,bytes,spec,ownerCount,outlineOwners,identityCo
     default:throw Error('Unsupported globe packet kind: '+kind);
   }
   context.throwIfCancelled();
-  return {value,transferable:kind!=='hydro'&&kind!=='catalog'};
+  return {value,transferable:kind!=='hydro'&&kind!=='catalog'&&kind!=='catalog-page'};
 }
 rpc.install({handlers:{
   'globe.combine-stored-strokes':async({packets}, context) => {

@@ -14,6 +14,7 @@ import {MAP_PROJECT_ROLES,mapProjectResourcePath,mapProjectResourcePaths,
 import {validateMapCatalogCoherence} from '../../scripts/lib/map-catalog-coherence.mjs';
 import {resolveBuiltinGeometryPacks} from '../../src/data/builtin-geometry-pack-receipt.js';
 import {globeLodEnabled,validateGlobeLodChunks} from '../../src/rendering/globe-lod.js';
+import {validateGlobeHistoryDirectory,validateGlobeHistoryPage} from '../../src/rendering/globe-history-catalog.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const HASH=/^[a-f0-9]{64}$/;
@@ -91,29 +92,33 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
   packet(globe.graticule);
   packet(globe.hydroMetadata);
   physical(globe.physical);
-  packet(globe.historyCatalog);
-  const spec=globe.historyCatalog;
-  let history;
-  try{
+  function catalogJson(spec) {
+    packet(spec);
     const compressed=bytesFor(spec.url);
     if(compressed.length!==spec.compressedBytes||digest(compressed)!==spec.sha256)
       invalid('Three.js history catalog differs from its transfer receipt');
     const decoded=gunzipSync(compressed,{maxOutputLength:spec.decodedBytes});
     if(decoded.length!==spec.decodedBytes)invalid('Three.js history catalog size mismatch');
-    history=JSON.parse(decoded);
+    return JSON.parse(decoded);
+  }
+  try {
+    const history=validateGlobeHistoryDirectory(catalogJson(globe.historyCatalog),
+      {lodVersion:globe.lodVersion,slotCount:globe.historySlotCount});
+    if(history.physicalContexts.some(row=>row.identity===globe.physical.identity))invalid('Duplicate base physical context');
+    for(const [page,record] of history.pages.entries()) {
+      const value=validateGlobeHistoryPage(history,page,catalogJson(record.spec));
+      for(const {value:row} of value.entries) {
+        if(record.kind==='historicalCountries') {
+          chunks(row.countryChunks,'historical country');
+          chunks(row.outlineChunks,'historical outline');
+        }else if(record.kind==='historicalBorders')chunks(row.chunks,'historical border');
+        else physical(row);
+      }
+    }
   }catch(error){
     if(error?.code?.startsWith('ARTIFACT_DEPLOY_'))throw error;
     invalid('Invalid Three.js history catalog: '+error.message);
   }
-  if(history?.version!==1||history.lodVersion!==globe.lodVersion||!Array.isArray(history.historicalCountries)
-    ||history.historicalCountries.length!==globe.historySlotCount||!Array.isArray(history.historyTimeline)
-    ||!history.history)invalid('Three.js history catalog version or slot count mismatch');
-  for(const row of history.historicalCountries){
-    chunks(row?.countryChunks,'historical country');
-    chunks(row?.outlineChunks,'historical outline');
-  }
-  for(const row of rows(history.historicalBorders,'historical border'))chunks(row?.chunks,'historical border');
-  for(const context of rows(history.physicalContexts,'historical physical'))physical(context);
   return seenPackets.size;
 }
 

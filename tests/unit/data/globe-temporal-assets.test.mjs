@@ -430,14 +430,14 @@ test('historical border and outline selections do not mix LODs or lose owner mem
   const assets=createGlobeTerritorialAssets({lodVersion:1,countryChunks:variants('base',[0]),borderChunks:variants('border',[0]),outlineChunks:variants('outline',[0])},{
     baseSlots:[{}],cacheBudget:{historicalCpuBytes:1024,borderBatchBytes:1024},loadMesh:async()=>({}),loadStroke:async()=>({}),load:async()=>({}),slotCount:()=>2,
   });
-  assets.addHistoryCatalog({lodVersion:1,historicalCountries:[{countryChunks:variants('historical',[1]),outlineChunks:variants('historical-outline',[1])}],
+  const history=assets.createHistorySelection({lodVersion:1,historicalCountries:[{countryChunks:variants('historical',[1]),outlineChunks:variants('historical-outline',[1])}],
     historicalBorders:[{chunks:variants('historical-border')}]});
   const view={borders:[0]};
   for (const lod of [0,1,2]) {
-    assert.ok(assets.plan(()=>true,()=>true,lod).every(row=>row.lod===lod));
-    assert.deepEqual(assets.planHistoryBorders(view,()=>true,lod).map(row=>row.spec.sha256),['historical-border-'+lod]);
-    assert.deepEqual(assets.outlineDescriptors(1,lod).map(row=>row.spec.sha256),['historical-outline-'+lod]);
+    assert.ok(assets.plan(()=>true,()=>true,lod,history).every(row=>row.lod===lod));
+    assert.deepEqual(assets.planHistoryBorders(view,()=>true,lod,history).map(row=>row.spec.sha256),['historical-border-'+lod]);
+    assert.deepEqual(assets.outlineDescriptors(1,lod,history).map(row=>row.spec.sha256),['historical-outline-'+lod]);
   }
-  assert.throws(()=>assets.addHistoryCatalog({historicalCountries:[],historicalBorders:[]}),/LOD version mismatch/);
+  assert.throws(()=>assets.createHistorySelection({historicalCountries:[],historicalBorders:[]}),/LOD version mismatch/);
   assets.dispose();
 });

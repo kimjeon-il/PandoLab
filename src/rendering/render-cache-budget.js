@@ -51,7 +51,7 @@ export function renderFootprintBytes({buffers, extraBytes = 0}) {
 
 // Decoded packet LRU with independent consumers of the same in-flight read.
 // Last-consumer cancellation propagates through network and Worker restores.
-export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, residency = null}) {
+export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, residency = null, estimateExtraBytes = () => 0}) {
   const entries = new Map(), standby = new Map();
   let retained = new Set(), disposed = false, cancelled = 0, residentBytes = 0, pendingCount = 0, warmBytes = 0;
   const warm = new Map();
@@ -61,7 +61,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     standby.delete(key);
     if (entries.get(key)!==entry)return;
     if (!protectedEntry(key, entry)&&!warm.has(key))standby.set(key, entry);
-    if (!entry.pending)residency?.set(entry, {buffers:entry.buffers, extraBytes:0, lastUsed:entry.lastUsed+(warm.has(key)?5000:0),
+    if (!entry.pending)residency?.set(entry, {buffers:entry.buffers, extraBytes:entry.extraBytes, lastUsed:entry.lastUsed+(warm.has(key)?5000:0),
       protected:protectedEntry(key, entry), evict:() => remove(key, entry)});
   }
   function remove(key, entry, {abort = false, notify = true} = {}) {
@@ -116,7 +116,8 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
       entry.controller.signal.throwIfAborted();
       if (entries.get(key)===entry) {
         entry.pending = false; pendingCount--; entry.buffers = renderPacketBuffers(value?.packet??value);
-        entry.bytes = renderBufferBytes(entry.buffers);
+        entry.extraBytes=Math.max(0,Number(estimateExtraBytes(value,key))||0);
+        entry.bytes = renderBufferBytes(entry.buffers,entry.extraBytes);
         residentBytes+=entry.bytes; sync(key, entry); trim();
       }
       return value;
@@ -146,7 +147,7 @@ export function createRenderPacketCache({byteBudget, entryLimit = 256, onEvict, 
     trim();
   }
   function memoryEntries() {
-    return [...entries].filter(([, entry]) => !entry.pending).map(([key, entry]) => ({key:entry, buffers:entry.buffers, extraBytes:0, lastUsed:entry.lastUsed,
+    return [...entries].filter(([, entry]) => !entry.pending).map(([key, entry]) => ({key:entry, buffers:entry.buffers, extraBytes:entry.extraBytes, lastUsed:entry.lastUsed,
       protected:protectedEntry(key, entry), evict:() => remove(key, entry)}));
   }
   function stats() {return {entries:entries.size, residentBytes, pending:pendingCount, cancelled, warmBytes, warmEntries:warm.size, byteBudget, entryLimit, ...counters};}

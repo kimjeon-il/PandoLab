@@ -181,9 +181,7 @@ export function createGlobeTerritorialAssets(spec, {
   const assets = createGlobeChunkAssets(descriptorsFor(), {
     loadMesh, loadStroke, residency, byteBudget:cacheBudget.historicalCpuBytes,
   });
-  const borderPlansByView = new WeakMap();
-
-  function addOutlineDescriptors(row, slot) {
+  function addOutlineDescriptors(row, slot, target = outlineBySlot) {
     const byLod=new Map();
     for (const chunk of chunks(row.outlineChunks)) {
       const lod=globeChunkLod(chunk);
@@ -195,27 +193,32 @@ export function createGlobeTerritorialAssets(spec, {
       const descriptor={...chunk,role:'outline',kind:'stroke',key:'outline:'+lod+':'+(slot??'base')+':'+order+':'+chunk.spec.sha256,slot,order,count:level.length};
       for (const owner of chunk.ownerSlots) {
         const key=lod+':'+owner;
-        let rows=outlineBySlot.get(key);
-        if (!rows) {rows=[];outlineBySlot.set(key,rows);}
+        let rows=target.get(key);
+        if (!rows) {rows=[];target.set(key,rows);}
         rows.push(descriptor);
       }
     }
   }
-  function addHistoryCatalog(catalog) {
+  function createHistorySelection(catalog) {
     if (catalog.lodVersion!==version)throw Error('Historical globe LOD version mismatch');
-    assets.addDescriptors(descriptorsFor(catalog));
-    catalog.historicalCountries.forEach((row, index) => addOutlineDescriptors(row, baseSlots.length+index));
+    const index=createGlobeChunkCatalog(descriptorsFor(catalog)),outlines=new Map();
+    catalog.historicalCountries.forEach((row,i)=>addOutlineDescriptors(row,baseSlots.length+i,outlines));
+    return {index,outlines,borderPlansByView:new WeakMap()};
   }
-  function planHistoryBorders(view, cull, lod = GLOBE_FINE_LOD) {
-    if (!view) return [];
-    let levels=borderPlansByView.get(view);
-    if (!levels) {levels=new Map();borderPlansByView.set(view,levels);}
+  function plan(cull,accept=all,lod=GLOBE_FINE_LOD,history=null) {
+    const rows=assets.plan(cull,accept,lod);
+    if (history)rows.push(...history.index.select(cull,accept,lod));
+    return rows;
+  }
+  function planHistoryBorders(view,cull,lod=GLOBE_FINE_LOD,history=null) {
+    if (!view||!history)return [];
+    let levels=history.borderPlansByView.get(view);
+    if (!levels) {levels=new Map();history.borderPlansByView.set(view,levels);}
     let index=levels.get(lod);
     if (!index) {
-      const groups = new Set(view.borders);
-      const allRows = assets.plan(() => true,
-        row => row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder),lod);
-      index = createGlobeChunkCatalog(combineBorderRows(allRows,false));
+      const groups=new Set(view.borders);
+      const rows=history.index.select(all,row=>row.role==='border'&&groups.has(row.historyBorder),lod);
+      index=createGlobeChunkCatalog(combineBorderRows(rows,false));
       levels.set(lod,index);
     }
     return index.select(cull,all,lod);
@@ -236,6 +239,7 @@ export function createGlobeTerritorialAssets(spec, {
     outlineBySlot.clear();
     assets.dispose();
   }
-  return Object.freeze({...assets, addHistoryCatalog,
-    outlineDescriptors:(slot,lod=GLOBE_FINE_LOD) => outlineBySlot.get(lod+':'+slot)??[], planHistoryBorders, loadOutlines, dispose});
+  return Object.freeze({...assets,plan,createHistorySelection,
+    outlineDescriptors:(slot,lod=GLOBE_FINE_LOD,history=null) => (slot<baseSlots.length?outlineBySlot:history?.outlines)?.get(lod+':'+slot)??[],
+    planHistoryBorders,loadOutlines,dispose});
 }

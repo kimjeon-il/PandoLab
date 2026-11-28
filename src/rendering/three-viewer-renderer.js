@@ -13,6 +13,7 @@ import { COUNTRY_LABEL_MIN_ZOOM } from './three-globe-labels.js';
 import { globeTerritoryKey } from './globe-mesh.js';
 import { createGlobeTerritorialAssets, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures, reuseGlobeTerritorialCoverage, reuseGlobePhysicalCoverage } from './globe-view-mesh-assets.js';
 import { createGlobeHistoryIndex, globeHistoryMonthKey, createGlobeNeighborPrefetchKey } from './globe-history-index.js';
+import { validateGlobeHistoryDirectory,validateGlobeHistoryPage,selectGlobeHistoryPages,collectGlobeHistoryPages } from './globe-history-catalog.js';
 import { createGlobeTemporalPresentation } from './globe-temporal-presentation.js';
 import { createGlobePacketTasks, globePacketWorkerCount } from './globe-packet-tasks.js';
 import { createGlobeWorkScheduler, estimateGlobeWorkingBytes } from './globe-work-scheduler.js';
@@ -38,7 +39,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const labelsBySlot = baseSlots.map(row => spec.countryLabels[row.id]);
   const refs = slots.map(({id}) => normalizeObjectRef({domain:'territorial', type:'entity', id}));
   let historyIndex = createGlobeHistoryIndex({version:1, stride:32, rows:[]}, baseSlots.length);
-  let historyLoaded = false, historyCatalogBytes = 0;
+  let historyLoaded = false, historyCatalogBytes = 0, historyDirectory=null;
+  const baseCatalogSelection=Object.freeze({key:'',pages:[],history:null,physicalSource:undefined,bytes:0});
+  let activeCatalogSelection=baseCatalogSelection,catalogViewKey=null;
+  const activeCatalogKey={};
   const historyCatalogKey = {};
   if (!Number.isSafeInteger(spec.historySlotCount)||spec.historySlotCount<0||!spec.historyCatalog)throw Error('Missing Three.js history catalog');
   const countryCount = baseSlots.length+spec.historySlotCount;
@@ -51,6 +55,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     outlineChunk:{byteBudget:Math.floor(cacheBudget.outlineBytes/4),entryLimit:64,standbyOnly:true},
   }});
   const historyCatalogCache = createRenderPacketCache({byteBudget:Infinity, entryLimit:1});
+  const historyPages=createRenderPacketCache({byteBudget:cacheBudget.neighborBytes,entryLimit:64,residency,
+    estimateExtraBytes:value=>value.estimatedBytes});
   const loadGate = createRenderLoadGate({concurrency:cacheBudget.concurrentLoads,byteBudget:cacheBudget.pendingBytes,residency,overflowAllowance:cacheBudget.pendingBytes});
   const workScheduler = createGlobeWorkScheduler({maxConcurrent:globePacketWorkerCount(), residency});
   const hydroMetadataCache = createRenderPacketCache({byteBudget:16*1024*1024, entryLimit:1});
@@ -126,9 +132,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }
   function clearPreparation() {
     cancelNeighborPrefetch();
-    for (const name of ['country-prefetch','physical-prefetch','territory-apply','physical-view','base-view','neighbor-prefetch','pick-click','pick-hover'])cancelRequest(name);
+    for (const name of ['country-prefetch','physical-prefetch','territory-apply','physical-view','base-view','catalog-view','neighbor-prefetch','pick-click','pick-hover'])cancelRequest(name);
     prefetchTerritoryPlan = null; prefetchPhysical = null; visiblePhysicalPlan = null; basePreparing = null; baseFailures.clear(); physicalFailures.clear();
-    surface?.cancelGpuActivations();retainCpuResources();
+    catalogViewKey=null;surface?.cancelGpuActivations();retainCpuResources();
   }
   function cancelOutlines() {
     for (const controller of pendingOutlines.values())controller.abort();
@@ -230,19 +236,19 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     for (const row of paint.roleStyles())width = Math.max(width, row?.width??0);
     return Math.max(5, Math.ceil(width+2*(0.5/(viewport?.dpr||1))+2));
   };
-  function physicalPlan(identity, padding = 0, visibility = null, lod = currentGeometryLod()) {
+  function physicalPlan(identity, padding = 0, visibility = null, lod = currentGeometryLod(),selection=activeCatalogSelection) {
     syncViewPlans(); const extra = strokePadding(), lakesVisible = visibility?.lakesVisible??state.layerVisibility.lakes!==false,
       riversVisible = visibility?.riversVisible??state.layerVisibility.rivers!==false;
-    const key=JSON.stringify([identity,lod,padding,extra,lakesVisible,riversVisible,view.zoom]);
+    const key=JSON.stringify([identity,lod,padding,extra,lakesVisible,riversVisible,view.zoom,selection.key]);
     let plan = physicalPlans.get(key);
-    if (!plan) {plan = physicalAssets.plan(identity, {zoom:view.zoom,lod,cull:viewCull(padding), strokeCull:viewCull(padding+extra), lakesVisible, riversVisible});
+    if (!plan) {plan = physicalAssets.plan(identity, {zoom:view.zoom,lod,cull:viewCull(padding), strokeCull:viewCull(padding+extra), lakesVisible, riversVisible,source:selection.physicalSource});
       if (physicalPlans.size>=8)physicalPlans.clear(); physicalPlans.set(key, plan);}
     return plan;
   }
   const territorialContext = (prepared, visibility = null, lod = currentGeometryLod()) => prepared.key+'|'+lod+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
-  function territorialPlan(prepared = territories, padding = 0, visibility = null, lod = currentGeometryLod()) {
+  function territorialPlan(prepared = territories, padding = 0, visibility = null, lod = currentGeometryLod(),selection=activeCatalogSelection) {
     syncViewPlans(); const extra = strokePadding(), objectsVisible = visibility?.objectsVisible??state.layerVisibility.objects!==false,
-      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility,lod)+'|'+padding+'|'+extra;
+      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility,lod)+'|'+padding+'|'+extra+'|'+selection.key;
     if (territoryPlans.has(key))return territoryPlans.get(key);
     if (!objectsVisible) {const rows = []; territoryPlans.set(key, rows); return rows;}
     const selectedSlots = new Set(prepared.slots), hidden = new Set(prepared.view?.hiddenBorders??[]);
@@ -252,30 +258,30 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot => selectedSlots.has(slot)));
       if (!boundariesVisible)return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
-    },lod);
+    },lod,selection.history);
     if (boundariesVisible&&prepared.view)
-      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod));
+      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod,selection.history));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
   function activeCost(basePlan, physicalTarget) {
     return sumGlobeCosts(estimateGlobePlanCost(basePlan),estimateGlobePlanCost(physicalTarget.rows),
       graticuleNeeded()?estimateGlobePlanCost(gridBudgetRows):emptyGlobeCost());
   }
-  function admitView(prepared,identity,visibility = null) {
+  function admitView(prepared,identity,visibility = null,selection=activeCatalogSelection) {
     syncViewPlans();
     const requestedLod=currentGeometryLod();
     // Include fixed framebuffers and pinned metadata in the common budget.
     // Browser/driver memory remains estimated, never presented as an exact
     // hardware allocation count.
-    const fixedBytes=historyCatalogBytes+(hydroMetadata?spec.hydroMetadata.decodedBytes*2+hydroSlots.size*64:0)
+    const fixedBytes=historyCatalogBytes+selection.bytes+(hydroMetadata?spec.hydroMetadata.decodedBytes*2+hydroSlots.size*64:0)
       +Math.ceil((viewport?.width??0)*(viewport?.height??0)*(viewport?.dpr??1)**2*12);
     const key=JSON.stringify([territorialContext(prepared,visibility,requestedLod),identity,
       visibility?.lakesVisible??state.layerVisibility.lakes!==false,visibility?.riversVisible??state.layerVisibility.rivers!==false,
-      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes,publishedPlanRevision]);
+      graticuleNeeded(),strokePadding(),budgetTier,fixedBytes,publishedPlanRevision,selection.key]);
     if (admissions.has(key))return admissions.get(key);
     const limits=globeActiveLimits(cacheBudget,{tier:budgetTier,otherBytes:fixedBytes});
     const build=(lod,padding=0)=>{
-      const base=territorialPlan(prepared,padding,visibility,lod),physical=physicalPlan(identity,padding,visibility,lod);
+      const base=territorialPlan(prepared,padding,visibility,lod,selection),physical=physicalPlan(identity,padding,visibility,lod,selection);
       const transitionBytes=estimateGlobeTransitionBytes(publishedBase?.plan,publishedPhysical?.plan.rows,base,physical.rows,
         graticuleNeeded()?gridBudgetRows:[]);
       return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical),transitionBytes};
@@ -288,7 +294,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       const padded=build(selected.lod,96);
       if (globeCostFits(padded.cost,limits.target)&&padded.transitionBytes<=limits.transitionBytes)margin=padded;
     }
-    const result={...selected,requestedLod,limits,margin};
+    const result={...selected,requestedLod,limits,margin,selection};
     if (admissions.size>=6)admissions.clear();
     admissions.set(key,result); return result;
   }
@@ -305,8 +311,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         publishedPhysical.spec.identity!==physical?.spec.identity)return null;
     const lod=publishedPhysical.plan.lod;
     const context=territorialContext(territories,null,lod);
-    const base=territorialPlan(territories,0,null,lod);
-    const water=physicalPlan(publishedPhysical.spec.identity,0,null,lod);
+    const base=territorialPlan(territories,0,null,lod,admission.selection);
+    const water=physicalPlan(publishedPhysical.spec.identity,0,null,lod,admission.selection);
     if (publishedBase.context!==context||!globeChunkSetContains(publishedBase.plan,base)||
         !physicalAssets.covers(publishedPhysical.plan,water))return null;
     const cost=activeCost(publishedBase.plan,publishedPhysical.plan);
@@ -316,9 +322,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   }
   function installHistoryCatalog(catalog) {
     if (historyLoaded)return;
-    if (catalog?.version!==1||catalog.lodVersion!==spec.lodVersion||!Array.isArray(catalog.historicalCountries)||catalog.historicalCountries.length!==countryCount-baseSlots.length
-      ||!Array.isArray(catalog.historicalBorders)||!Array.isArray(catalog.physicalContexts)||!Array.isArray(catalog.historyTimeline))
-      throw Error('Three.js history slot count mismatch');
+    validateGlobeHistoryDirectory(catalog,{lodVersion:spec.lodVersion,slotCount:countryCount-baseSlots.length});
+    if (catalog.physicalContexts.some(row=>row.identity===spec.physical.identity))throw Error('Duplicate base physical context');
     const index = createGlobeHistoryIndex(catalog.history, baseSlots.length, {timeline:catalog.historyTimeline,
       physicalIdentities:[spec.physical, ...catalog.physicalContexts].map(row => row.identity)});
     const keys = new Set(slotByKey.keys()), identities = catalog.historicalCountries.map(row => {
@@ -326,7 +331,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       if (keys.has(key)||!ref)throw Error('Invalid or duplicate historical territory identity');
       keys.add(key); return {row, key, ref};
     });
-    territorialAssets.addHistoryCatalog(catalog); physicalAssets.addDescriptors(catalog.physicalContexts);
+    historyDirectory=catalog;
     for (const {row, key, ref} of identities) {
       const slot = slots.length; slots.push(row); slotByKey.set(key, slot);
       labelsBySlot.push(row.label); refs.push(ref);
@@ -343,6 +348,81 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       readSignal.throwIfAborted(); installHistoryCatalog(catalog); return true;
     }, signal, {priority});
     signal?.throwIfAborted(); return historyLoaded;
+  }
+  const hasPhysicalSource=identity=>physicalAssets.has(identity)||!!historyDirectory?.physicalContexts.some(row=>row.identity===identity);
+  function catalogRequest(prepared,identity) {
+    if (!historyDirectory) {
+      if (prepared.view||!physicalAssets.has(identity))throw Error('Missing history directory');
+      return baseCatalogSelection;
+    }
+    const pages=selectGlobeHistoryPages(historyDirectory,prepared,identity,{baseCount:baseSlots.length,baseIdentity:spec.physical.identity,
+      cull:viewCull(96+strokePadding()+32)});
+    return pages.length?{pages,key:pages.join(',')}:baseCatalogSelection;
+  }
+  async function readCatalogSelection(request,signal,priority=20,claim=null) {
+    if (request.key===activeCatalogSelection.key)return activeCatalogSelection;
+    if (!request.pages.length)return baseCatalogSelection;
+    if (claim)for (const page of request.pages) {
+      const row=historyDirectory.pages[page].spec;
+      if (!historyPages.has(row.sha256)&&!claim(row,'catalog-page'))return null;
+    }
+    const results=await Promise.all(request.pages.map(page=>{
+      const row=historyDirectory.pages[page].spec;
+      return historyPages.read(row.sha256,async(readSignal,readPriority)=>{
+        const value=validateGlobeHistoryPage(historyDirectory,page,await load(row,'catalog-page',{signal:readSignal,priority:readPriority}));
+        return {value,estimatedBytes:row.decodedBytes*3};
+      },signal,{priority});
+    }));
+    signal?.throwIfAborted();
+    const catalog=collectGlobeHistoryPages(historyDirectory,request.pages,results.map(row=>row.value));
+    const context=catalog.physicalContexts.find(Boolean);
+    return {...request,history:territorialAssets.createHistorySelection(catalog),
+      physicalSource:context?physicalAssets.createDescriptor(context):undefined,
+      bytes:results.reduce((sum,row)=>sum+row.estimatedBytes,0)};
+  }
+  async function prepareCatalogSelection(prepared,identity,signal,priority=20,claim=null) {
+    for (;;) {
+      const request=catalogRequest(prepared,identity),selection=await readCatalogSelection(request,signal,priority,claim);
+      signal.throwIfAborted();
+      if (!selection||request.key===catalogRequest(prepared,identity).key)return selection;
+      if (claim)return null;
+    }
+  }
+  function activateCatalogSelection(selection) {
+    if (selection===activeCatalogSelection)return;
+    activeCatalogSelection=selection;
+    // The indexed active selection owns its metadata independently of the
+    // reclaimable decoded page cache. Conservatively charge both lifetimes.
+    if (selection.bytes)residency.set(activeCatalogKey,{protected:true,extraBytes:selection.bytes});
+    else residency.remove(activeCatalogKey);
+    residencyDirty=true;clearViewPlans();outlinePlanDirty=true;riverCamera=null;
+  }
+  function currentCatalogSelection(prepared,identity) {
+    const request=catalogRequest(prepared,identity);
+    return request.key===activeCatalogSelection.key?activeCatalogSelection:null;
+  }
+  function ensureViewportCatalog(prepared,identity) {
+    const request=catalogRequest(prepared,identity);
+    if (request.key===activeCatalogSelection.key) {
+      if (catalogViewKey!==null) {cancelRequest('catalog-view');catalogViewKey=null;}
+      return activeCatalogSelection;
+    }
+    if (catalogViewKey===request.key)return null;
+    const controller=startRequest('catalog-view'),epoch=generation;
+    catalogViewKey=request.key;
+    readCatalogSelection(request,controller.signal).then(selection=>{
+      if (!requestCurrent('catalog-view',controller)||generation!==epoch)return;
+      if (physical&&catalogRequest(territories,physical.spec.identity).key===request.key)activateCatalogSelection(selection);
+      invalidate('three-catalog-pages-ready');
+    }).catch(cause=>{
+      if (!requestCurrent('catalog-view',controller)||generation!==epoch)return;
+      if (physical&&catalogRequest(territories,physical.spec.identity).key===request.key)failMapPreparation(cause);
+      else invalidate('three-catalog-pages-superseded');
+    }).finally(()=>{
+      if (requestScopes.get('catalog-view')===controller)catalogViewKey=null;
+      controller.abort();finishRequest('catalog-view',controller);
+    });
+    return null;
   }
   const basePlanKey = rows => {let key = planKeys.get(rows); if (key===undefined) {key = globeChunkPlanKey(rows); planKeys.set(rows, key);}return key;};
   function initialize() {
@@ -417,8 +497,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const reusePhysical = admission => reuseGlobePhysicalCoverage(admission.physical,physicalAssets.covers,
     ...[publishedPhysical,physical].filter(candidate=>physicalWithinAdmission(candidate,admission)));
   async function requirePhysicalSource(month, identity, signal) {
-    if (!physicalAssets.has(identity))await ensureHistoryCatalog(signal);
-    if (!physicalAssets.has(identity))
+    if (!hasPhysicalSource(identity))await ensureHistoryCatalog(signal);
+    if (!hasPhysicalSource(identity))
       throw Object.assign(Error(`${month}에 준비된 Three.js 물리 지도가 없습니다.`), {code:'PL-THREE-MONTH'});
     return identity;
   }
@@ -508,9 +588,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
           signal.throwIfAborted(); if (!valid())break;
           // The nearest state in the travel direction receives most of the
           // available transfer/work budget; cached hits require no reservation.
-          if (!physicalAssets.has(target.physicalIdentity))continue;
+          if (!hasPhysicalSource(target.physicalIdentity))continue;
           let admitted;
-          try {admitted=admitView(target.territories,target.physicalIdentity);}
+          try {
+            const selection=await prepareCatalogSelection(target.territories,target.physicalIdentity,signal,-20,claim);
+            if (!selection||!valid())continue;
+            admitted=admitView(target.territories,target.physicalIdentity,null,selection);
+          }
           catch (cause) {if (cause.code==='PL-THREE-ACTIVE-BUDGET')continue;throw cause;}
           await territorialAssets.warm(admitted.base,{signal,priority:-20,claim,holdBytes:territorialHold});
           await physicalAssets.warm(admitted.physical,{signal,priority:-20,claim,holdBytes:physicalHold});
@@ -550,7 +634,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       ]);
       if (!requestCurrent('country-prefetch', controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
       const visibility=includeAllObjects?{objectsVisible:true,bordersVisible:true,lakesVisible:true,riversVisible:true}:null;
-      const admission=admitView(prepared,identity,visibility);
+      const selection=await prepareCatalogSelection(prepared,identity,controller.signal);
+      if (!requestCurrent('country-prefetch',controller)||!isCurrent())throw new DOMException('Territorial preparation superseded','AbortError');
+      const admission=admitView(prepared,identity,visibility,selection);
       plan=admission.base;physicalTarget=admission.physical;
       const baseHit=reuseTerritories(admission),physicalHit=reusePhysical(admission);
       if (baseHit)temporalReuse.countryPreparationsSkipped++;
@@ -585,7 +671,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         requireTerritorialGeometry(month, featureRefs(rows), controller.signal),
       ]);
       if (!requestCurrent('territory-apply', controller)||requestGeneration!==generation||month!==state.timelineCursor)return false;
-      const admission=admitView(prepared,identity),target=admission.physical,baseTarget=admission.base,context=admission.context;
+      const selection=await prepareCatalogSelection(prepared,identity,controller.signal);
+      if (!requestCurrent('territory-apply',controller)||requestGeneration!==generation||month!==state.timelineCursor)return false;
+      const admission=admitView(prepared,identity,null,selection),target=admission.physical,baseTarget=admission.base,context=admission.context;
       const oldPhysical = requestScopes.get('physical-view'), oldBase = requestScopes.get('base-view');
       const reusedBase = reuseTerritories(admission), reusedPhysical = reusePhysical(admission);
       const unchangedGeometry = Boolean(ready&&features&&prepared.key===acceptedTerritories.key&&
@@ -605,6 +693,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         if (oldBase&&oldBase===requestScopes.get('base-view'))cancelRequest('base-view');
       }
       if (!requestCurrent('territory-apply', controller)||request!==territorialRequest||requestGeneration!==generation||month!==state.timelineCursor)return false;
+      activateCatalogSelection(selection);
       if (unchangedGeometry)temporalReuse.unchangedGeometryTransitions++;
       // Even the reuse path must apply the accepted Core property changes,
       // including dated names, territorial visibility and paint.
@@ -666,7 +755,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).catch (error => {
       if (!requestCurrent('base-view', controller))return;
       let current;
-      try {current=physical&&admitView(territories,physical.spec.identity);}catch {invalidate('three-active-budget-recheck');return;}
+      try {const selection=physical&&currentCatalogSelection(territories,physical.spec.identity);current=selection&&admitView(territories,physical.spec.identity,null,selection);}catch {invalidate('three-active-budget-recheck');return;}
       const sameRequired=current&&context===current.context&&basePlanKey(current.base)===basePlanKey(target);
       const requiredFailure=!covered&&sameRequired&&!publishedCoverage(current);
       const failure = baseFailures.fail(key, requiredFailure, error);
@@ -699,7 +788,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }).catch (error => {
       if (!requestCurrent('physical-view', controller))return;
       let current;
-      try {current=physical&&admitView(territories,physical.spec.identity);}catch {invalidate('three-active-budget-recheck');return;}
+      try {const selection=physical&&currentCatalogSelection(territories,physical.spec.identity);current=selection&&admitView(territories,physical.spec.identity,null,selection);}catch {invalidate('three-active-budget-recheck');return;}
       const sameRequired=current?.physical.key===target.key;
       const requiredFailure=!covered&&sameRequired&&!publishedCoverage(current);
       const failure = physicalFailures.fail(target.key, requiredFailure, error);
@@ -760,7 +849,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       const roleStyles = paint.roleStyles();
       for (const [slot, code] of paint.countryRoles()) {
         if (!(roleStyles[code]?.width>0&&roleStyles[code]?.alpha>0))continue;
-        for (const descriptor of territorialAssets.outlineDescriptors(slot,lod)) {
+        for (const descriptor of territorialAssets.outlineDescriptors(slot,lod,admission.selection.history)) {
           if (descriptor.bounds&&!cull(descriptor.bounds))continue;
           let target = targets.get(descriptor.key);
           if (!target) {target = {descriptor, roles:new Map()}; targets.set(descriptor.key, target);}
@@ -838,7 +927,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!surface.prepareGpuFrame(camera,viewport.width,viewport.height)) {
       invalidate('three-gpu-shared-texture-budget');return defer();
     }
-    const targetAdmission=admitView(territories,physical.spec.identity);
+    const selection=ensureViewportCatalog(territories,physical.spec.identity);
+    if (!selection)return defer();
+    const targetAdmission=admitView(territories,physical.spec.identity,null,selection);
     lastAdmission=targetAdmission;
     const moving=movingGeometry();
     const retained=(!baseWithinAdmission(basePrepared,targetAdmission)||!physicalWithinAdmission(physical,targetAdmission))?
@@ -879,7 +970,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     const detailKey=JSON.stringify([requiredCost,usedOutline,admission.limits.optional,allowOptional,detailAllowed]);
     if (riverCamera!==camera||riverVisible!==showRivers||riverContext!==renderPhysical||riverBudgetKey!==detailKey||riverDetail.retryDue()) {
       riverCamera=camera;riverVisible=showRivers;riverContext=renderPhysical;riverBudgetKey=detailKey;
-      const candidates=detailAllowed?physicalAssets.detailPlan(renderPhysical.spec.identity,{zoom:view.zoom,lod:admission.lod,strokeCull:viewCull(strokePadding())}):[];
+      const candidates=detailAllowed?physicalAssets.detailPlan(renderPhysical.spec.identity,{zoom:view.zoom,lod:admission.lod,strokeCull:viewCull(strokePadding()),source:admission.selection.physicalSource}):[];
       const ranked=allowOptional?[...candidates].sort((a,b)=>optionalDistance(a)-optionalDistance(b)):[];
       const selected=admitGlobeOptional(ranked,{required:requiredCost,limits:admission.limits,optionalUsed:usedOutline});
       const keys=new Set(selected.rows.map(row=>row.key));
@@ -1011,7 +1102,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     waitForTemporalPresentation:presentation.waitForTemporalPresentation, getProjectGeneration:() => generation,
     preserveTemporalFrame() {cancelNeighborPrefetch(); framePreserved = true;}, isFramePreserved:() => framePreserved,
     resetProjectRenderState(options) {generation = options.generation; features = null; ready = false; error = null;
-        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; lastAdmission=activeBudgetStats=null;outlineBudgetKey=riverBudgetKey=null;outlineBudgetCost=emptyGlobeCost();outlineBudgetOmitted=detailBudgetOmitted=0;optionalPressureBlocked=false;clearViewPlans();presentation.resetForProject(options);},
+        drawnFrame = null; riverDetail?.update([]); riverCamera = null; surface?.labels.cancelPending(); clearPreparation(); neighborKey.clear(); publishedMonth = null; monthDirection = 0; cancelOutlines(); territorialAssets.releaseWarm(); physicalAssets.releaseWarm(); temporalInputs.reset(); paint.resetProject(); labelContent.resetProject(); presentationInputs = null; lastAdmission=activeBudgetStats=null;outlineBudgetKey=riverBudgetKey=null;outlineBudgetCost=emptyGlobeCost();outlineBudgetOmitted=detailBudgetOmitted=0;optionalPressureBlocked=false;activateCatalogSelection(baseCatalogSelection);clearViewPlans();presentation.resetForProject(options);},
     measureWork:metrics.track, measureSyncWork:metrics.run, failMapPreparation,
     reportAncillaryError:(cause, message, code) => deps.feedback.reportOperationError(cause,message,code),
     retryMapPreparation, getRuntimeState,
@@ -1031,9 +1122,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       countryLabelCount:surface?.labels.visibleCount(false)??0,
       placeLabelCount:surface?.labels.visibleCount(true)??0, riverDetail:riverDetail?.stats()??null,
       labelAtlasEntries:surface?.labels.atlasEntryCount()??0,
-      territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded, estimatedBytes:historyCatalogBytes}, historicalMetadata:historyIndex.stats(), temporalPresentation:{...temporalStats, ...temporalReuse}, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
+      territorialChunkCache:territorialAssets.stats(), historyCatalog:{loaded:historyLoaded,estimatedBytes:historyCatalogBytes,pages:historyPages.stats(),activePages:activeCatalogSelection.pages.length,activeBytes:activeCatalogSelection.bytes,totalPages:historyDirectory?.pages.length??0}, historicalMetadata:historyIndex.stats(), temporalPresentation:{...temporalStats, ...temporalReuse}, paintWork:{...paint.stats(), ...outlineStats, ...labelContent.stats()}, physicalCache:physicalAssets.stats(), residentCache:surface?.cacheStats()??null,
       labelAtlas:surface?.labels.cacheStats()??null, hydroTextureUploads:surface?.hydroUploadStats()??null, packetWorker:packetTasks.stats(), workScheduler:workScheduler.stats(), residency:residency.stats(), persistence:assetReader.stats(), loadGate:loadGate.stats(), errorMessage:error?.message??null, initialLoading}),
-    dispose() {cancelNeighborPrefetch(); disposed = true;offBudgetPressure(); baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose(); territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
+    dispose() {cancelNeighborPrefetch(); disposed = true;offBudgetPressure(); baseFailures.clear(); physicalFailures.clear(); input.dispose(); lifetime.abort(); for (const name of requestScopes.keys())cancelRequest(name); cancelOutlines(); presentation.dispose(); historyCatalogCache.dispose();historyPages.dispose();activateCatalogSelection(baseCatalogSelection);historyDirectory=null; territorialAssets.dispose(); physicalAssets.dispose(); hydroMetadataCache.dispose(); riverDetail?.dispose(); loadGate.dispose(); packetTasks.dispose(); surface?.dispose(); workScheduler.dispose(); residency.dispose(); canvas?.remove();
       acceptedPick = drawnFrame = features = basePrepared = publishedBase = basePreparing = physical = acceptedPhysical = publishedPhysical = hydroMetadata = null;
       acceptedRiverChunks = []; hydroSlots.clear(); paint.dispose(); temporalInputs.reset(); labelContent.dispose(); clearViewPlans(); surface = riverDetail = null;},
   });

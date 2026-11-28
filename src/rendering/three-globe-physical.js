@@ -47,16 +47,15 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
       key:role+':'+globeChunkLod(chunk)+':'+(row.id??i)+':'+j+':'+chunk.spec.sha256,
     })));
   }
+  function createDescriptor(spec) {
+    const waters=chunks(spec.waters,'water'),lakes=chunks(spec.lakes,'lake');
+    const rivers=batchRiverChunks(validateGlobeLodChunks(spec.riverChunks,lodVersion).map((row,i)=>({...row,role:'river',kind:'stroke',
+      minZoom:spec.riverMinZoom,key:'river:'+globeChunkLod(row)+':'+i+':'+row.spec.sha256})));
+    const details=validateGlobeLodChunks(spec.riverDetail,lodVersion).map(row=>({...row,role:'detail',kind:'stroke',key:'detail:'+globeChunkLod(row)+':'+row.id}));
+    return {spec,meshes:createGlobeChunkCatalog([...waters,...lakes]),strokes:createGlobeChunkCatalog(rivers),detail:createGlobeChunkCatalog(details)};
+  }
   function addDescriptors(rows) {
-    for (const spec of rows) {
-      if (catalog.has(spec.identity))continue;
-      const waters = chunks(spec.waters,'water'), lakes = chunks(spec.lakes,'lake');
-      const rivers = batchRiverChunks(validateGlobeLodChunks(spec.riverChunks,lodVersion).map((row, i) => ({...row, role:'river', kind:'stroke',
-        minZoom:spec.riverMinZoom, key:'river:'+globeChunkLod(row)+':'+i+':'+row.spec.sha256})));
-      const details = validateGlobeLodChunks(spec.riverDetail,lodVersion).map(row => ({...row, role:'detail', kind:'stroke', key:'detail:'+globeChunkLod(row)+':'+row.id}));
-      catalog.set(spec.identity, {spec, meshes:createGlobeChunkCatalog([...waters, ...lakes]),
-        strokes:createGlobeChunkCatalog(rivers), detail:createGlobeChunkCatalog(details)});
-    }
+    for (const spec of rows)if (!catalog.has(spec.identity))catalog.set(spec.identity,createDescriptor(spec));
   }
   addDescriptors(descriptors);
   const keyOf = row => row.kind+':'+row.spec.sha256;
@@ -67,9 +66,8 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
     return files.read(keyOf(row), (readSignal, readPriority) => row.kind==='stroke'?
       loadStroke(row.spec, readSignal, readPriority, row):loadMesh(row.spec, readSignal, readPriority), signal, {priority});
   }
-  function plan(identity, {zoom = Infinity, lod = GLOBE_FINE_LOD, lakesVisible = true, riversVisible = true, cull = () => true, strokeCull = cull} = {}) {
-    const source = catalog.get(identity);
-    if (!source)throw Error('Three.js physical context is missing');
+  function plan(identity, {zoom = Infinity, lod = GLOBE_FINE_LOD, lakesVisible = true, riversVisible = true, cull = () => true, strokeCull = cull,source=catalog.get(identity)} = {}) {
+    if (!source||source.spec.identity!==identity)throw Error('Three.js physical context is missing');
     const {spec} = source, meshes = source.meshes.select(cull, row => row.role==='water'||lakesVisible&&zoom>=row.minZoom,lod);
     const waters = meshes.filter(row => row.role==='water'), lakes = meshes.filter(row => row.role==='lake');
     const rivers = riversVisible&&zoom>=spec.riverMinZoom;
@@ -111,12 +109,12 @@ export function createGlobePhysicalAssets(descriptors, {loadMesh, loadStroke, by
   async function warm(target, {signal, priority = -20, claim, holdBytes = 0}) {
     for (const row of target.rows) {signal?.throwIfAborted(); if (files.has(keyOf(row))) {if (holdBytes)files.holdWarm(keyOf(row), holdBytes); continue;}if (!claim(row.spec, row.kind))continue; await read(row, signal, priority); if (holdBytes)files.holdWarm(keyOf(row), holdBytes);}
   }
-  function detailPlan(identity, {zoom, lod = GLOBE_FINE_LOD, strokeCull = () => true}) {
-    const source = catalog.get(identity); if (!source)return [];
+  function detailPlan(identity, {zoom, lod = GLOBE_FINE_LOD, strokeCull = () => true,source=catalog.get(identity)}) {
+    if (!source||source.spec.identity!==identity)return [];
     return source.detail.select(strokeCull, row => zoom>=row.minZoom,lod);
   }
   function retain(plans) {retained = plans.filter(Boolean); refresh();}
   function dispose() {disposed = true; contexts.clear(); pending.clear(); catalog.clear(); retained = []; files.dispose();}
-  return Object.freeze({has:identity => catalog.has(identity), addDescriptors, plan, prepare, coversWaters, covers, warm, releaseWarm:() => files.releaseWarm(), detailPlan,
+  return Object.freeze({has:identity => catalog.has(identity), addDescriptors, createDescriptor, plan, prepare, coversWaters, covers, warm, releaseWarm:() => files.releaseWarm(), detailPlan,
     readDetail:(row, signal) => read(row, signal, 5), retain, memoryEntries:files.memoryEntries, stats:() => ({...files.stats(), contexts:contexts.size}), dispose});
 }
