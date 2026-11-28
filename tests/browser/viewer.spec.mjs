@@ -412,7 +412,7 @@ test('Three globe draws local detailed rivers and reuses them after hiding the l
  const first=await detail(),network=detailRequests.length;
  expect(first.activeSegments).toBeGreaterThan(0);
  expect(network).toBeGreaterThan(0);
- expect(network).toBeLessThan(await page.evaluate(()=>window.PANDOLAB_BUILD_META.globePreview.physical.riverDetail.length));
+ expect(network).toBeLessThan(await page.evaluate(()=>window.PANDOLAB_BUILD_META.globePreview.physical.catalog.counts.detail));
  const canvas=page.locator('#map canvas'),before=await canvas.screenshot();
  await page.locator('#preferencesBtn').click();
  await page.locator('#preferencesRiversInput').uncheck();

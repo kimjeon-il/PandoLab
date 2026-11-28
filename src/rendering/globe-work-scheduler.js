@@ -52,5 +52,5 @@ export function estimateGlobeWorkingBytes(spec, kind = 'mesh') {
   const stored = Math.max(0, Number(spec.compressedBytes)||0), decoded = Math.max(1, Number(spec.decodedBytes)||0);
   // Allow decoded source, restored arrays, radix scratch, sparse tree, RPC
   // output and compressed transport copies to overlap during preparation.
-  return Math.ceil(stored*3+decoded*(kind==='catalog'||kind==='catalog-page'||kind==='hydro'?5:7)+64*1024);
+  return Math.ceil(stored*3+decoded*(kind==='catalog'||kind==='catalog-page'||kind==='physical-catalog-page'||kind==='hydro'?5:7)+64*1024);
 }

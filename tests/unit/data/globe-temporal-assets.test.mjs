@@ -75,7 +75,6 @@ test('historical globe enumerates month-end changes including calendar era and u
 });
 
 test('dated physical contexts reuse unchanged river packets while changing water identity', async () => {
-  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const calls=[];
   const load=async spec=>{calls.push(spec.url);return {bytes:spec.url};};
   const asset=(url,sha256=url)=>({url,sha256});
@@ -84,7 +83,7 @@ test('dated physical contexts reuse unchanged river packets while changing water
     waters:[{id:'waterbody:lake',chunks:[chunk(water)]}],lakes:[],riverDetail:[],riverMinZoom:2});
   const modern=asset('modern-water'),datedWater=asset('dated-water');
   const indexedWater=asset('modern-water-alias',modern.sha256);
-  const assets=createGlobePhysicalAssets([
+  const assets=await createPhysicalFixture([
     context('current',modern),
     context('dated',datedWater,asset('river-alias','rivers')),
     context('indexed',indexedWater),
@@ -107,12 +106,11 @@ test('dated physical contexts reuse unchanged river packets while changing water
 });
 
 test('dated physical cache drops inactive contexts without releasing a shared active river', async () => {
-  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const reads=[];
   const load=async spec=>{reads.push(spec.sha256);return {positions:new Float32Array(2)};};
   const chunk=sha256=>({spec:{sha256},bounds:[-1,-1,-1,1,1,1]});
   const context=identity=>({identity,riverChunks:[chunk('river')],waters:[{id:'water',chunks:[chunk(identity)]}],lakes:[],riverDetail:[],riverMinZoom:2});
-  const assets=createGlobePhysicalAssets([context('old'),context('current')],{loadMesh:load,loadStroke:load,byteBudget:16});
+  const assets=await createPhysicalFixture([context('old'),context('current')],{loadMesh:load,loadStroke:load,byteBudget:16});
   assets.retain([assets.plan('old')]);
   const old=await assets.prepare(assets.plan('old'));
   assets.retain([assets.plan('current')]);
@@ -128,10 +126,9 @@ test('dated physical cache drops inactive contexts without releasing a shared ac
 });
 
 test('physical plans defer hidden and higher-zoom lake and river packets',async()=>{
-  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const reads=[],load=async spec=>{reads.push(spec.sha256);return {positions:new Float32Array(2)};};
   const chunk=sha256=>({spec:{sha256},bounds:[-1,-1,-1,1,1,1]});
-  const assets=createGlobePhysicalAssets([{identity:'world',riverChunks:[chunk('river')],riverMinZoom:3,
+  const assets=await createPhysicalFixture([{identity:'world',riverChunks:[chunk('river')],riverMinZoom:3,
     waters:[{id:'sea',chunks:[chunk('sea')]}],
     lakes:[{minZoom:2,chunks:[chunk('large')]},{minZoom:5,chunks:[chunk('small')]}],riverDetail:[],
   }],{loadMesh:load,loadStroke:load});
@@ -206,9 +203,8 @@ test('history prefetch neighbors use ordered transition dates rather than unique
 });
 
 test('physical view plans only read visible exact water chunks',async()=>{
- const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
  const reads=[],load=async row=>{reads.push(row.sha256);return {positions:new Float32Array(1)};};
- const assets=createGlobePhysicalAssets([{identity:'world',waters:[{id:'sea',chunks:[
+ const assets=await createPhysicalFixture([{identity:'world',waters:[{id:'sea',chunks:[
   {spec:{sha256:'near'},bounds:[.8,0,0,1,.1,.1]},{spec:{sha256:'far'},bounds:[-1,0,0,-.8,.1,.1]},
  ]}],riverChunks:[{spec:{sha256:'river'},bounds:[-1,-1,-1,1,1,1]}],riverMinZoom:8,lakes:[],riverDetail:[]}],{loadMesh:load,loadStroke:load});
  const near=assets.plan('world',{zoom:2,cull:box=>box[3]>0});
@@ -220,10 +216,9 @@ test('physical view plans only read visible exact water chunks',async()=>{
 });
 
 test('physical catalog selects lake and base/detail river chunks through Cartesian coverage',async()=>{
- const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
  const near=[.8,0,0,1,.1,.1],far=[-1,0,0,-.8,.1,.1],chunk=(id,bounds)=>({spec:{sha256:id},bounds});
  const reads=[],load=async spec=>{reads.push(spec.sha256);return {points:new Float32Array(6)};};
- const assets=createGlobePhysicalAssets([{identity:'world',waters:[],lakes:[{minZoom:3,chunks:[chunk('lake-near',near),chunk('lake-far',far)]}],
+ const assets=await createPhysicalFixture([{identity:'world',waters:[],lakes:[{minZoom:3,chunks:[chunk('lake-near',near),chunk('lake-far',far)]}],
   riverMinZoom:3,riverChunks:[chunk('river-near',near),chunk('river-far',far)],riverDetail:[
    {...chunk('detail-near',near),id:'d1',minZoom:5},{...chunk('detail-far',far),id:'d2',minZoom:5},
   ]}],{loadMesh:load,loadStroke:load});
@@ -349,9 +344,8 @@ test('unchanged dated shapes reuse the published padded coverage but reject chan
 
 
 test('physical river packets are combined by spatial cell before GPU preparation',async()=>{
- const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
  const reads=[],chunk=(id,cell,bounds)=>({cell,bounds,spec:{sha256:id,compressedBytes:10,decodedBytes:24}});
- const assets=createGlobePhysicalAssets([{identity:'world',waters:[],lakes:[],riverMinZoom:2,riverDetail:[],
+ const assets=await createPhysicalFixture([{identity:'world',waters:[],lakes:[],riverMinZoom:2,riverDetail:[],
   riverChunks:[
    chunk('river-a','cell-a',[-1,-1,-1,0,0,0]),
    chunk('river-b','cell-a',[-.5,-1,-1,.2,0,0]),
@@ -402,11 +396,10 @@ test('base border chunks combine by cell while retaining owner slots and base-bo
 
 
 test('physical LOD plans retain zoom thresholds and never admit other geometry tiers', async () => {
-  const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
   const reads=[];
   const variants=(id,extra={})=>[0,1,2].map(lod=>({lod,bounds:[-1,-1,-1,1,1,1],cell:'0:0:0',
     spec:{sha256:id+'-'+lod,decodedBytes:24},...extra}));
-  const assets=createGlobePhysicalAssets([{identity:'world',waters:[{id:'sea',chunks:variants('sea')}],
+  const assets=await createPhysicalFixture([{identity:'world',waters:[{id:'sea',chunks:variants('sea')}],
     lakes:[{minZoom:4,chunks:variants('lake')}],riverMinZoom:2,riverChunks:variants('river'),
     riverDetail:variants('detail',{id:'detail',minZoom:5})}],{
     lodVersion:1,loadMesh:async spec=>{reads.push(spec.sha256);return {};},
@@ -441,3 +434,16 @@ test('historical border and outline selections do not mix LODs or lose owner mem
   assert.throws(()=>assets.createHistorySelection({historicalCountries:[],historicalBorders:[]}),/LOD version mismatch/);
   assets.dispose();
 });
+
+async function createPhysicalFixture(specs,options) {
+ const {createGlobePhysicalAssets}=await import('../../../src/rendering/three-globe-physical.js');
+ const {describeGlobePhysicalChunks}=await import('../../../src/rendering/globe-physical-catalog.js');
+ const assets=createGlobePhysicalAssets(options),contexts=new Map(),details=new Map();
+ for(const spec of specs) {
+  const roles=describeGlobePhysicalChunks(spec,options.lodVersion);
+  contexts.set(spec.identity,assets.createDescriptor(spec,[...roles.water,...roles.lake,...roles.river]));
+  details.set(spec.identity,assets.createDetailDescriptor(roles.detail));
+ }
+ return {...assets,plan:(identity,options)=>assets.plan(contexts.get(identity),options),
+  detailPlan:(identity,options)=>assets.detailPlan(details.get(identity),options)};
+}

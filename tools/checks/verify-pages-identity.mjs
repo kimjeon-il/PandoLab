@@ -15,6 +15,7 @@ import {validateMapCatalogCoherence} from '../../scripts/lib/map-catalog-coheren
 import {resolveBuiltinGeometryPacks} from '../../src/data/builtin-geometry-pack-receipt.js';
 import {globeLodEnabled,validateGlobeLodChunks} from '../../src/rendering/globe-lod.js';
 import {validateGlobeHistoryDirectory,validateGlobeHistoryPage} from '../../src/rendering/globe-history-catalog.js';
+import {validateGlobePhysicalCatalog,collectGlobePhysicalPages} from '../../src/rendering/globe-physical-catalog.js';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const HASH=/^[a-f0-9]{64}$/;
@@ -76,11 +77,10 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
     }
   };
   const physical=context=>{
-    if(!context||typeof context.identity!=='string')invalid('Missing Three.js physical context');
-    for(const row of rows(context.waters,'water'))chunks(row?.chunks,'water');
-    for(const row of rows(context.lakes,'lake'))chunks(row?.chunks,'lake');
-    chunks(context.riverChunks,'river');
-    chunks(context.riverDetail,'river detail');
+    validateGlobePhysicalCatalog(context,globe.lodVersion);
+    const ids=context.catalog.pages.map((_,i)=>i);
+    const descriptors=collectGlobePhysicalPages(context,ids,context.catalog.pages.map(page=>catalogJson(page.spec)),{complete:true});
+    for(const row of descriptors)packet(row.spec);
   };
   if(!globe||!Array.isArray(globe.countrySlots)||!Number.isSafeInteger(globe.historySlotCount)
     ||globe.historySlotCount<0)invalid('Missing Three.js map asset manifest');
@@ -91,7 +91,6 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
   chunks(globe.outlineChunks,'outline');
   packet(globe.graticule);
   packet(globe.hydroMetadata);
-  physical(globe.physical);
   function catalogJson(spec) {
     packet(spec);
     const compressed=bytesFor(spec.url);
@@ -102,6 +101,7 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
     return JSON.parse(decoded);
   }
   try {
+    physical(globe.physical);
     const history=validateGlobeHistoryDirectory(catalogJson(globe.historyCatalog),
       {lodVersion:globe.lodVersion,slotCount:globe.historySlotCount});
     if(history.physicalContexts.some(row=>row.identity===globe.physical.identity))invalid('Duplicate base physical context');
@@ -111,10 +111,10 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
         if(record.kind==='historicalCountries') {
           chunks(row.countryChunks,'historical country');
           chunks(row.outlineChunks,'historical outline');
-        }else if(record.kind==='historicalBorders')chunks(row.chunks,'historical border');
-        else physical(row);
+        }else chunks(row.chunks,'historical border');
       }
     }
+    for(const context of history.physicalContexts)physical(context);
   }catch(error){
     if(error?.code?.startsWith('ARTIFACT_DEPLOY_'))throw error;
     invalid('Invalid Three.js history catalog: '+error.message);

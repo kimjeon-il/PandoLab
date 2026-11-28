@@ -1,10 +1,11 @@
 import { validateGlobeLodChunks } from './globe-lod.js';
+import { validateGlobePhysicalCatalog } from './globe-physical-catalog.js';
 
 // A small immutable directory preserves Core's global historical slots and
 // border indices. Spatial descriptor pages are independent content-addressed
 // assets; a missing page must never be interpreted as an empty region.
 export const GLOBE_HISTORY_CATALOG_VERSION=2;
-const KINDS=['historicalCountries','historicalBorders','physicalContexts'];
+const KINDS=['historicalCountries','historicalBorders'];
 const validBounds=box=>Array.isArray(box)&&box.length===6&&box.every(Number.isFinite)&&
   box.slice(0,3).every((min,axis)=>min<=box[axis+3]);
 function familyBounds(rows) {
@@ -28,16 +29,15 @@ function sameBounds(a,b) {return a===null?b===null:validBounds(a)&&validBounds(b
 // borders in bounded groups; an unusually large individual family is isolated.
 export function partitionGlobeHistoryCatalog(source,emit,{maxRows=64,maxBytes=256*1024}={}) {
   const directory={version:GLOBE_HISTORY_CATALOG_VERSION,lodVersion:source.lodVersion,
-    historicalCountries:[],historicalBorders:[],physicalContexts:[],pages:[]};
+    historicalCountries:[],historicalBorders:[],physicalContexts:source.physicalContexts,pages:[]};
   for (const kind of KINDS) {
     const groups=new Map();
     source[kind].forEach((row,index)=>{
       const bounds=rowBounds(kind,row);
       const {countryChunks,outlineChunks,...metadata}=kind==='historicalCountries'?row:{};
       const value=kind==='historicalCountries'?{countryChunks,outlineChunks}:row;
-      directory[kind].push(kind==='historicalCountries'?{...metadata,bounds,page:null}:
-        kind==='historicalBorders'?{bounds,page:null}:{identity:row.identity,page:null});
-      const key=kind==='physicalContexts'?String(index):cell(bounds);
+      directory[kind].push(kind==='historicalCountries'?{...metadata,bounds,page:null}:{bounds,page:null});
+      const key=cell(bounds);
       let group=groups.get(key);if (!group){group=[];groups.set(key,group);}
       group.push({index,value});
     });
@@ -65,7 +65,7 @@ export function partitionGlobeHistoryCatalog(source,emit,{maxRows=64,maxBytes=25
 
 export function validateGlobeHistoryDirectory(directory,{lodVersion,slotCount}={}) {
   if (directory?.version!==GLOBE_HISTORY_CATALOG_VERSION||directory.lodVersion!==lodVersion||
-      !Array.isArray(directory.pages)||KINDS.some(kind=>!Array.isArray(directory[kind]))||
+      !Array.isArray(directory.pages)||!Array.isArray(directory.physicalContexts)||KINDS.some(kind=>!Array.isArray(directory[kind]))||
       (slotCount!==undefined&&directory.historicalCountries.length!==slotCount)||
       !Array.isArray(directory.historyTimeline)||!directory.history)throw Error('Invalid Three.js history directory');
   const seen=Object.fromEntries(KINDS.map(kind=>[kind,new Set()]));
@@ -77,7 +77,7 @@ export function validateGlobeHistoryDirectory(directory,{lodVersion,slotCount}={
     for (const index of indices) {
       const row=directory[kind][index];
       if (!Number.isSafeInteger(index)||index<0||!row||row.page!==page||seen[kind].has(index)||
-          (kind!=='physicalContexts'&&row.bounds!==null&&!validBounds(row.bounds)))
+          (row.bounds!==null&&!validBounds(row.bounds)))
         throw Error('Invalid historical catalog page membership');
       seen[kind].add(index);
     }
@@ -86,6 +86,7 @@ export function validateGlobeHistoryDirectory(directory,{lodVersion,slotCount}={
   const identities=directory.physicalContexts.map(row=>row.identity);
   if (identities.some(id=>typeof id!=='string'||!id)||new Set(identities).size!==identities.length)
     throw Error('Invalid historical physical identities');
+  for (const context of directory.physicalContexts)validateGlobePhysicalCatalog(context,lodVersion);
   return directory;
 }
 
@@ -97,40 +98,30 @@ export function validateGlobeHistoryPage(directory,page,value) {
   const chunks=rows=>{validateGlobeLodChunks(rows,directory.lodVersion);familyBounds(rows);};
   for (const [i,entry] of value.entries.entries()) {
     const index=record.indices[i],row=entry?.value,metadata=directory[record.kind][index];
-    if (entry?.index!==index||!row||!sameBounds(rowBounds(record.kind,row),record.kind==='physicalContexts'?null:metadata.bounds))
+    if (entry?.index!==index||!row||!sameBounds(rowBounds(record.kind,row),metadata.bounds))
       throw Error('Historical catalog page membership/bounds mismatch');
     if (record.kind==='historicalCountries') {chunks(row.countryChunks);chunks(row.outlineChunks);}
-    else if (record.kind==='historicalBorders')chunks(row.chunks);
-    else {
-      if (row.identity!==metadata.identity||!Array.isArray(row.waters)||!Array.isArray(row.lakes))
-        throw Error('Historical physical context identity mismatch');
-      for (const item of [...row.waters,...row.lakes])chunks(item.chunks);
-      chunks(row.riverChunks);chunks(row.riverDetail);
-    }
+    else chunks(row.chunks);
   }
   return value;
 }
 
 // The conservative union of every LOD's bounds must intersect the padded
 // viewport before an active historical family needs descriptor I/O.
-export function selectGlobeHistoryPages(directory,prepared,identity,{baseCount,baseIdentity,cull=()=>true}) {
+export function selectGlobeHistoryPages(directory,prepared,{baseCount,cull=()=>true}) {
   const pages=new Set();
   const include=(kind,index)=>{
     const row=directory[kind][index];
     if (!row)throw Error('Missing active historical catalog member');
-    if (row.bounds===undefined||row.bounds!==null&&cull(row.bounds))pages.add(row.page);
+    if (row.bounds!==null&&cull(row.bounds))pages.add(row.page);
   };
   for (const slot of prepared.slots)if (slot>=baseCount)include('historicalCountries',slot-baseCount);
   for (const index of prepared.view?.borders??[])include('historicalBorders',index);
-  if (identity!==baseIdentity) {
-    const index=directory.physicalContexts.findIndex(row=>row.identity===identity);
-    include('physicalContexts',index);
-  }
   return [...pages].sort((a,b)=>a-b);
 }
 
 export function collectGlobeHistoryPages(directory,ids,values) {
-  const result={lodVersion:directory.lodVersion,historicalCountries:[],historicalBorders:[],physicalContexts:[]};
+  const result={lodVersion:directory.lodVersion,historicalCountries:[],historicalBorders:[]};
   if (ids.length!==values.length)throw Error('Incomplete historical page read');
   for (const [i,page] of ids.entries()) {
     const value=validateGlobeHistoryPage(directory,page,values[i]);
