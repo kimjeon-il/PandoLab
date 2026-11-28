@@ -128,7 +128,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     cancelNeighborPrefetch();
     for (const name of ['country-prefetch','physical-prefetch','territory-apply','physical-view','base-view','neighbor-prefetch','pick-click','pick-hover'])cancelRequest(name);
     prefetchTerritoryPlan = null; prefetchPhysical = null; visiblePhysicalPlan = null; basePreparing = null; baseFailures.clear(); physicalFailures.clear();
-    retainCpuResources();
+    surface?.cancelGpuActivations();retainCpuResources();
   }
   function cancelOutlines() {
     for (const controller of pendingOutlines.values())controller.abort();
@@ -339,7 +339,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       // Each resident detail packet has a CPU copy and one GPU copy of its arrays.
       riverDetail = createGlobeRiverDetail({byteBudget:cacheBudget.hydroBytes,
         load:physicalAssets.readDetail,
-        attach:surface.attachRiverDetail, invalidate:() => {residencyDirty = true; invalidate('three-river-detail');},
+        attach:surface.attachRiverDetail,deferGpuAttach:true, invalidate:() => {residencyDirty = true; invalidate('three-river-detail');},
         onError:cause => deps.feedback.reportOperationError(cause,'상세 하천을 불러오지 못했습니다.','PL-THREE-RIVER-001'),
       });
       refreshHydroLedger = residency.register(() => hydroMetadata?[{protected:true, extraBytes:Math.max(0, Number(spec.hydroMetadata.decodedBytes)||0)*2+hydroSlots.size*64}]:[]);
@@ -818,7 +818,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!surface.prepareStaticGpuResources()) {invalidate('three-gpu-static-stage');return {...base,deferred:true};}
     const territoryGpuReady=surface.activateTerritorialChunks(territories.view,basePrepared.parts);
     const physicalGpuReady=territoryGpuReady&&surface.activatePhysicalContext(physical);
-    if (!territoryGpuReady||!physicalGpuReady) {invalidate('three-gpu-geometry-stage');return {...base,deferred:true};}
+    if (!territoryGpuReady||!physicalGpuReady) {surface.trimResidency();residency.trim();invalidate('three-gpu-geometry-stage');return {...base,deferred:true};}
     surface.commitGpuActivations();
     if (labelContent.needsUpdate())metrics.run('three.label-content',()=>labelContent.update({surface,camera,view,features,activeSlots,fontReady,needed:labelsNeeded()}));
     if (!surface.prepareLabels(camera, viewport.width, viewport.height, initialStrict,admission.limits.labelCandidates)&&initialStrict) {
@@ -851,7 +851,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       budgetLimited:admission.budgetLimited,targetExceeded:admission.targetExceeded,limits:admission.limits,
       required:admission.cost,active:requiredCost,transitionBytes:admission.transitionBytes,gpuFrame:surface.gpuFrameStats(),optional:{outlineOmitted:outlineBudgetOmitted,detailOmitted:detailBudgetOmitted,allowed:allowOptional}};
     const submitted = metrics.run('three.submit-frame', () => surface.draw(camera, viewport.width, viewport.height,admission.limits.hard));
-    if (!submitted) {invalidate('three-gpu-upload-budget');return {...base,deferred:true};}
+    if (!submitted) {surface.trimResidency();residency.trim();invalidate('three-gpu-upload-budget');return {...base,deferred:true};}
     const gpuDeferred=surface.gpuFrameStats().deferred;
     if (gpuDeferred.create||gpuDeferred.upload||gpuDeferred.compaction)invalidate('three-gpu-frame-work-pending');
     activeBudgetStats={...activeBudgetStats,gpuFrame:surface.gpuFrameStats()};
@@ -903,6 +903,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         retainCpuResources();
       }
     })) {drawnFrame = null; return false;}
+    surface.commitGpuPublication();
     const riverChanged = riverDetail.commit(acceptedRiverChunks), surfaceChanged = surface.trimResidency();
     const riverTrimmed = riverDetail.trim();
     if (first||residencyDirty||riverChanged||surfaceChanged||riverTrimmed) {residencyDirty = false; residency.trim();}

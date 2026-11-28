@@ -2,7 +2,7 @@ import { touchLruEntry } from '../runtime/lru-cache.js';
 /** Retain prepared line buffers for the accepted viewport and recent visits. */
 const RETRY_DELAY = 1500, MAX_RETRIES = 3;
 export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, onError,
-  now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout}) {
+  deferGpuAttach=false,now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout}) {
   const entries = new Map(), failed = new Map();
   let wanted = new Set(), published = new Set(), residentBytes = 0, retryTimer = null, disposed = false;
   function cancelRetryTimer() {
@@ -43,20 +43,27 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     }
     return before!==residentBytes;
   }
-  async function prepare(row, entry) {
-    try {
-      const packet = await load(row, entry.controller.signal);
-      if (entries.get(row.id)!==entry)return;
-      entry.resource = attach(row, packet);
-      entry.packet = packet; entry.bytes = entry.resource.residentBytes; entry.lastUsed = performance.now();
+  function attachPrepared(entry) {
+    if (entry.resource||!entry.packet)return Boolean(entry.resource);
+    const row=entry.row;
+    entry.resource=attach(row,entry.packet);
+    if (!entry.resource)return false;
+    entry.bytes=entry.resource.residentBytes;entry.lastUsed=performance.now();
       residentBytes+=entry.bytes;
       entry.resource.setResidency({protected:wanted.has(row.id)||published.has(row.id), evict:() => discard(row.id, entry),
         onBytesChanged:bytes => {
           if (entries.get(row.id)!==entry)return;
           residentBytes+=bytes-entry.bytes; entry.bytes = bytes;
         }});
-      failed.delete(row.id);
-      trim(); scheduleRetry(); invalidate();
+    return true;
+  }
+  async function prepare(row,entry) {
+    try {
+      const packet=await load(row,entry.controller.signal);
+      if (entries.get(row.id)!==entry)return;
+      entry.packet=packet;
+      if (!deferGpuAttach)attachPrepared(entry);
+      failed.delete(row.id);trim();scheduleRetry();invalidate();
     }catch (error) {
       if (entries.get(row.id)!==entry)return;
       discard(row.id, entry);
@@ -96,10 +103,13 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     }
     trim(); scheduleRetry(); return true;
   }
-  const activeEntries = () => [...wanted].map(id => entries.get(id)).filter(entry => entry?.resource);
+  const activeEntries = () => [...wanted].map(id=>entries.get(id)).filter(entry=>entry?.resource&&(!deferGpuAttach||entry.resource.drawReady?.()!==false));
   function prepareGpuUploads() {
     let ready=true;
-    for (const entry of activeEntries()) {
+    for (const id of wanted) {
+      const entry=entries.get(id);
+      if (!entry?.packet)continue;
+      if (!attachPrepared(entry)) {ready=false;continue;}
       const available=entry.resource.warmGpu?.()??true;
       entry.resource.setVisible(available);
       if (!available)ready=false;
