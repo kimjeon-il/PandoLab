@@ -127,13 +127,20 @@ export function createGlobePlanFailures({residency, onRetry}) {
 export function createGlobeTerritorialAssets(spec, {
   baseSlots, cacheBudget, residency, loadMesh, loadStroke, load, slotCount = () => baseSlots.length,
 }) {
-  function combineBorderRows(rows, baseBorder) {
+  function combineBorderRows(rows,baseBorder,aggregationLevel=0) {
     const other=rows.filter(row=>row.role!=='border'||Boolean(row.baseBorder)!==baseBorder);
     const borders=rows.filter(row=>row.role==='border'&&Boolean(row.baseBorder)===baseBorder);
     return [...other,...batchGlobeStrokeDescriptors(borders,{
-      prefix:baseBorder?'base-border-batch':'border-batch',
+      prefix:(baseBorder?'base-border-batch':'border-batch')+'-'+aggregationLevel,
       byteBudget:baseBorder?Math.floor(cacheBudget.borderBatchBytes/2):cacheBudget.borderBatchBytes,
-      maxSources:32,groupKey:row=>String(globeChunkLod(row)),
+      maxSources:32,groupKey:row=>String(globeChunkLod(row))+(!baseBorder?':'+String(row.historyBorder??''):''),
+      aggregate:sources=>{
+        const row=sources[0];if(aggregationLevel===0||row.lod!==0)return {};
+        const gridDivisions=aggregationLevel===1?128:aggregationLevel===2?64:20;
+        const aggregateReductionEstimate=aggregationLevel===1?2:aggregationLevel===2?8:32;
+        return {force:true,aggregateErrorScale:aggregationLevel===1?32:64,aggregateReductionEstimate,
+          aggregateMaxRun:512,aggregateBounds:null,aggregateGridDivisions:gridDivisions,aggregatePreserveOwners:true};
+      },
     })];
   }
   const version=spec.lodVersion;
@@ -152,7 +159,14 @@ export function createGlobeTerritorialAssets(spec, {
   }
   const assets=createGlobeChunkAssets([],{loadMesh,loadStroke,residency,byteBudget:cacheBudget.historicalCpuBytes});
   function createSelection(baseRows,catalog=null) {
-    const index=createGlobeChunkCatalog([...combineBorderRows(baseRows.filter(row=>row.role!=='outline'),true),...historyDescriptors(catalog)]),outlines=new Map();
+    const historicalRows=historyDescriptors(catalog),indexes=new Map(),outlines=new Map();
+    const indexFor=level=>{
+      if(!indexes.has(level))indexes.set(level,createGlobeChunkCatalog([
+        ...combineBorderRows(baseRows.filter(row=>row.role!=='outline'),true,level),...historicalRows,
+      ]));
+      return indexes.get(level);
+    };
+    const index=indexFor(0);
     const add=descriptor=>{
       for (const owner of descriptor.ownerSlots) {
         const key=globeChunkLod(descriptor)+':'+owner;let rows=outlines.get(key);
@@ -163,20 +177,20 @@ export function createGlobeTerritorialAssets(spec, {
     catalog?.historicalCountries.forEach((row,i)=>{
       for (const descriptor of describeGlobeOutlineChunks(row.outlineChunks,version,baseSlots.length+i))add(descriptor);
     });
-    return {index,outlines,borderPlansByView:new WeakMap()};
+    return {index,indexFor,outlines,borderPlansByView:new WeakMap()};
   }
-  function plan(cull,accept=all,lod=GLOBE_FINE_LOD,selection) {
+  function plan(cull,accept=all,lod=GLOBE_FINE_LOD,selection,aggregationLevel=0) {
     if (!selection)throw Error('Missing territorial catalog selection');
-    return selection.index.select(cull,accept,lod);
+    return selection.indexFor(aggregationLevel).select(cull,accept,lod);
   }
-  function planHistoryBorders(view,cull,lod=GLOBE_FINE_LOD,selection) {
+  function planHistoryBorders(view,cull,lod=GLOBE_FINE_LOD,selection,aggregationLevel=0) {
     if (!view||!selection)return [];
     let levels=selection.borderPlansByView.get(view);
     if (!levels){levels=new Map();selection.borderPlansByView.set(view,levels);}
-    let index=levels.get(lod);
+    const cacheKey=lod+':'+aggregationLevel;let index=levels.get(cacheKey);
     if (!index) {
-      const groups=new Set(view.borders),rows=selection.index.select(all,row=>row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder),lod);
-      index=createGlobeChunkCatalog(combineBorderRows(rows,false));levels.set(lod,index);
+      const groups=new Set(view.borders),rows=selection.indexFor(aggregationLevel).select(all,row=>row.role==='border'&&!row.baseBorder&&groups.has(row.historyBorder),lod);
+      index=createGlobeChunkCatalog(combineBorderRows(rows,false,aggregationLevel));levels.set(cacheKey,index);
     }
     return index.select(cull,all,lod);
   }

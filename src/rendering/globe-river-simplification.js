@@ -1,4 +1,4 @@
-import { createGlobeStrokePointTable, encodeIndexedGlobeStrokes } from './globe-mesh.js';
+import { createGlobeStrokePointTable } from './globe-mesh.js';
 function pointWords(packet){return new Uint32Array(packet.points.buffer,packet.points.byteOffset,packet.points.length);}
 function pointHash(words,index){let hash=2166136261;for(let axis=0;axis<6;axis++)hash=Math.imul(hash^words[index*6+axis],16777619);hash^=hash>>>16;return Math.imul(hash,0x85ebca6b)>>>0;}
 function hasBit(bits,hash){const bit=hash%(bits.length*8);return Boolean(bits[bit>>>3]&(1<<(bit&7)));}
@@ -54,7 +54,7 @@ export function simplifyGlobeRiverPacket(packet,lod,isShared=()=>false,{maxRun=3
 }
 
 
-// Last-resort display aggregation: quantize the unit-sphere network into a
+// Last-resort display aggregation: quantize a unit-sphere line network into a
 // bounded spatial lattice, merge duplicate edges, and retain maximum width.
 // This is display-only and deliberately drops object ownership when requested;
 // the exact source packets remain immutable and are still used at higher LODs.
@@ -62,11 +62,11 @@ export function aggregateGlobeStrokePacket(packet,{gridDivisions=64,preserveOwne
   if(!packet||!Number.isSafeInteger(packet.count)||packet.count<0||
     !Number.isInteger(gridDivisions)||gridDivisions<16||gridDivisions>256||
     typeof preserveOwners!=='boolean'||packet.endpointIndices?.length!==packet.count*2||
-    packet.points?.length%6!==0||packet.widths?.length!==0&&packet.widths.length!==packet.count||
-    packet.ownerGroups?.length!==0&&packet.ownerGroups.length!==packet.count)
+    packet.points?.length%6!==0||(packet.widths?.length??0)!==0&&(packet.widths?.length??0)!==packet.count||
+    (packet.ownerGroups?.length??0)!==0&&(packet.ownerGroups?.length??0)!==packet.count)
     throw new TypeError('Invalid spatial stroke aggregation packet');
   if(!packet.count)return packet;
-  const values=packet.points,words=new Uint32Array(packet.points.buffer,packet.points.byteOffset,packet.points.length);
+  const values=packet.points;
   const table=createGlobeStrokePointTable(Math.max(1,packet.count*2));
   const pointCache=new Map(),cellCache=new Map(),edges=new Map(),side=gridDivisions+1;
   function quantizePoint(id) {
@@ -106,10 +106,5 @@ export function aggregateGlobeStrokePacket(packet,{gridDivisions=64,preserveOwne
     if(widths.length)widths[index]=row.width;
     if(ownerGroups.length)ownerGroups[index]=row.owner;
   });
-  // Re-encode through the canonical packet contract before building its
-  // shared draw/picking spatial index in the Worker.
-  const encoded=encodeIndexedGlobeStrokes({count:rows.length,points:table.finish(),endpointIndices,widths,ownerGroups});
-  const pointOffset=20,indexOffset=pointOffset+table.finish().byteLength;
-  return {count:rows.length,points:table.finish(),endpointIndices,widths,ownerGroups,
-    encodedBytes:encoded.byteLength,pointCount:indexOffset};
+  return {count:rows.length,points:table.finish(),endpointIndices,widths,ownerGroups};
 }

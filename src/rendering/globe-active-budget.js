@@ -121,7 +121,7 @@ export function chooseGlobeActivePlan({requestedLod,minLod=0,limits,build,aggreg
     if (globeCostFits(cost,limits.target))return {...fallback,targetExceeded:false};
   }
   // Only after every ordinary LOD has failed its soft target do we trade
-  // river identity/precision for bounded spatial-network aggregation.
+  // line identity/precision for bounded spatial-network aggregation.
   for (const level of aggregateLevels) {
     const candidate=build(minLod,0,level),cost=candidate.cost;last=candidate;
     if (!globeCostFits(cost,limits.hard)||(candidate.transitionBytes??0)>(limits.transitionBytes??Infinity))continue;

@@ -495,3 +495,22 @@ test('physical river plans expose progressively coarser spatial aggregation with
  assert.equal(assets.covers(prepared.plan,normal),false);
  assets.dispose();
 });
+
+
+test('dense base and historical borders use the same bounded aggregation tiers while retaining owner groups',async()=>{
+ const {createGlobeTerritorialAssets}=await import('../../../src/rendering/globe-view-mesh-assets.js');
+ const {renderCacheBudget}=await import('../../../src/rendering/render-cache-budget.js');
+ const budget=renderCacheBudget(8),rows=[];
+ for(let lod=0;lod<3;lod++)for(let i=0;i<70;i++)rows.push({role:'border',kind:'stroke',baseBorder:true,lod,
+  key:'border-'+lod+'-'+i,slots:[i%4],bounds:[-.8,-.1,-.1,.8,.1,.1],first:0,end:320,
+  spec:{sha256:'border-'+lod+'-'+i,decodedBytes:320*24,compressedBytes:128}});
+ const assets=createGlobeTerritorialAssets({lodVersion:1},{baseSlots:[],cacheBudget:budget,loadMesh:async()=>({}),loadStroke:async()=>({})});
+ const selection=assets.createSelection(rows);
+ for(const [level,grid] of [[1,128],[2,64],[3,20]]) {
+  const plan=assets.plan(()=>true,()=>true,0,selection,level);
+  assert.ok(plan.length<70);
+  assert.ok(plan.every(row=>row.aggregateGridDivisions===grid&&row.aggregatePreserveOwners===true));
+  assert.ok(plan.every(row=>row.sources.length<=32));
+ }
+ assets.dispose();
+});

@@ -250,10 +250,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       if (physicalPlans.size>=8)physicalPlans.clear(); physicalPlans.set(key, plan);}
     return plan;
   }
-  const territorialContext = (prepared, visibility = null, lod = currentGeometryLod()) => prepared.key+'|'+lod+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
-  function territorialPlan(prepared = territories, padding = 0, visibility = null, lod = currentGeometryLod(),selection=activeCatalogSelection) {
+  const territorialContext = (prepared, visibility = null, lod = currentGeometryLod(),aggregationLevel=0) => prepared.key+'|'+lod+'|'+aggregationLevel+'|'+Number(visibility?.objectsVisible??state.layerVisibility.objects!==false)+'|'+Number(visibility?.bordersVisible??bordersNeeded());
+  function territorialPlan(prepared = territories, padding = 0, visibility = null, lod = currentGeometryLod(),selection=activeCatalogSelection,aggregationLevel=0) {
     syncViewPlans(); const extra = strokePadding(), objectsVisible = visibility?.objectsVisible??state.layerVisibility.objects!==false,
-      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility,lod)+'|'+padding+'|'+extra+'|'+selection.key;
+      boundariesVisible = visibility?.bordersVisible??bordersNeeded(), key = territorialContext(prepared,visibility,lod,aggregationLevel)+'|'+padding+'|'+extra+'|'+selection.key;
     if (territoryPlans.has(key))return territoryPlans.get(key);
     if (!objectsVisible) {const rows = []; territoryPlans.set(key, rows); return rows;}
     const selectedSlots = new Set(prepared.slots), hidden = new Set(prepared.view?.hiddenBorders??[]);
@@ -263,9 +263,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot => selectedSlots.has(slot)));
       if (!boundariesVisible)return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
-    },lod,selection.territorialSource);
+    },lod,selection.territorialSource,aggregationLevel);
     if (boundariesVisible&&prepared.view)
-      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod,selection.territorialSource));
+      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod,selection.territorialSource,aggregationLevel));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
   function activeCost(basePlan, physicalTarget) {
@@ -286,10 +286,10 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (admissions.has(key))return admissions.get(key);
     const limits=globeActiveLimits(cacheBudget,{tier:budgetTier,otherBytes:fixedBytes});
     const build=(lod,padding=0,aggregationLevel=0)=>{
-      const base=territorialPlan(prepared,padding,visibility,lod,selection),physical=physicalPlan(identity,padding,visibility,lod,selection,aggregationLevel);
+      const base=territorialPlan(prepared,padding,visibility,lod,selection,aggregationLevel),physical=physicalPlan(identity,padding,visibility,lod,selection,aggregationLevel);
       const transitionBytes=estimateGlobeTransitionBytes(publishedBase?.plan,publishedPhysical?.plan.rows,base,physical.rows,
         graticuleNeeded()?gridBudgetRows:[]);
-      return {base,physical,context:territorialContext(prepared,visibility,lod),cost:activeCost(base,physical),transitionBytes,aggregationLevel};
+      return {base,physical,context:territorialContext(prepared,visibility,lod,aggregationLevel),cost:activeCost(base,physical),transitionBytes,aggregationLevel};
     };
     const selected=chooseGlobeActivePlan({requestedLod,minLod:lodEnabled?0:GLOBE_FINE_LOD,limits,aggregateLevels:[1,2,3],build});
     // Keep the existing margin prefetch only if the complete combined margin
@@ -314,16 +314,16 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!ready||framePreserved||presentation.temporalPending()||publishedMonth!==state.timelineCursor||
         acceptedTerritories!==territories||!publishedBase||!publishedPhysical||
         publishedPhysical.spec.identity!==physical?.spec.identity)return null;
-    const lod=publishedPhysical.plan.lod;
-    const context=territorialContext(territories,null,lod);
-    const base=territorialPlan(territories,0,null,lod,admission.selection);
-    const water=physicalPlan(publishedPhysical.spec.identity,0,null,lod,admission.selection,admission.aggregationLevel??0);
+    const lod=publishedPhysical.plan.lod,aggregationLevel=publishedPhysical.plan.aggregationLevel??0;
+    const context=territorialContext(territories,null,lod,aggregationLevel);
+    const base=territorialPlan(territories,0,null,lod,admission.selection,aggregationLevel);
+    const water=physicalPlan(publishedPhysical.spec.identity,0,null,lod,admission.selection,aggregationLevel);
     if (publishedBase.context!==context||!globeChunkSetContains(publishedBase.plan,base)||
         !physicalAssets.covers(publishedPhysical.plan,water))return null;
     const cost=activeCost(publishedBase.plan,publishedPhysical.plan);
     if (!globeCostFits(cost,admission.limits.hard))return null;
-    return {...admission,lod,context,base,physical:water,cost,
-      budgetLimited:lod!==admission.requestedLod,targetExceeded:!globeCostFits(cost,admission.limits.target)};
+    return {...admission,lod,aggregationLevel,aggregateFallback:aggregationLevel>0,context,base,physical:water,cost,
+      budgetLimited:lod!==admission.requestedLod||aggregationLevel>0,targetExceeded:!globeCostFits(cost,admission.limits.target)};
   }
   function installHistoryCatalog(catalog) {
     if (historyLoaded)return;
