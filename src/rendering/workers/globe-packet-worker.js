@@ -63,7 +63,7 @@ async function decodePacket({kind,bytes,spec,ownerCount,outlineOwners,identityCo
   return {value,transferable:kind!=='hydro'&&kind!=='catalog'&&kind!=='catalog-page'&&kind!=='spatial-catalog-page'};
 }
 rpc.install({handlers:{
-  'globe.aggregate-stored-strokes':async({packets,lod=0,errorScale=16,maxRun=256,protectedBounds=null},context)=>{
+  'globe.aggregate-stored-strokes':async({packets,lod=0,errorScale=16,maxRun=512,protectedBounds=null},context)=>{
     if(!Array.isArray(packets)||packets.length<2||packets.length>32||lod!==0||!Number.isFinite(errorScale)||errorScale<1||errorScale>64||
       !Number.isInteger(maxRun)||maxRun<32||maxRun>512||protectedBounds!==null&&(!Array.isArray(protectedBounds)||protectedBounds.length!==6||!protectedBounds.every(Number.isFinite)))
       throw Error('Invalid hierarchical river aggregate request');

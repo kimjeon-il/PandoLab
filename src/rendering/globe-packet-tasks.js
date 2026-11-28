@@ -156,7 +156,7 @@ export function createGlobePacketTasks({
       return value;
     });
   }
-  function aggregateStoredStrokes(inputs,{signal,priority=10,lod=0,errorScale=16,maxRun=256,protectedBounds=null}={}) {
+  function aggregateStoredStrokes(inputs,{signal,priority=10,lod=0,errorScale=16,maxRun=512,protectedBounds=null}={}) {
     signal?.throwIfAborted();
     if(!Array.isArray(inputs)||inputs.length<2||inputs.length>32)throw new RangeError('Invalid spatial stroke aggregate batch');
     const transfer=[...new Set(inputs.map(row=>row.bytes))];

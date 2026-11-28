@@ -21,7 +21,7 @@ export function createGlobePhysicalAssets({loadMesh,loadStroke,byteBudget=render
         const row=sources[0],cell=String(row.cell??'').split(':').map(Number);
         if(row.lod!==0||cell.length!==3||!cell.every(Number.isInteger))return {};
         const supercell=cell.map(value=>Math.floor(value/2)),min=supercell.map(value=>value-1),max=supercell;
-        return {aggregateErrorScale:16,aggregateReductionEstimate:4,aggregateMaxRun:256,aggregateBounds:[...min,...max]};
+        return {aggregateErrorScale:16,aggregateReductionEstimate:4,aggregateMaxRun:512,aggregateBounds:[...min,...max]};
       },
     });
   }

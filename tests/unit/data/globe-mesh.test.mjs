@@ -351,15 +351,15 @@ test('hierarchical river aggregation simplifies long chains but protects shared 
  const {createGlobeRiverJunctionGuard,simplifyGlobeRiverPacket}=await import('../../../src/rendering/globe-river-simplification.js');
  const coordinates=[];for(let i=0;i<=512;i++)coordinates.push(i*.00001,0);
  const line=decodeGlobeStrokes(encodeGlobeStrokes(coordinates,null,Array(512).fill(1),Uint16Array.from({length:512},()=>7)));
- const aggregate=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],()=>false,{maxRun:256,errorScale:16});
+ const aggregate=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],()=>false,{maxRun:512,errorScale:16});
  assert.ok(aggregate.count<line.count/16);
  assert.deepEqual(globeStrokePoint(aggregate,0,0),globeStrokePoint(line,0,0));
  assert.deepEqual(globeStrokePoint(aggregate,aggregate.count-1,1),globeStrokePoint(line,line.count-1,1));
- const protectedLine=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],()=>false,{maxRun:256,errorScale:16,protectedBounds:[.999,-.001,-.001,1.001,.001,.001]});
+ const protectedLine=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],()=>false,{maxRun:512,errorScale:16,protectedBounds:[.999,-.001,-.001,1.001,.001,.001]});
  assert.equal(protectedLine.count,line.count);
  const branch=decodeGlobeStrokes(encodeGlobeStrokes([.00256,0,.00256,.001],null,[1],Uint16Array.of(8)));
  const guard=createGlobeRiverJunctionGuard([line,branch],{filterBytes:8192});
- const guarded=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],guard,{maxRun:256,errorScale:16});
+ const guarded=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],guard,{maxRun:512,errorScale:16});
  assert.ok(guarded.count>aggregate.count);
 });
 test('GPU mesh batches span neighboring cells while retaining owner order and spatial sub-indexes',async()=>{

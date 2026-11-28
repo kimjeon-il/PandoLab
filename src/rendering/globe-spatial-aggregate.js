@@ -16,7 +16,8 @@ export function batchGlobeStrokeDescriptors(rows,{prefix='stroke-batch',byteBudg
     const metadata=aggregate?.(sources)??{}, {force=false,...extra}=metadata;
     if(sources.length===1&&!force)result.push({...sources[0],...extra});
     else {
-      const key=prefix+':'+sources.map(row=>row.key??row.spec.sha256).join(',');
+      const aggregateKey=JSON.stringify(Object.fromEntries(Object.entries(extra).filter(([name])=>name.startsWith('aggregate'))));
+      const key=prefix+':'+aggregateKey+':'+sources.map(row=>row.key??row.spec.sha256).join(',');
       const decodedBytes=sources.reduce((sum,row)=>sum+bytesOf(row),0),compressedBytes=sources.reduce((sum,row)=>sum+compressedOf(row),0);
       const first=sources[0],slots=[...new Set(sources.flatMap(row=>row.slots??[]))].sort((a,b)=>a-b);
       result.push({...first,...extra,key,sources:[...sources],bounds:unionBounds(sources),slots,cell:null,
