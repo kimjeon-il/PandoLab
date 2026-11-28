@@ -158,7 +158,7 @@ export function createGlobePacketTasks({
   }
   function aggregateStoredStrokes(inputs,{signal,priority=10,lod=0,errorScale=16,maxRun=512,protectedBounds=null,gridDivisions=0,preserveOwners=true}={}) {
     signal?.throwIfAborted();
-    if(!Array.isArray(inputs)||inputs.length<1||inputs.length>32)throw new RangeError('Invalid spatial stroke aggregate batch');
+    if(!Array.isArray(inputs)||inputs.length<1||inputs.length>128)throw new RangeError('Invalid spatial stroke aggregate batch');
     const transfer=[...new Set(inputs.map(row=>row.bytes))];
     const packets=inputs.map(({bytes,spec})=>({bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes}}));
     return request('globe.aggregate-stored-strokes',{packets,lod,errorScale,maxRun,protectedBounds,gridDivisions,preserveOwners},transfer,{priority,signal});

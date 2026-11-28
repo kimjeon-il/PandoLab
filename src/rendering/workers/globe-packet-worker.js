@@ -64,7 +64,7 @@ async function decodePacket({kind,bytes,spec,ownerCount,outlineOwners,identityCo
 }
 rpc.install({handlers:{
   'globe.aggregate-stored-strokes':async({packets,lod=0,errorScale=16,maxRun=512,protectedBounds=null,gridDivisions=0,preserveOwners=true},context)=>{
-    if(!Array.isArray(packets)||packets.length<1||packets.length>32||lod!==0||!Number.isFinite(errorScale)||errorScale<1||errorScale>64||
+    if(!Array.isArray(packets)||packets.length<1||packets.length>128||lod!==0||!Number.isFinite(errorScale)||errorScale<1||errorScale>64||
       !Number.isInteger(maxRun)||maxRun<32||maxRun>512||!([0,20,64,128].includes(gridDivisions))||typeof preserveOwners!=='boolean'||protectedBounds!==null&&(!Array.isArray(protectedBounds)||protectedBounds.length!==6||!protectedBounds.every(Number.isFinite)))
       throw Error('Invalid hierarchical stroke aggregate request');
     const maxPoints=packets.reduce((sum,row)=>sum+Math.floor(row.spec.decodedBytes/24),0);

@@ -488,7 +488,7 @@ test('physical river plans expose progressively coarser spatial aggregation with
  assert.ok(medium.riverChunks.every(row=>row.aggregateGridDivisions===128&&row.aggregatePreserveOwners));
  assert.ok(coarse.riverChunks.every(row=>row.aggregateGridDivisions===64&&row.pickable===false));
  assert.ok(emergency.riverChunks.every(row=>row.aggregateGridDivisions===20&&row.pickable===false));
- assert.ok(emergency.riverChunks.every(row=>row.sources.length<=32));
+ assert.ok(emergency.riverChunks.every(row=>row.sources.length<=128));
  const prepared=await assets.prepare(emergency);
  assert.equal(prepared.plan.aggregationLevel,3);
  assert.ok(prepared.plan.riverChunks.every(row=>row.end===2&&!row.sources));
@@ -510,7 +510,7 @@ test('dense base and historical borders use the same bounded aggregation tiers w
   const plan=assets.plan(()=>true,()=>true,0,selection,level);
   assert.ok(plan.length<70);
   assert.ok(plan.every(row=>row.aggregateGridDivisions===grid&&row.aggregatePreserveOwners===true));
-  assert.ok(plan.every(row=>row.sources.length<=32));
+  assert.ok(plan.every(row=>row.sources.length<=128));
  }
  assets.dispose();
 });

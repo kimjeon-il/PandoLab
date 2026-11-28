@@ -10,7 +10,8 @@ export function createGlobePhysicalAssets({loadMesh,loadStroke,byteBudget=render
   const contexts=new Map(),pending=new Map();
   function batchRiverChunks(rows,aggregationLevel=0) {
     return batchGlobeStrokeDescriptors(rows,{
-      prefix:'river-batch-'+aggregationLevel,byteBudget:strokeBatchBytes,maxSources:32,
+      prefix:'river-batch-'+aggregationLevel,byteBudget:aggregationLevel===0?strokeBatchBytes:Math.max(256*1024,Math.floor(strokeBatchBytes/2)),
+      maxSources:aggregationLevel===0?32:128,
       groupKey:row=>{
         const cell=String(row.cell??'').split(':').map(Number);
         if(aggregationLevel===0&&row.lod===0&&cell.length===3&&cell.every(Number.isInteger))
