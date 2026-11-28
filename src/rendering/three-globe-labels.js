@@ -513,6 +513,7 @@ export function createThreeGlobeLabels(THREE,{scene,renderer,palette,capacity,vi
       if (candidates.length<2)continue;
       const pair = candidates.slice(0, 2), plan = planGlobeAtlasPages(pair.flatMap(row => row.runs), size);
       if (!plan||plan.length!==1)continue;
+      if (gpuFrameBudget&&!gpuFrameBudget.admitCreate(size*size,1))return renderRows;
       const release = residency?residency.reserve(size*size*2, {kind:'atlas-compaction', optional:true, trimFirst:false}):() => {};
       if (!release) {counters.compactionDeferrals++; return renderRows;}
       try {

@@ -806,8 +806,12 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       requiredReady&&=resource.drawReady;
     }
     if (!requiredReady)return false;
+    if (requireLabels&&graticule?.visible) {
+      graticule.drawReady=graticule.update(getCuller,view.zoom,stats)!==false;
+      if (!graticule.drawReady)return false;
+    }
     if (!labels.flushUploads()&&requireLabels)return false;
-    for (const resource of activeSpatialResources)if (resource.optional) {
+    for (const resource of activeSpatialResources)if (resource.optional&&(!requireLabels||resource!==graticule)) {
       resource.drawReady=resource.update(getCuller,view.zoom,stats)!==false;
       if (!resource.drawReady)resource.hideObjects();
     }

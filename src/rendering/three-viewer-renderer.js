@@ -824,6 +824,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!surface.prepareLabels(camera, viewport.width, viewport.height, initialStrict,admission.limits.labelCandidates)&&initialStrict) {
       const cause = surface.labels.sdfError();
       if (cause)failMapPreparation(cause);
+      surface.trimResidency();residency.trim();
       return {...base, deferred:true};
     }
     presentation.markTemporalFrame(frame);

@@ -582,3 +582,18 @@ test('compaction cursors split large and fragmented writes without loss or overl
  assert.equal(estimateGlobeDrawWriteBytes(scattered,4),321*4);
  assert.equal(takeGlobeDrawWriteSlice(scattered,{index:0,offset:0},100).writes.length,32);
 });
+
+
+test('detail river packet arrival does not create GPU resources outside a frame',async()=>{
+ const {createGlobeRiverDetail}=await import('../../../src/rendering/three-globe-rivers.js');
+ const loaded=Promise.withResolvers(),arrived=Promise.withResolvers();let attempts=0,ready=false,visible=false;
+ const detail=createGlobeRiverDetail({byteBudget:1000,deferGpuAttach:true,load:()=>loaded.promise,
+   attach:()=>{attempts++;if(attempts===1)return null;return {residentBytes:10,setResidency(){},setProtected(){},setVisible:value=>{visible=value;},warmGpu:()=>ready,drawReady:()=>ready&&visible,dispose(){}};},
+   invalidate:()=>arrived.resolve(),onError:error=>assert.fail(error)});
+ detail.update([{id:'a'}]);loaded.resolve({count:1});await arrived.promise;
+ assert.equal(attempts,0);assert.deepEqual(detail.activeEntries(),[]);
+ assert.equal(detail.prepareGpuUploads(),false);assert.equal(attempts,1);
+ assert.equal(detail.prepareGpuUploads(),false);assert.equal(attempts,2);
+ ready=true;assert.equal(detail.prepareGpuUploads(),true);assert.equal(detail.activeEntries().length,1);
+ detail.update([]);assert.equal(visible,false);detail.dispose();
+});

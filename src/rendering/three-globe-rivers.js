@@ -50,12 +50,12 @@ export function createGlobeRiverDetail({byteBudget, load, attach, invalidate, on
     entry.resource=attach(row,entry.packet);
     if (!entry.resource)return false;
     residency?.remove(entry);entry.bytes=entry.resource.residentBytes;entry.lastUsed=performance.now();
-      residentBytes+=entry.bytes;
-      entry.resource.setResidency({protected:wanted.has(row.id)||published.has(row.id), evict:() => discard(row.id, entry),
-        onBytesChanged:bytes => {
-          if (entries.get(row.id)!==entry)return;
-          residentBytes+=bytes-entry.bytes; entry.bytes = bytes;
-        }});
+    residentBytes+=entry.bytes;
+    entry.resource.setResidency({protected:wanted.has(row.id)||published.has(row.id), evict:() => discard(row.id, entry),
+      onBytesChanged:bytes => {
+        if (entries.get(row.id)!==entry)return;
+        residentBytes+=bytes-entry.bytes;entry.bytes=bytes;
+      }});
     return true;
   }
   async function prepare(row,entry) {
