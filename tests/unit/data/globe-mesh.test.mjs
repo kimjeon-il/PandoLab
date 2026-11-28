@@ -344,3 +344,38 @@ test('coarse native globe tessellation reduces interior triangles without editin
   assert.ok(meshes[i].positions.some((value,index)=>index%2===0&&value>=15e6));
  }
 });
+
+
+test('hierarchical river aggregation simplifies long chains but protects shared junctions and cell edges',async()=>{
+ const {GLOBE_LODS}=await import('../../../src/rendering/globe-lod.js');
+ const {createGlobeRiverJunctionGuard,simplifyGlobeRiverPacket}=await import('../../../src/rendering/globe-river-simplification.js');
+ const coordinates=[];for(let i=0;i<=512;i++)coordinates.push(i*.00001,0);
+ const line=decodeGlobeStrokes(encodeGlobeStrokes(coordinates,null,Array(512).fill(1),Uint16Array.from({length:512},()=>7)));
+ const aggregate=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],()=>false,{maxRun:256,errorScale:16});
+ assert.ok(aggregate.count<line.count/16);
+ assert.deepEqual(globeStrokePoint(aggregate,0,0),globeStrokePoint(line,0,0));
+ assert.deepEqual(globeStrokePoint(aggregate,aggregate.count-1,1),globeStrokePoint(line,line.count-1,1));
+ const protectedLine=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],()=>false,{maxRun:256,errorScale:16,protectedBounds:[.999,-.001,-.001,1.001,.001,.001]});
+ assert.equal(protectedLine.count,line.count);
+ const branch=decodeGlobeStrokes(encodeGlobeStrokes([.00256,0,.00256,.001],null,[1],Uint16Array.of(8)));
+ const guard=createGlobeRiverJunctionGuard([line,branch],{filterBytes:8192});
+ const guarded=simplifyGlobeRiverPacket(line,GLOBE_LODS[0],guard,{maxRun:256,errorScale:16});
+ assert.ok(guarded.count>aggregate.count);
+});
+test('GPU mesh batches span neighboring cells while retaining owner order and spatial sub-indexes',async()=>{
+ const {groupGlobeGpuMeshes,combineGlobeDrawMeshes}=await import('../../../src/rendering/globe-draw-compaction.js');
+ const {estimateGlobePlanCost}=await import('../../../src/rendering/globe-active-budget.js');
+ const rows=Array.from({length:70},(_,i)=>{
+  const packet={positions:new Float32Array(9),residuals:new Float32Array(9),indices:Uint32Array.of(0,1,2),slots:Uint16Array.of(i,i,i),spatial:{count:1}};
+  return {key:'mesh'+i,cell:(i%4)+':0:0',role:'country',kind:'mesh',mesh:{packet},first:0,end:1,
+    spec:{sha256:'mesh'+i,decodedBytes:106}};
+ });
+ const groups=groupGlobeGpuMeshes(rows,()=> 'country');
+ assert.equal(groups.length,3);
+ assert.deepEqual(groups.flatMap(group=>group.rows.map(row=>row.key)),rows.map(row=>row.key));
+ const combined=combineGlobeDrawMeshes(groups[0].rows);
+ assert.equal(combined.drawParts.length,32);
+ assert.deepEqual([...combined.slots.slice(0,3)],[0,1,2]);
+ const cost=estimateGlobePlanCost(rows);
+ assert.equal(cost.chunks,3);assert.equal(cost.drawCalls,6);assert.equal(cost.triangles,70);
+});

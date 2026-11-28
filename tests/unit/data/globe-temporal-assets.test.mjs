@@ -454,3 +454,18 @@ async function createPhysicalFixture(specs,options) {
  return {...assets,plan:(identity,options)=>assets.plan(contexts.get(identity),options),
   detailPlan:(identity,options)=>assets.detailPlan(details.get(identity),options)};
 }
+
+
+test('stroke descriptor batches aggregate consecutive neighboring cells within source and byte caps',async()=>{
+ const {batchGlobeStrokeDescriptors}=await import('../../../src/rendering/globe-spatial-aggregate.js');
+ const rows=Array.from({length:70},(_,i)=>({role:'river',kind:'stroke',lod:0,minZoom:2,
+   cell:(i<18?0:i<35?1:i<53?2:3)+':0:0',key:'r'+i,bounds:[i,0,0,i+1,1,1],slots:[i%3],
+   spec:{sha256:'r'+i,decodedBytes:100,compressedBytes:20}}));
+ const batches=batchGlobeStrokeDescriptors(rows,{prefix:'river',byteBudget:100000,maxSources:32,
+   groupKey:row=>'supercell:'+Math.floor(Number(row.cell.split(':')[0])/2),
+   aggregate:sources=>({aggregateErrorScale:16,aggregateReductionEstimate:4,force:true})});
+ assert.ok(batches.length<rows.length);
+ assert.ok(batches.every(row=>row.sources.length<=32&&row.aggregateErrorScale===16));
+ assert.deepEqual(batches.flatMap(row=>row.sources.map(source=>source.key)),rows.map(row=>row.key));
+ assert.ok(batches.every(row=>row.bounds.every(Number.isFinite)));
+});

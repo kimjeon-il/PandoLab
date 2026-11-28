@@ -150,7 +150,7 @@ export function groupGlobeGpuMeshes(rows, compatibility, {maxTriangles = 65536, 
   for (const row of rows) {
     const packet = row.mesh.packet, triangles = packet.indices.length/3,vertices=packet.positions.length/3;
     const style = compatibility(row), cell = row.cell??null, prior = result.at(-1);
-    if (prior&&cell!==null&&prior.cell===cell&&prior.style===style&&prior.rows.length<maxChunks&&
+    if (prior&&prior.style===style&&prior.rows.length<maxChunks&&
           prior.triangles+triangles<=maxTriangles&&prior.vertices+vertices<=maxVertices) {
       prior.rows.push(row); prior.triangles+=triangles; prior.vertices+=vertices;
     }else result.push({rows:[row], style, cell, triangles, vertices});

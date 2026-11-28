@@ -156,6 +156,13 @@ export function createGlobePacketTasks({
       return value;
     });
   }
+  function aggregateStoredStrokes(inputs,{signal,priority=10,lod=0,errorScale=16,maxRun=256,protectedBounds=null}={}) {
+    signal?.throwIfAborted();
+    if(!Array.isArray(inputs)||inputs.length<2||inputs.length>32)throw new RangeError('Invalid spatial stroke aggregate batch');
+    const transfer=[...new Set(inputs.map(row=>row.bytes))];
+    const packets=inputs.map(({bytes,spec})=>({bytes,spec:{encoding:spec.encoding,decodedBytes:spec.decodedBytes,maxDecodedBytes:spec.maxDecodedBytes}}));
+    return request('globe.aggregate-stored-strokes',{packets,lod,errorScale,maxRun,protectedBounds},transfer,{priority,signal});
+  }
   function combineStoredStrokes(inputs, {signal, priority = 10} = {}) {
     signal?.throwIfAborted();
     // Inputs are private verified stored-byte copies, not cached decoded
@@ -165,5 +172,5 @@ export function createGlobePacketTasks({
     return request('globe.combine-stored-strokes', {packets}, transfer, {priority, signal});
   }
   function dispose() {disposed = true; decodeBatcher.dispose(); if (owned)work.dispose(); for (const lane of lanes) {lane.worker.dispose('globe-packet-disposed');}}
-  return Object.freeze({decode, combineStoredStrokes, dispose, stats:() => ({submitted, completed, cancelled, workerLimit:count, workers:lanes.filter(row => row.worker.active).length, running, peakRunning, spatialIndexedPackets, decodeBatches, decodeBatchPackets, decodeBatcher:decodeBatcher.stats(), ...(owned?{scheduler:work.stats()}:{})})});
+  return Object.freeze({decode, combineStoredStrokes, aggregateStoredStrokes, dispose, stats:() => ({submitted, completed, cancelled, workerLimit:count, workers:lanes.filter(row => row.worker.active).length, running, peakRunning, spatialIndexedPackets, decodeBatches, decodeBatchPackets, decodeBatcher:decodeBatcher.stats(), ...(owned?{scheduler:work.stats()}:{})})});
 }

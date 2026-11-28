@@ -3,6 +3,7 @@ import { createGlobeRangeCuller } from './globe-spatial-partition.js';
 import { createRenderPacketCache, renderCacheBudget } from './render-cache-budget.js';
 import { createGlobePacketIndex } from './globe-picking.js';
 import { GLOBE_FINE_LOD, globeChunkLod, validateGlobeLodChunks } from './globe-lod.js';
+import { batchGlobeStrokeDescriptors } from './globe-spatial-aggregate.js';
 
 const all = () => true;
 export function globeViewChunkCuller(camera, viewport, padding = 0) {
@@ -127,40 +128,13 @@ export function createGlobeTerritorialAssets(spec, {
   baseSlots, cacheBudget, residency, loadMesh, loadStroke, load, slotCount = () => baseSlots.length,
 }) {
   function combineBorderRows(rows, baseBorder) {
-    const groups = new Map(), result = [];
-    for (const row of rows) {
-      if (row.role!=='border'||Boolean(row.baseBorder)!==baseBorder) {result.push(row); continue;}
-      const cell = (row.catalogPage??'')+':'+globeChunkLod(row)+':'+(row.cell??row.key);
-      let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
-      group.push(row);
-    }
-    const maxBatchBytes = baseBorder?Math.floor(cacheBudget.borderBatchBytes/2):cacheBudget.borderBatchBytes;
-    for (const group of groups.values()) {
-      let sources = [], decodedBytes = 0;
-      const flush = () => {
-        if (sources.length===1)result.push(sources[0]);
-        else if (sources.length) {
-          const key = (baseBorder?'base-border-batch:':'border-batch:')+sources.map(row => row.key).join(',');
-          const compressedBytes = sources.reduce((sum, row) => sum+(Number(row.spec.compressedBytes)||0), 0);
-          const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-          for (const row of sources)for (let axis = 0; axis<3; axis++) {
-            bounds[axis] = Math.min(bounds[axis], row.bounds[axis]);
-            bounds[axis+3] = Math.max(bounds[axis+3], row.bounds[axis+3]);
-          }
-          const slots = [...new Set(sources.flatMap(row => row.slots??[]))].sort((a,b) => a-b);
-          result.push({role:'border',kind:'stroke',key,sources,bounds,slots,cell:group[0].cell,lod:group[0].lod,baseBorder,
-            spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
-        }
-        sources = []; decodedBytes = 0;
-      };
-      for (const row of group) {
-        const bytes = Number(row.spec.decodedBytes)||0;
-        if (sources.length&&(sources.length>=32||decodedBytes+bytes>maxBatchBytes))flush();
-        sources.push(row); decodedBytes+=bytes;
-      }
-      flush();
-    }
-    return result;
+    const other=rows.filter(row=>row.role!=='border'||Boolean(row.baseBorder)!==baseBorder);
+    const borders=rows.filter(row=>row.role==='border'&&Boolean(row.baseBorder)===baseBorder);
+    return [...other,...batchGlobeStrokeDescriptors(borders,{
+      prefix:baseBorder?'base-border-batch':'border-batch',
+      byteBudget:baseBorder?Math.floor(cacheBudget.borderBatchBytes/2):cacheBudget.borderBatchBytes,
+      maxSources:32,groupKey:row=>String(globeChunkLod(row)),
+    })];
   }
   const version=spec.lodVersion;
   const chunks=rows=>validateGlobeLodChunks(rows,version);

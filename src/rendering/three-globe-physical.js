@@ -1,6 +1,7 @@
 import { createRenderPacketCache, renderCacheBudget, touchRenderCache } from './render-cache-budget.js';
 import { createGlobeChunkCatalog, globeChunkSetContains } from './globe-view-mesh-assets.js';
 import { GLOBE_FINE_LOD, globeChunkLod } from './globe-lod.js';
+import { batchGlobeStrokeDescriptors,globeStrokePacketDecodedBytes } from './globe-spatial-aggregate.js';
 
 // The same immutable Cartesian descriptor index is used for water, lakes
 // and all river tiers.
@@ -8,37 +9,21 @@ export function createGlobePhysicalAssets({loadMesh,loadStroke,byteBudget=render
   strokeBatchBytes=renderCacheBudget().borderBatchBytes,residency=null}) {
   const contexts=new Map(),pending=new Map();
   function batchRiverChunks(rows) {
-    const groups = new Map(), result = [];
-    for (const row of rows) {
-      const cell = (row.catalogPage??'')+':'+globeChunkLod(row)+':'+(row.cell??row.key);
-      let group = groups.get(cell); if (!group) {group = []; groups.set(cell, group);}
-      group.push(row);
-    }
-    for (const group of groups.values()) {
-      let sources = [], decodedBytes = 0;
-      const flush = () => {
-        if (sources.length===1)result.push(sources[0]);
-        else if (sources.length) {
-          const key = 'river-batch:'+sources.map(row => row.key).join(',');
-          const compressedBytes = sources.reduce((sum,row) => sum+(Number(row.spec.compressedBytes)||0),0);
-          const bounds = [Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
-          for (const row of sources)for (let axis=0;axis<3;axis++) {
-            bounds[axis]=Math.min(bounds[axis],row.bounds[axis]);
-            bounds[axis+3]=Math.max(bounds[axis+3],row.bounds[axis+3]);
-          }
-          result.push({role:'river',kind:'stroke',cell:group[0].cell,lod:group[0].lod,minZoom:group[0].minZoom,key,sources,bounds,
-            spec:{sha256:key,decodedBytes,compressedBytes,estimatedBytes:compressedBytes*3+decodedBytes*7+64*1024}});
-        }
-        sources=[]; decodedBytes=0;
-      };
-      for (const row of group) {
-        const bytes=Number(row.spec.decodedBytes)||0;
-        if (sources.length&&(sources.length>=32||decodedBytes+bytes>strokeBatchBytes))flush();
-        sources.push(row); decodedBytes+=bytes;
-      }
-      flush();
-    }
-    return result;
+    return batchGlobeStrokeDescriptors(rows,{
+      prefix:'river-batch',byteBudget:strokeBatchBytes,maxSources:32,
+      groupKey:row=>{
+        const cell=String(row.cell??'').split(':').map(Number);
+        if(row.lod===0&&cell.length===3&&cell.every(Number.isInteger))
+          return 'lod0:'+String(row.minZoom)+':'+cell.map(value=>Math.floor(value/2)).join(':');
+        return 'lod:'+globeChunkLod(row)+':'+String(row.minZoom??'');
+      },
+      aggregate:sources=>{
+        const row=sources[0],cell=String(row.cell??'').split(':').map(Number);
+        if(row.lod!==0||cell.length!==3||!cell.every(Number.isInteger))return {};
+        const supercell=cell.map(value=>Math.floor(value/2)),min=supercell.map(value=>value-1),max=supercell;
+        return {aggregateErrorScale:16,aggregateReductionEstimate:4,aggregateMaxRun:256,aggregateBounds:[...min,...max]};
+      },
+    });
   }
   let retained = [], disposed = false;
   function createDescriptor(spec,rows) {
@@ -82,7 +67,14 @@ export function createGlobePhysicalAssets({loadMesh,loadStroke,byteBudget=render
       const [waters, lakes, riverChunks] = await Promise.all([
         Promise.all(target.waters.map(async row => ({...row, mesh:await read(row, signal, priority)}))),
         Promise.all(target.lakes.map(async row => ({...row, mesh:await read(row, signal, priority)}))),
-        Promise.all(target.riverChunks.map(async row => ({...row, packet:await read(row, signal, priority)}))),
+        Promise.all(target.riverChunks.map(async row=>{
+          const packet=await read(row,signal,priority);
+          if(!row.aggregateErrorScale)return {...row,packet};
+          const {sources,aggregateErrorScale,aggregateReductionEstimate,aggregateMaxRun,aggregateBounds,...descriptor}=row;
+          const decodedBytes=globeStrokePacketDecodedBytes(packet);
+          return {...descriptor,first:0,end:packet.count,
+            spec:{...row.spec,decodedBytes,estimatedBytes:decodedBytes*4+packet.count*24+4096},packet};
+        })),
       ]);
       signal?.throwIfAborted(); if (disposed)throw new DOMException('Physical cache disposed','AbortError');
       const concurrent = touchRenderCache(contexts, target.key); if (concurrent)return concurrent;

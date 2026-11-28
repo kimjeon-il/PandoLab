@@ -37,7 +37,11 @@ export function createGlobeAssetReader({dataRevision, cacheBudget, residency, lo
       if (failed)throw failed.reason;
       const inputs = settled.map(row => row.value);
       handoff();
-      return metrics.track('three.combine-strokes', () => packetTasks.combineStoredStrokes(inputs, {signal, priority}));
+      return metrics.track(descriptor.aggregateErrorScale?'three.aggregate-river-strokes':'three.combine-strokes', () =>
+        descriptor.aggregateErrorScale
+          ?packetTasks.aggregateStoredStrokes(inputs,{signal,priority,lod:descriptor.lod,errorScale:descriptor.aggregateErrorScale,
+            maxRun:descriptor.aggregateMaxRun,protectedBounds:descriptor.aggregateBounds})
+          :packetTasks.combineStoredStrokes(inputs,{signal,priority}));
     });
   }
   return Object.freeze({load, loadTerritorialStroke, stats:() => ({

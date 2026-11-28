@@ -35,6 +35,8 @@ export function globeActiveLimits(cacheBudget,{tier='medium',otherBytes=0}={}) {
 }
 
 function primitiveCount(row,kind) {
+  if (row.aggregateReductionEstimate&&row.sources?.length)
+    return Math.max(1,Math.ceil(row.sources.reduce((count,source)=>count+primitiveCount(source,kind),0)/row.aggregateReductionEstimate));
   if (row.sources?.length)return row.sources.reduce((count,source)=>count+primitiveCount(source,kind),0);
   if (Number.isSafeInteger(row.end)&&Number.isSafeInteger(row.first)&&row.end>=row.first)return row.end-row.first;
   // Legacy unpartitioned lines (graticule) have no descriptor range.
@@ -50,18 +52,41 @@ export function estimateGlobeChunkCost(row) {
   // CPU packet + spatial tree + copied/compacted buffers + GPU storage.
   // These are accounting estimates, not hardware-reported allocations.
   const cost={triangles:kind==='mesh'?count:0,segments:kind==='stroke'?count:0,
-    drawCalls:kind==='mesh'?2:Math.max(1,Math.ceil(count/(row.role==='outline'?8192:250_000))),
+    drawCalls:kind==='mesh'?2:Math.max(1,Math.ceil(count/(row.role==='outline'?8192:500_000))),
     bytes:Math.ceil(decoded*(kind==='stroke'?4:3)+count*(kind==='stroke'?24:20)+4096),chunks:1};
   rowCosts.set(row,cost); return cost;
 }
+function meshCompatibility(row) {
+  if(row.role==='country')return 'country';
+  if(row.role==='water')return 'water:'+String(row.id);
+  if(row.role==='lake')return 'lake:'+String(row.minZoom);
+  return null;
+}
+function meshVertexEstimate(row,triangles) {
+  if(Number.isSafeInteger(row.vertexCount)&&row.vertexCount>=0)return row.vertexCount;
+  const decoded=Math.max(0,Number(row.spec?.decodedBytes)||0);
+  return Math.max(0,Math.floor((decoded-16-triangles*12)/24));
+}
 export function estimateGlobePlanCost(rows) {
-  let cost=planCosts.get(rows); if (cost)return cost;
-  cost=emptyGlobeCost();
-  for (const row of rows) {
-    const next=estimateGlobeChunkCost(row);
-    for (const field of fields)cost[field]+=next[field];
+  let cost=planCosts.get(rows); if(cost)return cost;
+  cost=emptyGlobeCost();let group=null;
+  const flush=()=>{
+    if(!group)return;
+    for(const row of group.rows){const next=estimateGlobeChunkCost(row);cost.triangles+=next.triangles;cost.bytes+=next.bytes;}
+    cost.drawCalls+=2;cost.chunks++;
+    if(group.rows.length>1)cost.bytes+=group.vertices*26+group.triangles*12;
+    group=null;
+  };
+  for(const row of rows){
+    const compatibility=meshCompatibility(row),next=estimateGlobeChunkCost(row);
+    if(compatibility!==null&&row.kind!=='stroke'){
+      const triangles=next.triangles,vertices=meshVertexEstimate(row,triangles);
+      if(group&&(group.compatibility!==compatibility||group.rows.length>=32||group.triangles+triangles>65_536||group.vertices+vertices>262_144))flush();
+      if(!group)group={compatibility,rows:[],triangles:0,vertices:0};
+      group.rows.push(row);group.triangles+=triangles;group.vertices+=vertices;
+    }else{flush();for(const field of fields)cost[field]+=next[field];}
   }
-  planCosts.set(rows,cost); return cost;
+  flush();planCosts.set(rows,cost);return cost;
 }
 
 // Reused chunks are charged once while the previous accepted scene and its
