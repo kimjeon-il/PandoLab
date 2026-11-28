@@ -25,7 +25,7 @@ const documentMethods = Object.freeze({
 });
 
 /** The single persistent C++ Project owns document, queries and selection. */
-export function createCoreWorkerRuntime({ loadModule, validateFlagDataUrl }) {
+export function createCoreWorkerRuntime({ loadModule, validateFlagDataUrl, referenceOnlyGeometry = false }) {
   let modulePromise = null;
   const loadOnce = () => {
     if (!modulePromise) modulePromise = Promise.resolve().then(loadModule).catch (error => {
@@ -35,7 +35,7 @@ export function createCoreWorkerRuntime({ loadModule, validateFlagDataUrl }) {
     });
     return modulePromise;
   };
-  const document = createDocumentSessionRuntime({ loadModule: loadOnce, validateFlagDataUrl });
+  const document = createDocumentSessionRuntime({ loadModule: loadOnce, validateFlagDataUrl, referenceOnlyGeometry });
   let loaded = false;
   let queue = Promise.resolve();
   function dispatch(operation, payload, context) {

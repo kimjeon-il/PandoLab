@@ -18,11 +18,18 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
   let hydroViews = Object.freeze([]);
   // Cache indexes by immutable source collections, not the whole project
   // snapshot: a geometry-only delta does not invalidate object identities.
-  const identityIndexes = new WeakMap(), bindingIndexes = new WeakMap(), projectionSources = new WeakMap();
+  const identityIndexes = new WeakMap(), bindingIndexes = new WeakMap(), projectionSources = new WeakMap(), resourceIndexes = new WeakMap();
   const worldBindingWindows = new WeakMap(), viewsByRow = new WeakMap(), worldLookups = new WeakMap(), viewOffsets = new WeakMap();
   function identityIndex(identities) {
     let index = identityIndexes.get(identities);
     if (!index) {index = new Map(identities.map(identity => [identity.id, identity])); identityIndexes.set(identities, index);}
+    return index;
+  }
+  function resourceIndex(project) {
+    const resources = project.geometryResources;
+    if (!resources)return null;
+    let index = resourceIndexes.get(resources);
+    if (!index) {index = new Map(resources.map(row=>[refKey(row),row]));resourceIndexes.set(resources,index);}
     return index;
   }
   function sourceBindingCandidates(identity, ref) {
@@ -58,14 +65,14 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
     if (!detached && responseWorld.sourceEpoch !== expectedEpoch) throw Object.assign(new Error('The C++ world belongs to another document operation epoch.'),
       { code: 'PL-CORE-STALE', name: 'AbortError', cancelled: true });
     const identities={territorial:identityIndex(sourceProject.territorialEntities),hydro:identityIndex(sourceProject.hydroEdits)};
-    const referenceDate=temporalMonthEnd(responseWorld.month);
+    const referenceDate=temporalMonthEnd(responseWorld.month), resources=resourceIndex(sourceProject);
     const previousWorld = !detached ? world : null;
     const ranges=[];
     const lookup=createWorldLookup();
     const rows=responseWorld.entities.map(row=>{
       const key=timelineObjectKey(row.objectRef);
       if(lookup.has(key))invalid('Duplicate C++ world identity: '+row.objectRef.id);
-      const projected=projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,range=>ranges.push(range));
+      const projected=projectRow(row,identities,sourceGeometries,resources,referenceDate,previousWorld,range=>ranges.push(range));
       lookup.set(key,projected);return projected;
     });
     return makeWorld(responseWorld,rows,lookup,createWorldBindingIndex(ranges),detached);
@@ -75,9 +82,13 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
     return Object.freeze({month:response.month,...(detached?{}:{sourceEpoch:response.sourceEpoch}),entities:rows,
       byId:Object.freeze({get:id=>lookup.get(timelineObjectKey({domain:'territorial',id})),getObject:ref=>lookup.get(timelineObjectKey(ref))})});
   }
-  function projectRow(row,identities,sourceGeometries,referenceDate,previousWorld,recordBinding){
-      const identity=identities[row.objectRef.domain]?.get(row.objectRef.id),geometry=sourceGeometries.get(row.geometryRef);
-      if (!identity || !geometry || !Array.isArray(row.ancestors))
+  function projectRow(row,identities,sourceGeometries,resources,referenceDate,previousWorld,recordBinding){
+      const identity=identities[row.objectRef.domain]?.get(row.objectRef.id);
+      const resource=resources?.get(refKey(row.geometryRef))||null;
+      // Resource-backed rows do not pin coordinates in historical world views.
+      // An undeclared missing geometry is still a rejected Core response.
+      const geometry=resource?null:sourceGeometries.get(row.geometryRef);
+      if (!identity || (!geometry&&!resource) || !Array.isArray(row.ancestors))
         invalid(`The C++ world contains an unknown/duplicate identity or geometry: ${row.objectRef.id}`);
       for (const field of ['parentId','coverageMode','validFrom','validTo','rootId'])
         if (!Object.hasOwn(row, field)) invalid(`Required C++ world field is missing: ${field}`);
@@ -91,7 +102,7 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
       const sourceVersion=sourceBinding?.sourceVersionId ?? String(identity.properties?.sourceGeometryVersion ?? '');
       const prior=previousWorld?.byId?.getObject?.(row.objectRef);
       const priorSource=projectionSources.get(prior);
-      if(prior && prior.geometry===geometry && priorSource?.identity===identity
+      if(prior && prior.geometry===geometry && prior.geometryResource===resource && priorSource?.identity===identity
         && priorSource.version===sourceVersion&&priorSource.binding===sourceBinding
         && (prior===row||(
           ['parentId','coverageMode','validFrom','validTo','rootId'].every(field=>prior[field]===row[field])
@@ -107,7 +118,7 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
           sourceGeometryVersion:sourceVersion}}):temporalIdentity;
       const effectiveIdentity=row.objectRef.domain==='hydro'
         ?freeze({...datedIdentity,properties:{...datedIdentity.properties,...row.rendering}}):datedIdentity;
-      const projected = freeze({ ...structuredClone(worldEntityPayload(row)), id:row.objectRef.id, identity:effectiveIdentity, geometry });
+      const projected = freeze({ ...structuredClone(worldEntityPayload(row)), id:row.objectRef.id, identity:effectiveIdentity, geometry, ...(resource?{geometryResource:resource}:{}) });
       projectionSources.set(projected,{identity,version:sourceVersion,binding:sourceBinding});
       return projected;
   }
@@ -117,11 +128,11 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
       let view=viewsByRow.get(row);
       if(!view){
         const prior=world?.byId.getObject(row.objectRef),priorView=prior&&viewsByRow.get(prior);
-        if(priorView&&prior.geometry===row.geometry
+        if(priorView&&prior.geometry===row.geometry&&prior.geometryResource===row.geometryResource
           &&(prior.identity===row.identity||(prior.identity.id===row.identity.id&&sameDisplayValue(prior.identity.properties,row.identity.properties)))
           &&['parentId','coverageMode','validFrom','validTo'].every(field=>prior[field]===row[field]))view=priorView;
-        else if(isHydro)view=freeze({...row.identity,geometry:row.geometry});
-        else view=freeze({...row.identity,geometry:row.geometry,properties:{...row.identity.properties,
+        else if(isHydro)view=freeze({...row.identity,geometry:row.geometry,...(row.geometryResource?{geometryRef:row.geometryResource}:{})});
+        else view=freeze({...row.identity,geometry:row.geometry,...(row.geometryResource?{geometryRef:row.geometryResource}:{}),properties:{...row.identity.properties,
           parentId:row.parentId,coverageMode:row.coverageMode,validFrom:row.validFrom,validTo:row.validTo}});
         viewsByRow.set(row,view);
       }
@@ -155,7 +166,7 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
     const project=readProject(), geometries=readGeometries();
     const prior=world,oldWindow=worldBindingWindows.get(prior.entities),lookup=worldLookups.get(prior.entities);
     if(!oldWindow||!lookup||worldSourceProject!==project)return null;
-    const referenceDate=temporalMonthEnd(delta.month);
+    const referenceDate=temporalMonthEnd(delta.month), resources=resourceIndex(project);
     const limit=Math.max(16,Math.floor(prior.entities.length/2));
     if(positions.size>limit)return null;
     // Core rows may be unchanged while their source-version metadata crosses
@@ -171,7 +182,7 @@ export function createCoreWorldProjection({readProject, readGeometries}) {
     const updates=[];
     const territorialChanges=[],hydroChanges=[];
     for(const [index,entity]of affected){
-      const row=projectRow(entity,identities,geometries,referenceDate,prior,range=>ranges.set(index,range));
+      const row=projectRow(entity,identities,geometries,resources,referenceDate,prior,range=>ranges.set(index,range));
       if(row===prior.entities[index])continue;
       if(rows===prior.entities)rows=rows.slice();
       rows[index]=row;updates.push([timelineObjectKey(row.objectRef),row]);

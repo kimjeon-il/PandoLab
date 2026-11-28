@@ -63,7 +63,7 @@ export function createTerritorialSceneRuntime() {
     const labelRefs = new Map(features.map(feature => [String(feature.id), { domain: 'territorial', type: 'entity', id: String(feature.id) }]));
     for (const unit of entities.filter(entity => entity.properties.entityKind === 'regional' || !!entity.properties.parentId)) {
       const id = territorialSceneDisplayId(unit, countryIds);
-      const feature = { type: 'Feature', id, properties: unit.properties, geometry: unit.geometry,
+      const feature = { type: 'Feature', id, properties: unit.properties, geometry: unit.geometry, ...(unit.geometryRef?{geometryRef:unit.geometryRef}:{}),
         boundaryRootId: territorialRootId(unit, entityId => entityRepository.get(entityId)) };
       labelById.set(id, feature);
       labelRefs.set(id, { domain: 'territorial', type: 'entity', id: unit.id });

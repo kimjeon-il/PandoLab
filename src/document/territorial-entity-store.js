@@ -1,5 +1,5 @@
 import { resourceKey, resourceUpdate } from '../runtime/resource-dependency-policy.js';
-import { admittedGeometryKey, geometryReferenceFor } from '../geometry/geometry-version-store.js';
+import { admittedGeometryKey, geometryReferenceFor, featureGeometryKey } from '../geometry/geometry-version-store.js';
 import { worldViewChange } from './world-view-change.js';
 // A fast path is allowed only for *verified* presentation-only differences.
 // The full Core and renderer path stays authoritative for any uncertainty.
@@ -101,7 +101,7 @@ export function createTerritorialEntityStore({ documentModel, commandOwner, onEn
   let previous = documentModel.territorialViews();
   const dependencies = rows => ({ source: 'territorial-root-geometry',
     content: resourceKey(rows.filter(feature => feature.properties.entityKind === 'general' && !feature.properties.parentId)
-      .map(feature => [feature.id, admittedGeometryKey(feature.geometry)])), preparation: 'roots-v1', context: null, presentation: 'roots' });
+      .map(feature => [feature.id, featureGeometryKey(feature)])), preparation: 'roots-v1', context: null, presentation: 'roots' });
   const unsubscribe = commandOwner.subscribeTransitions(() => {
     const next = documentModel.territorialViews(), prior = previous;
     if (next===prior)return;
@@ -115,7 +115,7 @@ export function createTerritorialEntityStore({ documentModel, commandOwner, onEn
     previous = next;
     if (changedIds.size) {
       const presentationOnly = classifyTerritorialPropertyOnly(prior, next, indices);
-      const rootGeometry = row => row.properties.entityKind==='general'&&!row.properties.parentId?admittedGeometryKey(row.geometry):null;
+      const rootGeometry = row => row.properties.entityKind==='general'&&!row.properties.parentId?featureGeometryKey(row):null;
       const rootGeometryChanged = presentationOnly===null
         ?indices?indices.some(i => rootGeometry(prior[i])!==rootGeometry(next[i])):resourceUpdate(dependencies(prior), dependencies(next)).prepare:false;
       onEntitiesReplaced(next, {changedIds, previous:prior, rootGeometryChanged,

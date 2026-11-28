@@ -155,9 +155,21 @@ export function createViewerMap({ runtimeContext, owners, projectDomain, documen
     objectPresentation: ports.objectPresentation, distributionServices: ports.distributionServices,
     objectLookup: ports.objectLookup, preferences: ports.preferences,
     navigation: ports.navigation, feedback: ports.feedback,
+    getGeneration:()=>projectDomain.getGeneration(),
+    async loadGeometryForFeatures(features, {month,isCurrent}) {
+      const requirements = features.filter(row=>row?.geometryRef&&!documentSession.documentModel.geometry(row.geometryRef)).map(row=>row.geometryRef);
+      if(requirements.length)await documentSession.commandOwner.prepareGeometryRefs(requirements,month,{isCurrent});
+      if(!isCurrent())return null;
+      return features.map(row=> {
+        if(!row?.geometryRef)return row;
+        const geometry=documentSession.documentModel.geometry(row.geometryRef);
+        if(!geometry)throw new Error('The requested Core geometry is not resident.');
+        return {...row,geometry};
+      });
+    },
   });
   connectOwner('objectCatalog');
-  const projectSourceRuntime = createProjectSourceRuntime({buildMeta: meta, projectDomain, baseDataset: BASE_DATASET});
+  const projectSourceRuntime = createProjectSourceRuntime({buildMeta: meta, projectDomain, baseDataset: BASE_DATASET, referenceOnlyGeometry:true});
   const releaseGeometryLoader = documentSession.commandOwner.setGeometryLoader(projectSourceRuntime.loadGeometryResources);
   connectOwner('hydroSettings');
   connectOwner('physicalResources');

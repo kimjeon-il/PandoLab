@@ -239,7 +239,7 @@ std::uint64_t geometryCacheBudget(const val& options) {
 }
 class WasmDocumentSession {
 public:
-    explicit WasmDocumentSession(val options):ports_(documentPorts(options)), session_(ports_, geometryCacheBudget(options)) {}
+    explicit WasmDocumentSession(val options):ports_(documentPorts(options)), session_(ports_, geometryCacheBudget(options), !options["referenceOnlyGeometry"].isUndefined()&&options["referenceOnlyGeometry"].as<bool>()) {}
     val documentLoad(const std::string& input, const std::string& currentMonth) {return boundary([&]{return documentState(session_.documentLoad(input, currentMonth));});}
     val storageBaselineLoad(val input, std::uint32_t epoch) {
         return boundary([&]{const auto kind = text(input["kind"],"CORE_STORAGE_BASELINE");

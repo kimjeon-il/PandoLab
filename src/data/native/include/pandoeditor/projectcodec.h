@@ -23,7 +23,7 @@ ProjectDocument decodeWebValue(const codecjson::Value&, const PlatformPorts&);
 ProjectDocument decodeBuiltinSourceValue(const codecjson::Value&, const PlatformPorts&);
 Geometry decodeGeometryResource(const GeometryResource&, const std::string&);
 ProjectDocument readWebSnapshot(const std::string&, const PlatformPorts&);
-std::string webSnapshot(const ProjectSnapshot&);
+std::string webSnapshot(const ProjectSnapshot&, bool includeGeometryResources = false);
 ProjectDocument replaceWebTerritorialSource(const ProjectDocument&, const ProjectDocument&, const std::string& month);
 std::string geometrySha256(const Geometry&);
 std::string sha256Bytes(const std::string&);

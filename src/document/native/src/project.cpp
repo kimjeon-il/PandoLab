@@ -48,18 +48,18 @@ bool sameTimelineCatalog(const ProjectDocument& a, const ProjectDocument& b) {
     });
 }
 std::shared_ptr<const detail::DocumentState> projectedState(const detail::DocumentState& source,
-                                                             const std::string& month, const ResolvedWorld* resolved = nullptr) {
+                                                             const std::string& month, const ResolvedWorld* resolved = nullptr, bool referenceOnlyGeometry = false) {
     if (source.staticTimeline)return {};
     const auto& document = source.document;
     if (month.empty())throw TimelineError("TIMELINE_CURSOR_REQUIRED","dated view needs a month");
     if (resolved&&resolved->month!=month)
         throw TimelineError("STALE_REVISION","Resolved timeline month differs from requested projection");
     if (resolved) {
-        auto projection = projectResolvedTimeline(document, *resolved);
-        return std::make_shared<const detail::DocumentState>(std::move(projection.document), std::move(projection.inactiveIds));
+        auto projection = projectResolvedTimeline(document, *resolved, !referenceOnlyGeometry);
+        return std::make_shared<const detail::DocumentState>(std::move(projection.document), std::move(projection.inactiveIds), referenceOnlyGeometry);
     }
-    auto projection = timelineDocumentView(document, month);
-    return std::make_shared<const detail::DocumentState>(std::move(projection.document), std::move(projection.inactiveIds));
+    auto projection = timelineDocumentView(document, month, nullptr, !referenceOnlyGeometry);
+    return std::make_shared<const detail::DocumentState>(std::move(projection.document), std::move(projection.inactiveIds), referenceOnlyGeometry);
 }
 }
 struct ProjectReplacementState::Data {
@@ -82,22 +82,22 @@ void Project::restoreReplacement(const ProjectReplacementState& checkpoint) {
 }
 void Project::admitTerritorialSource(ProjectDocument document, const std::string& month, bool activateEdits) {
     if (revision_==std::numeric_limits<std::uint64_t>::max()||presentationRevision_==std::numeric_limits<std::uint64_t>::max())throw std::overflow_error("PROJECT_REVISION_OVERFLOW");
-    auto current = std::make_shared<const detail::DocumentState>(std::move(document));
-    auto view = projectedState(*current, month); auto cursor = month;
+    auto current = std::make_shared<const detail::DocumentState>(std::move(document), std::set<ObjectRef>{}, referenceOnlyGeometry_);
+    auto view = projectedState(*current, month, nullptr, referenceOnlyGeometry_); auto cursor = month;
     state_ = std::move(current); viewState_ = std::move(view); timelineCursor_.swap(cursor);
     resourceCache_ = {};
     timelineEditsEnabled_ = activateEdits; ++revision_; ++presentationRevision_;
 }
 void Project::admitPresentation(ProjectDocument document, bool advanceRevision) {
     if (advanceRevision&&presentationRevision_==std::numeric_limits<std::uint64_t>::max())throw std::overflow_error("PROJECT_REVISION_OVERFLOW");
-    auto next = std::make_shared<const detail::DocumentState>(std::move(document));
+    auto next = std::make_shared<const detail::DocumentState>(std::move(document), std::set<ObjectRef>{}, referenceOnlyGeometry_);
     const bool reuse = preparedTimeline_&&preparedTimelineSource_.lock()==state_
         &&sameTimelineRecords(state_->document.timelineRecords, next->document.timelineRecords)
         &&sameTimelineCatalog(state_->document, next->document);
     std::shared_ptr<const ResolvedWorld> resolved;
     if (reuse&&!timelineCursor_.empty()&&!next->staticTimeline)
         resolved = resolveTimelineMetadata(timelineCursor_);
-    auto view = projectedState(*next, timelineCursor_, resolved.get());
+    auto view = projectedState(*next, timelineCursor_, resolved.get(), referenceOnlyGeometry_);
     state_ = std::move(next); viewState_ = std::move(view);
     if (reuse)preparedTimelineSource_ = state_;
     if (advanceRevision)++presentationRevision_;
@@ -107,7 +107,7 @@ void Project::admitTerritorialDirtyIds(const std::function<std::vector<std::stri
     const auto rebase = [&](const std::shared_ptr<const detail::DocumentState>& old) {
         if (const auto found = rebuilt.find(old.get()); found!=rebuilt.end())return found->second;
         auto ids = read(old->document); auto result = old;
-        if (ids!=old->document.dirtyTerritorialIds) {auto document = old->document; document.dirtyTerritorialIds = std::move(ids); result = std::make_shared<const detail::DocumentState>(std::move(document));}
+        if (ids!=old->document.dirtyTerritorialIds) {auto document = old->document; document.dirtyTerritorialIds = std::move(ids); result = std::make_shared<const detail::DocumentState>(std::move(document), std::set<ObjectRef>{}, referenceOnlyGeometry_);}
         rebuilt.emplace(old.get(), result); return result;
     };
     auto state = rebase(state_);
@@ -117,11 +117,11 @@ void Project::admitTerritorialDirtyIds(const std::function<std::vector<std::stri
     std::shared_ptr<const ResolvedWorld> resolved;
     if (reuse&&!timelineCursor_.empty()&&!state->staticTimeline)
         resolved = resolveTimelineMetadata(timelineCursor_);
-    auto view = projectedState(*state, timelineCursor_, resolved.get());
+    auto view = projectedState(*state, timelineCursor_, resolved.get(), referenceOnlyGeometry_);
     state_ = std::move(state); viewState_ = std::move(view);
     if (reuse)preparedTimelineSource_ = state_;
 }
-Project::Project() : state_(std::make_shared<const detail::DocumentState>()), instanceId_(nextInstanceId()) {}
+Project::Project(bool referenceOnlyGeometry) : state_(std::make_shared<const detail::DocumentState>()), referenceOnlyGeometry_(referenceOnlyGeometry), instanceId_(nextInstanceId()) {}
 std::string Project::normalizeName(const std::string& name)
 {
     auto first = std::find_if_not(name.begin(), name.end(), [](unsigned char c) {return std::isspace(c);});
@@ -131,7 +131,7 @@ std::string Project::normalizeName(const std::string& name)
 void Project::validate(const ProjectDocument& document) { (void)validateDocument(document); }
 void Project::replace(ProjectDocument document)
 {
-    auto next = std::make_shared<const detail::DocumentState>(std::move(document));
+    auto next = std::make_shared<const detail::DocumentState>(std::move(document), std::set<ObjectRef>{}, referenceOnlyGeometry_);
     auto identity = nextInstanceId();
     // No allocation or validation after this point: replace is all-or-nothing.
     state_ = std::move(next); viewState_.reset(); instanceId_.swap(identity);
@@ -156,7 +156,7 @@ bool Project::setTimelineCursor(const std::string& month, bool activateEdits, co
         evicted = document().geometries.resourceCacheEvictions(protectedGeometryResources(target), resourceCache_, resourceBudget);
         if (!evicted.empty()) {
             auto candidate = document(); candidate.geometries.evictResources(evicted);
-            nextState = std::make_shared<const detail::DocumentState>(std::move(candidate), *state_, detail::DocumentState::VerifiedResources{});
+            nextState = std::make_shared<const detail::DocumentState>(std::move(candidate), *state_, detail::DocumentState::VerifiedResources{}, referenceOnlyGeometry_);
         }
     }
     if (next==timelineCursor_&&nextState==state_) {
@@ -174,7 +174,7 @@ bool Project::setTimelineCursor(const std::string& month, bool activateEdits, co
                 sameProjection = true; break;
             }
     }
-    if (!next.empty())view = sameProjection?viewState_:projectedState(*nextState, next, target);
+    if (!next.empty())view = sameProjection?viewState_:projectedState(*nextState, next, target, referenceOnlyGeometry_);
     const bool reuse = preparedTimeline_&&preparedTimelineSource_.lock()==state_;
     const bool changed = next!=timelineCursor_;
     state_ = std::move(nextState); viewState_ = std::move(view);
@@ -241,7 +241,7 @@ std::shared_ptr<const ResolvedWorld> Project::resolveTimelineMetadata(const std:
 }
 std::shared_ptr<const ResolvedWorld> Project::resolveWorldShared(const std::string& month) const {
     const auto world = resolveTimelineMetadata(month);
-    document().geometries.requireReady(world->requiredGeometries());
+    if (!referenceOnlyGeometry_)document().geometries.requireReady(world->requiredGeometries());
     return world;
 }
 ResolvedWorld Project::resolveWorld(const std::string& month) const {
@@ -256,7 +256,8 @@ std::vector<GeometryRef> Project::missingGeometries(const std::string& month) co
 }
 std::set<GeometryRef> Project::protectedGeometryResources(const ResolvedWorld* current, const ResolvedWorld* target) const {
     std::set<GeometryRef> refs;
-    for (const auto* world:{current, target})if (world)refs.insert(world->requiredGeometries().begin(), world->requiredGeometries().end());
+    if (!referenceOnlyGeometry_)
+        for (const auto* world:{current, target})if (world)refs.insert(world->requiredGeometries().begin(), world->requiredGeometries().end());
     // Non-temporal content and opaque dependencies cannot be reconstructed
     // from a month resolver. Keep their original resource allocations.
     for (const auto& [ref, users]:index().geometryUsers)
@@ -267,14 +268,14 @@ std::set<GeometryRef> Project::protectedGeometryResources(const ResolvedWorld* c
 }
 void Project::admitGeometryResources(GeometryStore resources, bool evicted) {
     auto candidate = document(); candidate.geometries = std::move(resources);
-    auto next = std::make_shared<const detail::DocumentState>(std::move(candidate), *state_, detail::DocumentState::VerifiedResources{});
+    auto next = std::make_shared<const detail::DocumentState>(std::move(candidate), *state_, detail::DocumentState::VerifiedResources{}, referenceOnlyGeometry_);
     const bool reuse = preparedTimeline_&&preparedTimelineSource_.lock()==state_;
     // New target-month bytes cannot change the current projected view. Only
     // an eviction could leave an old view pinning a retired allocation.
     auto view = viewState_;
     if (evicted||(!view&&!next->staticTimeline)) {
         const auto resolved = timelineCursor_.empty()?nullptr:resolveTimelineMetadata(timelineCursor_);
-        view = projectedState(*next, timelineCursor_, resolved.get());
+        view = projectedState(*next, timelineCursor_, resolved.get(), referenceOnlyGeometry_);
     }
     state_ = std::move(next); viewState_ = std::move(view);
     if (reuse)preparedTimelineSource_ = state_;

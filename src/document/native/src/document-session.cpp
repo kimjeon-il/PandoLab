@@ -36,8 +36,8 @@ std::string temporalWorldSha256(const ResolvedWorld& world) {
 }
 } // namespace
 
-DocumentSession::DocumentSession(projectcodec::PlatformPorts ports, std::uint64_t resourceBudget)
-    :ports_(std::move(ports)), geometryCacheBudget_(resourceBudget) {
+DocumentSession::DocumentSession(projectcodec::PlatformPorts ports, std::uint64_t resourceBudget, bool referenceOnlyGeometry)
+    :project_(referenceOnlyGeometry), referenceOnlyGeometry_(referenceOnlyGeometry), ports_(std::move(ports)), geometryCacheBudget_(resourceBudget) {
     if (!ports_.validateFlagDataUrl)throw std::invalid_argument("CODEC_PLATFORM_REQUIRED: flag validator");
 }
 DocumentSessionState DocumentSession::adoptPreparedProject(Project&& project) {
@@ -88,7 +88,7 @@ TemporalSourceReceipt DocumentSession::temporalSourcePrepare(const projectcodec:
     // document, geometry and provenance using the current C++ source codec.
     // Unlike storageBaselineLoad, this NEVER modifies the active Project,
     // storageBaseline_, activeBaseline_, epoch, selection, edit or history.
-    auto baseline = projectcodec::admitWebStorageAssetBaseline(project_.snapshot(), source, ports_);
+    auto baseline = projectcodec::admitWebStorageAssetBaseline(project_.snapshot(), source, ports_, projectcodec::WebStorageBaselineKind::Builtin, !referenceOnlyGeometry_);
     const auto newId = temporalSourceSequence_+1;
     while (!temporalSources_.empty() &&
         (temporalSources_.size()>=TEMPORAL_SOURCE_MAX_ENTRIES ||
@@ -177,6 +177,7 @@ TemporalCandidateReceipt DocumentSession::temporalCandidatePrepare(
     if (temporalCandidateSequence_==std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("CORE_TEMPORAL_CANDIDATE_OVERFLOW");
     auto staged = std::make_unique<TemporalCandidateEntry>();
+    staged->project = Project(referenceOnlyGeometry_);
     // Prepare the *final* document and all expensive Core projections before
     // the replacement capsule is acquired. The old full baseline loader's
     // setup, provenance and new-document semantics remain authoritative.
@@ -190,6 +191,12 @@ TemporalCandidateReceipt DocumentSession::temporalCandidatePrepare(
     staged->world = staged->project.resolveWorld(targetMonth);
     staged->project.setTimelineCursor(targetMonth, true, &staged->world);
     if (transition) {
+        for (const auto& [ref, resource]:staged->project.document().geometries.resources()) {
+            const auto& prior = project_.document().geometries.resources();
+            const auto found = prior.find(ref);
+            if (found!=prior.end()&&(found->second.type!=resource.type||found->second.contentSha256!=resource.contentSha256||found->second.decodedBytes!=resource.decodedBytes))
+                throw TimelineError("CORE_BUILTIN_GEOMETRY_VERSION","A temporal source cannot rewrite an immutable resource declaration.");
+        }
         for (const auto& [ref, shape]:staged->project.document().geometries.versions()) {
             const auto previous = project_.document().geometries.get(ref);
             if (previous&&previous!=shape&&!sameGeometryValue(*previous, *shape))
@@ -198,7 +205,8 @@ TemporalCandidateReceipt DocumentSession::temporalCandidatePrepare(
         const auto impact = calculateChangeImpact(project_.document(), staged->project.document(), {}, targetMonth);
         // Prepare the authoritative wire delta before entering the replacement
         // transaction. Initial/file adoption continues to publish a full model.
-        staged->preparedDelta = projectcodec::encodeWebDelta(project_.document(), staged->project.document(), impact);
+        // Resource-backed source swaps publish the complete declaration catalog.
+        if (!referenceOnlyGeometry_)staged->preparedDelta = projectcodec::encodeWebDelta(project_.document(), staged->project.document(), impact);
     }
     staged->preparedSetupKey = setupKey;
     staged->preparedDocumentId = documentId;
@@ -222,7 +230,7 @@ std::optional<TemporalCandidateInspection> DocumentSession::temporalCandidateIns
         ||found->second.baseline.sourceMonth()!=temporalCandidate_->receipt.targetMonth)
         return std::nullopt;
     return TemporalCandidateInspection{
-        projectcodec::webSnapshot(temporalCandidate_->project.snapshotForView()),
+        projectcodec::webSnapshot(temporalCandidate_->project.snapshotForView(), referenceOnlyGeometry_),
         temporalCandidate_->world};
 }
 bool DocumentSession::temporalCandidateDiscard(std::uint32_t candidateId, std::uint32_t expectedEpoch) {
@@ -293,7 +301,7 @@ DocumentSessionState DocumentSession::documentLoad(const std::string& input, con
     // Both decoding and Project::replace build a validated candidate before the
     // canonical state changes. No partially parsed document can publish.
     const bool resumeEditing = !isStaticTimeline(document);
-    Project candidate; candidate.replace(std::move(document)); candidate.setTimelineCursor(month, resumeEditing);
+    Project candidate(referenceOnlyGeometry_); candidate.replace(std::move(document)); candidate.setTimelineCursor(month, resumeEditing);
     const auto header = codecjson::parse(candidate.document().exchangeMetadata);
     auto active = storageBaseline_&&header.object.at("baseDataset").string==storageBaseline_->baseDataset()?storageBaseline_:
         std::optional<projectcodec::WebStorageBaseline>{projectcodec::admitWebStorageDocumentBaseline(candidate.snapshot(), ports_)};
@@ -304,7 +312,7 @@ DocumentSessionState DocumentSession::documentLoad(const std::string& input, con
     return projectState();
 }
 std::string DocumentSession::storageSnapshot() const { requireLoaded(); return projectcodec::encodeWeb(project_.snapshot(), ports_); }
-std::string DocumentSession::documentSnapshot() const {requireLoaded(); return projectcodec::webSnapshot(project_.snapshot());}
+std::string DocumentSession::documentSnapshot() const {requireLoaded(); return projectcodec::webSnapshot(project_.snapshot(), referenceOnlyGeometry_);}
 DocumentSessionState DocumentSession::storageBaselineLoad(const codecjson::Value& input, std::uint32_t expectedEpoch) {
     requireEpoch(expectedEpoch); if (epoch_==std::numeric_limits<std::uint32_t>::max()||storageBaselineSequence_==std::numeric_limits<std::uint32_t>::max())throw std::overflow_error("CORE_SESSION_EPOCH_OVERFLOW");
     auto baseline = projectcodec::admitWebStorageBaseline(project_.snapshot(), input, ports_);
@@ -317,12 +325,12 @@ DocumentSessionState DocumentSession::storageBaselineLoad(const codecjson::Value
 }
 DocumentSessionState DocumentSession::storageBaselineLoad(const projectcodec::WebStorageAssetSource& input, std::uint32_t expectedEpoch) {
     requireEpoch(expectedEpoch); if (epoch_==std::numeric_limits<std::uint32_t>::max()||storageBaselineSequence_==std::numeric_limits<std::uint32_t>::max())throw std::overflow_error("CORE_SESSION_EPOCH_OVERFLOW");
-    auto baseline = projectcodec::admitWebStorageAssetBaseline(project_.snapshot(), input, ports_);
+    auto baseline = projectcodec::admitWebStorageAssetBaseline(project_.snapshot(), input, ports_, projectcodec::WebStorageBaselineKind::Builtin, !referenceOnlyGeometry_);
     storageBaseline_ = std::move(baseline); storageBaselineId_ = ++storageBaselineSequence_; ++epoch_; return projectState();
 }
 ResolvedWorld DocumentSession::baselineWorld(std::uint32_t id, const std::string& month) const {
     if (!storageBaseline_||id!=storageBaselineId_||!storageBaseline_->sourceDocument())throw TimelineError("PL-SCHEMA-BASE","Baseline source is absent or replaced.");
-    Project staged; staged.replace(*storageBaseline_->sourceDocument()); return staged.resolveWorld(month);
+    Project staged(referenceOnlyGeometry_); staged.replace(*storageBaseline_->sourceDocument()); return staged.resolveWorld(month);
 }
 DocumentSessionState DocumentSession::documentLoadBaseline(std::uint32_t id, const codecjson::Value& options, const std::string& documentId) {
     if (!storageBaseline_||id!=storageBaselineId_||!storageBaseline_->sourceDocument())throw TimelineError("PL-SCHEMA-BASE","The full accepted baseline source is absent or replaced.");
@@ -337,7 +345,7 @@ DocumentSessionState DocumentSession::documentLoadBaseline(std::uint32_t id, con
     document.exchangeMetadata = header.encode();
     if (setup.object.at("sourceMode").string=="builtin")GeometryProvenanceCodecAccess::admitProjectSetupMetadata(before, document);
     if (documentId.empty())throw TimelineError("INVALID_DOCUMENT_ID","New document ID is required."); document.documentId = documentId;
-    const auto month = setup.object.at("initialMonth").string; Project candidate; candidate.replace(std::move(document)); candidate.setTimelineCursor(month, true);
+    const auto month = setup.object.at("initialMonth").string; Project candidate(referenceOnlyGeometry_); candidate.replace(std::move(document)); candidate.setTimelineCursor(month, true);
     project_ = std::move(candidate); activeBaseline_ = storageBaseline_; loaded_ = true; stateRevision_ = 0;
     clearTemporalCandidate(); // A full accepted replacement supersedes this read-only candidate.
     selection_.resetProject(); externalSelectionRefs_.clear(); sourceEpoch_ = ++epoch_; return projectState();
@@ -354,7 +362,7 @@ DocumentSessionState DocumentSession::documentInitialize(const std::string& inpu
     else if (territorialSource)source = projectcodec::decodeWeb(*territorialSource, ports_);
     else if (features) {
         ProjectDocument empty; empty.documentId = content.documentId; empty.exchangeMetadata = content.exchangeMetadata;
-        Project staged; staged.replace(std::move(empty)); auto payload = codecjson::Value::obj(); payload.object["features"] = *features;
+        Project staged(referenceOnlyGeometry_); staged.replace(std::move(empty)); auto payload = codecjson::Value::obj(); payload.object["features"] = *features;
         const auto sourceRows = readWebTerritorialSource(payload, ports_);
         source = applyWebTerritorialSource(staged.snapshot(), sourceRows);
     }else source = projectcodec::readWebSnapshot(input, ports_);
@@ -362,12 +370,12 @@ DocumentSessionState DocumentSession::documentInitialize(const std::string& inpu
     auto document = projectcodec::replaceWebTerritorialSource(content, source, month);
     std::optional<projectcodec::WebStorageBaseline> active;
     if (baselineId)active = storageBaseline_;
-    else {Project sourceProject; sourceProject.replace(source); sourceProject.setTimelineCursor(month, false);
+    else {Project sourceProject(referenceOnlyGeometry_); sourceProject.replace(source); sourceProject.setTimelineCursor(month, false);
         active = projectcodec::admitWebStorageDocumentBaseline(sourceProject.snapshot(), ports_);}
     document.dirtyTerritorialIds = active?projectcodec::initialDirtyTerritorialIds(document, *active):std::vector<std::string>{};
     const bool activated = !isStaticTimeline(document)||(loaded_&&preserveCursor&&project_.timelineEditsEnabled());
     if (loaded_)project_.admitTerritorialSource(std::move(document), month, activated);
-    else {Project candidate; candidate.replace(std::move(document)); candidate.setTimelineCursor(month, activated); project_ = std::move(candidate); loaded_ = true;}
+    else {Project candidate(referenceOnlyGeometry_); candidate.replace(std::move(document)); candidate.setTimelineCursor(month, activated); project_ = std::move(candidate); loaded_ = true;}
     activeBaseline_ = active; clearTemporalSources(); selection_.prune([&](const SelectionRef& ref) {return selectionRefExists(ref);}); sourceEpoch_ = ++epoch_; return projectState();
 }
 std::uint32_t DocumentSession::captureReplacement(std::uint32_t expectedEpoch) {
@@ -452,7 +460,7 @@ GeometryResourceAdmission DocumentSession::admitGeometryResources(const std::vec
         auto protectedRefs = project_.protectedGeometryResources(current.get(), target.get());
         protectedRefs.insert(received.begin(), received.end());
         result.evicted = candidate.trimResourceCache(protectedRefs, project_.resourceCache_, geometryCacheBudget_);
-        candidate.requireReady(target->requiredGeometries());
+        if (!referenceOnlyGeometry_)candidate.requireReady(target->requiredGeometries());
     }
     if (!result.admitted.empty()||!result.evicted.empty())project_.admitGeometryResources(std::move(candidate), !result.evicted.empty());
     return result;

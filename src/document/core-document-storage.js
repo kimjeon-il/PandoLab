@@ -13,6 +13,20 @@ export function loadAcceptedStorage(value, reuse) {
     invalid(`Required accepted C++ loaded domain is missing: ${field}`);
   const {geometries:geometryRows, ...properties} = value;
   const candidate = structuredClone(properties);
+  if (Object.hasOwn(candidate,'geometryResources')) {
+    const rows = candidate.geometryResources;
+    if (!Array.isArray(rows))invalid('Invalid Core geometry resource catalog.');
+    const keys = new Set();
+    for (const row of rows) {
+      if (!row||typeof row.id!=='string'||!row.id||!Number.isSafeInteger(row.version)||row.version<1
+        ||!['Polygon','MultiPolygon','LineString','MultiLineString'].includes(row.type)
+        ||!/^[a-f0-9]{64}$/.test(row.contentSha256)||!Number.isSafeInteger(row.decodedBytes)
+        ||row.decodedBytes<=0)invalid('Invalid Core geometry resource declaration.');
+      const key = refKey(row);
+      if(keys.has(key))invalid('Duplicate Core geometry resource declaration.');
+      keys.add(key);
+    }
+  }
   const geometries = createGeometryVersionStore(geometryRows, {reuse});
   return {project:freeze({...candidate, geometries:geometries.snapshot()}), geometries};
 }

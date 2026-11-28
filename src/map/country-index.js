@@ -1,5 +1,5 @@
 import { resourceKey, resourceUpdate } from '../runtime/resource-dependency-policy.js';
-import { admittedGeometryKey, geometryReferenceFor } from '../geometry/geometry-version-store.js';
+import { admittedGeometryKey, geometryReferenceFor, featureGeometryReference, featureGeometryKey } from '../geometry/geometry-version-store.js';
 import { countryBoundaryOwner, matchesCountryGeometrySignature } from '../rendering/country-boundary-seed.js';
 /** CountryIndex: extracted application responsibility.
  * Dependencies are explicitly wired once by the composition modules.
@@ -251,8 +251,8 @@ export function createCountryIndex({buildMeta = globalThis.PANDOLAB_BUILD_META} 
       const id = String(feature?.id || '');
       if (requested && !requested.has(id) && !requested.has(String(sources.labelRefs.get(id)?.id))) continue;
       const previous = countryLabelAnchorDependencies.get(id) || null;
-      const ref = geometryReferenceFor(feature.geometry);
-      const content = admittedGeometryKey(feature.geometry);
+      const ref = featureGeometryReference(feature);
+      const content = featureGeometryKey(feature);
       const next = { source: sourceKey, content,
         preparation: resourceKey(['anchor-v1']), context: null, presentation: 'anchor' };
       const change = resourceUpdate(previous, next);
@@ -271,7 +271,9 @@ export function createCountryIndex({buildMeta = globalThis.PANDOLAB_BUILD_META} 
       }
       countryLabelAnchors.delete(id);
       countryLabelAnchorVersions.set(id, ++anchorVersionSequence);
-      pendingCountryLabelAnchors.add(id);
+      // Resource-backed territorial labels are supplied by the prepared globe mesh.
+      // Do not enqueue exact-coordinate fallback work for unloaded shapes.
+      if(feature.geometry)pendingCountryLabelAnchors.add(id);else pendingCountryLabelAnchors.delete(id);
       changed = true;
     }
     if (!changed) return;

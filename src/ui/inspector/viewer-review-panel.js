@@ -417,7 +417,8 @@ export function createViewerReviewPanel({document, window, map, documentSession,
     await documentSession.selectionDomain.replace(ref, {scope:'review', reason:'review-map-focus'});
     if (disposed||panel.hidden||ticket!==loadSerial||entity!==chosenEntity
       ||(generation!==undefined&&generation!==documentSession.projectDomain.getGeneration()))return;
-    const focused = map.objectQuery.focusObjectRef(ref, {announce:false});
+    const focused = await map.objectQuery.focusObjectRef(ref, {announce:false});
+    if (disposed||panel.hidden||ticket!==loadSerial||entity!==chosenEntity)return;
     feedback('reviewFocusStatus', focused?'현재 자료의 객체로 이동했습니다. 변경 후 지도라는 뜻은 아닙니다.':'현재 지도에서 해당 형상을 표시할 수 없습니다.');
   }
   function clearPreview() {get('reviewGeometryPreviews').hidden = true;}

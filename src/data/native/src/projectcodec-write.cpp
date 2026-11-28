@@ -272,7 +272,20 @@ V webSnapshotValue(const ProjectDocument& d,const WebStorageContext& context) {
     return root;
 }
 }
-std::string webSnapshot(const ProjectSnapshot& snapshot) {validateDocument(snapshot.document());return webSnapshotValue(snapshot.document(),{}).encode();}
+std::string webSnapshot(const ProjectSnapshot& snapshot, bool includeGeometryResources) {
+    const auto& document = snapshot.document(); validateDocument(document);
+    auto root = webSnapshotValue(document,{});
+    if (includeGeometryResources&&!document.geometries.resources().empty()) {
+        V rows = V::arr();
+        for (const auto& [ref, resource]:document.geometries.resources()) {
+            V row = V::obj(); row.object["id"] = V::str(ref.id); row.object["version"] = V::num(ref.version);
+            row.object["type"] = V::str(resource.type); row.object["contentSha256"] = V::str(resource.contentSha256);
+            row.object["decodedBytes"] = V::num(resource.decodedBytes); rows.array.push_back(std::move(row));
+        }
+        root.object["geometryResources"] = std::move(rows);
+    }
+    return root.encode();
+}
 codecjson::Value encodeWebValue(const ProjectSnapshot& snapshot,const PlatformPorts& ports,const WebStorageContext& context) {
     require(bool(ports.validateFlagDataUrl),"CODEC_PLATFORM_REQUIRED: flag validator");
     const auto& d=snapshot.document();validateDocument(d);validateWebObjectIds(d);validateProvenanceDigests(d);

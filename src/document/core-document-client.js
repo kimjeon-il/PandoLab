@@ -10,6 +10,7 @@ const stateResponses = new Set(['core.document-state']);
 export function createCoreDocumentClient({
   createWorker = () => createVerifiedCoreWorker(workerAssetUrl(new URL('../workers/core-viewer-session-worker.js', import.meta.url)), { type: 'module' }),
   onTransition = () => {},
+  referenceOnlyGeometry = false,
 } = {}) {
   let currentState = null;
   let disposed = false;
@@ -103,9 +104,12 @@ export function createCoreDocumentClient({
     queue = result.catch (() => {});
     return result;
   }
-  async function ensureGeometryResources(month, options = {}) {
+  async function ensureGeometryResources(month, options = {}, requested = null) {
     const generation = documentGeneration;
-    const query = await ordered('core.document-geometry-requirements', {month}, options);
+    if (!currentState)fail('PL-CORE-NOT-LOADED','The complete C++ document has not been loaded.');
+    const query = requested!==null ? {resources:requested,sourceEpoch:currentState.epoch}
+      : referenceOnlyGeometry ? {resources:[],sourceEpoch:currentState.epoch}
+      : await ordered('core.document-geometry-requirements', {month}, options);
     if (!Array.isArray(query?.resources)||!Number.isSafeInteger(query.sourceEpoch))fail('PL-CORE-RESPONSE','Core geometry requirements must be epoch-pinned.');
     const isCurrent = () => !disposed&&documentGeneration===generation&&currentState?.epoch===query.sourceEpoch
       &&options.isCurrent?.()!==false&&!options.signal?.aborted;
@@ -156,6 +160,10 @@ export function createCoreDocumentClient({
       return ordered('core.document-geometry-admit', admission, options, true, true);
     },
     prepareTimelineGeometry,
+    prepareGeometryRefs:(requirements, month, options = {}) => {
+      const unique = new Map(requirements.map(row => [JSON.stringify([row.id,row.version]),row]));
+      return ensureGeometryResources(month,options,[...unique.values()]);
+    },
     storageBaselineLoad: (baseline, options) => ordered('core.storage-baseline-load', { baseline }, options, true, true),
     temporalSourcePrepare:(source, {dataRevision, manifestSha256, ...options} = {}) =>
       ordered('core.document-temporal-source-prepare', {source, dataRevision, manifestSha256}, options),

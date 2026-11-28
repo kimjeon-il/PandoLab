@@ -65,9 +65,9 @@ void applyProperties(ProjectDocument& document, const ResolvedWorld& world) {
     }
 }
 }
-TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source, const ResolvedWorld& world) {
+TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source, const ResolvedWorld& world, bool requireGeometry) {
     TimelineDocumentProjection result;
-    source.geometries.requireReady(world.requiredGeometries());
+    if (requireGeometry)source.geometries.requireReady(world.requiredGeometries());
     // Copy only the live document domains. The historical archive is not
     // part of this static view and must not be copied just to discard it.
     auto& document = result.document;
@@ -132,12 +132,12 @@ TimelineDocumentProjection projectResolvedTimeline(const ProjectDocument& source
     applyProperties(result.document, world);
     return result;
 }
-TimelineDocumentView timelineDocumentView(const ProjectDocument& source, const std::string& month, const ResolvedWorld* resolved) {
+TimelineDocumentView timelineDocumentView(const ProjectDocument& source, const std::string& month, const ResolvedWorld* resolved, bool requireGeometry) {
     if (resolved&&resolved->month!=parseTemporal(month).canonical)
         throw TimelineError("STALE_REVISION","Resolved timeline month differs from requested projection");
     auto world = resolved?*resolved:resolveWorld(source.timelineRecords,
         {timelineEntityCatalog(source), [&](const ObjectRef&, const GeometryRef& ref) {return source.geometries.type(ref);}}, month);
-    auto projection = projectResolvedTimeline(source, world);
+    auto projection = projectResolvedTimeline(source, world, requireGeometry);
     return {std::move(projection.document), std::move(world), std::move(projection.inactiveIds)};
 }
 void captureTimelinePropertyChanges(const ProjectDocument& source, const ProjectDocument& beforeView,

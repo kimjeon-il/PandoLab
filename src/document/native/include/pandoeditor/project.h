@@ -52,7 +52,7 @@ public:
     std::shared_ptr<const ResolvedWorld> resolveWorldShared(const std::string& month) const;
     std::vector<GeometryRef> missingGeometries(const std::string& month = {}) const;
     std::uint64_t presentationRevision() const noexcept { return presentationRevision_; }
-    Project();
+    explicit Project(bool referenceOnlyGeometry = false);
     ProjectSnapshot snapshot() const { return {state_, instanceId_, revision_, timelineCursor_, timelineEditsEnabled_}; }
     ProjectSnapshot snapshotForView() const;
     const std::string& instanceId() const { return instanceId_; }
@@ -94,6 +94,7 @@ private:
     // Keep the displayed month when speculative preparation fills the cache.
     mutable std::array<std::shared_ptr<const ResolvedWorld>, 4> resolvedTimeline_{};
     GeometryResourceCache resourceCache_;
+    bool referenceOnlyGeometry_ = false;
     std::string instanceId_;
     std::uint64_t revision_ = 0;
     std::uint64_t presentationRevision_ = 0;

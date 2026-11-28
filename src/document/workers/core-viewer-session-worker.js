@@ -6,6 +6,7 @@ import { validateWebFlagDataUrl } from '../../ui/country-flags.js';
 const runtime = createCoreWorkerRuntime({
   loadModule: () => loadVerifiedCore({ baseUrl: new URL('../../wasm/', import.meta.url) }),
   validateFlagDataUrl: validateWebFlagDataUrl,
+  referenceOnlyGeometry: true,
 });
 
 self.PandoLabWorkerRpc.install({ handlers: Object.fromEntries(runtime.operations.map(operation =>

@@ -2,7 +2,7 @@ import { createGlobeAssetReader } from './globe-asset-reader.js';
 import { createGlobeViewerInput } from '../map/globe-viewer-input.js';
 import { normalizeObjectRef } from '../document/object-ref-identity.js';
 import { coordinateBounds } from '../geometry/coordinate-bounds.js';
-import { geometryReferenceFor } from '../geometry/geometry-version-store.js';
+import { featureGeometryReference } from '../geometry/geometry-version-store.js';
 import { layerStyle, territorialNamesVisible } from '../ui/layer-presentation.js';
 import { createGlobePresentationInputReader, globeChangedHiddenIds } from './globe-style-state.js';
 import { createGlobePaintState } from './globe-paint-state.js';
@@ -598,7 +598,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!match)throw Object.assign(Error(`${month}에 준비된 Three.js 영토 형상이 없습니다.`), {code:'PL-THREE-IDENTITY'});
     return match;
   }
-  function featureRefs(rows) {return new Map(rows.map(row => [String(row.id), geometryReferenceFor(row.geometry)]));}
+  function featureRefs(rows) {return new Map(rows.map(row => [String(row.id), featureGeometryReference(row)]));}
   function retainCpuResources() {
     if (disposed)return;
     residencyDirty = true;

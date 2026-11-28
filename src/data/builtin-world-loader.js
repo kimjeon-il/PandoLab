@@ -12,7 +12,7 @@ export { selectBuiltinCountries, assembleBuiltinWorld, resolveBuiltinWorldGeomet
 
 // The verified country catalog provides source coverage. The project retains
 // every original temporal interval; C++ owns month-end selection.
-export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevision, startupGeometryPacks = null, assetRoot, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches}) {
+export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevision, startupGeometryPacks = null, referenceOnlyGeometry = false, assetRoot, fetchFn = globalThis.fetch, cacheStorage = globalThis.caches}) {
   if (!manifestUrl||!manifestSpec?.sha256||!dataRevision)throw new Error('Builtin country catalog integrity metadata is required');
   const base = new URL(manifestUrl, globalThis.location?.href), parse = bytes => JSON.parse(new TextDecoder().decode(bytes));
   const assetOptions = {dataRevision, fetchFn, cacheStorage, resolveUrl:spec => new URL(spec.url, base).href};
@@ -22,7 +22,19 @@ export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevisio
   const assets = createStoredAssetLoader({...assetOptions, cachePolicy:'immutable'});
   let indexPromise, readMetadata, geometryAssetsByRef;
   const geometries = new Map(), pending = new Map(), geometryStates = new Map();
-  let activeReads = 0;
+  let activeReads = 0, retainedSourceBytes = 0;
+  const sourceBudget = 16*1024*1024;
+  function rememberSource(key,value) {
+    if (referenceOnlyGeometry) {
+      const bytes = value.length*2;
+      if (geometries.has(key))retainedSourceBytes-=geometries.get(key).length*2;
+      geometries.delete(key);
+      if(bytes>sourceBudget){geometryStates.delete(key);return;}
+      retainedSourceBytes+=bytes;
+      while(retainedSourceBytes>sourceBudget&&geometries.size){const oldest=geometries.keys().next().value;retainedSourceBytes-=geometries.get(oldest).length*2;geometries.delete(oldest);geometryStates.delete(oldest);}
+    }
+    geometries.set(key,value);geometryStates.set(key,'ready');
+  }
   const readQueue = [];
   async function limitedRead(operation) {
     if (activeReads===6)await new Promise(resolve => readQueue.push(resolve)); else activeReads++;
@@ -54,13 +66,13 @@ export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevisio
   }
   async function loadGeometry(asset) {
     const key = asset.file;
-    if (geometries.has(key))return geometries.get(key);
+    if (geometries.has(key)) {const value=geometries.get(key);if(referenceOnlyGeometry){geometries.delete(key);geometries.set(key,value);}return value;}
     const existing = pending.get(key);
     if (existing)return (await existing)??loadGeometry(asset);
     geometryStates.set(key,'loading');
     const reading = limitedRead(() => assets.loadAsset({...asset, url:asset.file},
       'builtin-world', asset.id,'국가 형상', buffer => decodeGeometryContent(buffer, asset)))
-      .then(({value}) => {geometries.set(key, value); geometryStates.set(key,'ready'); return value;})
+      .then(({value}) => {rememberSource(key,value); return value;})
       .catch (error => {geometryStates.set(key,'error'); throw error;});
     return trackPending(pending, key, reading);
   }
@@ -140,6 +152,7 @@ export function createBuiltinWorldLoader({manifestUrl, manifestSpec, dataRevisio
     // country-document reconstruction or parallel runtime model is retained.
     queryMonthEnd(month);
     const project = {...readMetadata, projectSetup:createBuiltinProjectSetup(month), geometries:[]};
+    if (referenceOnlyGeometry)return {project, fingerprint:`${manifestSpec.sha256}:complete-timeline`};
     const required = new Map(resolveBuiltinWorldGeometry(index, index.readIndex, month).map(({asset}) => [geometryKey(asset), asset]));
     let packs = [];
     if (startupGeometryPacks&&startupGeometryPacks.catalogSha256===manifestSpec.sha256) {

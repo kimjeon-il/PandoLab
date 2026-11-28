@@ -64,6 +64,10 @@ const immutableGeometries = new WeakSet();
 const immutableCanonicalGeometries = new WeakSet();
 const geometryReferences = new WeakMap();
 export const geometryReferenceFor = value => geometryReferences.get(value) || null;
+export const featureGeometryReference = feature => feature?.geometryRef || geometryReferenceFor(feature?.geometry);
+export const featureGeometryKey = feature => feature?.geometryRef
+  ? `resource:${JSON.stringify([feature.geometryRef.id,feature.geometryRef.version,feature.geometryRef.contentSha256])}`
+  : admittedGeometryKey(feature?.geometry);
 const contentByGeometry = new WeakMap();
 const contentBuckets = new Map();
 const verifiedContent = new Map();

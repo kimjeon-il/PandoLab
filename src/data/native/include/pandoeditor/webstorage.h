@@ -29,7 +29,7 @@ private:
     explicit WebStorageBaseline(std::shared_ptr<const Data> data):data_(std::move(data)) {}
     std::shared_ptr<const Data> data_;
     friend WebStorageBaseline admitWebStorageBaseline(const ProjectSnapshot&, const codecjson::Value&, const PlatformPorts&);
-    friend WebStorageBaseline admitWebStorageAssetBaseline(const ProjectSnapshot&, const WebStorageAssetSource&, const PlatformPorts&, WebStorageBaselineKind);
+    friend WebStorageBaseline admitWebStorageAssetBaseline(const ProjectSnapshot&, const WebStorageAssetSource&, const PlatformPorts&, WebStorageBaselineKind, bool);
     friend WebStorageBaseline admitWebStorageDocumentBaseline(const ProjectSnapshot&, const PlatformPorts&);
     friend std::vector<std::string> initialDirtyTerritorialIds(const ProjectSnapshot&, const WebStorageBaseline&);
     friend std::vector<std::string> initialDirtyTerritorialIds(const ProjectDocument&, const WebStorageBaseline&);
@@ -41,7 +41,7 @@ std::string webStorageFingerprint(const codecjson::Value& features);
 WebStorageBaseline admitWebStorageBaseline(const ProjectSnapshot&, const codecjson::Value& input, const PlatformPorts&);
 // The historical source pin hashes stored gzip bytes, never decoded JSON.
 WebStorageBaseline admitWebStorageAssetBaseline(const ProjectSnapshot&, const WebStorageAssetSource&, const PlatformPorts&,
-                                               WebStorageBaselineKind kind = WebStorageBaselineKind::Builtin);
+                                               WebStorageBaselineKind kind = WebStorageBaselineKind::Builtin, bool requireGeometry = true);
 WebStorageBaseline admitWebStorageDocumentBaseline(const ProjectSnapshot&, const PlatformPorts&);
 std::vector<std::string> initialDirtyTerritorialIds(const ProjectSnapshot&, const WebStorageBaseline&);
 std::vector<std::string> initialDirtyTerritorialIds(const ProjectDocument&, const WebStorageBaseline&);

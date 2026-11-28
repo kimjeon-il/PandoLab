@@ -18,18 +18,21 @@ struct DocumentState {
     std::set<ObjectRef> inactiveIds;
 
     DocumentState() = default; // unloaded Project only
-    explicit DocumentState(ProjectDocument candidate, std::set<ObjectRef> inactive = {})
+    explicit DocumentState(ProjectDocument candidate, std::set<ObjectRef> inactive = {}, bool referenceOnlyGeometry = false)
         : document(std::move(candidate)), index(validateDocument(document)), staticTimeline(isStaticTimeline(document)), inactiveIds(std::move(inactive))
-    { initializeViews(); }
+    { initializeViews(referenceOnlyGeometry); }
     struct VerifiedResources {};
     // Only Project's verified geometry-resource admission/eviction may use
     // this path. Identities, bindings, declarations and content are unchanged.
-    DocumentState(ProjectDocument candidate, const DocumentState& previous, VerifiedResources)
+    DocumentState(ProjectDocument candidate, const DocumentState& previous, VerifiedResources, bool referenceOnlyGeometry = false)
         :document(std::move(candidate)), index(previous.index), staticTimeline(previous.staticTimeline), inactiveIds(previous.inactiveIds)
-    { initializeViews(); }
-    void initializeViews() {
+    { initializeViews(referenceOnlyGeometry); }
+    void initializeViews(bool referenceOnlyGeometry) {
         if (!staticTimeline)return;
         properties = objectPropertyViews(document);
+        // The read-only Viewer uses verified globe meshes and object references.
+        // Native coordinate consumers retain the complete strict country view.
+        if (referenceOnlyGeometry&&!document.geometries.resources().empty())return;
         auto allCountries = countryViews(document, inactiveIds);
         countries.reserve(allCountries.size());
         for (const auto& view:allCountries)if (!inactiveIds.count(territorialRef(view.id)))countries.push_back(view);

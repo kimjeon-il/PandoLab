@@ -25,7 +25,7 @@ export async function prepareProjectCandidateWithGeometry({prepareCandidate, pre
 // Project-scoped source preparation and Core admission. A source adapter
 // supplies country bytes; the accepted C++ document is the only writable map.
 // Historical geometry bytes stay lazy and retain their existing verified cache.
-export function createProjectSourceRuntime({buildMeta, projectDomain, baseDataset} = {}) {
+export function createProjectSourceRuntime({buildMeta, projectDomain, baseDataset, referenceOnlyGeometry = false} = {}) {
   if (typeof projectDomain?.getGeneration!=='function' || typeof baseDataset!=='string' || !baseDataset)
     throw new TypeError('Project source runtime requires the active project domain and base dataset.');
   let builtinWorldLoader = null;
@@ -71,7 +71,7 @@ export function createProjectSourceRuntime({buildMeta, projectDomain, baseDatase
       const assetRoot = new URL('../../../', import.meta.url);
       builtinWorldLoader = createBuiltinWorldLoader({
         manifestUrl:new URL(selected, assetRoot).href,
-        manifestSpec:spec, dataRevision:meta.dataRevision, assetRoot, startupGeometryPacks:meta.startupGeometryPacks,
+        manifestSpec:spec, dataRevision:meta.dataRevision, assetRoot, startupGeometryPacks:meta.startupGeometryPacks, referenceOnlyGeometry,
       });
     }
     const {project} = await builtinWorldLoader.loadProject(month, {isCurrent});

@@ -100,19 +100,26 @@ export function createObjectQuery(dependencies) {
     return { name: name || ref.id, type: '도시', detail: labelKind[label?.kind] || '도시' };
   }
 
-  function focusObjectRef(value, { announce = true } = {}) {
+  let focusSerial=0;
+  async function focusObjectRef(value, { announce = true } = {}) {
+    const ticket=++focusSerial, month=dependencies.projectState.state.timelineCursor, generation=dependencies.getGeneration?.();
+    const isCurrent=()=>ticket===focusSerial&&month===dependencies.projectState.state.timelineCursor&&generation===dependencies.getGeneration?.();
     const ref = (0, dependencies.selectionServices.normalizeObjectRef)(value);
     if (!ref) return false;
-    let feature = null;
-    if (ref.domain === 'territorial') feature = territorialEntityForRef(ref);
+    let feature = null, members = null;
+    if (ref.domain === 'territorial') {
+      feature=territorialEntityForRef(ref);
+      if(feature?.properties.entityKind==='general'&&!feature.properties.parentId)
+        members=[feature,...dependencies.territorialModel.entityRepository.descendants(ref.id,{kind:'general'})];
+    }
     else if (ref.domain === 'generic') feature = dependencies.projectState.state.genericFeatures.find(item => String(item.id) === ref.id);
     else if (ref.domain === 'hydro') feature = (0, dependencies.hydroModel.hydroFeatureById)(ref.id);
     else if (ref.domain === 'distribution') {
       const features = (0, dependencies.distributionServices.distributionEntriesForLayer)(dependencies.projectState.state.distributionEntries, ref.id).map(entry => {
-        const geometry = entry.mode === dependencies.territorialModel.DISTRIBUTION_MODES.TERRITORIAL ? dependencies.territorialModel.entityRepository.get(entry.territorialUnitId)?.geometry : entry.geometry;
-        return geometry ? { type: 'Feature', properties: {}, geometry } : null;
+        if(entry.mode===dependencies.territorialModel.DISTRIBUTION_MODES.TERRITORIAL)return dependencies.territorialModel.entityRepository.get(entry.territorialUnitId);
+        return entry.geometry?{type:'Feature',properties:{},geometry:entry.geometry}:null;
       }).filter(Boolean);
-      if (features.length) feature = { type: 'FeatureCollection', features };
+      if (features.length) members=features;
     } else if (ref.domain === 'label') {
       const label = dependencies.labelPresentation.labelById(ref.id);
       if (label) {
@@ -121,11 +128,20 @@ export function createObjectQuery(dependencies) {
         return true;
       }
     }
-    if (!feature?.geometry && feature?.type !== 'FeatureCollection' &&
-      !(ref.domain==='hydro'&&feature?.__awBounds?.length===4&&feature.__awBounds.every(Number.isFinite))) return false;
-    const countryScope = ref.domain === 'territorial' && (dependencies.territorialModel.entityRepository.get(ref?.id)?.properties.entityKind === 'general' && !dependencies.territorialModel.entityRepository.get(ref?.id)?.properties.parentId)
-      ? dependencies.territorialObjectModel.territorialScope.scope(ref.id) : null;
-    if (countryScope?.members.length) feature = countryScope.extent;
+    let rows=members||[feature].filter(Boolean);
+    if(rows.some(row=>row.geometryRef&&!row.geometry)) {
+      if(typeof dependencies.loadGeometryForFeatures!=='function')throw new Error('Missing Core geometry loader.');
+      try {rows=await dependencies.loadGeometryForFeatures(rows,{month,isCurrent});}
+      catch(error){if(!isCurrent()||error?.cancelled||error?.name==='AbortError')return false;throw error;}
+      if(!rows||!isCurrent())return false;
+    }
+    if(members) {
+      const features=rows.filter(row=>row?.geometry);
+      if(!features.length)return false;
+      feature={type:'FeatureCollection',features};
+    }else feature=rows[0]||null;
+    if (!isCurrent()||(!feature?.geometry&&feature?.type!=='FeatureCollection'&&
+      !(ref.domain==='hydro'&&feature?.__awBounds?.length===4&&feature.__awBounds.every(Number.isFinite))))return false;
     dependencies.navigation.fitMapToFeature(feature);
     if (announce) (0, dependencies.feedback.setActionStatus)('선택 객체로 이동했습니다.', 'success', 2200);
     return true;

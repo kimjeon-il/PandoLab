@@ -1,7 +1,7 @@
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 
 /** ABI dispatch only; every mutation, validation and history entry is C++ owned. */
-export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, currentMonth = () => new Date().toISOString().slice(0, 7) }) {
+export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, referenceOnlyGeometry = false, currentMonth = () => new Date().toISOString().slice(0, 7) }) {
   if (typeof loadModule !== 'function' || typeof validateFlagDataUrl !== 'function' || typeof currentMonth !== 'function')
     throw new TypeError('The complete document module and current platform flag policy are required.');
   let sessionPromise = null;
@@ -10,7 +10,7 @@ export function createDocumentSessionRuntime({ loadModule, validateFlagDataUrl, 
   function session() {
     if (!sessionPromise) sessionPromise = Promise.resolve().then(loadModule).then(module => {
       if (typeof module.DocumentSession !== 'function') fail('PL-CORE-DOCUMENT-ABI', 'The required whole-document C++ session export is missing.');
-      return new module.DocumentSession({ validateFlagDataUrl });
+      return new module.DocumentSession({ validateFlagDataUrl, ...(referenceOnlyGeometry?{referenceOnlyGeometry:true}:{}) });
     }).catch (error => {
       // Release only a failed admission; command errors never discard a live session.
       sessionPromise = null;

@@ -88,7 +88,7 @@ export async function composeViewer({ meta }) {
     report(error,'지도 위치를 복원하지 못했습니다.','PL-WORKSPACE-READ-001');
     return null;
   });
-  const documentSession = createDocumentSession({initialProject:createInitialDocument({appVersion:meta.appVersion})});
+  const documentSession = createDocumentSession({initialProject:createInitialDocument({appVersion:meta.appVersion}), referenceOnlyGeometry:true});
   const disposables = [tooltipController, selectController, preferencePresentation, surfaces, notifications, documentSession.commandOwner, initialPresentation];
   function composeMap() {
   let openingPreserved = null;
@@ -171,7 +171,7 @@ export async function composeViewer({ meta }) {
     },
     selectObject:async id => {
       const ref = {domain:'territorial', type:'entity', id};
-      if (await selectionUiController.applyIntent(ref))map.objectQuery.focusObjectRef(ref, {announce:false});
+      if (await selectionUiController.applyIntent(ref))await map.objectQuery.focusObjectRef(ref, {announce:false});
     },
     hoverObject:(id, entered, isCurrent) => {
       const ref = normalizeObjectRef({domain:'territorial', type:'entity', id});

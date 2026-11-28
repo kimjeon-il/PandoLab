@@ -204,7 +204,7 @@ struct WebStorageBaseline::Data {
     V features, identities;
     std::vector<Row> rows;
     std::map<std::string, std::size_t> byId;
-    void populateDocument(ProjectDocument document, const ProjectSnapshot& current) {
+    void populateDocument(ProjectDocument document, const ProjectSnapshot& current, bool requireGeometry = true) {
         GeometryStore archive;
         for (const auto& [ref, resource]:document.geometries.resources())archive.declareResource(ref, resource);
         for (const auto& [ref, shape]:document.geometries.versions()) {
@@ -216,7 +216,7 @@ struct WebStorageBaseline::Data {
         std::map<std::string, GeometryRef> visible;
         if (!sourceMonth.empty()) {
             const auto world = resolveWorld(source->timelineRecords, {timelineEntityCatalog(*source), [&](const ObjectRef&, const GeometryRef& ref) {return source->geometries.type(ref);}}, sourceMonth);
-            std::vector<GeometryRef> required; for (const auto& row:world.entities())required.push_back(row.geometryRef); source->geometries.requireReady(required);
+            if (requireGeometry)source->geometries.requireReady(world.requiredGeometries());
             for (const auto& row:world.entities())if (row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id, row.geometryRef);
         } else if (isStaticTimeline(*source))for (const auto& row:source->timelineRecords.geometryBindings)if (row.objectRef.domain=="territorial")visible.emplace(row.objectRef.id, row.geometryRef);
         features = V::arr();
@@ -278,13 +278,13 @@ WebStorageBaseline admitWebStorageBaseline(const ProjectSnapshot& current, const
         }
     return WebStorageBaseline(std::move(data));
 }
-WebStorageBaseline admitWebStorageAssetBaseline(const ProjectSnapshot& current, const WebStorageAssetSource& input, const PlatformPorts& ports, WebStorageBaselineKind kind) {
+WebStorageBaseline admitWebStorageAssetBaseline(const ProjectSnapshot& current, const WebStorageAssetSource& input, const PlatformPorts& ports, WebStorageBaselineKind kind, bool requireGeometry) {
     require(bool(ports.validateFlagDataUrl),"CODEC_PLATFORM_REQUIRED","A flag validator is required.");
     require(!input.baseDataset.empty(),"PL-SCHEMA-BASE","Stored source dataset is invalid.");
     const auto month = parseTemporal(input.sourceMonth); require(month.precision=="month"&&month.canonical==input.sourceMonth,"PL-SCHEMA-BASE","Stored source month is invalid.");
     auto decoded = decodeAssetBytes(input); auto root = normalizedFullRoot(codecjson::parse(decoded, ports.parsedTextPolicy)); decoded.clear();
     auto document = kind==WebStorageBaselineKind::Builtin?decodeBuiltinSourceValue(root, ports):decodeWebValue(root, ports); auto data = std::make_shared<WebStorageBaseline::Data>(); data->identities = std::move(root.object.at("territorialEntities")); root = V{};
-    data->dataset = input.baseDataset; data->digest = input.fingerprint; data->sourceMonth = input.sourceMonth; data->kind = kind; data->populateDocument(std::move(document), current);
+    data->dataset = input.baseDataset; data->digest = input.fingerprint; data->sourceMonth = input.sourceMonth; data->kind = kind; data->populateDocument(std::move(document), current, requireGeometry);
     return WebStorageBaseline(std::move(data));
 }
 WebStorageBaseline admitWebStorageDocumentBaseline(const ProjectSnapshot& current, const PlatformPorts& ports) {
