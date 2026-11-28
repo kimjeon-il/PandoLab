@@ -42,6 +42,24 @@ export function createGlobeGpuFrameBudget({totalRenderBytes=320*MiB,limits=globe
     if (!admitUpload(size,operations))return false;
     compactionBytes+=size;return true;
   }
+  // The initial index upload already includes the copied bytes. Reserve
+  // creation, initialization and CPU compaction as one atomic operation.
+  function admitIndexGrowth(bytes,copiedBytes) {
+    const size=Math.max(0,bytes),copied=Math.max(0,copiedBytes);
+    const createFits=(creates<limits.createOperations&&createBytes+size<=limits.createBytes)||
+      (creates===0&&size<=limits.maxSingleCreateBytes);
+    const uploadFits=(uploads<limits.uploadOperations&&uploadBytes+size<=limits.uploadBytes)||
+      (uploads===0&&size<=limits.maxSingleUploadBytes);
+    const compactFits=compactionBytes+copied<=limits.compactionBytes;
+    if (!createFits||!uploadFits||!compactFits) {
+      if (!createFits)deferred.create++;
+      if (!uploadFits)deferred.upload++;
+      if (!compactFits)deferred.compaction++;
+      return false;
+    }
+    creates++;createBytes+=size;uploads++;uploadBytes+=size;compactionBytes+=copied;
+    return true;
+  }
   function remainingCompactionBytes() {
     if (uploads>=limits.uploadOperations)return 0;
     return Math.max(0,Math.min(limits.compactionBytes-compactionBytes,limits.uploadBytes-uploadBytes));
@@ -53,5 +71,5 @@ export function createGlobeGpuFrameBudget({totalRenderBytes=320*MiB,limits=globe
         uploadBytes:Math.max(0,limits.uploadBytes-uploadBytes),compactionBytes:Math.max(0,limits.compactionBytes-compactionBytes),
         createOperations:Math.max(0,limits.createOperations-creates),uploadOperations:Math.max(0,limits.uploadOperations-uploads)}};
   }
-  return Object.freeze({beginFrame,admitCreate,admitUpload,admitCompaction,remainingCompactionBytes,defer,stats});
+  return Object.freeze({beginFrame,admitCreate,admitUpload,admitCompaction,admitIndexGrowth,remainingCompactionBytes,defer,stats});
 }

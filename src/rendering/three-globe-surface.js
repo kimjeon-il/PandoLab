@@ -136,6 +136,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   function flushCountryPaint() {
     if (!countryPendingFull&&!countryDirtySlots.size)return true;
     const full=countryPendingFull,bytes=full?channels.byteLength:countryDirtySlots.size*4;
+    assertSingleUpload(bytes);
     if (!gpuFrameBudget.admitUpload(bytes,1))return false;
     texture.clearUpdateRanges();
     if (countryTextureUploaded&&!full)for (const slot of countryDirtySlots)texture.addUpdateRange(slot*4,4);
@@ -211,7 +212,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   // The logical visibility/ownership of a packet is independent of which
   // spatial ranges its current camera actually submits.
-  function spatialResource(objects, material, update, pointResources = [], retained = null, {geometries = null, workspace = () => [], disposeExtra = () => {}, optional = false} = {}) {
+  function spatialResource(objects, material, update, pointResources = [], retained = null, {geometries = null, workspace = () => [], disposeExtra = () => {}, optional = false, warm = null} = {}) {
     let enabled = true, disposed = false;
     const materials = globeMeshMaterials(objects);
     if (material)materials.add(material);
@@ -223,7 +224,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const resource = {
       material,optional,drawReady:false,update, lastUsed:performance.now(),
       markFootprint:() => meshLedger.mark(resource),
-      warmGpu() {for (const mesh of objects)if (!prepareGpuMesh(mesh))return false;return true;},
+      warmGpu() {if (warm)return warm();for (const mesh of objects)if (!prepareGpuMesh(mesh))return false;return true;},
       hideObjects() {for (const mesh of objects)mesh.visible=false;},
       setOrder(order, span = 0) {objects.forEach((mesh, i) => {mesh.renderOrder = order+span*i/Math.max(1,objects.length);});},
       setStrokeStyle(style) {for (const material of materials) {const u = material.uniforms; if (u.radius)u.radius.value = style.width/2;if(u.strokeColor)u.strokeColor.value.set(style.color);if(u.strokeOpacity)u.strokeOpacity.value=style.opacity??style.alpha??1;}},
@@ -417,8 +418,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
         // Fill new indices before their first upload. The original vertex
         // attributes are shared and already uploaded.
         const newIndexBytes=needed*12;
-        if (writeBytes>gpuFrameBudget.remainingCompactionBytes()||
-            !gpuFrameBudget.admitCreate(newIndexBytes,1)||!gpuFrameBudget.admitUpload(newIndexBytes,1))return false;
+        if (!gpuFrameBudget.admitIndexGrowth(newIndexBytes,writeBytes))return false;
         const replacement=residency.withTemporary(newIndexBytes*2,'gpu-index-growth',()=>{
           const index=new THREE.BufferAttribute(new Uint32Array(needed*3),1).setUsage(THREE.DynamicDrawUsage);
           return {geometry:makeGeometry(index),index};
@@ -476,6 +476,8 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
       stats.meshDrawCalls+=activeCalls;
       if (mesh.geometry===sourceGeometry&&submitted)stats.immutableIndexTriangles+=submitted;
     }, [], packet, {geometries:() => [sourceGeometry, ...(dynamicGeometry?[dynamicGeometry]:[])],
+      warm:()=>{const original=mesh.geometry;try {mesh.geometry=sourceGeometry;if (!prepareGpuMesh(mesh))return false;
+        if (dynamicGeometry) {mesh.geometry=dynamicGeometry;if (!prepareGpuMesh(mesh))return false;}return true;}finally{mesh.geometry=original;}},
       workspace:() => [priorSelection, ...[...blocks.values()].map(row => row.ranges), ...parts.flatMap(row => row.selection.footprint())]});
     if (name)addLayer(name, resource);
     return resource;
@@ -499,8 +501,13 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   const riverStyle = { ...palette.strokes.river, color: palette.ocean };
   const riverMesh = (packet, minZoom, optional=false) => spatialStrokes(packet, {order:3, minZoom, optional,strokeKind:'river',
     style:riverStyle, cameraUniforms, viewport, margin, multisampling, hydroUniforms});
+  function strokeCreationBytes(packet) {
+    return packet.points.byteLength+packet.count*16+Math.min(packet.count,2048)*48+4096;
+  }
   function attachRiverDetail(row, packet) {
-    const estimate=packet.points.byteLength+packet.endpointIndices.byteLength+packet.widths.byteLength+packet.ownerGroups.byteLength+4096;
+    const estimate=strokeCreationBytes(packet);
+    if (estimate>gpuFrameBudget.stats().limits.maxSingleCreateBytes)
+      throw Object.assign(new RangeError('Detailed river exceeds GPU creation allowance'),{code:'PL-THREE-GPU-FRAME-BUDGET'});
     if (!gpuFrameBudget.admitCreate(estimate,1))return null;
     const resource = riverMesh(packet, row.minZoom,true);resource.visible=false;
     const order = Math.max(0, row.order??0); resource.setOrder(4+.49*order/(order+1));
@@ -511,12 +518,28 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   const countryStrokeStyle = {...palette.strokes.country};
   const strokeOptions = {style:countryStrokeStyle, cameraUniforms, viewport, margin, multisampling, strokeKind:'country'};
-  let graticule = null, graticuleVisible = true;
+  let graticule=null,graticulePacket=null,graticuleVisible=true;
+  const graticuleStagingKey={};
   function installGraticule(packet) {
-    if (graticule)return;
-    graticule = spatialStrokes(packet, {...strokeOptions, order:5.5,
-      multisampling:false, strokeKind:null, style:{color:'#aaaaaa', width:0.55, opacity:0.34}});
-    addLayer('graticule', graticule); graticule.visible = graticuleVisible;
+    if (graticule||graticulePacket)return;
+    graticulePacket=packet;
+    residency.set(graticuleStagingKey,{buffers:renderPacketBuffers(packet),protected:true});
+  }
+  function prepareGraticule() {
+    if (!graticuleVisible)return true;
+    if (!graticule&&graticulePacket) {
+      const estimate=strokeCreationBytes(graticulePacket);
+      if (estimate>gpuFrameBudget.stats().limits.maxSingleCreateBytes)
+        throw Object.assign(new RangeError('Graticule exceeds GPU creation allowance'),{code:'PL-THREE-GPU-FRAME-BUDGET'});
+      if (!gpuFrameBudget.admitCreate(estimate,1))return false;
+      graticule=spatialStrokes(graticulePacket,{...strokeOptions,order:5.5,optional:true,
+        multisampling:false,strokeKind:null,style:{color:'#aaaaaa',width:.55,opacity:.34}});
+      addLayer('graticule',graticule);graticulePacket=null;residency.remove(graticuleStagingKey);
+    }
+    if (!graticule)return true;
+    const ready=graticule.warmGpu();
+    graticule.visible=ready&&graticuleVisible;
+    return ready;
   }
   if (packets.graticule)installGraticule(packets.graticule);
   const stages={territory:{input:null,resources:new Set()},physical:{input:null,resources:new Set()}};
@@ -571,9 +594,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     if (!lakes.complete)return false;
     const rivers=[];
     for (const row of parts.riverChunks) {
-      const packet=row.packet,estimate=(packet.points?.byteLength??0)+(packet.endpointIndices?.byteLength??0)+
-        (packet.start?.byteLength??0)+(packet.startLow?.byteLength??0)+(packet.end?.byteLength??0)+(packet.endLow?.byteLength??0)+
-        (packet.widths?.byteLength??0)+(packet.ownerGroups?.byteLength??0)+4096;
+      const packet=row.packet,estimate=strokeCreationBytes(packet);
       const resource=useMesh('river',row.key,()=>riverMesh(packet,row.minZoom),estimate,stage);
       if (!resource||!resource.warmGpu())return false;
       rivers.push(resource);
@@ -601,9 +622,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const nextBase=groups.rows.map(({resource},i)=>{resource.setOrder(1+.5*i/Math.max(1,groups.rows.length));return resource;});
     const nextBorders=[];
     for (const row of borders) {
-      const packet=row.packet,estimate=(packet.points?.byteLength??0)+(packet.endpointIndices?.byteLength??0)+
-        (packet.start?.byteLength??0)+(packet.startLow?.byteLength??0)+(packet.end?.byteLength??0)+(packet.endLow?.byteLength??0)+
-        (packet.widths?.byteLength??0)+(packet.ownerGroups?.byteLength??0)+4096;
+      const packet=row.packet,estimate=strokeCreationBytes(packet);
       const resource=useMesh('border',row.key,()=>spatialStrokes(packet,{...strokeOptions,order:5,baseBorder:row.baseBorder===true}),estimate,stage);
       if (!resource||!resource.warmGpu())return false;
       nextBorders.push(resource);
@@ -657,6 +676,7 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
   }
   function flushHydroPaint() {
     if (hydroPendingFull) {
+      assertSingleUpload(hydroBytes.byteLength);
       if (!gpuFrameBudget.admitUpload(hydroBytes.byteLength,1))return false;
       hydroTexture.needsUpdate=true;renderer.initTexture(hydroTexture);return true;
     }
@@ -762,10 +782,10 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     const country=flushCountryPaint(),hydro=flushHydroPaint();
     return country&&hydro&&countryTextureUploaded&&hydroUploaded;
   }
-  function prepareGpuResource(resource) {return !resource||resource.warmGpu();}
-  function prepareStaticGpuResources() {
-    for (const name of ['objects','graticule','borders'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
-    return true;
+  function prepareStaticGpuResources(required) {
+    for (const name of ['objects','borders'])for (const resource of layers.get(name)??[])if (resource.visible&&!resource.warmGpu())return false;
+    const gridReady=prepareGraticule();
+    return gridReady||!required;
   }
   function draw(globeCamera,width,height,activeLimits=null,requireLabels=false) {
     updateGpuCamera(globeCamera,width,height);
@@ -805,13 +825,13 @@ export function createThreeGlobeSurface(THREE, { canvas, context, palette, packe
     labels.dispose();uploadTarget.dispose();
     for (const entry of outlineCache.values())entry.dispose();
     outlineCache.clear(); paintedOutlines.clear(); dirtyOutlineOwners.clear(); residentMeshes.clear();
-    residency.remove(channels);
+    residency.remove(channels);residency.remove(graticuleStagingKey);graticulePacket=null;
     for (const resource of [...spatialResources])resource.dispose();
     layers.clear(); waterMeshes.clear(); activeBorders = []; activeBase = []; activeTerritoryInput = null; physicalLayers = activePhysical = null; graticule = null;
     texture.dispose(); hydroTexture.dispose(); hydroCopier.dispose();
     renderer.dispose();
   }
-  return Object.freeze({resize,draw,beginGpuFrame,prepareGpuFrame,prepareGpuResource,prepareStaticGpuResources,
-    activateTerritorialChunks,activatePhysicalContext,commitGpuActivations,cancelGpuActivations,commitGpuPublication,gpuFrameStats:()=>gpuFrameBudget.stats(),setPalette, setCountryPaint, restoreCountryPaint, installGraticule, hasGraticule:() => graticule!==null, installBaseBorders, hasBaseBorders:() => baseBordersInstalled, installOutlines, hasOutlines:slot => outlineCache.has(slot), setOutlinePaint, setHydroPaint, setLayerVisibility, attachRiverDetail, prepareLabels, trimResidency, cacheStats, labels, dispose,
+  return Object.freeze({resize,draw,beginGpuFrame,prepareGpuFrame,prepareStaticGpuResources,
+    activateTerritorialChunks,activatePhysicalContext,commitGpuActivations,cancelGpuActivations,commitGpuPublication,gpuFrameStats:()=>gpuFrameBudget.stats(),setPalette, setCountryPaint, restoreCountryPaint, installGraticule, hasGraticule:()=>Boolean(graticule||graticulePacket), installBaseBorders, hasBaseBorders:() => baseBordersInstalled, installOutlines, hasOutlines:slot => outlineCache.has(slot), setOutlinePaint, setHydroPaint, setLayerVisibility, attachRiverDetail, prepareLabels, trimResidency, cacheStats, labels, dispose,
     drawCalls:() => renderer.info.render.calls, hydroUploadStats:() => ({...hydroUploadStats}), spatialStats:() => ({...spatialStats})});
 }

@@ -815,7 +815,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (!baseReady||!physicalReady)return {...base,deferred:true};
     const initialStrict=!ready;
     if (initialStrict&&(!graticuleReady||!fontAvailable))return {...base,deferred:true};
-    if (!surface.prepareStaticGpuResources()) {invalidate('three-gpu-static-stage');return {...base,deferred:true};}
+    if (!surface.prepareStaticGpuResources(initialStrict)) {invalidate('three-gpu-static-stage');return {...base,deferred:true};}
     const territoryGpuReady=surface.activateTerritorialChunks(territories.view,basePrepared.parts);
     const physicalGpuReady=territoryGpuReady&&surface.activatePhysicalContext(physical);
     if (!territoryGpuReady||!physicalGpuReady) {surface.trimResidency();residency.trim();invalidate('three-gpu-geometry-stage');return {...base,deferred:true};}

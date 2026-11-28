@@ -546,3 +546,39 @@ test('GPU frame budget scales with shared render memory and never mutates its li
  assert.equal(stats.limits.uploadBytes,low.uploadBytes);
  assert.equal(Object.isFrozen(stats.limits),false);
 });
+
+
+test('GPU index growth admits creation, upload and compaction atomically',async()=>{
+ const {createGlobeGpuFrameBudget}=await import('../../../src/rendering/globe-gpu-frame-budget.js');
+ const budget=createGlobeGpuFrameBudget({limits:{createBytes:100,createOperations:2,maxSingleCreateBytes:160,
+  uploadBytes:80,uploadOperations:2,maxSingleUploadBytes:120,compactionBytes:32}});
+ budget.beginFrame(1);
+ assert.equal(budget.admitIndexGrowth(40,33),false);
+ assert.equal(budget.stats().createBytes,0);
+ assert.equal(budget.stats().uploadBytes,0);
+ assert.equal(budget.admitIndexGrowth(40,20),true);
+ assert.equal(budget.stats().compactionBytes,20);
+ assert.equal(budget.admitIndexGrowth(40,13),false);
+ assert.equal(budget.stats().uploadBytes,40);
+ assert.equal(budget.remainingCompactionBytes(),12);
+ budget.beginFrame(2);
+ assert.equal(budget.admitIndexGrowth(40,32),true);
+ assert.equal(budget.stats().uploadBytes,40);
+});
+
+test('compaction cursors split large and fragmented writes without loss or overlap',async()=>{
+ const {takeGlobeDrawWriteSlice,estimateGlobeDrawWriteBytes}=await import('../../../src/rendering/globe-draw-compaction.js');
+ const plan=[{first:10,end:22,offset:0},{first:50,end:54,offset:12},{first:70,end:76,offset:16}];
+ let cursor={index:0,offset:0},completed=false,actual=[];
+ while(!completed) {
+  const slice=takeGlobeDrawWriteSlice(plan,cursor,5,2);
+  assert.ok(slice.count>0&&slice.count<=5&&slice.writes.length<=2);
+  actual.push(...slice.writes.flatMap(row=>Array.from({length:row.end-row.first},(_,i)=>[row.first+i,row.offset+i])));
+  cursor=slice.cursor;completed=slice.complete;
+ }
+ const expected=plan.flatMap(row=>Array.from({length:row.end-row.first},(_,i)=>[row.first+i,row.offset+i]));
+ assert.deepEqual(actual,expected);
+ const scattered=Array.from({length:33},(_,i)=>({first:i*10,end:i*10+1,offset:i*10}));
+ assert.equal(estimateGlobeDrawWriteBytes(scattered,4),321*4);
+ assert.equal(takeGlobeDrawWriteSlice(scattered,{index:0,offset:0},100).writes.length,32);
+});
