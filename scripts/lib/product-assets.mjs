@@ -11,6 +11,7 @@ export const runtimeDependencies = Object.freeze({
   'assets/js/modules/globe-label-sdf-tasks.js':['assets/js/workers/globe-label-sdf-worker.js'],
   'assets/js/modules/three-globe-labels.js':['assets/fonts/pretendard-v1.3.9/PretendardVariable.woff2'],
   'assets/js/modules/territorial-labels.js':['assets/js/workers/place-worker.js'],
+  'assets/js/modules/object-search-runtime.js':['assets/js/workers/object-search-worker.js'],
   'assets/js/modules/country-index.js':['assets/js/workers/label-anchor-worker.js'],
   'assets/js/modules/core-document-client.js': ['assets/js/workers/core-viewer-session-worker.js'],
   'assets/js/modules/core-wasm-loader.js': ['assets/wasm/pandoeditor-core.js', 'assets/wasm/pandoeditor-core.wasm', 'assets/wasm/pandoeditor-core.manifest.json'],

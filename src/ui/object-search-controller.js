@@ -1,6 +1,6 @@
 import { normalizeObjectRef } from '../document/object-ref-identity.js';
 import { normalizePlaceQuery, PLACE_LIMITS } from '../document/place-contract.js';
-import { createObjectSearchModel, visibleObjectSearchRows } from '../document/object-search-model.js';
+import { createObjectSearchCatalog, createObjectSearchModel, visibleObjectSearchRows } from '../document/object-search-model.js';
 import { resourceKey, resourceUpdate } from '../runtime/resource-dependency-policy.js';
 import { objectListWindow,objectListSpacer,observeObjectList,virtualListMetrics } from './virtual-object-list.js';
 
@@ -21,13 +21,14 @@ export function createObjectSearchController({
   builtinSearch = null,
   cancelBuiltinSearch = () => {},
   builtinRecordVisible = () => true,
+  searchRuntime = null,
   onSearchError = () => {},
 } = {}) {
   let searchTimer = 0;
   let renderedDependencies = null;
   let renderedSearchRefs = [],resultRows=[],renderedWindow=null,resultNodes=new Map(),stopVirtual=()=>{};
   let windowMetrics=null,renderedQuery='',renderedTruncated=false;
-  let cachedCatalog = null, cachedRevision;
+  let cachedCatalog = null, cachedCatalogPromise = null, fallbackCatalog = null, fallbackRevision;
   let hydrated = false;
   let disposed = false;
   let bound = false;
@@ -38,6 +39,7 @@ export function createObjectSearchController({
     subscriptions.push(() => node.removeEventListener(name, handler));
   };
   let searchGeneration = 0;
+  let activeSearchRequest = null, catalogGeneration = 0, builtinGeneration = 0;
   let builtinQuery = null;
   let builtinRows = [];
   let builtinTruncated = false;
@@ -47,13 +49,67 @@ export function createObjectSearchController({
   const currentRow = target => !disposed && !projectSuspended
     && target?.dataset?.searchRowRevision === String(rowRevision)
     && target?.dataset?.searchProjectScope === readProjectScope();
+  function cancelObjectSearchRequest() {
+    const request = activeSearchRequest;
+    activeSearchRequest = null;
+    request?.controller.abort();
+  }
+
+  function currentCatalogKey(scope = projectScope) {
+    return resourceKey(['object-search-index', scope, model.catalogRevision?.() ?? 'uncached']);
+  }
+
+  function getSearchRequest(query) {
+    const key = currentCatalogKey();
+    if (activeSearchRequest && activeSearchRequest.generation === searchGeneration
+      && activeSearchRequest.scope === projectScope && activeSearchRequest.query === query
+      && activeSearchRequest.catalogKey === key && !activeSearchRequest.controller.signal.aborted)
+      return activeSearchRequest;
+    cancelObjectSearchRequest();
+    activeSearchRequest = {
+      generation:searchGeneration,
+      scope:projectScope,
+      query,
+      catalogKey:key,
+      controller:new AbortController(),
+      objectRowsPromise:null,
+      reportedError:false,
+    };
+    return activeSearchRequest;
+  }
+
+  function isCurrentSearchRequest(request) {
+    return !!request && !disposed && !projectSuspended && activeSearchRequest === request
+      && request.generation === searchGeneration && request.scope === readProjectScope()
+      && request.catalogKey === currentCatalogKey(request.scope)
+      && request.query === String(model.snapshot().search || '').trim()
+      && !request.controller.signal.aborted;
+  }
+
   function syncProjectScope() {
     const next = readProjectScope();
-    if (next===projectScope)return false;
-    projectScope = next; searchGeneration++; rowRevision++;
-    cachedCatalog = null; cachedRevision = undefined; renderedDependencies = null;
-    renderedSearchRefs = []; resultRows=[];renderedWindow=null;resultNodes.clear();windowMetrics=null; builtinQuery = null; builtinRows = []; builtinTruncated = false;
+    if (next === projectScope) return false;
+    projectScope = next;
+    searchGeneration++;
+    rowRevision++;
+    cancelObjectSearchRequest();
+    catalogGeneration++;
+    cachedCatalog = null;
+    cachedCatalogPromise = null;
+    fallbackCatalog = null;
+    fallbackRevision = undefined;
+    renderedDependencies = null;
+    renderedSearchRefs = [];
+    resultRows = [];
+    renderedWindow = null;
+    resultNodes.clear();
+    windowMetrics = null;
+    builtinQuery = null;
+    builtinRows = [];
+    builtinTruncated = false;
+    builtinGeneration++;
     cancelBuiltinSearch();
+    void searchRuntime?.invalidate?.();
     return true;
   }
 
@@ -129,20 +185,86 @@ export function createObjectSearchController({
     return row;
   }
 
-  function rowsFor(query) {
-    if (!query) return [];
-    // Unknown revisions (e.g. isolated callers) keep the safe uncached path.
-    const revision = model.catalogRevision?.();
-    if (!cachedCatalog || revision === undefined || revision !== cachedRevision) {
-      cachedCatalog = createObjectSearchModel({
-        items: model.items,
-        groups: groups.search,
-        itemRef: model.itemRef,
-        compare: model.compare,
+  function prepareSearchCatalog(request) {
+    if (cachedCatalog?.key === request.catalogKey) return Promise.resolve(cachedCatalog);
+    if (cachedCatalogPromise?.key === request.catalogKey) return cachedCatalogPromise.promise;
+
+    const source = createObjectSearchCatalog({
+      items:model.items,
+      groups:groups.search,
+      itemRef:model.itemRef,
+    });
+    const indexCatalog = {
+      keys:source.items.map(item => String(item.key)),
+      ids:source.items.map(item => String(item.id)),
+      names:source.items.map(item => String(item.name || '')),
+      typeLabels:source.items.map(item => String(item.typeLabel || '')),
+      searchTexts:source.items.map(item => String(item.searchText || '')),
+    };
+    const generation = ++catalogGeneration;
+    const promise = searchRuntime.prepare({key:request.catalogKey, catalog:indexCatalog}).then(order => {
+      if (!(order instanceof Uint32Array) || order.length !== source.items.length)
+        throw new TypeError('Object search Worker returned an invalid catalog order.');
+      const orderedItems = new Array(order.length), seen = new Set();
+      for (let i = 0; i < order.length; i++) {
+        const index = order[i];
+        if (index >= source.items.length || seen.has(index))
+          throw new RangeError('Object search Worker returned an invalid catalog position.');
+        seen.add(index);
+        orderedItems[i] = source.items[index];
+      }
+      if (seen.size !== source.items.length)
+        throw new RangeError('Object search Worker omitted catalog rows.');
+      const catalog = {key:request.catalogKey, items:Object.freeze(orderedItems)};
+      if (generation === catalogGeneration && request.scope === projectScope
+        && request.catalogKey === currentCatalogKey(request.scope)) cachedCatalog = catalog;
+      return catalog;
+    }).finally(() => {
+      if (cachedCatalogPromise?.promise === promise) cachedCatalogPromise = null;
+    });
+    cachedCatalogPromise = {key:request.catalogKey, promise};
+    return promise;
+  }
+
+  function rowsFor(query, request) {
+    if (!request.objectRowsPromise) request.objectRowsPromise = (async() => {
+      if (!query) return [];
+      const revision = model.catalogRevision?.();
+      if (!searchRuntime || revision === undefined) {
+        if (!fallbackCatalog || revision === undefined || revision !== fallbackRevision) {
+          fallbackCatalog = createObjectSearchModel({
+            items:model.items,
+            groups:groups.search,
+            itemRef:model.itemRef,
+            compare:model.compare,
+          });
+          fallbackRevision = revision;
+        }
+        return visibleObjectSearchRows(fallbackCatalog, query);
+      }
+
+      const catalog = await prepareSearchCatalog(request);
+      request.controller.signal.throwIfAborted();
+      if (!isCurrentSearchRequest(request)) return null;
+      const indices = await searchRuntime.search({
+        key:catalog.key,
+        query,
+        signal:request.controller.signal,
       });
-      cachedRevision = revision;
-    }
-    return visibleObjectSearchRows(cachedCatalog, query);
+      request.controller.signal.throwIfAborted();
+      if (!isCurrentSearchRequest(request)) return null;
+      if (!(indices instanceof Uint32Array))
+        throw new TypeError('Object search Worker returned invalid result positions.');
+      const rows = new Array(indices.length);
+      for (let i = 0; i < indices.length; i++) {
+        const index = indices[i];
+        if (index >= catalog.items.length)
+          throw new RangeError('Object search Worker returned an out-of-range result.');
+        rows[i] = catalog.items[index];
+      }
+      return rows;
+    })();
+    return request.objectRowsPromise;
   }
 
   function renderWindow({force=false,focusIndex=null,focusAction=false}={}) {
@@ -189,8 +311,17 @@ export function createObjectSearchController({
     const next = { source: resourceKey(['object-search', projectScope]), content: resourceKey(rows.map(item =>
       [item.key, item.id, item.layerGroup, item.name || '', item.typeLabel || '', item.flagUrl || ''])),
       preparation: 'search-rows-v1', context: null, presentation: resourceKey([query, builtinTruncated]) };
-    if (!resourceUpdate(renderedDependencies, next).present) { syncSelection(); return false; }
     const results = elements.searchResults;
+    if (!resourceUpdate(renderedDependencies, next).present) {
+      if (results) {
+        results.inert = false;
+        results.setAttribute('aria-busy', 'false');
+      }
+      syncSelection();
+      return false;
+    }
+    results.inert = false;
+    results.setAttribute('aria-busy', 'false');
     rowRevision++;
     const resetScroll=query!==renderedQuery;
     commands.clearSearchHover();
@@ -206,36 +337,63 @@ export function createObjectSearchController({
     return true;
   }
 
-  function combinedRows(query) {
-    const rows=[...rowsFor(query),...builtinRows.filter(row=>builtinRecordVisible(row))];
-    return [...new Map(rows.map(row=>[row.key,row])).values()];
+  async function combinedRows(query, request) {
+    const objects = await rowsFor(query, request);
+    if (!Array.isArray(objects) || !isCurrentSearchRequest(request)) return null;
+    const rows = [...objects, ...builtinRows.filter(row => builtinRecordVisible(row))];
+    return [...new Map(rows.map(row => [row.key, row])).values()];
   }
 
-  function requestBuiltinRows(query) {
+  async function commitSearchRequest(request) {
+    const rows = await combinedRows(request.query, request);
+    if (!rows || !isCurrentSearchRequest(request)) return false;
+    return commitRows(request.query, rows);
+  }
+
+  function reportSearchError(error, request) {
+    if (!isCurrentSearchRequest(request)) return;
+    const results = elements.searchResults;
+    if (results) {
+      results.inert = false;
+      results.setAttribute('aria-busy', 'false');
+    }
+    if (error.cancelled || error.name === 'AbortError' || request.reportedError) return;
+    request.reportedError = true;
+    onSearchError(error);
+  }
+
+  function requestBuiltinRows(query, request) {
     const normalized = normalizePlaceQuery(query);
-    const next = { source: resourceKey(['builtin-search', projectScope]),
-      content: resourceKey([normalized, model.snapshot().builtinContext ?? null]),
-      preparation: 'search-v1', context: null, presentation: 'results' };
+    const next = {
+      source:resourceKey(['builtin-search', projectScope]),
+      content:resourceKey([normalized, model.snapshot().builtinContext ?? null]),
+      preparation:'search-v1',
+      context:null,
+      presentation:'results',
+    };
     if (model.snapshot().searchActive === false || !resourceUpdate(builtinQuery, next).prepare) return;
     builtinQuery = next;
-    const generation = ++searchGeneration, requestScope = projectScope;
+    const generation = ++builtinGeneration, requestScope = projectScope;
     cancelBuiltinSearch();
     builtinRows = [];
     builtinTruncated = false;
     if (!builtinSearch || [...normalized].length < 2) return;
     Promise.resolve().then(() => builtinSearch(normalized)).then(result => {
-      if (disposed || generation !== searchGeneration || requestScope !== readProjectScope()
-        || model.snapshot().searchActive === false || normalizePlaceQuery(model.snapshot().search) !== normalized) return;
+      if (disposed || generation !== builtinGeneration || requestScope !== readProjectScope()
+        || !isCurrentSearchRequest(request) || model.snapshot().searchActive === false
+        || normalizePlaceQuery(model.snapshot().search) !== normalized) return;
       builtinTruncated = result.truncated === true;
       builtinRows = result.records.slice(0, PLACE_LIMITS.searchResults).map(record => {
-        const ref = normalizeObjectRef({ domain: 'label', type: record.kind, id: record.id });
-        return { ...record, key: ref.key, ref, layerGroup: 'labels', kind: 'object', meta: '내장 도시' };
+        const ref = normalizeObjectRef({domain:'label', type:record.kind, id:record.id});
+        return {...record, key:ref.key, ref, layerGroup:'labels', kind:'object', meta:'내장 도시'};
       });
-      commitRows(query, combinedRows(query));
-    }).catch (error => {
-      if (disposed || generation !== searchGeneration || requestScope !== readProjectScope()) return;
+      return commitSearchRequest(request);
+    }).catch(error => {
+      if (disposed || generation !== builtinGeneration || requestScope !== readProjectScope()
+        || !isCurrentSearchRequest(request)) return;
       builtinQuery = null;
-      if (error.cancelled || error.name === 'AbortError') return;
+      if (error.cancelled || error.name === 'AbortError' || request.reportedError) return;
+      request.reportedError = true;
       onSearchError(error);
     });
   }
@@ -248,8 +406,12 @@ export function createObjectSearchController({
     const results = elements.searchResults;
     if (!results) return false;
     results.classList.toggle('hidden', !query);
-    requestBuiltinRows(query);
-    return commitRows(query, query ? combinedRows(query) : []);
+    const request = getSearchRequest(query);
+    results.inert = true;
+    results.setAttribute('aria-busy', 'true');
+    requestBuiltinRows(query, request);
+    void commitSearchRequest(request).catch(error => reportSearchError(error, request));
+    return true;
   }
 
   function syncSelection() {
@@ -345,9 +507,15 @@ export function createObjectSearchController({
     });
     listen(elements.search, 'input', event => {
       searchGeneration += 1;
+      cancelObjectSearchRequest();
+      builtinGeneration++;
       builtinQuery = null;
       cancelBuiltinSearch();
       commands.setSearchValue(event.currentTarget.value || '');
+      if (elements.searchResults) {
+        elements.searchResults.inert = true;
+        elements.searchResults.setAttribute('aria-busy', 'true');
+      }
       window.clearTimeout(searchTimer);
       searchTimer = window.setTimeout(() => {
         render();
@@ -372,14 +540,19 @@ export function createObjectSearchController({
   }
 
   function cancelSearch() {
-    searchGeneration += 1;
+    searchGeneration++;
+    cancelObjectSearchRequest();
+    builtinGeneration++;
     builtinQuery = null;
     builtinRows = [];
     builtinTruncated = false;
     window.clearTimeout(searchTimer);
     cancelBuiltinSearch();
+    if (elements.searchResults) {
+      elements.searchResults.inert = false;
+      elements.searchResults.setAttribute('aria-busy', 'false');
+    }
     // Surface closure may detach the hovered row before pointerout is delivered.
-    // Request cancellation while search is open must retain its current preview.
     if (model.snapshot().searchSurfaceOpen === false) commands.clearSearchHover();
   }
 
@@ -409,9 +582,14 @@ export function createObjectSearchController({
     renderedDependencies = null;
     renderedSearchRefs = [];
     cachedCatalog = null;
+    cachedCatalogPromise = null;
+    fallbackCatalog = null;
+    fallbackRevision = undefined;
+    catalogGeneration++;
     builtinQuery = null;
     builtinRows = [];
     builtinTruncated = false;
+    void searchRuntime?.invalidate?.();
     syncProjectScope();
     // Reconcile a visible query immediately after accepted map publication.
     // Post-hydration may still be pending, but no retired country can remain.
@@ -430,11 +608,16 @@ export function createObjectSearchController({
       elements.searchResults.inert = false;
       elements.searchResults.setAttribute('aria-busy', 'false');
     }
-    searchGeneration += 1;
+    searchGeneration++;
+    cancelObjectSearchRequest();
+    catalogGeneration++;
+    builtinGeneration++;
     cancelBuiltinSearch();
     builtinRows = [];
     renderedSearchRefs = [];
     cachedCatalog = null;
+    cachedCatalogPromise = null;
+    fallbackCatalog = null;
     window.clearTimeout(searchTimer);
   }
 
@@ -483,6 +666,7 @@ export function createAppObjectSearchController(runtime = {}) {
     builtinRecordVisible: record => runtime.libraryAvailable?.()!==false
       &&state.resourceCapabilities?.builtinPlaces!==false&&state.layerVisibility?.labels!==false&&state.itemVisibility?.labels?.[record.id]!==false&&!(state.labels || []).some(label => String(label.sourcePlaceId || '') === String(record.id)),
     onSearchError: runtime.onSearchError,
+    searchRuntime:runtime.searchRuntime,
     model: {
       snapshot: () => ({ projectScope:runtime.getProjectScope?.()??null,
         builtinContext:JSON.stringify([runtime.getProjectScope?.()??null, state.timelineCursor, state.layerVisibility?.labels, state.itemVisibility?.labels]),

@@ -15,6 +15,7 @@ import { createObjectDetailsPanel } from '../ui/object-details-panel.js';
 import { affiliationTypeAt } from '../document/territorial-affiliation.js';
 import { createTooltipController } from '../ui/tooltip-controller.js';
 import { createAppObjectSearchController } from '../ui/object-search-controller.js';
+import { createObjectSearchRuntime } from '../document/object-search-runtime.js';
 import { createSemanticIcon } from '../ui/icon-utils.js';
 import { createEmptyState } from '../ui/empty-state.js';
 import { createSelectionDomain } from '../document/selection-domain.js';
@@ -216,6 +217,12 @@ export async function composeViewer({ meta }) {
     onError:report,
   });
   disposables.push(inspectorController);
+  // The catalog is indexed lazily on a dedicated Worker when search is first used.
+  const objectSearchRuntime = createObjectSearchRuntime({
+    assetUrl:path => runtimeContext.assetUrl(path),
+    meta:runtimeContext.meta,
+  });
+  disposables.push(objectSearchRuntime);
   // One complete historical project needs no neighbouring-month prefetch.
   const searchController = createAppObjectSearchController({window, document, getElement:get, state:map.viewState,
     objectSearchGroupKeys:map.objectPresentation.LAYER_SEARCH_GROUP_KEYS, listObjectSearchItems:map.objectCatalog.listObjectSearchItems,
@@ -224,7 +231,8 @@ export async function composeViewer({ meta }) {
     libraryAvailable:() => projectDomain.activeProject()?.source==='builtin',
     isSearchOpen:() => surfaces.surfaceController.isOpen('search')&&map.searchActive(), isSearchSurfaceOpen:() => surfaces.surfaceController.isOpen('search'),
     createIcon:(name, className) => createSemanticIcon(document, name, className), createEmptyState:createEmptyState.bind(null, document),
-    onSearchError:report, cancelBuiltinSearch:() => map.cancelSearch(), builtinSearch:value => map.searchPlaces(value),
+    onSearchError:report, searchRuntime:objectSearchRuntime,
+    cancelBuiltinSearch:() => map.cancelSearch(), builtinSearch:value => map.searchPlaces(value),
     selectObjectSearchItem:map.navigation.selectObjectSearchItem, focusObjectRef:map.objectQuery.focusObjectRef,
     closeSearchAfterSingleSelection:() => surfaces.closeSurface('search')});
   disposables.push(searchController);
