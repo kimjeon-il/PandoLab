@@ -24,7 +24,7 @@ export function globeChunkLod(row) {
 // Estimated chord deviation in physical screen pixels. This is a conservative
 // quality heuristic, not a certified bound for every source polygon or pitch.
 // High zoom always falls back to the exact tier.
-export function selectGlobeLod({zoom, dpr = 1, pitch = 0, enabled = true, previous = null} = {}) {
+export function selectGlobeLod({zoom, dpr = 1, pitch = 0, enabled = true, previous = null, moving = false} = {}) {
   if (!enabled||!Number.isFinite(zoom)||!Number.isFinite(dpr)||dpr<=0||!Number.isFinite(pitch))return GLOBE_FINE_LOD;
   const radians = Math.PI/180;
   const scale = referenceZoomPixelsPerDegree(zoom)/radians*Math.max(1,dpr)
@@ -32,7 +32,9 @@ export function selectGlobeLod({zoom, dpr = 1, pitch = 0, enabled = true, previo
   for (const lod of GLOBE_LODS) {
     if (lod.id===GLOBE_FINE_LOD)return lod.id;
     const error = Math.max(1-Math.cos(lod.maxEdgeDegrees*radians/2),lod.riverError);
-    const limit = previous!==null&&lod.id<previous ? .48 : .6;
+    // Motion tolerates a wider estimated screen error, without forcing a
+    // coarse tier at extreme zoom. The stationary hysteresis is independent.
+    const limit = (previous!==null&&lod.id<previous ? .48 : .6)*(moving?4:1);
     if (scale*error<=limit)return lod.id;
   }
   return GLOBE_FINE_LOD;

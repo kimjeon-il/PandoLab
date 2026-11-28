@@ -281,6 +281,12 @@ test('globe LOD selects progressively finer geometry with zoom, DPR and hysteres
   assert.equal(selectGlobeLod({zoom:3.5,dpr:1}),0);
   assert.equal(selectGlobeLod({zoom:3.5,dpr:1,previous:1}),1);
   assert.equal(selectGlobeLod({zoom:3,dpr:1,previous:1}),0);
+  assert.equal(selectGlobeLod({zoom:4,dpr:1,moving:true,previous:1}),0);
+  assert.equal(selectGlobeLod({zoom:4,dpr:1,moving:false,previous:1}),1);
+  assert.equal(selectGlobeLod({zoom:7,dpr:1,moving:true}),1);
+  assert.equal(selectGlobeLod({zoom:7,dpr:1}),GLOBE_FINE_LOD);
+  assert.equal(selectGlobeLod({zoom:9,dpr:1,moving:true}),GLOBE_FINE_LOD);
+  assert.equal(selectGlobeLod({zoom:4,dpr:1,moving:true,enabled:false}),GLOBE_FINE_LOD);
   assert.throws(()=>validateGlobeLodChunks([{lod:0},{lod:2}],1),/Incomplete/);
   assert.throws(()=>validateGlobeLodChunks([{lod:0,slots:[1]},{lod:1,slots:[1]},{lod:2,slots:[1,2]}],1),/owner coverage/);
   assert.deepEqual(validateGlobeLodChunks([{slots:[1]}],undefined),[{slots:[1]}]);
