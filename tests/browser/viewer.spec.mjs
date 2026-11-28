@@ -263,7 +263,7 @@ test('Three globe keeps its map ready and reuses loaded spatial chunks while nav
   expect(startupRequests.some(path=>path.includes('/countries/'))).toBe(true);
   expect(startupRequests.length).toBeLessThan(await page.evaluate(()=>{
    const spec = window.PANDOLAB_BUILD_META.globePreview;
-   return spec.countryChunks.length + spec.borderChunks.length;
+   return spec.territorialCatalog.counts.country + spec.territorialCatalog.counts.border;
   }));
   expectNoDuplicateBaseRequests();
   expect(writes).toBeGreaterThan(0);

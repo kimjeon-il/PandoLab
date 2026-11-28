@@ -1,3 +1,4 @@
+import {validateGlobeSpatialCatalog,collectGlobeSpatialPages} from '../../src/rendering/globe-spatial-catalog.js';
 // P2 publication gate. Validate the exact staged Viewer identities before
 // uploading a Pages artifact. Deployment only reads the verified receipt.
 import assert from 'node:assert/strict';
@@ -86,9 +87,6 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
     ||globe.historySlotCount<0)invalid('Missing Three.js map asset manifest');
   try {globeLodEnabled(globe.lodVersion);}
   catch(error){invalid(error.message);}
-  chunks(globe.countryChunks,'country');
-  chunks(globe.borderChunks,'border');
-  chunks(globe.outlineChunks,'outline');
   packet(globe.graticule);
   packet(globe.hydroMetadata);
   function catalogJson(spec) {
@@ -101,6 +99,9 @@ export function verifyGlobePreviewIdentity(globe,files,bytesFor){
     return JSON.parse(decoded);
   }
   try {
+    const territorial=validateGlobeSpatialCatalog(globe.territorialCatalog,globe.lodVersion,['country','border','outline']);
+    const ids=territorial.pages.map((_,i)=>i);
+    for(const row of collectGlobeSpatialPages(territorial,ids,territorial.pages.map(page=>catalogJson(page.spec)),{complete:true}))packet(row.spec);
     physical(globe.physical);
     const history=validateGlobeHistoryDirectory(catalogJson(globe.historyCatalog),
       {lodVersion:globe.lodVersion,slotCount:globe.historySlotCount});

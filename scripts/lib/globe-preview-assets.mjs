@@ -1,3 +1,4 @@
+import {partitionGlobeSpatialCatalog,describeGlobeTerritorialChunks} from '../../src/rendering/globe-spatial-catalog.js';
 import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { gzipSync, gunzipSync } from 'node:zlib';
@@ -659,6 +660,8 @@ export async function buildGlobePreviewAssets({ territorial, physical, prepared,
     physicalContexts:otherPhysical.map(physicalDirectory)},page=>emit(Buffer.from(JSON.stringify(page)),'catalog/pages/'));
   const historyCatalog=emit(Buffer.from(JSON.stringify({...historyDirectoryIndex,
     history:encodeGlobeHistoricalViews(historicalViews),historyTimeline:timeline.map(row=>[row.month,viewBySignature.get(row.signature),physicalIndex.get(row.physicalIdentity)])})),'catalog/');
-  return {assets,skeleton,preview:{lodVersion:GLOBE_LOD_VERSION,countryChunks,countrySlots,countryLabels,outlineChunks,borderChunks,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
+  const territorialCatalog=partitionGlobeSpatialCatalog(describeGlobeTerritorialChunks({countryChunks,borderChunks,outlineChunks},GLOBE_LOD_VERSION),
+    GLOBE_LOD_VERSION,page=>emit(Buffer.from(JSON.stringify(page)),'catalog/territorial/'));
+  return {assets,skeleton,preview:{lodVersion:GLOBE_LOD_VERSION,territorialCatalog,countrySlots,countryLabels,borderOwners,graticule:emit(buildGraticule()),hydroMetadata,hydroCount:hydroObjects.length,
     physical:physicalDirectory(basePhysical),physicalMonth:month,historySlotCount:historicalCountries.length,historyCatalog}};
 }

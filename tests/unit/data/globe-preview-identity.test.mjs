@@ -1,10 +1,11 @@
+import {partitionGlobeSpatialCatalog,describeGlobeTerritorialChunks,selectGlobeSpatialPages,collectGlobeSpatialPages} from '../../../src/rendering/globe-spatial-catalog.js';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {gzipSync} from 'node:zlib';
 import test from 'node:test';
 import {verifyGlobePreviewIdentity} from '../../../tools/checks/verify-pages-identity.mjs';
 import {partitionGlobeHistoryCatalog,selectGlobeHistoryPages,collectGlobeHistoryPages,validateGlobeHistoryDirectory} from '../../../src/rendering/globe-history-catalog.js';
-import {partitionGlobePhysicalCatalog,selectGlobePhysicalPages,collectGlobePhysicalPages,validateGlobePhysicalCatalog} from '../../../src/rendering/globe-physical-catalog.js';
+import {partitionGlobePhysicalCatalog,collectGlobePhysicalPages,validateGlobePhysicalCatalog} from '../../../src/rendering/globe-physical-catalog.js';
 
 function fixture(){
  const files=new Map(),bytes=new Map();
@@ -21,18 +22,20 @@ function fixture(){
   historicalBorders:[{chunks:[chunk('dated-border')]}],physicalContexts:[physical('dated')],
   history:{version:1,stride:32,rows:[]},historyTimeline:[]};
  const basePhysical=physical('current');
- const globe={countrySlots:[],countryChunks:[chunk('country')],outlineChunks:[chunk('outline')],borderChunks:[chunk('border')],
+ const baseTerritory={countryChunks:[chunk('country')],outlineChunks:[{...chunk('outline'),ownerSlots:[],owners:[]}],borderChunks:[chunk('border')]};
+ const globe={countrySlots:[],
   graticule:emit('grid'),hydroMetadata:emit('hydro'),physical:null,historySlotCount:1};
  function publishHistory(){
   for(const path of files.keys())if(path.includes('/catalog/')){files.delete(path);bytes.delete(path);}
   const physicalDirectory=context=>partitionGlobePhysicalCatalog(context,history.lodVersion,value=>emit(value,'catalog/physical/'));
   globe.physical=physicalDirectory(basePhysical);
+  globe.territorialCatalog=partitionGlobeSpatialCatalog(describeGlobeTerritorialChunks(baseTerritory,history.lodVersion),history.lodVersion,value=>emit(value,'catalog/territorial/'));
   const directory=partitionGlobeHistoryCatalog({...history,physicalContexts:history.physicalContexts.map(physicalDirectory)},value=>emit(value,'catalog/pages/'));
   const root={...directory,history:history.history,historyTimeline:history.historyTimeline};
   globe.historyCatalog=emit(root,'catalog/');return root;
  }
  publishHistory();
- return {globe,history,basePhysical,files,bytes,publishHistory,verify:()=>verifyGlobePreviewIdentity(globe,files,path=>bytes.get(path))};
+ return {globe,history,basePhysical,baseTerritory,files,bytes,publishHistory,verify:()=>verifyGlobePreviewIdentity(globe,files,path=>bytes.get(path))};
 }
 
 test('Pages identity traverses current and historical spatial assets',()=>{
@@ -44,10 +47,9 @@ test('Pages identity traverses current and historical spatial assets',()=>{
 
 test('Pages identity rejects retired unpartitioned manifests and physical packets',()=>{
  const f=fixture();
- const chunks=f.globe.countryChunks;
- f.globe.countries=chunks[0].spec;delete f.globe.countryChunks;
+ const catalog=f.globe.territorialCatalog;delete f.globe.territorialCatalog;
  assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
- f.globe.countryChunks=chunks;
+ f.globe.territorialCatalog=catalog;
  delete f.globe.physical.catalog;
  assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
 });
@@ -70,9 +72,9 @@ test('Pages identity rejects incomplete LOD families and inconsistent history ve
   for(const row of [...context.waters,...context.lakes])row.chunks=variants(row.chunks);
   context.riverChunks=variants(context.riverChunks);context.riverDetail=variants(context.riverDetail).map(row=>({...row,id:row.id+':'+row.lod}));
  };
- f.globe.countryChunks=variants(f.globe.countryChunks);
- f.globe.borderChunks=variants(f.globe.borderChunks);
- f.globe.outlineChunks=variants(f.globe.outlineChunks);
+ f.baseTerritory.countryChunks=variants(f.baseTerritory.countryChunks);
+ f.baseTerritory.borderChunks=variants(f.baseTerritory.borderChunks);
+ f.baseTerritory.outlineChunks=variants(f.baseTerritory.outlineChunks);
  physical(f.basePhysical);
  assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
  f.history.lodVersion=1;
@@ -81,7 +83,9 @@ test('Pages identity rejects incomplete LOD families and inconsistent history ve
  for(const context of f.history.physicalContexts)physical(context);
  f.publishHistory();
  assert.equal(f.verify(),f.files.size);
- f.globe.countryChunks=f.globe.countryChunks.filter(row=>row.lod!==1);
+ const catalog=f.globe.territorialCatalog;
+ catalog.pages=catalog.pages.filter(page=>page.role!=='country'||page.lod!==1);
+ catalog.counts.country=catalog.pages.filter(page=>page.role==='country').reduce((sum,page)=>sum+page.count,0);
  assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
 });
 
@@ -123,13 +127,26 @@ test('physical catalog pages select by spatial coverage, zoom, layer and LOD',()
  const values=[],emit=value=>{values.push(value);return {sha256:String(values.length),decodedBytes:JSON.stringify(value).length};};
  const root=partitionGlobePhysicalCatalog(raw,1,emit,{maxRows:1});
  validateGlobePhysicalCatalog(root,1);
- const ids=selectGlobePhysicalPages(root,{cull:box=>box[3]>0,zoom:3,lod:1,roles:['water','lake','river']});
+ const ids=selectGlobeSpatialPages(root.catalog,{cull:box=>box[3]>0,zoom:3,lod:1,roles:['water','lake','river']});
  assert.deepEqual(collectGlobePhysicalPages(root,ids,ids.map(id=>values[id])).map(row=>row.spec.sha256),['w1','r1']);
- const detail=selectGlobePhysicalPages(root,{zoom:5,lod:2,roles:['detail']});
+ const detail=selectGlobeSpatialPages(root.catalog,{zoom:5,lod:2,roles:['detail']});
  assert.deepEqual(collectGlobePhysicalPages(root,detail,detail.map(id=>values[id])).map(row=>row.spec.sha256),['d2']);
  const all=root.catalog.pages.map((_,i)=>i);
  assert.equal(collectGlobePhysicalPages(root,all,all.map(id=>values[id]),{complete:true}).length,15);
  assert.throws(()=>collectGlobePhysicalPages(root,ids,ids.map(id=>values[id]),{complete:true}),/Incomplete/);
  const f=fixture(),page=f.globe.physical.catalog.pages[0];f.files.delete(page.spec.url);
+ assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
+});
+
+test('base territorial descriptor pages preserve keys and outline ordering across viewport selection',()=>{
+ const near=[.8,0,0,1,.1,.1],far=[-1,0,0,-.8,.1,.1];
+ const family=(bounds,id)=>[0,1,2].map(lod=>({lod,bounds,ownerSlots:[0],spec:{sha256:id+lod}}));
+ const roles=describeGlobeTerritorialChunks({countryChunks:[...family(near,'c'),...family(far,'f')],borderChunks:family(near,'b'),outlineChunks:[...family(far,'o'),...family(near,'p')]},1);
+ const values=[],emit=value=>{values.push(value);return {sha256:String(values.length),decodedBytes:JSON.stringify(value).length};};
+ const root=partitionGlobeSpatialCatalog(roles,1,emit,{maxRows:1}),ids=selectGlobeSpatialPages(root,{cull:box=>box[3]>0,maxLod:1}),rows=collectGlobeSpatialPages(root,ids,ids.map(i=>values[i]));
+ assert.ok(rows.every(row=>row.lod<=1&&row.bounds[3]>0));
+ assert.deepEqual(rows.filter(row=>row.role==='outline').map(row=>[row.order,row.count]),[[1,2],[1,2]]);
+ assert.equal(rows.find(row=>row.role==='country').key,roles.country[0].key);
+ const f=fixture(),page=f.globe.territorialCatalog.pages[0];f.files.delete(page.spec.url);
  assert.throws(f.verify,{code:'ARTIFACT_DEPLOY_DATA_PIN'});
 });

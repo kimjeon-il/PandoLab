@@ -384,7 +384,12 @@ test('base border chunks combine by cell while retaining owner slots and base-bo
   baseSlots:[],cacheBudget:{historicalCpuBytes:1024*1024,borderBatchBytes:1024*1024},
   loadMesh:async()=>({}),loadStroke:async()=>({}),load:async()=>({}),slotCount:()=>4,
  });
- const rows=assets.plan(()=>true);
+ const {describeGlobeTerritorialChunks}=await import('../../../src/rendering/globe-spatial-catalog.js');
+ const selection=assets.createSelection(Object.values(describeGlobeTerritorialChunks({countryChunks:[],outlineChunks:[],borderChunks:[
+  border('border-a','cell-a',[0],[-1,-1,-1,0,0,0]),border('border-b','cell-a',[1],[-.5,-1,-1,.2,0,0]),
+  border('border-c','cell-b',[3],[0,-1,-1,1,0,0]),
+ ]},undefined)).flat());
+ const rows=assets.plan(()=>true,()=>true,undefined,selection);
  assert.equal(rows.length,2);
  const grouped=rows.find(row=>row.sources);
  assert.equal(grouped.baseBorder,true);
@@ -423,7 +428,9 @@ test('historical border and outline selections do not mix LODs or lose owner mem
   const assets=createGlobeTerritorialAssets({lodVersion:1,countryChunks:variants('base',[0]),borderChunks:variants('border',[0]),outlineChunks:variants('outline',[0])},{
     baseSlots:[{}],cacheBudget:{historicalCpuBytes:1024,borderBatchBytes:1024},loadMesh:async()=>({}),loadStroke:async()=>({}),load:async()=>({}),slotCount:()=>2,
   });
-  const history=assets.createHistorySelection({lodVersion:1,historicalCountries:[{countryChunks:variants('historical',[1]),outlineChunks:variants('historical-outline',[1])}],
+  const {describeGlobeTerritorialChunks}=await import('../../../src/rendering/globe-spatial-catalog.js');
+  const base=Object.values(describeGlobeTerritorialChunks({countryChunks:variants('base',[0]),borderChunks:variants('border',[0]),outlineChunks:variants('outline',[0])},1)).flat();
+  const history=assets.createSelection(base,{lodVersion:1,historicalCountries:[{countryChunks:variants('historical',[1]),outlineChunks:variants('historical-outline',[1])}],
     historicalBorders:[{chunks:variants('historical-border')}]});
   const view={borders:[0]};
   for (const lod of [0,1,2]) {
@@ -431,7 +438,7 @@ test('historical border and outline selections do not mix LODs or lose owner mem
     assert.deepEqual(assets.planHistoryBorders(view,()=>true,lod,history).map(row=>row.spec.sha256),['historical-border-'+lod]);
     assert.deepEqual(assets.outlineDescriptors(1,lod,history).map(row=>row.spec.sha256),['historical-outline-'+lod]);
   }
-  assert.throws(()=>assets.createHistorySelection({historicalCountries:[],historicalBorders:[]}),/LOD version mismatch/);
+  assert.throws(()=>assets.createSelection(base,{historicalCountries:[],historicalBorders:[]}),/LOD version mismatch/);
   assets.dispose();
 });
 

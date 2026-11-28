@@ -13,8 +13,9 @@ import { COUNTRY_LABEL_MIN_ZOOM } from './three-globe-labels.js';
 import { globeTerritoryKey } from './globe-mesh.js';
 import { createGlobeTerritorialAssets, globeViewChunkCuller, globeChunkSetContains, globeChunkPlanKey, createGlobePlanFailures, reuseGlobeTerritorialCoverage, reuseGlobePhysicalCoverage } from './globe-view-mesh-assets.js';
 import { createGlobeHistoryIndex, globeHistoryMonthKey, createGlobeNeighborPrefetchKey } from './globe-history-index.js';
-import { validateGlobeHistoryDirectory,validateGlobeHistoryPage,selectGlobeHistoryPages,collectGlobeHistoryPages } from './globe-history-catalog.js';
-import { validateGlobePhysicalCatalog,validateGlobePhysicalPage,selectGlobePhysicalPages,collectGlobePhysicalPages } from './globe-physical-catalog.js';
+import { validateGlobeHistoryDirectory,selectGlobeHistoryPages,collectGlobeHistoryPages } from './globe-history-catalog.js';
+import { validateGlobePhysicalCatalog,collectGlobePhysicalPages } from './globe-physical-catalog.js';
+import { validateGlobeSpatialCatalog,selectGlobeSpatialPages,collectGlobeSpatialPages } from './globe-spatial-catalog.js';
 import { createGlobeTemporalPresentation } from './globe-temporal-presentation.js';
 import { createGlobePacketTasks, globePacketWorkerCount } from './globe-packet-tasks.js';
 import { createGlobeWorkScheduler, estimateGlobeWorkingBytes } from './globe-work-scheduler.js';
@@ -41,7 +42,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   const refs = slots.map(({id}) => normalizeObjectRef({domain:'territorial', type:'entity', id}));
   let historyIndex = createGlobeHistoryIndex({version:1, stride:32, rows:[]}, baseSlots.length);
   let historyLoaded = false, historyCatalogBytes = 0, historyDirectory=null;
-  const baseCatalogSelection=Object.freeze({key:null,pages:[],history:null,physicalSource:null,bytes:0});
+  const baseCatalogSelection=Object.freeze({key:null,pages:[],territorialSource:null,physicalSource:null,bytes:0});
   let activeCatalogSelection=baseCatalogSelection,catalogViewKey=null;
   let detailCatalogSelection=null,detailCatalogPendingKey=null,detailCatalogFailedKey=null;
   const activeCatalogKey={},detailCatalogKey={};
@@ -188,6 +189,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   });
   const {load, loadTerritorialStroke} = assetReader;
   const loadMesh = async(row, signal, priority = 20) => ({packet:await load(row,'mesh', {signal, priority})});
+  validateGlobeSpatialCatalog(spec.territorialCatalog,spec.lodVersion,['country','border','outline']);
   const territorialAssets = createGlobeTerritorialAssets(spec, {
     baseSlots, cacheBudget, residency, loadMesh, loadStroke:loadTerritorialStroke, load, slotCount:() => slots.length,
   });
@@ -261,9 +263,9 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
         (row.historySlot!==undefined?selectedSlots.has(row.historySlot):!row.slots?.length||row.slots.some(slot => selectedSlots.has(slot)));
       if (!boundariesVisible)return false;
       return row.baseBorder&&(!row.slots?.length||row.slots.some(group => !hidden.has(group)));
-    },lod,selection.history);
+    },lod,selection.territorialSource);
     if (boundariesVisible&&prepared.view)
-      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod,selection.history));
+      rows.push(...territorialAssets.planHistoryBorders(prepared.view, viewCull(padding+extra),lod,selection.territorialSource));
     if (territoryPlans.size>=8)territoryPlans.clear(); territoryPlans.set(key, rows); return rows;
   }
   function activeCost(basePlan, physicalTarget) {
@@ -358,24 +360,26 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
   function catalogRequest(prepared,identity,visibility=null) {
     const context=physicalDirectoryFor(identity);
     if (!context||prepared.view&&!historyDirectory)throw Error('Missing globe catalog directory');
-    const cull=viewCull(96+strokePadding()+32);
-    const historical=historyDirectory?selectGlobeHistoryPages(historyDirectory,prepared,{baseCount:baseSlots.length,cull}):[];
+    const cull=viewCull(96+strokePadding()+32),maxLod=Math.max(currentGeometryLod(),publishedPhysical?.plan.lod??0);
+    const objectsVisible=visibility?.objectsVisible??state.layerVisibility.objects!==false;
+    const bordersVisible=objectsVisible&&(visibility?.bordersVisible??bordersNeeded());
+    const historical=historyDirectory&&objectsVisible?selectGlobeHistoryPages(historyDirectory,prepared,{baseCount:baseSlots.length,cull}):[];
+    const territoryRoles=objectsVisible?['country','outline']:[];if (bordersVisible)territoryRoles.push('border');
+    const territorial=selectGlobeSpatialPages(spec.territorialCatalog,{cull,roles:territoryRoles,maxLod});
     const roles=['water'];
     if (visibility?.lakesVisible??state.layerVisibility.lakes!==false)roles.push('lake');
     if (visibility?.riversVisible??state.layerVisibility.rivers!==false)roles.push('river');
-    const physical=selectGlobePhysicalPages(context,{cull,roles,zoom:view.zoom});
+    const physical=selectGlobeSpatialPages(context.catalog,{cull,roles,zoom:view.zoom,maxLod});
     const pages=[...historical.map(id=>({kind:'catalog-page',id,spec:historyDirectory.pages[id].spec})),
-      ...physical.map(id=>({kind:'physical-catalog-page',id,spec:context.catalog.pages[id].spec}))];
-    return {key:JSON.stringify([identity,historical,physical]),historical,physical,context,pages};
+      ...territorial.map(id=>({kind:'spatial-catalog-page',id,spec:spec.territorialCatalog.pages[id].spec})),
+      ...physical.map(id=>({kind:'spatial-catalog-page',id,spec:context.catalog.pages[id].spec}))];
+    return {key:JSON.stringify([identity,historical,territorial,physical]),historical,territorial,physical,context,pages};
   }
-  async function readCatalogPage(page,context,signal,priority) {
+  async function readCatalogPage(page,signal,priority) {
     const row=page.spec,key=page.kind+':'+row.sha256;
-    return catalogPages.read(key,async(readSignal,readPriority)=>{
-      const raw=await load(row,page.kind,{signal:readSignal,priority:readPriority});
-      const value=page.kind==='catalog-page'?validateGlobeHistoryPage(historyDirectory,page.id,raw):
-        validateGlobePhysicalPage(context,page.id,raw);
-      return {value,estimatedBytes:row.decodedBytes*3};
-    },signal,{priority});
+    return catalogPages.read(key,async(readSignal,readPriority)=>({
+      value:await load(row,page.kind,{signal:readSignal,priority:readPriority}),estimatedBytes:row.decodedBytes*3,
+    }),signal,{priority});
   }
   const catalogBytes=pages=>pages.reduce((sum,page)=>sum+page.spec.decodedBytes*3,0);
   async function readCatalogSelection(request,signal,priority=20,claim=null) {
@@ -388,13 +392,13 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }
     if (claim)for (const page of request.pages)
       if (!catalogPages.has(page.kind+':'+page.spec.sha256)&&!claim(page.spec,page.kind))return null;
-    const results=await Promise.all(request.pages.map(page=>readCatalogPage(page,request.context,signal,priority)));
+    const results=await Promise.all(request.pages.map(page=>readCatalogPage(page,signal,priority)));
     signal?.throwIfAborted();
-    const historical=request.historical.length?collectGlobeHistoryPages(historyDirectory,request.historical,
-      results.slice(0,request.historical.length).map(row=>row.value)):null;
-    const physical=collectGlobePhysicalPages(request.context,request.physical,
-      results.slice(request.historical.length).map(row=>row.value));
-    return {...request,history:historical?territorialAssets.createHistorySelection(historical):null,
+    const n=request.historical.length,m=n+request.territorial.length;
+    const historical=n?collectGlobeHistoryPages(historyDirectory,request.historical,results.slice(0,n).map(row=>row.value)):null;
+    const territorial=collectGlobeSpatialPages(spec.territorialCatalog,request.territorial,results.slice(n,m).map(row=>row.value));
+    const physical=collectGlobePhysicalPages(request.context,request.physical,results.slice(m).map(row=>row.value));
+    return {...request,territorialSource:territorialAssets.createSelection(territorial,historical),
       physicalSource:physicalAssets.createDescriptor(request.context,physical),bytes};
   }
   async function prepareCatalogSelection(prepared,identity,signal,priority=20,claim=null,visibility=null) {
@@ -446,8 +450,8 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     if (detailCatalogSelection) {detailCatalogSelection=null;residency.remove(detailCatalogKey);residencyDirty=true;}
   }
   function detailCatalogRequest(context,lod) {
-    const ids=selectGlobePhysicalPages(context,{cull:viewCull(strokePadding()),roles:['detail'],zoom:view.zoom,lod});
-    const ranked=ids.map(id=>({kind:'physical-catalog-page',id,spec:context.catalog.pages[id].spec,
+    const ids=selectGlobeSpatialPages(context.catalog,{cull:viewCull(strokePadding()),roles:['detail'],zoom:view.zoom,lod});
+    const ranked=ids.map(id=>({kind:'spatial-catalog-page',id,spec:context.catalog.pages[id].spec,
       bounds:context.catalog.pages[id].bounds})).sort((a,b)=>optionalDistance(a)-optionalDistance(b));
     const pages=[];let bytes=0;
     for (const page of ranked) {
@@ -473,7 +477,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
     }
     const controller=startRequest('detail-catalog'),epoch=generation;
     detailCatalogPendingKey=request.key;
-    Promise.all(request.pages.map(page=>readCatalogPage(page,request.context,controller.signal,5))).then(results=>{
+    Promise.all(request.pages.map(page=>readCatalogPage(page,controller.signal,5))).then(results=>{
       if (!requestCurrent('detail-catalog',controller)||generation!==epoch)return;
       const rows=collectGlobePhysicalPages(request.context,request.ids,results.map(row=>row.value));
       detailCatalogSelection={...request,index:physicalAssets.createDetailDescriptor(rows)};
@@ -914,7 +918,7 @@ export function createThreeViewerRenderer(deps, {meta, initialCamera, presentMap
       const roleStyles = paint.roleStyles();
       for (const [slot, code] of paint.countryRoles()) {
         if (!(roleStyles[code]?.width>0&&roleStyles[code]?.alpha>0))continue;
-        for (const descriptor of territorialAssets.outlineDescriptors(slot,lod,admission.selection.history)) {
+        for (const descriptor of territorialAssets.outlineDescriptors(slot,lod,admission.selection.territorialSource)) {
           if (descriptor.bounds&&!cull(descriptor.bounds))continue;
           let target = targets.get(descriptor.key);
           if (!target) {target = {descriptor, roles:new Map()}; targets.set(descriptor.key, target);}

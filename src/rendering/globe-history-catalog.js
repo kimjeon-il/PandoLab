@@ -125,7 +125,7 @@ export function collectGlobeHistoryPages(directory,ids,values) {
   if (ids.length!==values.length)throw Error('Incomplete historical page read');
   for (const [i,page] of ids.entries()) {
     const value=validateGlobeHistoryPage(directory,page,values[i]);
-    for (const entry of value.entries)result[value.kind][entry.index]=entry.value;
+    for (const entry of value.entries)result[value.kind][entry.index]={...entry.value,catalogPage:directory.pages[page].spec.sha256};
   }
   return result;
 }
