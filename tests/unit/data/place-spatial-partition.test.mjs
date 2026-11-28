@@ -39,7 +39,7 @@ test('city release builds three nested spatial stages and recursively pages coin
  const firstCell=partition.tiles['0/4-4'];
  assert.ok(Array.isArray(firstCell)&&firstCell.length>1,'coincident cities must use deterministic overflow pages');
  assert.ok(partition.search.ci.length>0);
- assert.ok(partition.search.ci.every(row=>row.first==='ci'&&row.last==='ci\\uffff'));
+ assert.ok(partition.search.ci.every(row=>row.first==='ci'&&row.last==='ci\uffff'));
  for(const shard of partition.shardFiles)assert.ok(shard.bytes.length<=512*1024);
 });
 

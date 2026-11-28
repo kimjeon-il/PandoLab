@@ -57,8 +57,9 @@ function splitCell(records,bounds,depth,path,output) {
     if(children.length===1&&children[0].rows.length===records.length) {
       const ordered=[...records].sort((a,b)=>a.id.localeCompare(b.id));
       children=[];
-      for(let firstIndex=0;firstIndex<ordered.length;firstIndex+=PLACE_LIMITS.tileRecords)
-        children.push({rows:ordered.slice(firstIndex,firstIndex+PLACE_LIMITS.tileRecords),index:firstIndex/PLACE_LIMITS.tileRecords});
+      const chunkSize=Math.max(1,Math.ceil(ordered.length/4));
+      for(let firstIndex=0;firstIndex<ordered.length;firstIndex+=chunkSize)
+        children.push({rows:ordered.slice(firstIndex,firstIndex+chunkSize),index:firstIndex/chunkSize});
     }
   }
   for(const child of children) {
@@ -126,7 +127,7 @@ export function buildPlaceSpatialPartition(inputRecords) {
         }
         for(const prefix of prefixes) {
           if(!search[prefix])search[prefix]=[];
-          search[prefix].push({...descriptor,first:prefix,last:prefix+'\\uffff',rank:page.priority});
+          search[prefix].push({...descriptor,first:prefix,last:prefix+'\uffff',rank:page.priority});
         }
       }
       offset+=page.bytes.length;

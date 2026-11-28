@@ -8,7 +8,6 @@ import {withLibraryOutputs} from "../data/library-runtime.mjs";
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
-import { encodePlaceTile, decodePlaceTile } from "../../src/data/place-codec.js";
 import { normalizePlace, PLACE_LIMITS } from "../../src/document/place-contract.js";
 import { buildPlaceSpatialPartition } from './place-spatial-partition.mjs';
 import { reportPath } from "../data/report-paths.mjs";

@@ -62,7 +62,7 @@ jobs:
           node tools/data/report-paths.mjs reports/map-analysis/corpus/gazetteer-v1/sources/cities500.source.json read
           node tools/data/report-paths.mjs reports/map-analysis/corpus/gazetteer-v1/runtime/manifest.json read
           node tools/data/report-paths.mjs reports/map-analysis/corpus/gazetteer-v1/runtime/records read
-      - name: Generate population tiers and neighbourhood weights only
+      - name: Generate population ranks and multi-stage spatial city tiles
         run: node tools/build/build-place-runtime.mjs
       - name: Verify deterministic generation and approved records
         run: |-
@@ -92,11 +92,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           test "$(git ls-remote origin refs/heads/work/active | cut -f1)" = "$GITHUB_SHA"
           node --input-type=module <<'JS'
+          import fs from 'node:fs';
           import {storeLibraryData} from './tools/data/library-store.mjs';
+          const directory='assets/data/places';
+          const manifest=JSON.parse(fs.readFileSync(directory+'/manifest.json','utf8'));
+          const shards=Object.values(manifest.shards).map(row=>directory+'/'+row.url);
           storeLibraryData({push:true,expectedRevision:process.env.DATA_REVISION,expectedBranch:'work/active',expectedAppBranch:'work/active',prefixes:[
-            'assets/data/places/reviewed-records-v1.json',
-            'assets/data/places/places-v1.bin',
-            'assets/data/places/manifest.json',
+            directory+'/reviewed-records-v1.json',...shards,directory+'/manifest.json',
           ]});
           JS
           git add -- config/library-data.json
