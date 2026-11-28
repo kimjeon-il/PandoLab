@@ -78,7 +78,11 @@ jobs:
             assert.equal(p.entries["1835848"].populationTier,1);
             assert.equal(p.entries["1835235"].populationTier,1);
             assert(p.entries["1835848"].priority>p.entries["1835235"].priority);
-            console.log(JSON.stringify({count:p.approvedCount,neighbours:p.neighbourhoodCandidateCount,
+            assert.equal(a.spatialPartition?.schema,"pando-place-spatial-partition-v1");
+            assert.equal(a.spatialPartition?.sourceRecordCount,p.approvedCount);
+            assert.deepEqual(a.stages.map(({id,minZoom,columns,rows})=>[id,minZoom,columns,rows]),[[0,0,8,8],[1,4.5,16,16],[2,7,32,32]]);
+            assert.equal(Object.keys(a.shards).length,a.spatialPartition.shards);
+            console.log(JSON.stringify({count:p.approvedCount,spatialPages:a.spatialPartition.totalPages,shards:a.spatialPartition.shards,neighbours:p.neighbourhoodCandidateCount,
               seoul:p.entries["1835848"],daejeon:p.entries["1835235"]}));
           '
       - name: Store and pin only completed city data; never merge main

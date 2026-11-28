@@ -1,7 +1,7 @@
 /**
  * Reproducible publisher for all reviewed place batches.
  * The review JSONs remain the only source of historical name decisions.
- * Outputs: a portable catalog, one PLAC v4 shard, and a hashed search/viewport manifest.
+ * Outputs: a portable catalog, bounded PLAC v4 spatial shards, and a hashed viewport/search manifest.
  */
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import {withLibraryOutputs} from "../data/library-runtime.mjs";

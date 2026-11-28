@@ -82,6 +82,8 @@ export function validatePlaceManifest(raw) {
       const pages=entries.flatMap(row=>row.rows);
       const maxRecords=pages.reduce((max,row)=>Math.max(max,row.recordCount),0);
       const maxBytes=pages.reduce((max,row)=>Math.max(max,row.length),0);
+      const stageRecords=pages.reduce((sum,row)=>sum+row.recordCount,0);
+      if(stageRecords!==partition.sourceRecordCount)throw new TypeError('Place spatial stage record count mismatch: '+stage.id);
       if(stats?.id!==stage.id||stats.minZoom!==stage.minZoom||stats.columns!==stage.columns||stats.rows!==stage.rows||
         stats.tileCount!==entries.length||stats.pageCount!==pages.length||stats.maxRecords!==maxRecords||stats.maxBytes!==maxBytes)
         throw new TypeError('Place spatial stage statistics mismatch: '+stage.id);
