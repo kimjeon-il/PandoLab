@@ -117,7 +117,7 @@ export function buildPlaceSpatialPartition(inputRecords) {
         }
         for(const prefix of prefixes) {
           if(!search[prefix])search[prefix]=[];
-          search[prefix].push({...descriptor,first:prefix,last:prefix+'\\uffff',rank:page.priority});
+          search[prefix].push({...descriptor,first:prefix,last:prefix+'\uffff',rank:page.priority});
         }
       }
       offset+=page.bytes.length;
