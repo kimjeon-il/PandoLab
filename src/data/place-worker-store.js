@@ -55,10 +55,39 @@ export function validatePlaceManifest(raw) {
     if (!shard || !Number.isInteger(row.offset) || row.offset < 0 || !Number.isInteger(row.length) || row.length < 32 || row.offset + row.length > shard.bytes) throw new RangeError('Invalid place tile range');
     if (!SHA256_PATTERN.test(String(row.sha256 || ''))) throw new TypeError('Invalid place tile hash');
   };
-  for (const [key, row] of Object.entries(raw.tiles)) {
+  const tileEntries=Object.entries(raw.tiles),tileRowsByStage=new Map();
+  for (const [key,value] of tileEntries) {
     const match = /^(\d+)\/(\d+)-(\d+)$/u.exec(key), stage = match && raw.stages.find(s => s.id === Number(match[1]));
     if (!stage || Number(match[2]) >= stage.columns || Number(match[3]) >= stage.rows) throw new TypeError('Invalid place tile key');
-    checkTile(row);
+    const rows=Array.isArray(value)?value:[value];
+    if(!rows.length||rows.length>4096)throw new RangeError('Invalid place spatial page group');
+    for(const row of rows) {
+      checkTile(row);
+      if(raw.spatialPartition&&(!Number.isInteger(row.recordCount)||row.recordCount<1||row.recordCount>PLACE_LIMITS.tileRecords||
+        !Number.isFinite(row.priority)||!Number.isFinite(row.population)||row.length>PLACE_LIMITS.shardBytes))
+        throw new TypeError('Invalid place spatial page metadata');
+    }
+    let pages=tileRowsByStage.get(stage.id);if(!pages){pages=[];tileRowsByStage.set(stage.id,pages);}pages.push({key,rows});
+  }
+  if(raw.spatialPartition!==undefined) {
+    const partition=raw.spatialPartition;
+    if(partition?.schema!=='pando-place-spatial-partition-v1'||partition.algorithm!=='equirectangular-grid-bounded-overflow-v1'||
+      partition.maxTileRecords!==PLACE_LIMITS.tileRecords||partition.maxTileBytes!==PLACE_LIMITS.shardBytes||
+      partition.maxQueryPages!==PLACE_LIMITS.queryTiles||!Number.isInteger(partition.sourceRecordCount)||partition.sourceRecordCount<0||
+      !Array.isArray(partition.stages)||partition.stages.length!==raw.stages.length||partition.shards!==Object.keys(raw.shards).length)
+      throw new TypeError('Invalid place spatial partition contract');
+    let totalCells=0,totalPages=0;
+    for(let index=0;index<raw.stages.length;index++) {
+      const stage=raw.stages[index],stats=partition.stages[index],entries=tileRowsByStage.get(stage.id)??[];
+      const pages=entries.flatMap(row=>row.rows);
+      const maxRecords=pages.reduce((max,row)=>Math.max(max,row.recordCount),0);
+      const maxBytes=pages.reduce((max,row)=>Math.max(max,row.length),0);
+      if(stats?.id!==stage.id||stats.minZoom!==stage.minZoom||stats.columns!==stage.columns||stats.rows!==stage.rows||
+        stats.tileCount!==entries.length||stats.pageCount!==pages.length||stats.maxRecords!==maxRecords||stats.maxBytes!==maxBytes)
+        throw new TypeError('Place spatial stage statistics mismatch: '+stage.id);
+      totalCells+=entries.length;totalPages+=pages.length;
+    }
+    if(partition.totalCells!==totalCells||partition.totalPages!==totalPages)throw new TypeError('Place spatial partition totals mismatch');
   }
   for (const pages of Object.values(raw.search)) {
     if (!Array.isArray(pages)) throw new TypeError('Invalid place search pages');
@@ -177,7 +206,9 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
       const bytes = rangeBytes ?? full.subarray(row.offset, row.offset + row.length);
       if (await sha256Hex(bytes) !== row.sha256) throw new Error('Invalid place tile hash');
       context.throwIfCancelled();
-      const records=decodePlaceTile(bytes).map(record => {
+      const decoded=decodePlaceTile(bytes);
+      if(row.recordCount!==undefined&&decoded.length!==row.recordCount)throw new RangeError('Place spatial page record count mismatch');
+      const records=decoded.map(record => {
         const rank=record.source==='geonames' && record.kind==='city'
           ? manifest.displayRanking?.entries?.[record.sourceId] : null;
         return rank ? normalizePlace({ ...record, population:rank.population,
@@ -205,15 +236,27 @@ export function createPlaceWorkerStore({ manifest: raw, baseUrl = 'http://localh
     metrics.queryCount++; context.throwIfCancelled();
     const zoom=Number(view.threshold || 0);
     const stages=manifest.stages.filter(stage => isWithinDisplayZoom(zoom,stage.minZoom)).sort((a,b) => b.minZoom-a.minZoom);
-    let tileWindow=null, specs=[];
-    for (const stage of stages) { tileWindow=createHydroTileWindow({ ...view, manifest: { stages: [stage] } }); specs=hydroTileSpecsForWindow(tileWindow); if (specs.length <= PLACE_LIMITS.queryTiles) break; }
-    if (specs.length > PLACE_LIMITS.queryTiles) throw new RangeError('Place viewport tile budget exceeded');
-    const rows=specs.map(spec => manifest.tiles[`${spec.stage}/${spec.x}-${spec.y}`]).filter(Boolean);
+    let tileWindow=null,rows=[],spatialPagesOmitted=false;
+    const compareTilePages=(a,b)=>(Number(b.priority)||0)-(Number(a.priority)||0)||
+      (Number(b.population)||0)-(Number(a.population)||0)||String(a.shard).localeCompare(String(b.shard))||a.offset-b.offset;
+    for(const stage of stages) {
+      const candidateWindow=createHydroTileWindow({...view,manifest:{stages:[stage]}}),specs=hydroTileSpecsForWindow(candidateWindow);
+      const candidateRows=specs.flatMap(spec=>{
+        const value=manifest.tiles[`${spec.stage}/${spec.x}-${spec.y}`];
+        return value===undefined?[]:Array.isArray(value)?value:[value];
+      }).sort(compareTilePages);
+      tileWindow=candidateWindow;rows=candidateRows;
+      if(rows.length<=PLACE_LIMITS.queryTiles)break;
+    }
+    if(rows.length>PLACE_LIMITS.queryTiles){rows=rows.slice(0,PLACE_LIMITS.queryTiles);spatialPagesOmitted=true;}
     const inViewport=viewportPredicate(view);
-    const {records}=await loadRows(rows,context,record =>
+    const loaded=await loadRows(rows,context,record =>
       isWithinDisplayZoom(zoom,placeDisplayMinZoom(record.minZoom))&&inViewport(record),PLACE_LIMITS.candidates);
-    metrics.lastTileCount=rows.length; metrics.lastCandidateCount=records.length;
-    return { signature: `${manifest.revision}:${tileWindow?.signature || 'empty'}`, records, tileCount: rows.length, cacheBytes: used, peakWorkingRecords:metrics.peakWorkingRecords };
+    metrics.lastTileCount=rows.length; metrics.lastCandidateCount=loaded.records.length;
+    return {signature:`${manifest.revision}:${tileWindow?.signature||'empty'}`,records:loaded.records,
+      tileCount:rows.length,stageId:tileWindow?.windows?.[0]?.stage??null,
+      truncated:spatialPagesOmitted||loaded.truncated,spatialPagesOmitted,
+      cacheBytes:used,peakWorkingRecords:metrics.peakWorkingRecords};
   }
   async function search(value, context=noCancellation, presentation=null) {
     const query=normalizePlaceQuery(value); if ([...query].length < 2) return { records: [], truncated: false };

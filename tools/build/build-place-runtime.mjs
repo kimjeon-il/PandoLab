@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { encodePlaceTile, decodePlaceTile } from "../../src/data/place-codec.js";
-import { normalizePlace, normalizePlaceQuery, PLACE_LIMITS } from "../../src/document/place-contract.js";
+import { normalizePlace, PLACE_LIMITS } from "../../src/document/place-contract.js";
+import { buildPlaceSpatialPartition } from './place-spatial-partition.mjs';
 import { reportPath } from "../data/report-paths.mjs";
 import { generateApprovedPlaceDisplayRanks } from "./place-display-rank.mjs";
 
@@ -169,38 +170,7 @@ export function deriveReleaseCatalog(directory = reportPath('reports/places', { 
     stagedCount: seen.size, withheldCount: seen.size - result.records.length,
     sourceBatchCount: files.length, unrankedCount: result.records.length,
     urbanIdentityFlagged: result.records.filter(place => place.kind === 'town').length };
-  if (result.records.length > PLACE_LIMITS.tileRecords)
-    throw new Error('Single tile has reached the 512-record limit: implement spatial sharding before publishing more cities');
   return result;
-}
-
-function allSelectedNames(record) {
-  return [record.name, record.nameEn, record.nameNative, ...record.nameNativeExtras,
-    ...record.nameTimeline.flatMap(entry => [entry.ko, entry.en, entry.native, ...(entry.nativeExtras || [])])]
-    .filter(value => typeof value === 'string' && value.trim());
-}
-
-function loadArchivedDisplayPopulationSources() {
-  const sourcePath = reportPath('reports/map-analysis/corpus/gazetteer-v1/sources/cities500.source.json', { access: 'read' });
-  const source = JSON.parse(readFileSync(sourcePath, 'utf8'));
-  const indexPath = reportPath('reports/map-analysis/corpus/gazetteer-v1/runtime/manifest.json', { access: 'read' });
-  const index = JSON.parse(readFileSync(indexPath, 'utf8'));
-  if (!index.sources?.some(entry => entry.sha256 === source.sha256) || index.recordCount < 200000)
-    throw new Error('Archived GeoNames source/index pairing is missing or changed');
-  const directory = reportPath('reports/map-analysis/corpus/gazetteer-v1/runtime/records', { access: 'read' });
-  const records = [];
-  for (const filename of readdirSync(directory).filter(name => /^[a-f0-9]{2}\.json$/.test(name)).sort()) {
-    const bytes = readFileSync(join(directory, filename));
-    if (hash('sha256', bytes) !== index.files?.['records/' + filename]?.sha256)
-      throw new Error('Archived GeoNames record shard changed: ' + filename);
-    const shard = JSON.parse(bytes.toString('utf8'));
-    for (const row of Object.values(shard)) records.push({
-      id: row.id, coordinates: row.coordinates, population: row.population,
-      featureCode: row.featureCode,
-    });
-  }
-  if (records.length < 200000) throw new Error('Incomplete archived GeoNames spatial source');
-  return { records, sourceSha256: source.sha256 };
 }
 
 export function generatePlaceRelease() {
@@ -210,38 +180,29 @@ export function generatePlaceRelease() {
     populationSources.records, populationSources.sourceSha256);
   const catalogText = sortedJson(catalog);
   const records = catalog.records.map(normalizePlace);
-  const bytes = Buffer.from(encodePlaceTile(records));
-  const decoded = decodePlaceTile(bytes);
-  if (JSON.stringify(decoded) !== JSON.stringify(records)) throw new Error('Place tile round-trip failed');
-  const sum = hash('sha256', bytes);
-  const shard = 'places-v1';
-  const row = { shard, offset: 0, length: bytes.length, sha256: sum };
-  const prefixes = new Set();
-  for (const record of catalog.records) for (const value of allSelectedNames(record)) {
-    const query = normalizePlaceQuery(value);
-    if ([...query].length >= 2) prefixes.add([...query].slice(0, 2).join(''));
-  }
-  const search = Object.fromEntries([...prefixes].sort().map(prefix => [
-    prefix, [{ ...row, first: prefix, last: prefix + '\uffff' }],
-  ]));
+  const spatial = buildPlaceSpatialPartition(records);
+  const spatialRevision = hash('sha256', sortedJson({partition:spatial.spatialPartition,shards:spatial.shards})).slice(0,12);
   const manifest = { version: 1,
     revision: 'approved-places-' + hash('sha256', catalogText).slice(0, 16)
-      + '-spatial-' + hash('sha256', sortedJson(displayRanking)).slice(0, 12),
+      + '-spatial-' + hash('sha256', sortedJson(displayRanking)).slice(0, 12)
+      + '-' + spatialRevision,
     displayRanking,
-    stages: [{ id: 0, minZoom: 0, columns: 1, rows: 1 }],
-    tiles: { '0/0-0': row },
-    shards: { [shard]: { url: 'places-v1.bin', bytes: bytes.length, sha256: sum } },
-    search,
+    stages: spatial.stages,
+    spatialPartition: spatial.spatialPartition,
+    tiles: spatial.tiles,
+    shards: spatial.shards,
+    search: spatial.search,
   };
-  if (bytes.length > PLACE_LIMITS.shardBytes) throw new Error('Place shard size exceeded');
-  return { catalogText, bytes, manifestText: sortedJson(manifest), manifest, recordCount: records.length };
+  return {catalogText, shardFiles:spatial.shardFiles, manifestText:sortedJson(manifest), manifest,
+    recordCount:records.length, tileCount:spatial.spatialPartition.totalPages,
+    bytes:spatial.shardFiles.reduce((sum,row)=>sum+row.bytes.length,0)};
 }
 
 export function publishPlaceRelease({ check = false } = {}) {
   const generated = generatePlaceRelease();
   const outputs = [
     ['reviewed-records-v1.json', Buffer.from(generated.catalogText)],
-    ['places-v1.bin', generated.bytes],
+    ...generated.shardFiles.map(row => [row.name,row.bytes]),
     ['manifest.json', Buffer.from(generated.manifestText)],
   ];
   const publish = () => { for (const [name, bytes] of outputs) {
@@ -256,8 +217,8 @@ export function publishPlaceRelease({ check = false } = {}) {
   } };
   if (check) publish();
   else withLibraryOutputs({ root: ROOT, paths: outputs.map(([name]) => join(OUTPUT_DIR, name)) }, publish);
-  return { records: generated.recordCount, bytes: generated.bytes.length,
-    searchPrefixes: Object.keys(generated.manifest.search).length, check };
+  return { records: generated.recordCount, tiles:generated.tileCount, shards:generated.shardFiles.length,
+    bytes:generated.bytes, searchPrefixes: Object.keys(generated.manifest.search).length, check };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
